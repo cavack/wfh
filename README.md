@@ -45,7 +45,7 @@ Backend:
 
 ```bash
 python -m pip install -r backend/requirements.txt
-PYTHONPATH=backend/src pytest -q backend/tests
+PYTHONPATH=backend/src:. pytest -q backend/tests
 ```
 
 Frontend:
