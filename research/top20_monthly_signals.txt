@@ -1,0 +1,22 @@
+# Selected from the completed 30-day report by realised outcome proxy (2R win, 1R loss), then signal count.
+# This is a fixed research universe; it must not be described as out-of-sample selection.
+REUSDT
+CATIUSDT
+龙虾USDT
+ESPORTSUSDT
+GWEIUSDT
+TSTUSDT
+ZBTUSDT
+COTIUSDT
+ONDOUSDT
+1000PEPEUSDT
+BMTUSDT
+DOGEUSDT
+IOTXUSDT
+PENGUUSDT
+SAGAUSDT
+XLMUSDT
+1000CATUSDT
+ALLOUSDT
+BICOUSDT
+BLUAIUSDT

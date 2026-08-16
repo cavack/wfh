@@ -1,0 +1,143 @@
+import { AlertTriangle, GitBranch, ShieldCheck } from "lucide-react";
+
+type TriState = {
+  passed?: number;
+  failed?: number;
+  unavailable?: number;
+  evaluated?: number;
+  pass_rate?: number | null;
+};
+
+export type SignalFunnelData = {
+  observational_only?: boolean;
+  hard_gating_allowed?: boolean;
+  candidate_count?: number;
+  lifecycle?: Record<string, number>;
+  stage_lifecycle?: {
+    version?: string;
+    observational_only?: boolean;
+    hard_gating_allowed?: boolean;
+    availability?: TriState;
+    stages?: Record<string, TriState>;
+  };
+  quality_gates?: Record<string, TriState>;
+  breakdown_evidence?: Record<string, TriState>;
+  attention?: {
+    required?: boolean;
+    cross_exchange_systemic_zero?: boolean;
+    reason?: string | null;
+  };
+};
+
+const states = ["WATCH", "FUEL-RICH", "PRE-TRIGGER", "ARMED", "TRIGGERED"];
+const lifecycleStages = [
+  ["hype", "Hype"],
+  ["damage", "Damage"],
+  ["setup", "Setup"],
+  ["trigger", "Current trigger"],
+  ["passed", "Lifecycle passed"],
+] as const;
+const gates = [
+  ["channel_stage_chain", "Snapshot stage gate"],
+  ["microstructure_approved", "Microstructure"],
+  ["complete_fresh_derivatives_packet", "Derivatives"],
+  ["taker_sell_dominance", "Sell dominance"],
+] as const;
+
+const breakdownChecks = [
+  ["primary_breakdown_confirmed", "Primary breakdown"],
+  ["confirmation_exchange_15m", "Confirmation exchange 15m"],
+  ["composite_breakdown_confirmed", "Composite breakdown"],
+] as const;
+
+function count(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value.toLocaleString("en-US", { maximumFractionDigits: 0 })
+    : "—";
+}
+
+export function SignalFunnel({ funnel }: { funnel?: SignalFunnelData }) {
+  const safe = funnel?.observational_only === true && funnel?.hard_gating_allowed === false;
+  if (!safe) {
+    return (
+      <section className="mx-auto mb-7 max-w-7xl rounded-2xl border border-slate-800 bg-slate-900 p-5">
+        <p className="text-sm text-slate-400">Signal funnel unavailable; no diagnostic values are inferred.</p>
+      </section>
+    );
+  }
+
+  const systemicZero = funnel.attention?.cross_exchange_systemic_zero === true;
+  const lifecycleSafe = funnel.stage_lifecycle?.observational_only === true
+    && funnel.stage_lifecycle?.hard_gating_allowed === false;
+
+  return (
+    <section className="mx-auto mb-7 max-w-7xl rounded-2xl border border-slate-800 bg-slate-900 p-5 sm:p-6" aria-label="Signal funnel diagnostics">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-100"><GitBranch size={17} className="text-violet-300" />Signal funnel</h2>
+          <p className="mt-1 text-sm text-slate-400">Persisted lifecycle progress and current-snapshot gate diagnostics. Missing evidence stays separate from a failed gate.</p>
+        </div>
+        <span className="status-pill border border-sky-400/25 bg-sky-500/10 text-sky-200">OBSERVATIONAL</span>
+      </div>
+
+      <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-5">
+        {states.map((state) => (
+          <div key={state} className="metric-card">
+            <p className="text-[11px] text-slate-500">{state}</p>
+            <p className="mt-1 text-xl font-semibold tabular-nums text-slate-100">{count(funnel.lifecycle?.[state])}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-5 border-t border-slate-800 pt-4">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <div>
+            <h3 className="text-xs font-semibold text-slate-200">Persisted lifecycle chain</h3>
+            <p className="mt-1 text-xs text-slate-500">Stages may complete in order across separate evaluations; trigger must still be current.</p>
+          </div>
+          <p className="text-[11px] text-slate-500">Available: {count(funnel.stage_lifecycle?.availability?.passed)} / {count(funnel.candidate_count)}</p>
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-5">
+          {lifecycleStages.map(([key, label]) => (
+            <div key={key} className="metric-card">
+              <p className="text-[11px] text-slate-500">{label}</p>
+              <p className="mt-1 text-xl font-semibold tabular-nums text-violet-200">
+                {lifecycleSafe ? count(funnel.stage_lifecycle?.stages?.[key]?.passed) : "—"}
+              </p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-5 overflow-x-auto border-t border-slate-800 pt-4">
+        <p className="mb-3 text-xs font-semibold text-slate-200">Current-snapshot gates</p>
+        <table className="w-full min-w-[560px] text-left text-xs">
+          <thead className="text-slate-500"><tr><th className="pb-2 font-medium">Gate</th><th className="pb-2 font-medium">Pass</th><th className="pb-2 font-medium">Fail</th><th className="pb-2 font-medium">Unavailable</th><th className="pb-2 font-medium">Pass rate</th></tr></thead>
+          <tbody className="divide-y divide-slate-800">
+            {gates.map(([key, label]) => {
+              const gate = funnel.quality_gates?.[key];
+              const rate = typeof gate?.pass_rate === "number" ? `${(gate.pass_rate * 100).toFixed(1)}%` : "—";
+              return <tr key={key}><td className="py-2.5 text-slate-300">{label}</td><td className="py-2.5 font-mono text-emerald-300">{count(gate?.passed)}</td><td className="py-2.5 font-mono text-rose-300">{count(gate?.failed)}</td><td className="py-2.5 font-mono text-slate-400">{count(gate?.unavailable)}</td><td className="py-2.5 font-mono text-slate-300">{rate}</td></tr>;
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="mt-5 grid gap-3 sm:grid-cols-3">
+        {breakdownChecks.map(([key, label]) => {
+          const check = funnel.breakdown_evidence?.[key];
+          const rate = typeof check?.pass_rate === "number" ? `${(check.pass_rate * 100).toFixed(1)}%` : "—";
+          return <div key={key} className="metric-card"><p className="text-xs text-slate-500">{label}</p><p className="mt-1 text-sm text-slate-200"><span className="font-mono text-emerald-300">{count(check?.passed)}</span> pass · <span className="font-mono text-rose-300">{count(check?.failed)}</span> fail</p><p className="mt-1 text-[11px] text-slate-500">{rate} pass · {count(check?.unavailable)} unavailable</p></div>;
+        })}
+      </div>
+
+      {systemicZero ? (
+        <p className="mt-4 flex items-start gap-2 rounded-xl border border-amber-400/25 bg-amber-500/10 p-3 text-xs leading-5 text-amber-100">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" />Cross-exchange confirmation has zero passes across the evaluated snapshot. This is an audit signal, not permission to bypass the gate.
+        </p>
+      ) : null}
+
+      <p className="mt-4 flex items-start gap-2 border-t border-slate-800 pt-3 text-xs leading-5 text-slate-500"><ShieldCheck size={15} className="mt-0.5 shrink-0 text-emerald-400/80" />Read-only diagnostics. This panel cannot change lifecycle state, score, alerts, thresholds, or eligibility.</p>
+    </section>
+  );
+}

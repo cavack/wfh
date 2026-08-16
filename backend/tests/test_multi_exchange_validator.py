@@ -1,0 +1,234 @@
+from waterfallhunter.core.multi_exchange_validator import MultiExchangeValidator
+from waterfallhunter.core.multi_exchange import MultiExchangeGateway
+
+
+def validator():
+    instance = object.__new__(MultiExchangeValidator)
+    instance.armed_threshold = 60
+    instance.triggered_threshold = 85
+    return instance
+
+
+def test_regime_without_trigger_cannot_arm():
+    status = validator()._suggested_status(
+        score=95.0,
+        stages={"regime": True, "setup": "FAILED_PULLBACK", "trigger": False},
+        microstructure_approved=True,
+        cross_exchange_confirmed=True,
+    )
+
+    assert status == "WATCH"
+
+
+def test_legacy_regime_setup_trigger_flags_cannot_arm_without_full_channel_chain():
+    status = validator()._suggested_status(
+        score=70.0,
+        stages={"regime": True, "setup": "FAILED_PULLBACK", "trigger": True},
+        microstructure_approved=True,
+        cross_exchange_confirmed=True,
+    )
+
+    assert status == "WATCH"
+
+
+def test_complete_channel_strategy_stage_chain_can_arm():
+    status = validator()._suggested_status(
+        score=70.0,
+        stages={"hype": True, "damage": True, "setup": True, "setup_type": "BREAKDOWN", "trigger": True, "passed": True},
+        microstructure_approved=True,
+        cross_exchange_confirmed=True,
+    )
+
+    assert status == "ARMED"
+
+
+def test_passed_flag_without_full_channel_stage_chain_cannot_arm():
+    status = validator()._suggested_status(
+        score=95.0,
+        stages={"passed": True},
+        microstructure_approved=True,
+        cross_exchange_confirmed=True,
+    )
+
+    assert status == "WATCH"
+
+
+def test_passed_flag_with_missing_trigger_cannot_arm():
+    status = validator()._suggested_status(
+        score=95.0,
+        stages={"hype": True, "damage": True, "setup": True, "trigger": False, "passed": True},
+        microstructure_approved=True,
+        cross_exchange_confirmed=True,
+    )
+
+    assert status == "WATCH"
+
+
+def test_cross_exchange_price_guard_rejects_symbol_collision():
+    assert not MultiExchangeGateway._price_is_compatible(
+        {"last": 0.0000556}, reference_price=0.002592, max_deviation_pct=5.0
+    )
+
+
+def test_cross_exchange_price_guard_keeps_small_real_discrepancy():
+    assert MultiExchangeGateway._price_is_compatible(
+        {"last": 0.04502}, reference_price=0.04495, max_deviation_pct=5.0
+    )
+
+
+def _complete_candles():
+    return {
+        "4h": {
+            "valid": True, "hype_context": True, "support_broken": True,
+            "lower_high": True, "setup": "FAILED_PULLBACK", "bearish_close": True,
+            "volume_acceleration": True,
+        },
+        **{
+            timeframe: {
+                "valid": True, "two_closed_candles": True, "lower_high": True,
+                "reclaim": True, "repump": False, "rsi_rollover": True,
+                "bearish_close": True, "volume_acceleration": True,
+            }
+            for timeframe in ("1h", "15m", "5m")
+        },
+    }
+
+
+def _complete_microstructure():
+    return {
+        "approved": True, "spoofing_detected": False, "sell_flow_usdt": 60.0,
+        "buy_flow_usdt": 40.0, "bid_depth_usdt": 1_000.0, "ask_depth_usdt": 1_000.0,
+        "spread_pct": 0.05, "slippage_pct": 0.05,
+        "footprint": {"available": True, "aggressive_selling": True},
+    }
+
+
+def _complete_derivatives():
+    return {
+        "available": True, "funding_rate": 0.0005, "funding_percentile": 0.95,
+        "oi_change_1h_pct": 1.0, "taker_buy_sell_ratio": 0.8,
+        "top_trader_long_short_ratio": 2.0,
+    }
+
+
+def test_score_v2_replaces_price_dislocation_and_uses_selected_contract_vwap():
+    result = validator()._merge_score_v2(
+        candles=_complete_candles(),
+        microstructure=_complete_microstructure(),
+        derivatives=_complete_derivatives(),
+        cross_exchange_confirmed=True,
+        ticker={"last": 90.0, "vwap": 100.0},
+        reference_price=100.0,
+        strategy_stages={"hype": True, "damage": True, "setup": True, "trigger": True, "passed": True},
+    )
+
+    assert result["score_version"] == "score_v2"
+    assert result["is_valid"] is True
+    assert "price_dislocation" not in result["score_components"]
+    assert result["score_components"]["same_contract_price_location"] == 5.0
+    assert result["score"] == 100.0
+
+
+def test_score_v2_rejects_missing_stage_chain_without_a_zero_score():
+    result = validator()._merge_score_v2(
+        candles=_complete_candles(),
+        microstructure=_complete_microstructure(),
+        derivatives=_complete_derivatives(),
+        cross_exchange_confirmed=True,
+        ticker={"last": 90.0, "vwap": 100.0},
+        reference_price=100.0,
+        strategy_stages={"hype": True, "damage": True, "setup": True, "trigger": False, "passed": False},
+    )
+
+    assert result["is_valid"] is False
+    assert result["score"] is None
+    assert result["reason"] == "channel stage chain incomplete"
+    assert result["quality_gates"]["channel_stage_chain"] is False
+
+
+def test_score_v2_rejects_missing_selected_contract_vwap_honestly():
+    result = validator()._merge_score_v2(
+        candles=_complete_candles(),
+        microstructure=_complete_microstructure(),
+        derivatives=_complete_derivatives(),
+        cross_exchange_confirmed=True,
+        ticker={"last": 90.0},
+        reference_price=100.0,
+        strategy_stages={"hype": True, "damage": True, "setup": True, "trigger": True, "passed": True},
+    )
+
+    assert result["is_valid"] is False
+    assert result["score"] is None
+    assert result["reason"] == "incomplete same-contract price-location packet"
+
+
+def test_watch_score_is_available_without_promoting_an_incomplete_live_setup():
+    result = validator()._watch_score(
+        candles=_complete_candles(),
+        microstructure=_complete_microstructure(),
+        derivatives={"available": False, "reason": "missing valid funding rate"},
+        cross_exchange_confirmed=True,
+        ticker={"last": 90.0, "vwap": 100.0},
+    )
+
+    assert result["trade_eligible"] is False
+    assert result["score"] == 100.0
+    assert result["coverage_pct"] == 85.0
+
+
+def test_experimental_pretrigger_uses_fixed_threshold_and_keeps_core_safety_gates():
+    stages = {
+        "hype": True,
+        "damage": False,
+        "setup": False,
+        "trigger": True,
+        "passed": False,
+    }
+    gates = {
+        "all_timeframes_valid": True,
+        "complete_candle_packet": True,
+        "complete_microstructure_packet": True,
+        "complete_fresh_derivatives_packet": True,
+        "taker_sell_dominance": True,
+        "complete_price_location": True,
+        "live_orderbook": True,
+        "channel_stage_chain": False,
+        "cross_exchange_confirmed": False,
+    }
+    kwargs = {
+        "enabled": True,
+        "threshold": 45.0,
+        "observation_score": 48.0,
+        "observation_status": "PRE-TRIGGER",
+        "strategy_stages": stages,
+        "quality_gates": gates,
+        "microstructure": {"approved": True},
+        "derivatives": {"available": True},
+    }
+
+    assert MultiExchangeValidator._experimental_pretrigger_eligible(**kwargs) is True
+    assert MultiExchangeValidator._experimental_pretrigger_eligible(
+        **{**kwargs, "observation_score": 44.99}
+    ) is False
+    assert MultiExchangeValidator._experimental_pretrigger_eligible(
+        **{**kwargs, "quality_gates": {**gates, "taker_sell_dominance": False}}
+    ) is False
+
+
+def test_position_reference_price_uses_live_ticker_fallbacks():
+    assert MultiExchangeValidator._position_reference_price(
+        {"mark": None, "last": 0.0003799},
+        {"best_bid": 0.0003798, "best_ask": 0.0003800},
+    ) == (0.0003799, "ticker.last")
+
+    assert MultiExchangeValidator._position_reference_price(
+        {},
+        {"best_bid": 10.0, "best_ask": 10.2},
+    ) == (10.1, "orderbook.mid")
+
+
+def test_position_reference_price_rejects_non_live_values():
+    assert MultiExchangeValidator._position_reference_price(
+        {"mark": None, "last": 0.0},
+        {"best_bid": 1.0, "best_ask": None},
+    ) == (None, None)

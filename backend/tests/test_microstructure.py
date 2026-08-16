@@ -1,0 +1,119 @@
+import asyncio
+import time
+
+import pytest
+
+from waterfallhunter.core.microstructure import MicrostructureAnalyzer
+
+
+class FreshExchange:
+    async def fetch_order_book(self, symbol, limit):
+        now = int(time.time() * 1000)
+        return {"timestamp": now, "bids": [[10.0, 100.0]], "asks": [[10.1, 100.0]]}
+
+    async def fetch_trades(self, symbol, limit):
+        now = int(time.time() * 1000)
+        return [{"timestamp": now, "side": "sell", "price": 10.0, "amount": 1.0} for _ in range(20)]
+
+
+def test_microstructure_rejects_a_stale_initial_orderbook_snapshot():
+    result = asyncio.run(MicrostructureAnalyzer().analyze(
+        FreshExchange(), "TEST/USDT:USDT",
+        {"timestamp": int(time.time() * 1000) - 6_000, "bids": [[10.0, 100.0]], "asks": [[10.1, 100.0]]},
+        {"limits": {}, "contractSize": 1},
+    ))
+
+    assert result == {"approved": False, "reason": "stale orderbook snapshot"}
+
+
+def test_contract_orderbook_amounts_are_converted_to_usdt_notional():
+    levels = [[0.000005, 10.0]]
+
+    assert MicrostructureAnalyzer._depth(levels, contract_size=1_000_000) == 50.0
+    assert MicrostructureAnalyzer._vwap(levels, notional=50.0, contract_size=1_000_000) == 0.000005
+
+
+def test_microstructure_reports_real_entry_and_exit_vwap_slippage():
+    now = int(time.time() * 1000)
+    book = {
+        "timestamp": now,
+        "bids": [[10.0, 2.0], [9.9, 10.0]],
+        "asks": [[10.1, 2.0], [10.2, 10.0]],
+    }
+    class DepthExchange:
+        async def fetch_order_book(self, symbol, limit):
+            return {**book, "timestamp": int(time.time() * 1000)}
+
+        async def fetch_trades(self, symbol, limit):
+            timestamp = int(time.time() * 1000)
+            return [{"timestamp": timestamp, "side": "sell", "price": 10.0, "amount": 1.0} for _ in range(20)]
+
+    result = asyncio.run(MicrostructureAnalyzer(executable_notional=50.0).analyze(
+        DepthExchange(), "TEST/USDT:USDT", book,
+        {"limits": {"amount": {"min": 0.01}, "cost": {"min": 1.0}}, "contractSize": 1},
+    ))
+
+    expected_sell_vwap = 50.0 / (2.0 + 30.0 / 9.9)
+    expected_buy_vwap = 50.0 / (2.0 + 29.8 / 10.2)
+    assert result["sell_vwap"] == pytest.approx(expected_sell_vwap)
+    assert result["buy_vwap"] == pytest.approx(expected_buy_vwap)
+    assert result["entry_slippage_pct"] == round((10.0 - expected_sell_vwap) / 10.0 * 100.0, 4)
+    assert result["exit_slippage_pct"] == round((expected_buy_vwap - 10.1) / 10.1 * 100.0, 4)
+    assert result["executable"] is True
+    assert isinstance(result["observed_at"], float)
+    assert 0 <= time.time() - result["observed_at"] < 2.0
+    assert result["source_capture"]["raw_trades_captured"] is True
+    assert len(result["source_capture"]["fresh_trades"]) == 20
+    assert set(result["source_capture"]["fresh_trades"][0]) == {
+        "timestamp", "side", "price", "amount"
+    }
+    assert result["source_capture"]["orderbook_snapshots_captured"] is True
+    assert len(result["source_capture"]["orderbook_snapshots"]) == 3
+    assert result["source_capture"]["market_filters_captured"] is True
+    assert result["source_capture"]["market"]["contractSize"] == 1
+
+
+def test_source_capture_keeps_every_orderbook_level_consumed_by_production():
+    now = int(time.time() * 1000)
+    bids = [[10.0 - index * 0.01, 2.0 + index] for index in range(30)]
+    asks = [[10.1 + index * 0.01, 2.0 + index] for index in range(30)]
+    first = {"timestamp": now, "bids": bids, "asks": asks}
+
+    class LimitIgnoringExchange:
+        async def fetch_order_book(self, symbol, limit):
+            assert limit == 20
+            return {
+                "timestamp": int(time.time() * 1000),
+                "bids": bids,
+                "asks": asks,
+            }
+
+        async def fetch_trades(self, symbol, limit):
+            timestamp = int(time.time() * 1000)
+            return [
+                {"timestamp": timestamp, "side": "sell", "price": 10.0, "amount": 1.0}
+                for _ in range(20)
+            ]
+
+    result = asyncio.run(
+        MicrostructureAnalyzer(snapshot_delay_seconds=0.0).analyze(
+            LimitIgnoringExchange(),
+            "TEST/USDT:USDT",
+            first,
+            {
+                "limits": {"amount": {"min": 0.01}, "cost": {"min": 1.0}},
+                "precision": {},
+                "contractSize": 1.0,
+            },
+        )
+    )
+
+    captured = result["source_capture"]["orderbook_snapshots"]
+    assert [len(snapshot["bids"]) for snapshot in captured] == [30, 30, 30]
+    assert [len(snapshot["asks"]) for snapshot in captured] == [30, 30, 30]
+    assert result["bid_depth_usdt"] == pytest.approx(
+        MicrostructureAnalyzer._depth(captured[-1]["bids"])
+    )
+    assert result["ask_depth_usdt"] == pytest.approx(
+        MicrostructureAnalyzer._depth(captured[-1]["asks"])
+    )
