@@ -5,8 +5,10 @@ aiohttp==3.14.3
 httpx==0.27.0
 
 # Crypto Exchange Integration
+# ccxt 4.5.68 currently hard-pins cryptography 49.0.0. The corresponding
+# audit exception is tracked in the repository CI and must be removed as soon
+# as upstream releases a compatible version.
 ccxt==4.5.68
-cryptography==50.0.0
 
 # Data Processing
 pydantic==2.13.4
