@@ -22,6 +22,7 @@ WaterfallHunter is an observational monitoring and research system for USDT perp
 - Execution suitability cannot replace the volume proxy until promotion criteria pass.
 - Lifecycle persistence and stale-trigger safety must be audited before any hard gate.
 - Canary trading requires separate explicit approval and additional risk controls.
+- AI output is advisory only. Gemini is the only configured AI advisory provider; if it is unavailable, deterministic logic continues without a local-model fallback.
 
 ## Local development
 
@@ -53,14 +54,27 @@ Frontend:
 ```bash
 cd frontend
 npm ci
+npm run typecheck
 npm run build
 ```
 
-CI runs both checks for every push and pull request.
+Container configuration:
+
+```bash
+cp .env.example .env
+docker compose config --quiet
+docker compose build waterfall-backend frontend watchdog
+```
+
+CI runs backend tests, frontend typechecking/build, Python and npm dependency audits, container validation/build, and repository hygiene checks for pull requests. Dependabot configuration tracks Python, npm, GitHub Actions, and Docker dependency updates.
 
 ## Deployment
 
 Production secrets and state live outside Git. Copy `.env.example` to `.env`, provide only the optional credentials you need, keep `LIVE_TRADING_ENABLED=false`, and deploy through Docker Compose. The application database is stored in the `waterfall_data` volume and is not part of this repository.
+
+## Repository governance
+
+Changes should be made on short-lived branches and merged through reviewed pull requests after CI passes. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and safety checklist. Ownership rules live in `.github/CODEOWNERS`.
 
 ## Project roadmap
 
@@ -75,3 +89,7 @@ Production secrets and state live outside Git. Copy `.env.example` to `.env`, pr
 ## Security
 
 Do not open public issues containing credentials, exchange-account details, production evidence, database files, or server addresses. See [SECURITY.md](SECURITY.md) for reporting guidance.
+
+## License
+
+This repository is publicly viewable but is not open-source licensed. See [LICENSE](LICENSE).

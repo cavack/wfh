@@ -34,8 +34,6 @@ services:
     deploy:
       resources:
         limits:
-          # Raw production evidence and feature-equivalent replay stabilize
-          # around 410 MiB with transient peaks above the former 512 MiB cap.
           memory: 1G
           pids: 100
     healthcheck:
@@ -254,47 +252,11 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  ollama:
-    image: ollama/ollama@sha256:b88c73ace3e115f8ec53dc8761ae1c0aabfa675406e3681786b98757ce050f42
-    restart: unless-stopped
-    read_only: true
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,nodev,size=256m
-    environment:
-      HOME: /tmp
-      OLLAMA_MODELS: /ollama/models
-    volumes:
-      - ollama_models:/ollama
-    user: "65534:65534"
-    init: true
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    deploy:
-      resources:
-        limits:
-          memory: 6G
-          pids: 200
-    healthcheck:
-      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    networks:
-      - application
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
 volumes:
   waterfall_data:
   prometheus_data:
   grafana_data:
   alertmanager_data:
-  ollama_models:
 
 networks:
   edge:
