@@ -197,16 +197,11 @@ def test_execution_suitability_route_is_registered(
         tmp_path
     )
 
-    paths = {
-        route.path
-        for route in client.app.routes
-        if hasattr(route, "path")
-    }
-
-    assert (
+    response = client.get(
         "/api/execution-suitability"
-        in paths
     )
+
+    assert response.status_code == 200
 
 
 def test_execution_suitability_endpoint_returns_all_classes(
