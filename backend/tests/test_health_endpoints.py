@@ -11,6 +11,7 @@ def test_standard_health_routes_are_registered():
     paths = {
         route.path
         for route in main.app.routes
+        if hasattr(route, "path")
     }
 
     assert "/api/health" in paths
