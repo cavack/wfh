@@ -1,0 +1,10 @@
+groups:
+  - name: waterfall
+    rules:
+      - alert: WaterfallBackendDown
+        expr: up{job="waterfall-backend"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Waterfall backend is unreachable
