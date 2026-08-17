@@ -14,11 +14,11 @@ ccxt==4.5.68
 
 # Data Processing
 pydantic==2.13.4
-pydantic-settings==2.14.2
+pydantic-settings==2.15.0
 
 # Observability and Utilities
-prometheus-client==0.20.0
-loguru==0.7.2
+prometheus-client==0.26.0
+loguru==0.7.3
 
 # Testing
 pytest==9.1.1
