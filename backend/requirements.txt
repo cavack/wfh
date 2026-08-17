@@ -18,7 +18,7 @@ pydantic-settings==2.15.0
 
 # Observability and Utilities
 prometheus-client==0.26.0
-loguru==0.7.2
+loguru==0.7.3
 
 # Testing
 pytest==9.1.1
