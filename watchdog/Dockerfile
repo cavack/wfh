@@ -1,4 +1,4 @@
-FROM python:3.11-alpine
+FROM python:3.14-alpine
 RUN addgroup -S watchdog && adduser -S watchdog -G watchdog
 WORKDIR /app
 
