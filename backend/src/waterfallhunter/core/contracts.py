@@ -1,7 +1,17 @@
+import math
+from collections.abc import Mapping
 from enum import Enum
+from types import MappingProxyType
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 
 NonEmptyStr = Annotated[str, Field(min_length=1)]
@@ -12,6 +22,90 @@ NonNegativeFinite = Annotated[float, Field(ge=0.0, allow_inf_nan=False)]
 FiniteFloat = Annotated[float, Field(allow_inf_nan=False)]
 Sha256Hex = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 SystemLeverage = Annotated[float, Field(ge=3.0, le=20.0, allow_inf_nan=False)]
+
+_DELIVERY_PAYLOAD_KEYS = frozenset(
+    {
+        "delivery_id",
+        "delivery_state",
+        "telegram_message_id",
+        "attempt_count",
+        "last_attempt_at",
+        "next_retry_at",
+        "sending_started_at",
+        "sending_lease_expires_at",
+        "delivered_at",
+        "last_error_class",
+        "provider_status_code",
+        "retry_after_seconds",
+    }
+)
+_SECRET_KEY_WORDS = frozenset({"token", "secret", "password", "credential"})
+_SECRET_KEY_NAMES = frozenset(
+    {
+        "api_key",
+        "apikey",
+        "access_key",
+        "private_key",
+        "secret_key",
+    }
+)
+
+
+def _normalized_payload_key(key: str) -> str:
+    return key.strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _payload_key_is_forbidden(key: str) -> bool:
+    normalized = _normalized_payload_key(key)
+    if normalized in _DELIVERY_PAYLOAD_KEYS or normalized in _SECRET_KEY_NAMES:
+        return True
+    return any(word in normalized for word in _SECRET_KEY_WORDS)
+
+
+def _freeze_json_mapping(
+    value: Mapping[Any, Any],
+    *,
+    reject_payload_keys: bool,
+) -> Mapping[str, Any]:
+    frozen: dict[str, Any] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise ValueError("contract JSON object keys must be strings")
+        if reject_payload_keys and _payload_key_is_forbidden(key):
+            raise ValueError("notification payload contains delivery or secret fields")
+        frozen[key] = _freeze_json(
+            item,
+            reject_payload_keys=reject_payload_keys,
+        )
+    return MappingProxyType(frozen)
+
+
+def _freeze_json(value: Any, *, reject_payload_keys: bool = False) -> Any:
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("contract JSON numbers must be finite")
+        return value
+    if isinstance(value, Mapping):
+        return _freeze_json_mapping(
+            value,
+            reject_payload_keys=reject_payload_keys,
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(
+            _freeze_json(item, reject_payload_keys=reject_payload_keys)
+            for item in value
+        )
+    raise ValueError("contract JSON values must be JSON-compatible")
+
+
+def _thaw_json(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _thaw_json(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_json(item) for item in value]
+    return value
 
 
 class SourceRevisionStatus(str, Enum):
@@ -142,7 +236,7 @@ class SignalDecisionPacket(CommonContractEnvelope):
     decision_contract_hash: Sha256Hex
     analysis_observed_at: Annotated[int, Field(ge=0)]
     reference_observed_at: Annotated[int, Field(ge=0)] | None = None
-    eligibility_gates: dict[str, Any]
+    eligibility_gates: Mapping[str, Any]
     evidence_quality: EvidenceQualityPacket
     predictive_evidence_score: Score100 | None = None
     final_signal_score: Score100
@@ -152,6 +246,21 @@ class SignalDecisionPacket(CommonContractEnvelope):
     execution_plan_id: NonEmptyStr
     reason_codes: tuple[str, ...]
     execution_mode: ExecutionMode = ExecutionMode.PAPER_ONLY
+
+    @field_validator("eligibility_gates", mode="after")
+    @classmethod
+    def _freeze_eligibility_gates(
+        cls,
+        value: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        return _freeze_json(value)
+
+    @field_serializer("eligibility_gates")
+    def _serialize_eligibility_gates(
+        self,
+        value: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        return _thaw_json(value)
 
 
 class ExecutionPlan(CommonContractEnvelope):
@@ -262,5 +371,20 @@ class NotificationEvent(CommonContractEnvelope):
     idempotency_key: NonEmptyStr
     priority: int
     payload_contract_version: NonEmptyStr
-    payload: dict[str, Any]
+    payload: Mapping[str, Any]
     created_at: Annotated[int, Field(ge=0)]
+
+    @field_validator("payload", mode="after")
+    @classmethod
+    def _freeze_payload(
+        cls,
+        value: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        return _freeze_json(value, reject_payload_keys=True)
+
+    @field_serializer("payload")
+    def _serialize_payload(
+        self,
+        value: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        return _thaw_json(value)

@@ -58,7 +58,11 @@ def _valid_signal_packet() -> dict:
         "decision_contract_hash": "a" * 64,
         "analysis_observed_at": 1,
         "reference_observed_at": 1,
-        "eligibility_gates": {"fresh": True, "execution": True},
+        "eligibility_gates": {
+            "fresh": True,
+            "execution": True,
+            "nested": {"items": ["A", "B"]},
+        },
         "evidence_quality": _valid_evidence_packet(),
         "predictive_evidence_score": None,
         "final_signal_score": 88.0,
@@ -133,6 +137,26 @@ def _valid_position_state() -> dict:
     }
 
 
+def _valid_notification_event(*, payload: dict | None = None) -> dict:
+    return {
+        **_envelope("notification_event", "1.0"),
+        "event_id": "event-1",
+        "event_type": "SIGNAL_CONFIRMED",
+        "aggregate_type": "signal",
+        "aggregate_id": "signal-1",
+        "symbol": "BTC/USDT:USDT",
+        "signal_class": "STRICT",
+        "lifecycle_state": "TRIGGERED",
+        "decision_status": {"primary": "CONFIRMED"},
+        "material_state_hash": "b" * 64,
+        "idempotency_key": "signal-confirmed:signal-1",
+        "priority": 100,
+        "payload_contract_version": "1",
+        "payload": {} if payload is None else payload,
+        "created_at": 2,
+    }
+
+
 def test_signal_class_is_only_strict_or_experimental():
     contracts = _contracts()
     assert {item.value for item in contracts.SignalClass} == {"STRICT", "EXPERIMENTAL"}
@@ -164,16 +188,40 @@ def test_signal_decision_packet_keeps_probability_unavailable_explicit():
     assert packet.evidence_quality.coverage_pct == 100.0
 
 
+def test_signal_decision_packet_deep_freezes_eligibility_gates():
+    contracts = _contracts()
+    packet = contracts.SignalDecisionPacket(**_valid_signal_packet())
+
+    with pytest.raises(TypeError):
+        packet.eligibility_gates["fresh"] = False
+    with pytest.raises(TypeError):
+        packet.eligibility_gates["nested"]["new"] = True
+    with pytest.raises(AttributeError):
+        packet.eligibility_gates["nested"]["items"].append("C")
+
+    dumped = packet.model_dump(mode="json")
+    assert dumped["eligibility_gates"] == {
+        "fresh": True,
+        "execution": True,
+        "nested": {"items": ["A", "B"]},
+    }
+
+
 def test_signal_decision_packet_rejects_fake_probability_and_bad_hash():
     contracts = _contracts()
+    invalid_probability = {
+        **_valid_signal_packet(),
+        "calibrated_probability": 1.01,
+    }
+    invalid_hash = {
+        **_valid_signal_packet(),
+        "decision_contract_hash": "not-a-sha256",
+    }
+
     with pytest.raises(ValidationError):
-        contracts.SignalDecisionPacket(
-            **{**_valid_signal_packet(), "calibrated_probability": 1.01}
-        )
+        contracts.SignalDecisionPacket(**invalid_probability)
     with pytest.raises(ValidationError):
-        contracts.SignalDecisionPacket(
-            **{**_valid_signal_packet(), "decision_contract_hash": "not-a-sha256"}
-        )
+        contracts.SignalDecisionPacket(**invalid_hash)
 
 
 def test_execution_plan_is_lbank_isolated_only_and_preserves_raw_leverage():
@@ -189,12 +237,13 @@ def test_execution_plan_is_lbank_isolated_only_and_preserves_raw_leverage():
 
 def test_execution_plan_rejects_cross_margin_and_out_of_range_system_leverage():
     contracts = _contracts()
+    cross_margin = {**_valid_execution_plan(), "cross_margin_allowed": True}
+    excessive_leverage = {**_valid_execution_plan(), "system_leverage": 21}
+
     with pytest.raises(ValidationError):
-        contracts.ExecutionPlan(
-            **{**_valid_execution_plan(), "cross_margin_allowed": True}
-        )
+        contracts.ExecutionPlan(**cross_margin)
     with pytest.raises(ValidationError):
-        contracts.ExecutionPlan(**{**_valid_execution_plan(), "system_leverage": 21})
+        contracts.ExecutionPlan(**excessive_leverage)
 
 
 def test_execution_plan_requires_reason_when_levels_are_unavailable():
@@ -224,8 +273,10 @@ def test_position_state_keeps_execution_and_thesis_states_separate():
 
 def test_position_state_rejects_non_isolated_margin():
     contracts = _contracts()
+    cross_margin_state = {**_valid_position_state(), "margin_mode": "CROSS"}
+
     with pytest.raises(ValidationError):
-        contracts.PositionState(**{**_valid_position_state(), "margin_mode": "CROSS"})
+        contracts.PositionState(**cross_margin_state)
 
 
 def test_position_amendment_is_frozen_append_only_vocabulary():
@@ -248,45 +299,74 @@ def test_position_amendment_is_frozen_append_only_vocabulary():
 
 def test_notification_event_requires_sha256_material_hash():
     contracts = _contracts()
+    invalid_hash = {
+        **_valid_notification_event(),
+        "material_state_hash": "not-a-hash",
+    }
+
     with pytest.raises(ValidationError):
-        contracts.NotificationEvent(
-            **_envelope("notification_event", "1.0"),
-            event_id="event-1",
-            event_type="SIGNAL_CONFIRMED",
-            aggregate_type="signal",
-            aggregate_id="signal-1",
-            symbol="BTC/USDT:USDT",
-            signal_class="STRICT",
-            lifecycle_state="TRIGGERED",
-            decision_status={"primary": "CONFIRMED"},
-            material_state_hash="not-a-hash",
-            idempotency_key="signal-confirmed:signal-1",
-            priority=100,
-            payload_contract_version="1",
-            payload={},
-            created_at=2,
+        contracts.NotificationEvent(**invalid_hash)
+
+
+def test_notification_event_deep_freezes_payload():
+    contracts = _contracts()
+    event = contracts.NotificationEvent(
+        **_valid_notification_event(
+            payload={"summary": {"items": ["A", "B"]}},
         )
+    )
+
+    with pytest.raises(TypeError):
+        event.payload["new"] = True
+    with pytest.raises(TypeError):
+        event.payload["summary"]["new"] = True
+    with pytest.raises(AttributeError):
+        event.payload["summary"]["items"].append("C")
+
+    assert event.model_dump(mode="json")["payload"] == {
+        "summary": {"items": ["A", "B"]}
+    }
+
+
+def test_notification_event_rejects_delivery_state_and_secret_keys_recursively():
+    contracts = _contracts()
+    top_level_delivery = _valid_notification_event(
+        payload={"delivery_state": "DELIVERED"}
+    )
+    nested_delivery = _valid_notification_event(
+        payload={"metadata": {"delivery_state": "DELIVERED"}}
+    )
+    top_level_secret = _valid_notification_event(
+        payload={"telegram_token": "should-never-be-here"}
+    )
+    nested_secret = _valid_notification_event(
+        payload={"metadata": {"credentials": {"api_token": "secret"}}}
+    )
+
+    for invalid_payload in (
+        top_level_delivery,
+        nested_delivery,
+        top_level_secret,
+        nested_secret,
+    ):
+        with pytest.raises(ValidationError):
+            contracts.NotificationEvent(**invalid_payload)
+
+
+def test_notification_event_rejects_non_json_payload_values():
+    contracts = _contracts()
+    non_finite = _valid_notification_event(payload={"ratio": float("inf")})
+    non_string_key = _valid_notification_event(payload={"nested": {1: "x"}})
+    unsupported = _valid_notification_event(payload={"tags": {"a", "b"}})
+
+    for invalid_payload in (non_finite, non_string_key, unsupported):
+        with pytest.raises(ValidationError):
+            contracts.NotificationEvent(**invalid_payload)
 
 
 def test_notification_event_contains_no_delivery_or_secret_fields():
     contracts = _contracts()
-    event = contracts.NotificationEvent(
-        **_envelope("notification_event", "1.0"),
-        event_id="event-1",
-        event_type="SIGNAL_CONFIRMED",
-        aggregate_type="signal",
-        aggregate_id="signal-1",
-        symbol="BTC/USDT:USDT",
-        signal_class="STRICT",
-        lifecycle_state="TRIGGERED",
-        decision_status={"primary": "CONFIRMED"},
-        material_state_hash="b" * 64,
-        idempotency_key="signal-confirmed:signal-1",
-        priority=100,
-        payload_contract_version="1",
-        payload={},
-        created_at=2,
-    )
+    event = contracts.NotificationEvent(**_valid_notification_event())
     dumped = event.model_dump(mode="json")
     assert "telegram_message_id" not in dumped
     assert "delivery_state" not in dumped
