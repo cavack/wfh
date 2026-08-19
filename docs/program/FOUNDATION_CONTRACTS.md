@@ -30,7 +30,7 @@ Verified provenance requires every link:
 
 Missing, invalid, or mismatched links yield `DEPLOYMENT_PROVENANCE_PARTIAL`.
 
-`backend/requirements.lock` and `watchdog/requirements.lock` are resolved, hash-locked Python dependency inputs used by CI and their respective images. Base images and GitHub Actions are pinned by digest/SHA. Production images carry OCI revision/source/created/version labels.
+`backend/requirements.lock` and `watchdog/requirements.lock` are resolved, hash-locked Python dependency inputs used by CI and their respective images. Container installs accept wheels only. Base images use digest-only references and GitHub Actions are commit-pinned. Production images carry OCI revision/source/created/version labels.
 
 The dependency audit found vulnerable versions forced by `ccxt==4.5.68`. Wave 0 upgrades to `ccxt==4.5.74`, `aiohttp==3.14.3`, and `cryptography==50.0.0`, removes all four audit exceptions, and preserves the baseline model suite.
 

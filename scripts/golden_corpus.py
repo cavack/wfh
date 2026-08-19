@@ -36,10 +36,9 @@ def main() -> int:
         return 0
 
     corpus = json.loads(args.corpus.read_text(encoding="utf-8"))
-    if not verify_corpus(corpus):
-        raise SystemExit("corpus verification failed")
-    print("corpus verification passed")
-    return 0
+    valid = verify_corpus(corpus)
+    print(f"corpus verification {'passed' if valid else 'failed'}")
+    return int(not valid)
 
 
 if __name__ == "__main__":

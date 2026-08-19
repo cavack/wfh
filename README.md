@@ -26,7 +26,7 @@ WaterfallHunter is an observational monitoring and research system for USDT perp
 
 ## Local development
 
-Requirements: Docker with Compose, or Python 3.14 and Node.js 26 for running components directly.
+Requirements: Docker with Compose, or Python 3.13 and Node.js 26 for running components directly.
 
 ```bash
 cp .env.example .env

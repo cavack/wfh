@@ -1,5 +1,5 @@
-ARG PYTHON_VERSION=3.14
-ARG PYTHON_IMAGE=python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4
+ARG PYTHON_VERSION=3.13
+ARG PYTHON_IMAGE=python@sha256:ffb752e139c0a19692a43af8d8523b274222dd68eebad5d583b45c2201c6e30a
 
 # Stage 1: Builder
 FROM ${PYTHON_IMAGE} AS builder
@@ -10,7 +10,7 @@ RUN apt-get update && \
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 COPY requirements.lock .
-RUN pip install --no-cache-dir --require-hashes -r requirements.lock
+RUN pip install --only-binary :all: --no-cache-dir --require-hashes -r requirements.lock
 
 # Stage 2: Production
 FROM ${PYTHON_IMAGE} AS production

@@ -1,5 +1,5 @@
-ARG PYTHON_VERSION=3.14
-ARG PYTHON_IMAGE=python:3.14-alpine@sha256:05b2b8b732ecd268fee8727a369f936f022d1321b59befd13c30ede22769dcdc
+ARG PYTHON_VERSION=3.13
+ARG PYTHON_IMAGE=python@sha256:540c7d91f98ff6880174c40e99067bf5941eb54d818a7a5e094d188b196a934d
 FROM ${PYTHON_IMAGE}
 ARG VCS_REF=unknown
 ARG BUILD_DATE=unknown
@@ -17,7 +17,7 @@ ENV HOME="/tmp" \
     PYTHONUNBUFFERED=1
 
 COPY requirements.lock .
-RUN pip install --no-cache-dir --require-hashes -r requirements.lock
+RUN pip install --only-binary :all: --no-cache-dir --require-hashes -r requirements.lock
 
 COPY main.py .
 RUN chown -R watchdog:watchdog /app

@@ -29,27 +29,28 @@ REQUIRED_LINKS = (
 )
 
 
+def _invalid_links(links: Mapping[str, Any]) -> list[str]:
+    validators = {
+        "git_sha": _GIT_SHA,
+        "dependency_lock_sha256": _HEX_SHA256,
+        "dockerfile_sha256": _HEX_SHA256,
+        "deployment_manifest_sha256": _HEX_SHA256,
+        "base_image_digest": _SHA256,
+        "built_image_digest": _SHA256,
+        "tested_image_digest": _SHA256,
+        "running_image_digest": _SHA256,
+    }
+    return [
+        key
+        for key, validator in validators.items()
+        if links[key] and not validator.fullmatch(str(links[key]))
+    ]
+
+
 def evaluate_deployment_provenance(values: Mapping[str, Any]) -> dict[str, Any]:
     links = {key: values.get(key) for key in REQUIRED_LINKS}
     missing = [key for key, value in links.items() if not value]
-    invalid: list[str] = []
-    if links["git_sha"] and not _GIT_SHA.fullmatch(str(links["git_sha"])):
-        invalid.append("git_sha")
-    for key in (
-        "dependency_lock_sha256",
-        "dockerfile_sha256",
-        "deployment_manifest_sha256",
-    ):
-        if links[key] and not _HEX_SHA256.fullmatch(str(links[key])):
-            invalid.append(key)
-    for key in (
-        "base_image_digest",
-        "built_image_digest",
-        "tested_image_digest",
-        "running_image_digest",
-    ):
-        if links[key] and not _SHA256.fullmatch(str(links[key])):
-            invalid.append(key)
+    invalid = _invalid_links(links)
     mismatches: list[str] = []
     if links["built_image_digest"] and links["tested_image_digest"] != links["built_image_digest"]:
         mismatches.append("tested_image_digest")
