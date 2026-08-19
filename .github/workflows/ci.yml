@@ -8,24 +8,29 @@ on:
 permissions:
   contents: read
 
+env:
+  PYTHON_RUNTIME: "3.14"
+  NODE_RUNTIME: "26"
+
 jobs:
   backend:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
-          python-version: "3.12"
+          python-version: ${{ env.PYTHON_RUNTIME }}
           cache: pip
-          cache-dependency-path: backend/requirements.txt
+          cache-dependency-path: backend/requirements.lock
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install -r backend/requirements.txt
+      - run: python -m pip install --require-hashes -r backend/requirements.lock
       - run: pytest -q backend/tests
         env:
           PYTHONPATH: backend/src:.
           LIVE_TRADING_ENABLED: "false"
           REGISTRY_DB_PATH: ${{ runner.temp }}/waterfall_registry.db
+      - run: PYTHONPATH=backend/src:. python scripts/verify_runtime_parity.py
 
   frontend:
     runs-on: ubuntu-latest
@@ -34,10 +39,10 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: "20"
+          node-version: ${{ env.NODE_RUNTIME }}
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
@@ -48,25 +53,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
-          python-version: "3.12"
-      - uses: actions/setup-node@v7
+          python-version: ${{ env.PYTHON_RUNTIME }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: "20"
+          node-version: ${{ env.NODE_RUNTIME }}
       - run: python -m pip install --upgrade pip pip-audit
       - name: Audit Python dependencies
         run: |
-          # Temporary upstream exceptions: ccxt 4.5.68 hard-pins aiohttp
-          # 3.14.1 and cryptography 49.0.0. Remove these exact exceptions as
-          # soon as ccxt releases compatible dependency pins. Every other
-          # Python vulnerability remains CI-blocking.
-          pip-audit -r backend/requirements.txt \
-            --ignore-vuln PYSEC-2026-3545 \
-            --ignore-vuln PYSEC-2026-3546 \
-            --ignore-vuln PYSEC-2026-3547 \
-            --ignore-vuln PYSEC-2026-3552
+          pip-audit --require-hashes -r backend/requirements.lock
+          pip-audit --require-hashes -r watchdog/requirements.lock
       - run: npm ci
         working-directory: frontend
       - run: npm audit --omit=dev --audit-level=high
@@ -76,16 +74,38 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: cp .env.example .env
       - run: docker compose config --quiet
-      - run: docker compose build waterfall-backend frontend watchdog
+      - name: Build revision-labelled production artifacts
+        run: |
+          BUILD_DATE="$(git show -s --format=%cI HEAD)"
+          docker compose build \
+            --build-arg VCS_REF="$GITHUB_SHA" \
+            --build-arg BUILD_DATE="$BUILD_DATE" \
+            --build-arg VERSION="$GITHUB_REF_NAME" \
+            waterfall-backend frontend watchdog
+      - name: Test the exact backend artifact family
+        run: |
+          docker run --rm --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m \
+            -e LIVE_TRADING_ENABLED=false \
+            -e REGISTRY_DB_PATH=/tmp/waterfall_registry.db \
+            -e PYTHONPATH=/app/src:/project \
+            -v "$PWD:/project:ro" \
+            -w /project \
+            waterfallhunter-waterfall-backend \
+            pytest -q backend/tests
+      - name: Verify OCI revision labels
+        run: |
+          test "$(docker image inspect waterfallhunter-waterfall-backend --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$GITHUB_SHA"
+          test "$(docker image inspect waterfallhunter-frontend --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$GITHUB_SHA"
+          test "$(docker image inspect waterfallhunter-watchdog --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$GITHUB_SHA"
 
   repository-hygiene:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
       - name: Reject tracked runtime and secret files
