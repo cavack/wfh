@@ -62,6 +62,24 @@ def _payload_key_is_forbidden(key: str) -> bool:
     return any(word in normalized for word in _SECRET_KEY_WORDS)
 
 
+def _freeze_json_mapping(
+    value: Mapping[Any, Any],
+    *,
+    reject_payload_keys: bool,
+) -> Mapping[str, Any]:
+    frozen: dict[str, Any] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise ValueError("contract JSON object keys must be strings")
+        if reject_payload_keys and _payload_key_is_forbidden(key):
+            raise ValueError("notification payload contains delivery or secret fields")
+        frozen[key] = _freeze_json(
+            item,
+            reject_payload_keys=reject_payload_keys,
+        )
+    return MappingProxyType(frozen)
+
+
 def _freeze_json(value: Any, *, reject_payload_keys: bool = False) -> Any:
     if value is None or isinstance(value, (str, bool, int)):
         return value
@@ -70,19 +88,10 @@ def _freeze_json(value: Any, *, reject_payload_keys: bool = False) -> Any:
             raise ValueError("contract JSON numbers must be finite")
         return value
     if isinstance(value, Mapping):
-        frozen: dict[str, Any] = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise ValueError("contract JSON object keys must be strings")
-            if reject_payload_keys and _payload_key_is_forbidden(key):
-                raise ValueError(
-                    "notification payload contains delivery or secret fields"
-                )
-            frozen[key] = _freeze_json(
-                item,
-                reject_payload_keys=reject_payload_keys,
-            )
-        return MappingProxyType(frozen)
+        return _freeze_json_mapping(
+            value,
+            reject_payload_keys=reject_payload_keys,
+        )
     if isinstance(value, (list, tuple)):
         return tuple(
             _freeze_json(item, reject_payload_keys=reject_payload_keys)
