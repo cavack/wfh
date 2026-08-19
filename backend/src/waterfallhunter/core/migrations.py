@@ -55,6 +55,15 @@ class Migration:
             raise MigrationDiscoveryError("migration filename must not be empty")
         if not isinstance(sql_bytes, bytes):
             raise MigrationDiscoveryError("migration SQL must be raw bytes")
+
+        match = _MIGRATION_FILENAME.fullmatch(filename)
+        if match is None:
+            raise MigrationDiscoveryError("migration filename is not canonical")
+        if int(match.group("version")) != int(version) or match.group("name") != str(name):
+            raise MigrationDiscoveryError(
+                "migration filename does not match declared version/name"
+            )
+
         return cls(
             version=int(version),
             name=str(name),
@@ -169,14 +178,21 @@ class MigrationRunner:
         self._source_revision = source_revision
 
     def apply(self) -> tuple[int, ...]:
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        if not self._db_path.parent.is_dir():
+            raise MigrationError("database parent directory does not exist")
+
         timeout_seconds = max(self._busy_timeout_ms / 1_000.0, 0.001)
 
-        with sqlite3.connect(
-            self._db_path,
-            timeout=timeout_seconds,
-            isolation_level=None,
-        ) as conn:
+        try:
+            conn = sqlite3.connect(
+                self._db_path,
+                timeout=timeout_seconds,
+                isolation_level=None,
+            )
+        except sqlite3.Error as exc:
+            raise MigrationError("database open failed") from exc
+
+        try:
             conn.execute("PRAGMA foreign_keys=ON")
             conn.execute(f"PRAGMA busy_timeout={self._busy_timeout_ms}")
             self._bootstrap_history(conn)
@@ -191,38 +207,50 @@ class MigrationRunner:
                 applied_versions = self._verify_state(conn)
 
             return tuple(newly_applied)
+        finally:
+            conn.close()
 
     @staticmethod
     def _bootstrap_history(conn: sqlite3.Connection) -> None:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS schema_migrations (
-                version INTEGER PRIMARY KEY,
-                name TEXT NOT NULL,
-                checksum_sha256 TEXT NOT NULL,
-                applied_at INTEGER NOT NULL,
-                source_revision TEXT
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    checksum_sha256 TEXT NOT NULL,
+                    applied_at INTEGER NOT NULL,
+                    source_revision TEXT
+                )
+                """
             )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TRIGGER IF NOT EXISTS schema_migrations_no_update
-            BEFORE UPDATE ON schema_migrations
-            BEGIN
-                SELECT RAISE(ABORT, 'schema_migrations is immutable');
-            END
-            """
-        )
-        conn.execute(
-            """
-            CREATE TRIGGER IF NOT EXISTS schema_migrations_no_delete
-            BEFORE DELETE ON schema_migrations
-            BEGIN
-                SELECT RAISE(ABORT, 'schema_migrations is immutable');
-            END
-            """
-        )
+            conn.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS schema_migrations_no_update
+                BEFORE UPDATE ON schema_migrations
+                BEGIN
+                    SELECT RAISE(ABORT, 'schema_migrations is immutable');
+                END
+                """
+            )
+            conn.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS schema_migrations_no_delete
+                BEFORE DELETE ON schema_migrations
+                BEGIN
+                    SELECT RAISE(ABORT, 'schema_migrations is immutable');
+                END
+                """
+            )
+            conn.execute("COMMIT")
+        except sqlite3.Error as exc:
+            if conn.in_transaction:
+                try:
+                    conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+            raise MigrationError("migration history bootstrap failed") from exc
 
     def _verify_state(self, conn: sqlite3.Connection) -> set[int]:
         rows = conn.execute(
