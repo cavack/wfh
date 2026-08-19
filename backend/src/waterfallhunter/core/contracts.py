@@ -199,3 +199,56 @@ class ExecutionPlan(CommonContractEnvelope):
         elif self.unavailable_reason is None:
             raise ValueError("unavailable execution levels require unavailable_reason")
         return self
+
+
+class PositionState(CommonContractEnvelope):
+    position_id: NonEmptyStr
+    signal_id: NonEmptyStr
+    execution_state: PositionExecutionState
+    thesis_state: PositionThesisState
+    original_execution_plan_id: NonEmptyStr
+    margin_mode: MarginMode = MarginMode.ISOLATED
+    isolated_margin_initial: NonNegativeFinite
+    isolated_margin_current: NonNegativeFinite
+    notional: NonNegativeFinite
+    entry_price: PositiveFinite
+    realized_pnl: FiniteFloat
+    unrealized_pnl: FiniteFloat
+    fees: NonNegativeFinite
+    funding: FiniteFloat
+    current_sl: PositiveFinite | None = None
+    current_tp1: PositiveFinite | None = None
+    current_tp2: PositiveFinite | None = None
+    latest_amendment_id: NonEmptyStr | None = None
+    opened_at: Annotated[int, Field(ge=0)]
+    last_reassessed_at: Annotated[int, Field(ge=0)]
+    closed_at: Annotated[int, Field(ge=0)] | None = None
+
+
+class PositionAmendment(CommonContractEnvelope):
+    amendment_id: NonEmptyStr
+    position_id: NonEmptyStr
+    action: NonEmptyStr
+    reason_codes: tuple[str, ...]
+    created_at: Annotated[int, Field(ge=0)]
+    proposed_sl: PositiveFinite | None = None
+    proposed_tp1: PositiveFinite | None = None
+    proposed_tp2: PositiveFinite | None = None
+    source_context_version: NonEmptyStr
+
+
+class NotificationEvent(CommonContractEnvelope):
+    event_id: NonEmptyStr
+    event_type: NonEmptyStr
+    aggregate_type: NonEmptyStr
+    aggregate_id: NonEmptyStr
+    symbol: NonEmptyStr | None = None
+    signal_class: SignalClass | None = None
+    lifecycle_state: LifecycleState | None = None
+    decision_status: DecisionStatus | None = None
+    material_state_hash: Sha256Hex
+    idempotency_key: NonEmptyStr
+    priority: int
+    payload_contract_version: NonEmptyStr
+    payload: dict[str, Any]
+    created_at: Annotated[int, Field(ge=0)]
