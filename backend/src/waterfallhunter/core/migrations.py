@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import re
+import sqlite3
+import time
 from dataclasses import dataclass
 from importlib import resources
+from pathlib import Path
 from typing import Iterable
 
 
 _MIGRATION_FILENAME = re.compile(r"^(?P<version>\d{4})_(?P<name>[a-z0-9_]+)\.sql$")
+_SCHEMA_MIGRATIONS_TABLE = "schema_migrations"
 
 
 class MigrationError(RuntimeError):
@@ -115,3 +119,184 @@ def discover_migrations(
         )
 
     return validate_migrations(discovered)
+
+
+def _split_sql_statements(sql_bytes: bytes) -> tuple[str, ...]:
+    try:
+        sql = sql_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise MigrationError("migration SQL must be valid UTF-8") from exc
+
+    statements: list[str] = []
+    buffer: list[str] = []
+    for character in sql:
+        buffer.append(character)
+        if character != ";":
+            continue
+        candidate = "".join(buffer)
+        if sqlite3.complete_statement(candidate):
+            statements.append(candidate.strip())
+            buffer.clear()
+
+    remainder = "".join(buffer).strip()
+    if remainder:
+        if sqlite3.complete_statement(remainder):
+            statements.append(remainder)
+        else:
+            raise MigrationError("migration SQL contains an incomplete statement")
+
+    return tuple(statement for statement in statements if statement)
+
+
+class MigrationRunner:
+    """Apply immutable, checksum-verified SQLite migrations."""
+
+    def __init__(
+        self,
+        *,
+        db_path: str | Path,
+        migrations: Iterable[Migration] | None = None,
+        busy_timeout_ms: int = 5_000,
+        source_revision: str | None = None,
+    ) -> None:
+        if busy_timeout_ms < 0:
+            raise ValueError("busy_timeout_ms must be non-negative")
+        self._db_path = Path(db_path)
+        self._migrations = validate_migrations(
+            discover_migrations() if migrations is None else migrations
+        )
+        self._busy_timeout_ms = int(busy_timeout_ms)
+        self._source_revision = source_revision
+
+    def apply(self) -> tuple[int, ...]:
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        timeout_seconds = max(self._busy_timeout_ms / 1_000.0, 0.001)
+
+        with sqlite3.connect(
+            self._db_path,
+            timeout=timeout_seconds,
+            isolation_level=None,
+        ) as conn:
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute(f"PRAGMA busy_timeout={self._busy_timeout_ms}")
+            self._bootstrap_history(conn)
+            applied_versions = self._verify_state(conn)
+
+            newly_applied: list[int] = []
+            for migration in self._migrations:
+                if migration.version in applied_versions:
+                    continue
+                self._apply_one(conn, migration)
+                newly_applied.append(migration.version)
+                applied_versions = self._verify_state(conn)
+
+            return tuple(newly_applied)
+
+    @staticmethod
+    def _bootstrap_history(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                checksum_sha256 TEXT NOT NULL,
+                applied_at INTEGER NOT NULL,
+                source_revision TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS schema_migrations_no_update
+            BEFORE UPDATE ON schema_migrations
+            BEGIN
+                SELECT RAISE(ABORT, 'schema_migrations is immutable');
+            END
+            """
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS schema_migrations_no_delete
+            BEFORE DELETE ON schema_migrations
+            BEGIN
+                SELECT RAISE(ABORT, 'schema_migrations is immutable');
+            END
+            """
+        )
+
+    def _verify_state(self, conn: sqlite3.Connection) -> set[int]:
+        rows = conn.execute(
+            "SELECT version, name, checksum_sha256 "
+            "FROM schema_migrations ORDER BY version"
+        ).fetchall()
+        user_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+
+        history_versions = [int(row[0]) for row in rows]
+        expected_history = list(range(1, len(history_versions) + 1))
+        if history_versions != expected_history:
+            raise MigrationStateError("migration history is not contiguous")
+
+        expected_user_version = history_versions[-1] if history_versions else 0
+        if user_version != expected_user_version:
+            raise MigrationStateError(
+                "PRAGMA user_version disagrees with migration history"
+            )
+
+        migrations_by_version = {
+            migration.version: migration for migration in self._migrations
+        }
+        for version, name, checksum in rows:
+            migration = migrations_by_version.get(int(version))
+            if migration is None:
+                raise MigrationStateError(
+                    "applied migration version is missing from the migration set"
+                )
+            if str(name) != migration.name:
+                raise MigrationStateError("applied migration name has changed")
+            if str(checksum) != migration.checksum_sha256:
+                raise MigrationChecksumMismatch(
+                    "applied migration checksum does not match migration bytes"
+                )
+
+        return set(history_versions)
+
+    def _apply_one(self, conn: sqlite3.Connection, migration: Migration) -> None:
+        statements = _split_sql_statements(migration.sql_bytes)
+        if not statements:
+            raise MigrationError("migration SQL must contain at least one statement")
+
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            for statement in statements:
+                conn.execute(statement)
+            conn.execute(
+                """
+                INSERT INTO schema_migrations (
+                    version,
+                    name,
+                    checksum_sha256,
+                    applied_at,
+                    source_revision
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    migration.version,
+                    migration.name,
+                    migration.checksum_sha256,
+                    int(time.time()),
+                    self._source_revision,
+                ),
+            )
+            conn.execute(f"PRAGMA user_version={migration.version}")
+            conn.execute("COMMIT")
+        except Exception as exc:
+            if conn.in_transaction:
+                try:
+                    conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+            if isinstance(exc, MigrationError):
+                raise
+            raise MigrationError(
+                f"migration version {migration.version} failed"
+            ) from exc
