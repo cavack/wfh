@@ -17,7 +17,8 @@ Worktree: isolated development checkout; Production source and state are exclude
 | Frontend baseline | PASSED | Node 20 typecheck and production build |
 | Dependency baseline | PRE_EXISTING_SECURITY_FINDING_FIXED | Baseline required four exceptions; updated lock has npm: 0 and Python: 0 known vulnerabilities without exceptions |
 | Compose config | PASSED | Configuration parses without Production mutation |
-| Production image build | DEFERRED_TO_CI | Current workspace shares the Production Docker host; GitHub CI will build/test artifacts without Production mutation |
+| Production image build | CI_PASSED | PR #22 built revision-labelled backend/frontend/watchdog artifacts and tested image-contained backend code without Production mutation |
+| Static/security analysis | PASSED | SonarCloud quality gate, CodeQL Actions/JavaScript/Python, CodeFactor, repository hygiene |
 
 ## Workstreams
 
@@ -26,7 +27,7 @@ Worktree: isolated development checkout; Production source and state are exclude
 | W0-A | Runtime Fingerprint | baseline | NO_MODEL_IMPACT | SOURCE_GATE_PASSED; legacy capture reserved |
 | W0-B | Golden Regression Corpus tooling | baseline, canonical hashing | NO_MODEL_IMPACT | CANONICAL_FIXTURES_PASSED; legacy evidence blocked |
 | W0-C | Artifact/deployment provenance | W0-A contract | NO_MODEL_IMPACT | TOOLING_PASSED; running digest reserved |
-| W0-D | CI/runtime artifact parity | W0-C chain | NO_MODEL_IMPACT | LOCAL_PASSED; CI_PENDING |
+| W0-D | CI/runtime artifact parity | W0-C chain | NO_MODEL_IMPACT | CI_PASSED |
 | W1-A | Canonical domain contracts | Wave 0 | SEMANTIC_INFRA | NOT_STARTED |
 | W1-B | Migration framework/readiness | W1-A | SEMANTIC_INFRA | NOT_STARTED |
 | W1-C | Unified signal metadata/cohort purity | W1-B | SEMANTIC_INFRA | NOT_STARTED |
@@ -43,3 +44,14 @@ Worktree: isolated development checkout; Production source and state are exclude
 2. Their old `ARMED`-requires-trigger semantics are superseded only in Lifecycle V2 shadow work; current model behavior is preserved until Golden Corpus and OOS gates pass.
 3. No Production DB, backup, migration, deployment, restart, Telegram message, or merge is authorized.
 4. The canonical fixture corpus is not a substitute for real-data replay, OOS evidence, or the legacy-runtime corpus.
+
+## Wave 0 review evidence
+
+- Draft PR: <https://github.com/cavack/wfh/pull/22>
+- Backend: 346 passed; 9 pre-existing deprecation warnings.
+- Frontend: Node 26 typecheck and production build passed.
+- Dependency audit: backend, watchdog, and npm passed with zero known findings and no audit exceptions.
+- Artifact parity: Python 3.13 and Node 26 declarations match digest-only image inputs; container validation passed.
+- Independent analysis: SonarCloud initially found seven issues; all were fixed without suppressions and the rerun quality gate passed. CodeQL reported no new alerts.
+- Model impact: no scoring, threshold, lifecycle, trigger, or execution-level changes; canonical fixture replay remained exact.
+- Remaining hard gate: legacy-runtime evidence capture requires separate Production authorization before model-affecting work.
