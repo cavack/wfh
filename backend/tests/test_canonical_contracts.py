@@ -106,6 +106,33 @@ def _valid_execution_plan() -> dict:
     }
 
 
+def _valid_position_state() -> dict:
+    return {
+        **_envelope("position_state", "1.0"),
+        "position_id": "position-1",
+        "signal_id": "signal-1",
+        "execution_state": "OPEN",
+        "thesis_state": "CAUTION",
+        "original_execution_plan_id": "plan-1",
+        "margin_mode": "ISOLATED",
+        "isolated_margin_initial": 20.0,
+        "isolated_margin_current": 20.0,
+        "notional": 120.0,
+        "entry_price": 100.0,
+        "realized_pnl": 0.0,
+        "unrealized_pnl": -2.0,
+        "fees": 0.1,
+        "funding": 0.0,
+        "current_sl": 103.0,
+        "current_tp1": 95.0,
+        "current_tp2": 90.0,
+        "latest_amendment_id": None,
+        "opened_at": 1,
+        "last_reassessed_at": 1,
+        "closed_at": None,
+    }
+
+
 def test_signal_class_is_only_strict_or_experimental():
     contracts = _contracts()
     assert {item.value for item in contracts.SignalClass} == {"STRICT", "EXPERIMENTAL"}
@@ -184,3 +211,83 @@ def test_execution_plan_requires_reason_when_levels_are_unavailable():
     }
     with pytest.raises(ValidationError):
         contracts.ExecutionPlan(**unavailable)
+
+
+def test_position_state_keeps_execution_and_thesis_states_separate():
+    contracts = _contracts()
+    state = contracts.PositionState(**_valid_position_state())
+    assert state.execution_state.value == "OPEN"
+    assert state.thesis_state.value == "CAUTION"
+    assert state.margin_mode.value == "ISOLATED"
+    assert not hasattr(state, "lifecycle_state")
+
+
+def test_position_state_rejects_non_isolated_margin():
+    contracts = _contracts()
+    with pytest.raises(ValidationError):
+        contracts.PositionState(**{**_valid_position_state(), "margin_mode": "CROSS"})
+
+
+def test_position_amendment_is_frozen_append_only_vocabulary():
+    contracts = _contracts()
+    amendment = contracts.PositionAmendment(
+        **_envelope("position_amendment", "1.0"),
+        amendment_id="amendment-1",
+        position_id="position-1",
+        action="TIGHTEN_RISK",
+        reason_codes=["BTC_REGIME_WEAKENED"],
+        created_at=2,
+        proposed_sl=101.0,
+        proposed_tp1=None,
+        proposed_tp2=None,
+        source_context_version="market_context_v1",
+    )
+    with pytest.raises(ValidationError):
+        amendment.action = "CLOSE_EARLY"
+
+
+def test_notification_event_requires_sha256_material_hash():
+    contracts = _contracts()
+    with pytest.raises(ValidationError):
+        contracts.NotificationEvent(
+            **_envelope("notification_event", "1.0"),
+            event_id="event-1",
+            event_type="SIGNAL_CONFIRMED",
+            aggregate_type="signal",
+            aggregate_id="signal-1",
+            symbol="BTC/USDT:USDT",
+            signal_class="STRICT",
+            lifecycle_state="TRIGGERED",
+            decision_status={"primary": "CONFIRMED"},
+            material_state_hash="not-a-hash",
+            idempotency_key="signal-confirmed:signal-1",
+            priority=100,
+            payload_contract_version="1",
+            payload={},
+            created_at=2,
+        )
+
+
+def test_notification_event_contains_no_delivery_or_secret_fields():
+    contracts = _contracts()
+    event = contracts.NotificationEvent(
+        **_envelope("notification_event", "1.0"),
+        event_id="event-1",
+        event_type="SIGNAL_CONFIRMED",
+        aggregate_type="signal",
+        aggregate_id="signal-1",
+        symbol="BTC/USDT:USDT",
+        signal_class="STRICT",
+        lifecycle_state="TRIGGERED",
+        decision_status={"primary": "CONFIRMED"},
+        material_state_hash="b" * 64,
+        idempotency_key="signal-confirmed:signal-1",
+        priority=100,
+        payload_contract_version="1",
+        payload={},
+        created_at=2,
+    )
+    dumped = event.model_dump(mode="json")
+    assert "telegram_message_id" not in dumped
+    assert "delivery_state" not in dumped
+    assert "token" not in dumped
