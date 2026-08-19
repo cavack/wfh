@@ -353,6 +353,17 @@ def test_notification_event_rejects_delivery_state_and_secret_keys_recursively()
             contracts.NotificationEvent(**invalid_payload)
 
 
+def test_notification_event_rejects_non_json_payload_values():
+    contracts = _contracts()
+    non_finite = _valid_notification_event(payload={"ratio": float("inf")})
+    non_string_key = _valid_notification_event(payload={"nested": {1: "x"}})
+    unsupported = _valid_notification_event(payload={"tags": {"a", "b"}})
+
+    for invalid_payload in (non_finite, non_string_key, unsupported):
+        with pytest.raises(ValidationError):
+            contracts.NotificationEvent(**invalid_payload)
+
+
 def test_notification_event_contains_no_delivery_or_secret_fields():
     contracts = _contracts()
     event = contracts.NotificationEvent(**_valid_notification_event())
