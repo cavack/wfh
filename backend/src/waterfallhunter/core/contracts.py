@@ -59,8 +59,7 @@ def _payload_key_is_forbidden(key: str) -> bool:
     normalized = _normalized_payload_key(key)
     if normalized in _DELIVERY_PAYLOAD_KEYS or normalized in _SECRET_KEY_NAMES:
         return True
-    words = {part for part in normalized.split("_") if part}
-    return bool(words & _SECRET_KEY_WORDS)
+    return any(word in normalized for word in _SECRET_KEY_WORDS)
 
 
 def _freeze_json(value: Any, *, reject_payload_keys: bool = False) -> Any:
