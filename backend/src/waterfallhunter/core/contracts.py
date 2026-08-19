@@ -109,6 +109,8 @@ class CommonContractEnvelope(BaseModel):
 
 
 class EvidenceQualityPacket(CommonContractEnvelope):
+    contract_type: Literal["evidence_quality"]
+    contract_version: Literal["1.0"]
     coverage_pct: Score100
     completeness_status: NonEmptyStr
     analysis_observed_at: Annotated[int, Field(ge=0)]
@@ -127,6 +129,8 @@ class EvidenceQualityPacket(CommonContractEnvelope):
 
 
 class SignalDecisionPacket(CommonContractEnvelope):
+    contract_type: Literal["signal_decision"]
+    contract_version: Literal["1.1"]
     decision_id: NonEmptyStr
     signal_id: NonEmptyStr
     symbol: NonEmptyStr
@@ -151,6 +155,8 @@ class SignalDecisionPacket(CommonContractEnvelope):
 
 
 class ExecutionPlan(CommonContractEnvelope):
+    contract_type: Literal["execution_plan"]
+    contract_version: Literal["1.1"]
     execution_plan_id: NonEmptyStr
     signal_id: NonEmptyStr
     venue: Literal["LBANK"] = "LBANK"
@@ -202,6 +208,8 @@ class ExecutionPlan(CommonContractEnvelope):
 
 
 class PositionState(CommonContractEnvelope):
+    contract_type: Literal["position_state"]
+    contract_version: Literal["1.0"]
     position_id: NonEmptyStr
     signal_id: NonEmptyStr
     execution_state: PositionExecutionState
@@ -226,6 +234,8 @@ class PositionState(CommonContractEnvelope):
 
 
 class PositionAmendment(CommonContractEnvelope):
+    contract_type: Literal["position_amendment"]
+    contract_version: Literal["1.0"]
     amendment_id: NonEmptyStr
     position_id: NonEmptyStr
     action: NonEmptyStr
@@ -238,6 +248,8 @@ class PositionAmendment(CommonContractEnvelope):
 
 
 class NotificationEvent(CommonContractEnvelope):
+    contract_type: Literal["notification_event"]
+    contract_version: Literal["1.0"]
     event_id: NonEmptyStr
     event_type: NonEmptyStr
     aggregate_type: NonEmptyStr
