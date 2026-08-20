@@ -128,6 +128,7 @@ class SignalMetadataStore:
     def verify_completeness(self) -> MetadataCompletenessResult:
         conn = _open_read_only(self._db_path)
         try:
+            conn.execute("BEGIN")
             _require_schema(conn)
             ledger_count = _scalar_count(
                 conn,
@@ -157,7 +158,11 @@ class SignalMetadataStore:
         except (sqlite3.Error, TypeError, ValueError) as exc:
             raise SignalMetadataError("SIGNAL_METADATA_QUERY_FAILED") from exc
         finally:
-            conn.close()
+            try:
+                if conn.in_transaction:
+                    conn.rollback()
+            finally:
+                conn.close()
 
         reasons: list[str] = []
         if missing_metadata_count:
@@ -166,6 +171,8 @@ class SignalMetadataStore:
             reasons.append("ORPHAN_METADATA")
         if invalid_metadata_count:
             reasons.append("INVALID_METADATA")
+        if canonical_count != ledger_count:
+            reasons.append("CANONICAL_VIEW_COUNT_MISMATCH")
 
         return MetadataCompletenessResult(
             complete=not reasons,
