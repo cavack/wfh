@@ -1,0 +1,75 @@
+name: Wave1C1 Schema Contract Patch
+
+on:
+  push:
+    branches:
+      - feat/wave1c1-metadata-foundation-v1
+    paths:
+      - .github/workflows/wave1c1-schema-contract-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: feat/wave1c1-metadata-foundation-v1
+      - name: Apply exact schema contract patch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('backend/src/waterfallhunter/core/schema_contract.py')
+          text = path.read_text()
+
+          def replace_once(old: str, new: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected one match, found {count}: {old[:80]!r}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              'CURRENT_RUNTIME_SCHEMA_VERSION = 2',
+              'CURRENT_RUNTIME_SCHEMA_VERSION = 3',
+          )
+
+          replace_once(
+              '''@dataclass(frozen=True, slots=True)\nclass ManagedTableSpec:\n    name: str\n    columns: tuple[ColumnSpec, ...]\n    indexes: tuple[IndexSpec, ...] = ()\n    foreign_keys: tuple[ForeignKeySpec, ...] = ()\n    check_fragments: tuple[str, ...] = ()\n    triggers: tuple[TriggerSpec, ...] = ()\n''',
+              '''@dataclass(frozen=True, slots=True)\nclass ManagedTableSpec:\n    name: str\n    columns: tuple[ColumnSpec, ...]\n    indexes: tuple[IndexSpec, ...] = ()\n    foreign_keys: tuple[ForeignKeySpec, ...] = ()\n    check_fragments: tuple[str, ...] = ()\n    triggers: tuple[TriggerSpec, ...] = ()\n\n\n@dataclass(frozen=True, slots=True)\nclass ManagedViewSpec:\n    name: str\n    required_fragments: tuple[str, ...]\n    forbidden_fragments: tuple[str, ...] = ()\n''',
+          )
+
+          anchor = '\n}\n\n\n_MIGRATION_INFRA_TABLES = frozenset({"schema_migrations", "db_readiness_probe"})'
+          metadata = '''\n    "signal_metadata": ManagedTableSpec(\n        name="signal_metadata",\n        columns=(\n            _c("signal_id", "INTEGER", pk=1),\n            _c("signal_class", "TEXT", not_null=True),\n            _c("strategy_profile", "TEXT", not_null=True),\n            _c("score_version", "TEXT", not_null=True),\n            _c("model_generation", "TEXT", not_null=True),\n            _c("decision_contract_hash", "TEXT", not_null=True),\n            _c("analysis_observed_at", "INTEGER", not_null=True),\n            _c("reference_observed_at", "INTEGER"),\n            _c("metadata_contract_version", "TEXT", not_null=True),\n            _c("classification_method", "TEXT", not_null=True),\n            _c("classification_evidence_hash", "TEXT"),\n            _c("created_at", "INTEGER", not_null=True),\n        ),\n        foreign_keys=(\n            ForeignKeySpec("signal_id", "lbank_signal_ledger", "id"),\n        ),\n        check_fragments=(\n            "check(signal_class in ('STRICT', 'EXPERIMENTAL'))",\n            "check(length(strategy_profile) > 0)",\n            "check(length(score_version) > 0)",\n            "check(length(model_generation) > 0)",\n            "check(length(decision_contract_hash) = 64)",\n            "check(decision_contract_hash not glob '*[^0-9a-f]*')",\n            "check(analysis_observed_at >= 0)",\n            "check(reference_observed_at is null or reference_observed_at >= 0)",\n            "check(metadata_contract_version = 'signal_metadata_v1')",\n        ),\n        triggers=_immutable(\n            "signal_metadata",\n            message="signal_metadata is immutable",\n        ),\n    ),\n}\n\n\n_RUNTIME_VIEWS: dict[str, ManagedViewSpec] = {\n    "canonical_signal_view": ManagedViewSpec(\n        name="canonical_signal_view",\n        required_fragments=(\n            "inner join signal_metadata as m",\n            "on m.signal_id = s.id",\n            "s.id as signal_id",\n            "m.signal_class",\n            "m.strategy_profile",\n            "m.decision_contract_hash",\n        ),\n        forbidden_fragments=(\n            "left join signal_metadata",\n            "select *",\n        ),\n    ),\n}\n\n\n_MIGRATION_INFRA_TABLES = frozenset({"schema_migrations", "db_readiness_probe"})'''
+          replace_once(anchor, metadata)
+
+          replace_once(
+              '''def managed_runtime_table_names() -> frozenset[str]:\n    """Return the complete first-party runtime table ownership set."""\n    return frozenset(_RUNTIME_SCHEMA)\n''',
+              '''def managed_runtime_table_names() -> frozenset[str]:\n    """Return the complete first-party runtime table ownership set."""\n    return frozenset(_RUNTIME_SCHEMA)\n\n\ndef managed_runtime_view_names() -> frozenset[str]:\n    """Return the complete first-party managed view ownership set."""\n    return frozenset(_RUNTIME_VIEWS)\n''',
+          )
+
+          replace_once(
+              '''def _unknown_user_tables(conn: sqlite3.Connection) -> tuple[str, ...]:\n''',
+              '''def _view_issues(\n    conn: sqlite3.Connection,\n    spec: ManagedViewSpec,\n) -> list[SchemaIssue]:\n    row = conn.execute(\n        "SELECT sql FROM sqlite_master WHERE type='view' AND name=?",\n        (spec.name,),\n    ).fetchone()\n    if row is None or not isinstance(row[0], str):\n        return [\n            SchemaIssue(\n                "VIEW_MISMATCH",\n                spec.name,\n                "managed view is absent or has no SQL definition",\n            )\n        ]\n\n    compact = _sql_compact(row[0])\n    missing = [\n        fragment\n        for fragment in spec.required_fragments\n        if _sql_compact(fragment) not in compact\n    ]\n    forbidden = [\n        fragment\n        for fragment in spec.forbidden_fragments\n        if _sql_compact(fragment) in compact\n    ]\n    if not missing and not forbidden:\n        return []\n    return [\n        SchemaIssue(\n            "VIEW_MISMATCH",\n            spec.name,\n            f"missing required fragments {missing!r}; forbidden fragments {forbidden!r}",\n        )\n    ]\n\n\ndef _unknown_user_tables(conn: sqlite3.Connection) -> tuple[str, ...]:\n''',
+          )
+
+          replace_once(
+              '''        issues.extend(_check_issues(conn, spec))\n        issues.extend(_trigger_issues(conn, spec))\n\n    return SchemaVerificationResult(\n''',
+              '''        issues.extend(_check_issues(conn, spec))\n        issues.extend(_trigger_issues(conn, spec))\n\n    if required_tables is None:\n        for view_name in sorted(managed_runtime_view_names()):\n            issues.extend(_view_issues(conn, _RUNTIME_VIEWS[view_name]))\n\n    return SchemaVerificationResult(\n''',
+          )
+
+          path.write_text(text)
+          PY
+          python -m compileall -q backend/src/waterfallhunter/core/schema_contract.py
+          git diff --check
+      - name: Commit patch
+        run: |
+          git config user.name "cavack"
+          git config user.email "30337601+cavack@users.noreply.github.com"
+          git add backend/src/waterfallhunter/core/schema_contract.py
+          git diff --cached --quiet && exit 0
+          git commit -m "feat: verify signal metadata schema and canonical view"
+          git push origin HEAD:feat/wave1c1-metadata-foundation-v1
