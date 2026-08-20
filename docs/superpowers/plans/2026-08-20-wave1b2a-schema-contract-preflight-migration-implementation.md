@@ -219,17 +219,19 @@ Expected: import/module missing.
 
 - [ ] **Step 3: Implement manifest primitives and introspection**
 
-Use `PRAGMA table_info`, `index_list`, `index_info`, `foreign_key_list`, and `sqlite_master`. Normalize whitespace and unquoted SQL text for CHECK/trigger matching, but preserve the exact bytes inside quoted literals:
+Use `PRAGMA table_info`, `index_list`, `index_info`, `foreign_key_list`, and `sqlite_master`. Tokenize executable SQL separately from comments, string literals, and quoted identifiers. CHECK fragments must match executable structure outside quoted content; trigger guards must match an executable `RAISE(ABORT, <literal>)` call whose decoded literal equals the canonical message:
 
 ```python
 def _normalized_sql(sql: str | None) -> str:
-    # Scanner tracks single-quoted SQL literals (including doubled quote escapes).
-    # Outside literals: remove whitespace and case-fold. Inside literals: preserve.
+    # Scanner tracks comments, literals, identifiers, and executable SQL.
+    # Structural checks never accept required expressions from quoted text.
     ...
 ```
 
-Do not compare full table SQL strings. Add a regression proving
-`CHECK(status = 'PENDING')` remains distinct from `CHECK(status = 'pending')`.
+Do not compare full table SQL strings. Add regressions proving
+`CHECK(status = 'PENDING')` remains distinct from `CHECK(status = 'pending')`
+and that CHECK/RAISE text inside comments or string literals cannot satisfy the
+schema contract.
 
 - [ ] **Step 4: Encode all 13 current table contracts**
 

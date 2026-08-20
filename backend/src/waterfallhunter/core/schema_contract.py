@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -544,6 +545,12 @@ _RUNTIME_SCHEMA: dict[str, ManagedTableSpec] = {
 _MIGRATION_INFRA_TABLES = frozenset({"schema_migrations", "db_readiness_probe"})
 
 
+def _sql_literal_marker(value: str) -> str:
+    """Return an opaque, case-sensitive marker that cannot contain SQL syntax."""
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return f"\x00s{digest}\x00"
+
+
 def managed_runtime_table_names() -> frozenset[str]:
     """Return the complete first-party runtime table ownership set."""
     return frozenset(_RUNTIME_SCHEMA)
@@ -591,6 +598,74 @@ def _sql_compact(value: str | None) -> str:
             compact.append(character.casefold())
         index += 1
     return "".join(compact)
+
+
+def _sql_structure(value: str | None) -> tuple[str, tuple[str, ...]]:
+    """Return executable SQL structure with comments and quoted identifiers hidden."""
+    if not isinstance(value, str):
+        return "", ()
+
+    compact: list[str] = []
+    literals: list[str] = []
+    index = 0
+    while index < len(value):
+        character = value[index]
+        following = value[index + 1] if index + 1 < len(value) else ""
+
+        if character == "-" and following == "-":
+            index += 2
+            while index < len(value) and value[index] not in "\r\n":
+                index += 1
+            continue
+        if character == "/" and following == "*":
+            comment_end = value.find("*/", index + 2)
+            if comment_end < 0:
+                return "", ()
+            index = comment_end + 2
+            continue
+        if character == "'":
+            index += 1
+            literal: list[str] = []
+            closed = False
+            while index < len(value):
+                if value[index] == "'":
+                    if index + 1 < len(value) and value[index + 1] == "'":
+                        literal.append("'")
+                        index += 2
+                        continue
+                    index += 1
+                    closed = True
+                    break
+                literal.append(value[index])
+                index += 1
+            if not closed:
+                return "", ()
+            literal_value = "".join(literal)
+            literals.append(literal_value)
+            compact.append(_sql_literal_marker(literal_value))
+            continue
+        if character in {'"', "`", "["}:
+            closing = "]" if character == "[" else character
+            index += 1
+            closed = False
+            while index < len(value):
+                if value[index] == closing:
+                    if index + 1 < len(value) and value[index + 1] == closing:
+                        index += 2
+                        continue
+                    index += 1
+                    closed = True
+                    break
+                index += 1
+            if not closed:
+                return "", ()
+            compact.append("\x00i\x00")
+            continue
+        if not character.isspace():
+            compact.append(character.casefold())
+        index += 1
+
+    return "".join(compact), tuple(literals)
 
 
 def _default_normalized(value: object) -> str | None:
@@ -727,11 +802,11 @@ def _foreign_key_issues(
 def _check_issues(conn: sqlite3.Connection, spec: ManagedTableSpec) -> list[SchemaIssue]:
     if not spec.check_fragments:
         return []
-    sql = _sql_compact(_table_sql(conn, spec.name))
+    sql, _ = _sql_structure(_table_sql(conn, spec.name))
     missing = [
         fragment
         for fragment in spec.check_fragments
-        if _sql_compact(fragment) not in sql
+        if _sql_structure(fragment)[0] not in sql
     ]
     if not missing:
         return []
@@ -750,15 +825,19 @@ def _trigger_is_canonical(
     trigger: TriggerSpec,
     sql: str | None,
 ) -> bool:
-    compact = _sql_compact(sql)
-    if not compact:
+    structure, literals = _sql_structure(sql)
+    if not structure:
         return False
-    required = (
-        _sql_compact(f"before {trigger.event} on {table_name}"),
-        _sql_compact("raise(ABORT"),
-        _sql_compact(repr(trigger.abort_message)),
+    event_structure = _sql_structure(
+        f"before {trigger.event} on {table_name}"
+    )[0]
+    if event_structure not in structure:
+        return False
+    abort_marker = _sql_literal_marker(trigger.abort_message)
+    return (
+        trigger.abort_message in literals
+        and f"raise(abort,{abort_marker})" in structure
     )
-    return all(fragment in compact for fragment in required)
 
 
 def _trigger_issues(
