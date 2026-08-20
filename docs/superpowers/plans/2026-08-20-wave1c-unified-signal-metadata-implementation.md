@@ -224,7 +224,9 @@ Do not alter `build_decision_contract()` semantics.
 
 ```bash
 pytest -q backend/tests/test_signal_metadata_contract.py backend/tests/test_decision_provenance.py
-pytest -q backend/tests/test_contracts.py backend/tests/test_canonical_json.py
+pytest -q backend/tests/test_canonical_contracts.py \
+          backend/tests/test_canonical_contract_determinism.py \
+          backend/tests/test_foundation_tooling.py
 ```
 
 Expected: PASS.
@@ -258,7 +260,7 @@ git commit -m "feat: define canonical signal metadata lineage"
 
 - [ ] **Step 1: Write RED schema tests**
 
-Assert a disposable migrated DB reaches `PRAGMA user_version = 3`, contains exactly the metadata columns from the approved spec, has immutable UPDATE/DELETE triggers, and exposes a view whose normalized SQL contains `INNER JOIN signal_metadata` and never `LEFT JOIN signal_metadata` or `SELECT *`.
+Assert a disposable migrated DB reaches `PRAGMA user_version = 3`, contains exactly the metadata columns from the approved spec, rejects mismatched class/profile/score-version tuples at the SQLite boundary, has immutable UPDATE/DELETE triggers, and exposes the exact complete canonical normalized view definition.
 
 Also seed one ledger-only row and one ledger+metadata row; the canonical view must expose only the latter.
 
@@ -307,9 +309,13 @@ CREATE TABLE signal_metadata (
        AND classification_evidence_hash NOT GLOB '*[^0-9a-f]*')
     ),
     CHECK(
-      (signal_class='STRICT' AND strategy_profile='strict_score_v2')
+      (signal_class='STRICT'
+       AND strategy_profile='strict_score_v2'
+       AND score_version='score_v2')
       OR
-      (signal_class='EXPERIMENTAL' AND strategy_profile='experimental_pretrigger_v1')
+      (signal_class='EXPERIMENTAL'
+       AND strategy_profile='experimental_pretrigger_v1'
+       AND score_version='score_v2_watch_v1')
     )
 );
 ```
@@ -318,7 +324,7 @@ Add canonical immutability triggers and `canonical_signal_view` with explicit le
 
 - [ ] **Step 4: Add first-class view verification**
 
-Add a focused immutable `ManagedViewSpec` in `schema_contract.py`, register `canonical_signal_view`, and verify the exact required/forbidden normalized fragments from `sqlite_master`. Treat missing/drifted view as schema failure. Do not model the view as a table.
+Add a focused immutable `ManagedViewSpec` in `schema_contract.py`, register `canonical_signal_view`, and compare its complete normalized executable definition from `sqlite_master` with the canonical manifest definition. The comparison must bind every selected expression and alias, the exact INNER JOIN, and the absence of extra predicates/clauses; required/forbidden fragment checks alone are not sufficient. Treat any missing or drifted view as schema failure. Do not model the view as a table.
 
 - [ ] **Step 5: Run focused schema/migration/readiness tests**
 
@@ -362,7 +368,7 @@ git commit -m "feat: add signal metadata schema and canonical view"
 
 - [ ] **Step 1: Write RED completeness tests**
 
-Cover zero-signal PASS, complete ledger+metadata PASS, missing metadata FAIL, orphan metadata FAIL using a deliberately corrupted fixture, and no filesystem mutation before/after read-only verification.
+Cover zero-signal PASS, complete ledger+metadata PASS, missing metadata FAIL, orphan metadata FAIL using a deliberately corrupted fixture, invalid class/profile/score-version metadata FAIL even when a weakened test schema permits insertion, and no filesystem mutation before/after read-only verification.
 
 - [ ] **Step 2: Run RED**
 

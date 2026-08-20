@@ -109,7 +109,16 @@ CREATE TABLE signal_metadata (
     CHECK(length(model_generation) > 0),
     CHECK(length(decision_contract_hash) = 64),
     CHECK(analysis_observed_at >= 0),
-    CHECK(reference_observed_at IS NULL OR reference_observed_at >= 0)
+    CHECK(reference_observed_at IS NULL OR reference_observed_at >= 0),
+    CHECK(
+      (signal_class='STRICT'
+       AND strategy_profile='strict_score_v2'
+       AND score_version='score_v2')
+      OR
+      (signal_class='EXPERIMENTAL'
+       AND strategy_profile='experimental_pretrigger_v1'
+       AND score_version='score_v2_watch_v1')
+    )
 );
 ```
 
@@ -239,7 +248,11 @@ INNER JOIN signal_metadata AS m
     ON m.signal_id = s.id;
 ```
 
-The actual view may expose additional immutable ledger fields needed by existing consumers, but it must use explicit column names and INNER JOIN.
+The final migration and schema manifest must bind one complete canonical view
+definition: explicit selected expressions, exact aliases, the exact INNER JOIN,
+and no additional predicate or clause. Fragment-only verification is
+insufficient because an added `WHERE`, changed expression, or omitted cohort
+could otherwise drift consumer semantics while preserving required fragments.
 
 Forbidden consumer behavior after cutover:
 
