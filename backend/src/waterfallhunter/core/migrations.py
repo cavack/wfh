@@ -253,13 +253,17 @@ class MigrationRunner:
             raise MigrationError("migration history bootstrap failed") from exc
 
     def _verify_state(self, conn: sqlite3.Connection) -> set[int]:
-        rows = conn.execute(
-            "SELECT version, name, checksum_sha256 "
-            "FROM schema_migrations ORDER BY version"
-        ).fetchall()
-        user_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        try:
+            rows = conn.execute(
+                "SELECT version, name, checksum_sha256 "
+                "FROM schema_migrations ORDER BY version"
+            ).fetchall()
+            user_version_row = conn.execute("PRAGMA user_version").fetchone()
+            user_version = int(user_version_row[0])
+            history_versions = [int(row[0]) for row in rows]
+        except (sqlite3.Error, TypeError, ValueError, IndexError) as exc:
+            raise MigrationStateError("migration history state is malformed") from exc
 
-        history_versions = [int(row[0]) for row in rows]
         expected_history = list(range(1, len(history_versions) + 1))
         if history_versions != expected_history:
             raise MigrationStateError("migration history is not contiguous")
