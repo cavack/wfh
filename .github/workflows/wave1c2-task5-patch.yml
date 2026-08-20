@@ -1,9 +1,7 @@
 name: Wave1C2 Task5 Exact Patch
 
 on:
-  push:
-    branches:
-      - feat/wave1c2-persistence-legacy-classification-v1
+  pull_request:
     paths:
       - .github/workflows/wave1c2-task5-patch.yml
 
@@ -12,7 +10,7 @@ permissions:
 
 jobs:
   patch:
-    if: github.event.head_commit.message == 'chore: run wave1c2 task5 exact patch'
+    if: github.head_ref == 'feat/wave1c2-persistence-legacy-classification-v1'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -97,5 +95,3 @@ jobs:
           git add backend/src/waterfallhunter/main.py backend/src/waterfallhunter/core/multi_exchange_validator.py
           git commit -m 'feat: emit explicit signal lineage at persistence boundary'
           git push origin HEAD:feat/wave1c2-persistence-legacy-classification-v1
-
-# one-shot trigger marker; remove after successful patch application
