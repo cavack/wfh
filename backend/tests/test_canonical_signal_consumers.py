@@ -4,6 +4,10 @@ import json
 import sqlite3
 
 from schema_test_support import migrate_test_database
+from waterfallhunter.core.lbank_execution_outcome_report import (
+    LBankExecutionOutcomeReport,
+    ReportCohort,
+)
 from waterfallhunter.core.lbank_signal_outcome import LBankSignalOutcomeStore
 
 
@@ -87,17 +91,22 @@ def _insert_metadata(
     )
 
 
-def test_pending_signals_use_canonical_view_and_exclude_unresolved(tmp_path) -> None:
-    db_path = tmp_path / "canonical-consumers.db"
-    migrate_test_database(db_path)
+def _insert_outcome(conn: sqlite3.Connection, signal_id: int, symbol: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO lbank_signal_outcomes (
+            signal_id, symbol, outcome_status, signal_triggered_at,
+            horizon_seconds, price_source, observed_candles, expected_candles,
+            details_json, observational_only, trade_eligible, resolved_at
+        ) VALUES (?, ?, 'TP1_ONLY_24H', 100, 86400, 'closed_1m_trade_ohlcv_proxy', 1440, 1440, '{}', 1, NULL, 200)
+        """,
+        (signal_id, symbol),
+    )
 
+
+def _seed_three_cohorts(db_path) -> None:
     with sqlite3.connect(db_path) as conn:
-        _insert_ledger_row(
-            conn,
-            signal_id=1,
-            symbol="STRICT/USDT:USDT",
-            triggered_at=100,
-        )
+        _insert_ledger_row(conn, signal_id=1, symbol="STRICT/USDT:USDT", triggered_at=100)
         _insert_metadata(
             conn,
             signal_id=1,
@@ -106,13 +115,9 @@ def test_pending_signals_use_canonical_view_and_exclude_unresolved(tmp_path) -> 
             score_version="score_v2",
             hash_char="a",
         )
+        _insert_outcome(conn, 1, "STRICT/USDT:USDT")
 
-        _insert_ledger_row(
-            conn,
-            signal_id=2,
-            symbol="EXPERIMENTAL/USDT:USDT",
-            triggered_at=101,
-        )
+        _insert_ledger_row(conn, signal_id=2, symbol="EXPERIMENTAL/USDT:USDT", triggered_at=101)
         _insert_metadata(
             conn,
             signal_id=2,
@@ -121,13 +126,36 @@ def test_pending_signals_use_canonical_view_and_exclude_unresolved(tmp_path) -> 
             score_version="score_v2_watch_v1",
             hash_char="b",
         )
+        _insert_outcome(conn, 2, "EXPERIMENTAL/USDT:USDT")
 
-        _insert_ledger_row(
+        _insert_ledger_row(conn, signal_id=3, symbol="UNRESOLVED/USDT:USDT", triggered_at=102)
+        _insert_outcome(conn, 3, "UNRESOLVED/USDT:USDT")
+
+
+def test_pending_signals_use_canonical_view_and_exclude_unresolved(tmp_path) -> None:
+    db_path = tmp_path / "canonical-consumers.db"
+    migrate_test_database(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        _insert_ledger_row(conn, signal_id=1, symbol="STRICT/USDT:USDT", triggered_at=100)
+        _insert_metadata(
             conn,
-            signal_id=3,
-            symbol="UNRESOLVED/USDT:USDT",
-            triggered_at=102,
+            signal_id=1,
+            signal_class="STRICT",
+            strategy_profile="strict_score_v2",
+            score_version="score_v2",
+            hash_char="a",
         )
+        _insert_ledger_row(conn, signal_id=2, symbol="EXPERIMENTAL/USDT:USDT", triggered_at=101)
+        _insert_metadata(
+            conn,
+            signal_id=2,
+            signal_class="EXPERIMENTAL",
+            strategy_profile="experimental_pretrigger_v1",
+            score_version="score_v2_watch_v1",
+            hash_char="b",
+        )
+        _insert_ledger_row(conn, signal_id=3, symbol="UNRESOLVED/USDT:USDT", triggered_at=102)
 
     rows = LBankSignalOutcomeStore(str(db_path)).pending_signals(
         mature_before=1_000,
@@ -140,3 +168,34 @@ def test_pending_signals_use_canonical_view_and_exclude_unresolved(tmp_path) -> 
         ("EXPERIMENTAL", "experimental_pretrigger_v1"),
     ]
     assert all("trigger_metrics_json" in row for row in rows)
+
+
+def test_reports_default_strict_and_require_explicit_research_cohorts(tmp_path) -> None:
+    db_path = tmp_path / "canonical-report-cohorts.db"
+    migrate_test_database(db_path)
+    _seed_three_cohorts(db_path)
+
+    strict = LBankExecutionOutcomeReport(str(db_path)).build_report(now=200_000)
+    experimental = LBankExecutionOutcomeReport(
+        str(db_path), cohort=ReportCohort.EXPERIMENTAL
+    ).build_report(now=200_000)
+    mixed = LBankExecutionOutcomeReport(
+        str(db_path), cohort=ReportCohort.MIXED_RESEARCH
+    ).build_report(now=200_000)
+
+    assert strict["settlement"]["signal_count"] == 1
+    assert strict["signal_class_scope"] == ["STRICT"]
+    assert strict["research_only"] is False
+
+    assert experimental["settlement"]["signal_count"] == 1
+    assert experimental["signal_class_scope"] == ["EXPERIMENTAL"]
+    assert experimental["research_only"] is True
+
+    assert mixed["settlement"]["signal_count"] == 2
+    assert mixed["signal_class_scope"] == ["STRICT", "EXPERIMENTAL"]
+    assert mixed["research_only"] is True
+
+    assert all(report["settlement"]["signal_count"] != 3 for report in (strict, experimental, mixed))
+    assert "calibrated_probability" not in strict
+    assert "calibrated_probability" not in experimental
+    assert "calibrated_probability" not in mixed
