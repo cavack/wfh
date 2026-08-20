@@ -8,6 +8,8 @@ import time
 import zlib
 from typing import Any
 
+from waterfallhunter.core.schema_contract import require_managed_schema
+
 
 logger = logging.getLogger("WaterfallHunter.ProductionEvidence")
 
@@ -23,6 +25,7 @@ class ProductionEvidenceRecorder:
         db_path: str = "/app/data/waterfall_registry.db",
         *,
         bucket_seconds: int = 300,
+        verify_schema: bool = True,
     ):
         self.db_path = db_path
         self.bucket_seconds = max(60, int(bucket_seconds))
@@ -30,92 +33,14 @@ class ProductionEvidenceRecorder:
         self.total_recorded = 0
         self.total_deduplicated = 0
         self.total_failed = 0
-        self._init_db()
+        if verify_schema:
+            require_managed_schema(
+                self.db_path,
+                required_tables=frozenset({"production_evidence_snapshots"}),
+            )
 
     def _connect(self):
         return sqlite3.connect(self.db_path, timeout=20.0)
-
-    def _init_db(self) -> None:
-        with self._connect() as conn:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS production_evidence_snapshots (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    bucket_started_at INTEGER NOT NULL,
-                    symbol TEXT NOT NULL,
-                    observed_at REAL NOT NULL,
-                    candidate_state TEXT,
-                    reference_source TEXT,
-                    reference_price REAL,
-                    result_valid INTEGER NOT NULL,
-                    suggested_status TEXT,
-                    score REAL,
-                    evidence_sha256 TEXT NOT NULL,
-                    evidence_zlib BLOB NOT NULL,
-                    uncompressed_bytes INTEGER NOT NULL,
-                    compressed_bytes INTEGER NOT NULL,
-                    has_orderbook INTEGER NOT NULL,
-                    orderbook_bid_levels INTEGER NOT NULL,
-                    orderbook_ask_levels INTEGER NOT NULL,
-                    has_candle_analysis INTEGER NOT NULL,
-                    valid_candle_timeframes INTEGER NOT NULL,
-                    has_derivatives INTEGER NOT NULL,
-                    has_confirmation_source INTEGER NOT NULL,
-                    raw_ohlcv_captured INTEGER NOT NULL DEFAULT 0 CHECK(raw_ohlcv_captured = 0),
-                    raw_trades_captured INTEGER NOT NULL DEFAULT 0 CHECK(raw_trades_captured = 0),
-                    source_replay_ready INTEGER NOT NULL DEFAULT 0 CHECK(source_replay_ready = 0),
-                    decision_packet_complete INTEGER NOT NULL,
-                    schema_version TEXT NOT NULL,
-                    capture_mode TEXT NOT NULL,
-                    observational_only INTEGER NOT NULL DEFAULT 1 CHECK(observational_only = 1),
-                    hard_gating_allowed INTEGER NOT NULL DEFAULT 0 CHECK(hard_gating_allowed = 0),
-                    trade_eligible INTEGER CHECK(trade_eligible IS NULL),
-                    UNIQUE(bucket_started_at, symbol)
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_production_evidence_time
-                ON production_evidence_snapshots(observed_at);
-
-                CREATE INDEX IF NOT EXISTS idx_production_evidence_symbol
-                ON production_evidence_snapshots(symbol, observed_at);
-
-                CREATE TRIGGER IF NOT EXISTS production_evidence_no_update
-                BEFORE UPDATE ON production_evidence_snapshots
-                BEGIN SELECT RAISE(ABORT, 'production evidence is immutable'); END;
-
-                CREATE TRIGGER IF NOT EXISTS production_evidence_no_delete
-                BEFORE DELETE ON production_evidence_snapshots
-                BEGIN SELECT RAISE(ABORT, 'production evidence is immutable'); END;
-                """
-            )
-            columns = {
-                row[1]
-                for row in conn.execute(
-                    "PRAGMA table_info(production_evidence_snapshots)"
-                )
-            }
-            for name in (
-                "source_ohlcv_captured",
-                "source_trades_captured",
-                "source_replay_ready_v2",
-                "feature_replay_ready_v3",
-                "triggered_path_replay_ready_v4",
-                "decision_provenance_ready_v5",
-                "raw_derivatives_captured_v5",
-                "production_evidence_complete_v5",
-                "confirmation_ohlcv_captured_v5",
-            ):
-                if name not in columns:
-                    conn.execute(
-                        f"ALTER TABLE production_evidence_snapshots ADD COLUMN {name} INTEGER NOT NULL DEFAULT 0 CHECK({name} IN (0, 1))"
-                    )
-            if "code_sha256_v5" not in columns:
-                conn.execute(
-                    "ALTER TABLE production_evidence_snapshots "
-                    "ADD COLUMN code_sha256_v5 TEXT NOT NULL DEFAULT ''"
-                )
 
     @classmethod
     def _safe(cls, value: Any) -> Any:
