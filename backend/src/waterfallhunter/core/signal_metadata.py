@@ -14,7 +14,7 @@ Sha256Hex = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 NonEmptyStr = Annotated[str, Field(min_length=1)]
 NonNegativeTimestamp = Annotated[int, Field(ge=0)]
 
-METADATA_CONTRACT_VERSION = "signal_metadata_v1"
+METADATA_CONTRACT_VERSION: Literal["signal_metadata_v1"] = "signal_metadata_v1"
 STRICT_STRATEGY_PROFILE = "strict_score_v2"
 EXPERIMENTAL_STRATEGY_PROFILE = "experimental_pretrigger_v1"
 MODEL_GENERATION = "waterfall_signal_model_v1"
