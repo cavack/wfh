@@ -342,25 +342,27 @@ Expected: PASS.
 - Modify: `scripts/calibrate_score_v2.py`
 - Modify: `backend/tests/test_score_v2_calibration.py`
 
-- [ ] **Step 1: RED missing-manifest promotion behavior**
+- [ ] **Step 1: RED missing-manifest promotion behavior using the actual calibration API**
 
-Existing historical backtest reports do not prove canonical STRICT lineage. Add a test that calibration may still compute research statistics but cannot emit promotion authority:
+Existing historical backtest reports do not prove canonical STRICT lineage. Extend an existing valid report fixture by omitting `dataset_manifest`, then call the current public API exactly:
 
 ```python
-result = calibrate(report_without_manifest, current_score_contract, candidate_weights)
+result = calibrate(report_without_manifest)
 
 assert result["research_only"] is True
 assert result["promotion_allowed"] is False
 assert result["promotion_blockers"] == ["MISSING_DATASET_MANIFEST"]
 ```
 
-Use the existing test helper values for `current_score_contract` and `candidate_weights`; do not change calibration selection math.
+Do not require old research fixtures to masquerade as STRICT and do not change the calibration configuration defaults merely to satisfy this test.
 
 - [ ] **Step 2: RED non-STRICT manifest behavior**
 
-When report input includes a valid EXPERIMENTAL/MIXED research manifest:
+Attach a valid research manifest to an otherwise valid existing report fixture, then call:
 
 ```python
+result = calibrate(report_with_research_manifest)
+
 assert result["research_only"] is True
 assert result["promotion_allowed"] is False
 assert "NON_STRICT_DATASET" in result["promotion_blockers"]
@@ -386,9 +388,9 @@ Do not alter:
 
 ```text
 APPROVED_WEIGHTS
-threshold candidates
-purged splits
-walk-forward selection
+CONFIGURATIONS threshold candidates
+purged_time_splits
+walk_forward_assessment selection
 holdout non-selection rule
 performance metrics
 ```
