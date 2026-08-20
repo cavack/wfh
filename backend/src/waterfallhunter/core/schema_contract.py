@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 import hashlib
 import re
 import sqlite3
@@ -668,6 +669,35 @@ def _sql_structure(value: str | None) -> tuple[str, tuple[str, ...]]:
     return "".join(compact), tuple(literals)
 
 
+def _check_structures(value: str | None) -> tuple[str, ...]:
+    """Return every complete executable CHECK clause in normalized form."""
+    structure, _ = _sql_structure(value)
+    checks: list[str] = []
+    offset = 0
+    pattern = re.compile(r"check\(")
+
+    while match := pattern.search(structure, offset):
+        start = match.start()
+        depth = 0
+        cursor = match.end() - 1
+        while cursor < len(structure):
+            character = structure[cursor]
+            if character == "(":
+                depth += 1
+            elif character == ")":
+                depth -= 1
+                if depth == 0:
+                    checks.append(structure[start : cursor + 1])
+                    offset = cursor + 1
+                    break
+            cursor += 1
+        else:
+            checks.append(structure[start:])
+            break
+
+    return tuple(checks)
+
+
 def _sql_unquoted_tokens(value: str | None) -> tuple[str, ...]:
     """Return executable word tokens outside comments and quoted content."""
     if not isinstance(value, str):
@@ -885,23 +915,33 @@ def _foreign_key_issues(
 
 
 def _check_issues(conn: sqlite3.Connection, spec: ManagedTableSpec) -> list[SchemaIssue]:
-    if not spec.check_fragments:
-        return []
-    sql, _ = _sql_structure(_table_sql(conn, spec.name))
-    missing = [
-        fragment
-        for fragment in spec.check_fragments
-        if _sql_structure(fragment)[0] not in sql
-    ]
-    if not missing:
-        return []
-    return [
-        SchemaIssue(
-            "CHECK_MISSING",
-            spec.name,
-            f"missing critical CHECK constraints: {missing!r}",
+    expected = Counter(
+        _sql_structure(fragment)[0] for fragment in spec.check_fragments
+    )
+    actual = Counter(_check_structures(_table_sql(conn, spec.name)))
+    issues: list[SchemaIssue] = []
+
+    missing = tuple((expected - actual).elements())
+    if missing:
+        issues.append(
+            SchemaIssue(
+                "CHECK_MISSING",
+                spec.name,
+                f"missing critical CHECK constraints: {missing!r}",
+            )
         )
-    ]
+
+    unexpected = tuple((actual - expected).elements())
+    if unexpected:
+        issues.append(
+            SchemaIssue(
+                "CHECK_UNEXPECTED",
+                spec.name,
+                f"unexpected CHECK constraints: {unexpected!r}",
+            )
+        )
+
+    return issues
 
 
 def _trigger_is_canonical(
@@ -914,13 +954,20 @@ def _trigger_is_canonical(
     if not structure:
         return False
     abort_marker = _sql_literal_marker(trigger.abort_message)
+    quoted_identifier = re.escape("\x00i\x00")
+    trigger_identifier = (
+        "(?:" + re.escape(trigger.name.casefold()) + "|" + quoted_identifier + ")"
+    )
+    table_identifier = (
+        "(?:" + re.escape(table_name.casefold()) + "|" + quoted_identifier + ")"
+    )
     canonical = (
         r"createtrigger(?:ifnotexists)?"
-        + re.escape(trigger.name.casefold())
+        + trigger_identifier
         + "before"
         + re.escape(trigger.event.casefold())
         + "on"
-        + re.escape(table_name.casefold())
+        + table_identifier
         + r"beginselectraise\(abort,"
         + re.escape(abort_marker)
         + r"\);end;?"

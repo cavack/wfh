@@ -219,7 +219,7 @@ Expected: import/module missing.
 
 - [ ] **Step 3: Implement manifest primitives and introspection**
 
-Use `PRAGMA table_info`, `index_list`, `index_xinfo`, `foreign_key_list`, and `sqlite_master`. Named indexes must match uniqueness, ordered key columns, direction, collation, and non-partial status. Reject explicit managed-column `COLLATE` clauses because the canonical schema uses SQLite's default `BINARY` collation. Tokenize executable SQL separately from comments, string literals, and quoted identifiers. CHECK fragments must match executable structure outside quoted content; trigger guards must match the complete canonical trigger DDL with no `WHEN` clause or additional statements, and its executable `RAISE(ABORT, <literal>)` call must use a decoded literal equal to the canonical message:
+Use `PRAGMA table_info`, `index_list`, `index_xinfo`, `foreign_key_list`, and `sqlite_master`. Named indexes must match uniqueness, ordered key columns, direction, collation, and non-partial status. Reject explicit managed-column `COLLATE` clauses because the canonical schema uses SQLite's default `BINARY` collation. Tokenize executable SQL separately from comments, string literals, and quoted identifiers. Quoted trigger/table identifiers using SQLite's double-quote, backtick, or bracket forms are accepted only at their canonical positions, while exact decoded identity remains enforced by `sqlite_master.name` and `sqlite_master.tbl_name`. The complete executable CHECK-constraint multiset must exactly match the manifest, including for tables with no canonical CHECKs; missing, weakened, additional, and duplicate CHECKs are rejected. Trigger guards must match the complete canonical trigger DDL with no `WHEN` clause or additional statements, and its executable `RAISE(ABORT, <literal>)` call must use a decoded literal equal to the canonical message:
 
 ```python
 def _normalized_sql(sql: str | None) -> str:
@@ -475,7 +475,8 @@ Rules:
 7. unknown non-managed objects are reported but not fatal when all required legacy objects are canonical;
 8. any partial migration infrastructure, missing required legacy table, malformed managed object, or unexpected legacy `user_version` -> incompatible;
 9. before history bootstrap, every case-insensitive global name owned by migrations (`schema_migrations`, `db_readiness_probe`, and both `schema_migrations_no_*` triggers) must be absent, even when an extension object uses the name or when the database contains no user tables;
-10. `MigrationRunner` repeats the reserved-name check under its write lock and either validates existing history without repair or creates the complete history table/trigger set atomically.
+10. before the `CLEAN_EMPTY` path, every managed table, index, and trigger name found in `sqlite_master` must have its canonical object type, exact table name, and owner, so a reserved view cannot be adopted or bypass preflight;
+11. `MigrationRunner` repeats the reserved migration-infrastructure check under its write lock and either validates existing history without repair or creates the complete history table/trigger set atomically.
 
 - [ ] **Step 4: Run GREEN and byte-preservation tests**
 

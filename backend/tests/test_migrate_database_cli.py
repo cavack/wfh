@@ -163,6 +163,33 @@ def test_cli_apply_rejects_incompatible_legacy_before_migration_write(tmp_path: 
     assert "LEGACY_SCHEMA_MISMATCH" in payload["reason_codes"]
 
 
+def test_cli_apply_rejects_managed_view_without_bootstrapping_history(
+    tmp_path: Path,
+    capsys,
+):
+    db_path = tmp_path / "managed-view.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE VIEW lbank_catalog AS SELECT 1 AS symbol")
+    before = db_path.read_bytes()
+
+    exit_code = _main()(
+        ["--db-path", str(db_path), "--apply", "--source-revision", "test"]
+    )
+
+    assert exit_code == 3
+    assert db_path.read_bytes() == before
+    with sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True) as conn:
+        history = conn.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type='table' AND name='schema_migrations'"
+        ).fetchone()
+    assert history is None
+    payload = _json_output(capsys)
+    assert payload["ok"] is False
+    assert payload["state"] == "PARTIAL_OR_INCOMPATIBLE"
+    assert payload["reason_codes"] == ["LEGACY_SCHEMA_MISMATCH"]
+
+
 @pytest.mark.parametrize(
     "collision_sql",
     [

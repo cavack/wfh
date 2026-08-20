@@ -47,12 +47,21 @@ def test_preflight_classifies_existing_empty_sqlite_without_mutation(tmp_path: P
     assert _sha256(db_path) == before
 
 
+@pytest.mark.parametrize(
+    "reserved_name",
+    (
+        "SCHEMA_MIGRATIONS",
+        "lbank_catalog",
+        "IDX_LBANK_EXECUTION_QUEUE",
+    ),
+)
 def test_preflight_rejects_reserved_view_in_otherwise_tableless_database(
     tmp_path: Path,
+    reserved_name: str,
 ):
     db_path = tmp_path / "reserved-view.db"
     with sqlite3.connect(db_path) as conn:
-        conn.execute("CREATE VIEW SCHEMA_MIGRATIONS AS SELECT 1 AS version")
+        conn.execute(f'CREATE VIEW "{reserved_name}" AS SELECT 1 AS value')
     before = _sha256(db_path)
 
     result = classify_database(db_path=db_path)

@@ -238,6 +238,7 @@ def _create_outcomes(
     observational_check: str = "observational_only = 1",
     immutable_update: bool = True,
     unique_signal_id: bool = True,
+    extra_table_check: str | None = None,
 ) -> None:
     update_raise = (
         "SELECT RAISE(ABORT, 'lbank_signal_outcomes is immutable');"
@@ -245,6 +246,9 @@ def _create_outcomes(
         else "SELECT RAISE(IGNORE);"
     )
     signal_id_constraint = " UNIQUE" if unique_signal_id else ""
+    extra_check_clause = (
+        f", CHECK ({extra_table_check})" if extra_table_check is not None else ""
+    )
     conn.executescript(
         f"""
         CREATE TABLE lbank_signal_outcomes (
@@ -271,7 +275,7 @@ def _create_outcomes(
             details_json TEXT NOT NULL,
             observational_only INTEGER NOT NULL DEFAULT 1 CHECK ({observational_check}),
             trade_eligible INTEGER CHECK (trade_eligible IS NULL),
-            resolved_at INTEGER NOT NULL,
+            resolved_at INTEGER NOT NULL{extra_check_clause},
             FOREIGN KEY(signal_id) REFERENCES {fk_target}(id)
         );
         CREATE INDEX idx_lbank_signal_outcomes_status
@@ -310,6 +314,51 @@ def test_schema_verifier_rejects_missing_critical_check():
         required_tables=frozenset({"lbank_signal_outcomes"}),
     )
     assert "CHECK_MISSING" in _codes(result)
+
+
+def test_schema_verifier_rejects_unexpected_check_on_table_without_canonical_checks():
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        """
+        CREATE TABLE lbank_catalog (
+            symbol TEXT PRIMARY KEY,
+            last_price REAL,
+            quote_volume REAL,
+            is_meme BOOLEAN,
+            scan_eligible BOOLEAN DEFAULT 0,
+            status TEXT DEFAULT 'WATCH',
+            first_seen_at INTEGER,
+            last_added_at INTEGER,
+            last_seen_at INTEGER,
+            removed_at INTEGER,
+            consecutive_missing_snapshots INTEGER DEFAULT 0,
+            lifecycle_id INTEGER NOT NULL DEFAULT 1,
+            trigger_data TEXT,
+            CHECK(symbol = 'BTCUSDT')
+        )
+        """
+    )
+
+    result = verify_managed_schema_connection(
+        conn,
+        required_tables=frozenset({"lbank_catalog"}),
+    )
+
+    assert "CHECK_UNEXPECTED" in _codes(result)
+
+
+def test_schema_verifier_rejects_extra_check_beside_canonical_checks():
+    conn = sqlite3.connect(":memory:")
+    _create_signal_ledger_parent(conn)
+    _create_outcomes(conn, extra_table_check="symbol = 'BTCUSDT'")
+
+    result = verify_managed_schema_connection(
+        conn,
+        required_tables=frozenset({"lbank_signal_outcomes"}),
+    )
+
+    assert "CHECK_MISSING" not in _codes(result)
+    assert "CHECK_UNEXPECTED" in _codes(result)
 
 
 def test_schema_verifier_rejects_check_fragment_present_only_in_comment():
@@ -456,6 +505,49 @@ def test_schema_verifier_rejects_abort_guard_in_unreachable_trigger_expression()
     )
 
     assert "TRIGGER_MISMATCH" in _codes(result)
+
+
+@pytest.mark.parametrize(
+    ("opening_quote", "closing_quote"),
+    [("\"", "\""), ("`", "`"), ("[", "]")],
+)
+@pytest.mark.parametrize(
+    ("trigger_name", "event"),
+    [
+        ("lbank_signal_outcomes_no_update", "UPDATE"),
+        ("lbank_signal_outcomes_no_delete", "DELETE"),
+    ],
+)
+def test_schema_verifier_accepts_semantically_canonical_quoted_trigger_identifiers(
+    opening_quote: str,
+    closing_quote: str,
+    trigger_name: str,
+    event: str,
+):
+    conn = sqlite3.connect(":memory:")
+    _create_signal_ledger_parent(conn)
+    _create_outcomes(conn)
+    conn.execute(f"DROP TRIGGER {trigger_name}")
+    quoted_trigger = f"{opening_quote}{trigger_name}{closing_quote}"
+    quoted_table = (
+        f"{opening_quote}lbank_signal_outcomes{closing_quote}"
+    )
+    conn.executescript(
+        f"""
+        CREATE TRIGGER {quoted_trigger}
+        BEFORE {event} ON {quoted_table}
+        BEGIN
+            SELECT RAISE(ABORT, 'lbank_signal_outcomes is immutable');
+        END;
+        """
+    )
+
+    result = verify_managed_schema_connection(
+        conn,
+        required_tables=frozenset({"lbank_signal_outcomes"}),
+    )
+
+    assert "TRIGGER_MISMATCH" not in _codes(result)
 
 
 def test_schema_verifier_rejects_non_aborting_immutable_trigger():

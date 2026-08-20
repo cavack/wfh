@@ -290,14 +290,16 @@ def classify_database(*, db_path: str | Path) -> PreflightResult:
         except (sqlite3.Error, TypeError, ValueError, IndexError):
             return _incompatible("DB_METADATA_UNREADABLE")
 
-        if (
-            "schema_migrations" not in tables
-            and not _migration_infrastructure_names_available(conn)
-        ):
-            return _incompatible(
-                "LEGACY_SCHEMA_MISMATCH",
-                user_version=user_version,
-            )
+        if "schema_migrations" not in tables:
+            if (
+                not _migration_infrastructure_names_available(conn)
+                or not _managed_table_names_valid(conn)
+                or not _managed_global_names_valid(conn)
+            ):
+                return _incompatible(
+                    "LEGACY_SCHEMA_MISMATCH",
+                    user_version=user_version,
+                )
 
         if not tables:
             if user_version == 0:
