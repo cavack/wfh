@@ -84,9 +84,23 @@ def _scalar_count(conn: sqlite3.Connection, sql: str) -> int:
 
 
 def _invalid_metadata_count(conn: sqlite3.Connection) -> int:
-    quoted = ", ".join(_METADATA_INPUT_COLUMNS)
     rows = conn.execute(
-        f"SELECT {quoted}, created_at FROM signal_metadata ORDER BY signal_id"
+        """
+        SELECT
+            signal_class,
+            strategy_profile,
+            score_version,
+            model_generation,
+            decision_contract_hash,
+            analysis_observed_at,
+            reference_observed_at,
+            metadata_contract_version,
+            classification_method,
+            classification_evidence_hash,
+            created_at
+        FROM signal_metadata
+        ORDER BY signal_id
+        """
     ).fetchall()
 
     invalid = 0
@@ -140,8 +154,6 @@ class SignalMetadataStore:
                 "WHERE s.id IS NULL",
             )
             invalid_metadata_count = _invalid_metadata_count(conn)
-        except SignalMetadataError:
-            raise
         except (sqlite3.Error, TypeError, ValueError) as exc:
             raise SignalMetadataError("SIGNAL_METADATA_QUERY_FAILED") from exc
         finally:
