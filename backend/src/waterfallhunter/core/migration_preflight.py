@@ -110,23 +110,49 @@ def _managed_constraints_valid(conn: sqlite3.Connection) -> bool:
 
 def _managed_global_names_valid(conn: sqlite3.Connection) -> bool:
     """Reject reserved managed names attached to the wrong object or table."""
-    owners = managed_runtime_global_object_owners()
+    owners = {
+        name.casefold(): (object_type, table_name.casefold())
+        for name, (object_type, table_name) in (
+            managed_runtime_global_object_owners().items()
+        )
+    }
     if not owners:
         return True
-    placeholders = ",".join("?" for _ in owners)
     rows = conn.execute(
         "SELECT type, name, tbl_name FROM sqlite_master "
-        f"WHERE name IN ({placeholders})",
-        tuple(sorted(owners)),
+        "WHERE name NOT LIKE 'sqlite_%'"
     ).fetchall()
-    return all(
-        (str(row[0]), str(row[2])) == owners[str(row[1])]
-        for row in rows
-    )
+    for object_type, name, table_name in rows:
+        expected = owners.get(str(name).casefold())
+        if expected is None:
+            continue
+        if (str(object_type).casefold(), str(table_name).casefold()) != expected:
+            return False
+    return True
+
+
+def _managed_table_names_valid(conn: sqlite3.Connection) -> bool:
+    """Reject reserved managed table names occupied by another object type."""
+    canonical = {
+        table_name.casefold(): table_name
+        for table_name in managed_runtime_table_names()
+    }
+    rows = conn.execute(
+        "SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
+    ).fetchall()
+    for object_type, name in rows:
+        expected_name = canonical.get(str(name).casefold())
+        if expected_name is None:
+            continue
+        if str(object_type).casefold() != "table" or str(name) != expected_name:
+            return False
+    return True
 
 
 def _pending_runtime_schema_valid(conn: sqlite3.Connection) -> tuple[bool, tuple[str, ...]]:
     """Validate the only two safe states before migration 2 is applied."""
+    if not _managed_table_names_valid(conn):
+        return False, ()
     managed_tables = managed_runtime_table_names()
     existing_tables = _user_tables(conn) & managed_tables
     if not existing_tables:
@@ -189,6 +215,7 @@ def _classify_migrated(path: Path, user_version: int) -> PreflightResult:
                     not schema.valid
                     or not _managed_constraints_valid(conn)
                     or not _managed_global_names_valid(conn)
+                    or not _managed_table_names_valid(conn)
                 ):
                     return _incompatible(
                         "MIGRATION_SCHEMA_MISMATCH",
@@ -274,6 +301,7 @@ def classify_database(*, db_path: str | Path) -> PreflightResult:
                 not schema.valid
                 or not _managed_constraints_valid(conn)
                 or not _managed_global_names_valid(conn)
+                or not _managed_table_names_valid(conn)
             ):
                 return _incompatible(
                     "LEGACY_SCHEMA_MISMATCH",

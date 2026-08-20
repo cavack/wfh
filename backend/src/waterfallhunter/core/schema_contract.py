@@ -553,18 +553,39 @@ def _sql_compact(value: str | None) -> str:
     if not isinstance(value, str):
         return ""
     compact: list[str] = []
-    in_string = False
+    quote: str | None = None
     index = 0
     while index < len(value):
         character = value[index]
-        if character == "'":
-            compact.append(character)
-            if in_string and index + 1 < len(value) and value[index + 1] == "'":
-                compact.append("'")
-                index += 2
-                continue
-            in_string = not in_string
-        elif in_string:
+        following = value[index + 1] if index + 1 < len(value) else ""
+
+        if quote is not None:
+            compact.append(character if quote == "'" else character.casefold())
+            closing = "]" if quote == "[" else quote
+            if character == closing:
+                if following == closing:
+                    compact.append(
+                        following if quote == "'" else following.casefold()
+                    )
+                    index += 2
+                    continue
+                quote = None
+            index += 1
+            continue
+
+        if character == "-" and following == "-":
+            index += 2
+            while index < len(value) and value[index] not in "\r\n":
+                index += 1
+            continue
+        if character == "/" and following == "*":
+            comment_end = value.find("*/", index + 2)
+            if comment_end < 0:
+                return ""
+            index = comment_end + 2
+            continue
+        if character in {"'", '"', "`", "["}:
+            quote = character
             compact.append(character)
         elif not character.isspace():
             compact.append(character.casefold())

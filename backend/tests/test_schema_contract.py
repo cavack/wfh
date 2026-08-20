@@ -51,6 +51,18 @@ def test_sql_normalization_preserves_case_inside_quoted_literals():
     )
 
 
+def test_sql_normalization_strips_comments_but_preserves_comment_markers_in_quotes():
+    normalized = _sql_compact(
+        "CHECK(x = 1) /* CHECK(observational_only = 1) */ "
+        "-- RAISE(ABORT, 'spoof')\n"
+        "CHECK(note = '/* retained */ -- retained')"
+    )
+
+    assert "check(observational_only=1)" not in normalized
+    assert "raise(abort" not in normalized
+    assert "'/* retained */ -- retained'" in normalized
+
+
 def test_schema_verifier_rejects_missing_managed_table():
     conn = sqlite3.connect(":memory:")
     result = verify_managed_schema_connection(
@@ -219,6 +231,49 @@ def test_schema_verifier_rejects_missing_critical_check():
         required_tables=frozenset({"lbank_signal_outcomes"}),
     )
     assert "CHECK_MISSING" in _codes(result)
+
+
+def test_schema_verifier_rejects_check_fragment_present_only_in_comment():
+    conn = sqlite3.connect(":memory:")
+    _create_signal_ledger_parent(conn)
+    _create_outcomes(
+        conn,
+        observational_check=(
+            "observational_only IN (0, 1) "
+            "/* CHECK(observational_only = 1) */"
+        ),
+    )
+
+    result = verify_managed_schema_connection(
+        conn,
+        required_tables=frozenset({"lbank_signal_outcomes"}),
+    )
+
+    assert "CHECK_MISSING" in _codes(result)
+
+
+def test_schema_verifier_rejects_abort_guard_present_only_in_comment():
+    conn = sqlite3.connect(":memory:")
+    _create_signal_ledger_parent(conn)
+    _create_outcomes(conn)
+    conn.execute("DROP TRIGGER lbank_signal_outcomes_no_update")
+    conn.executescript(
+        """
+        CREATE TRIGGER lbank_signal_outcomes_no_update
+        BEFORE UPDATE ON lbank_signal_outcomes
+        BEGIN
+            /* SELECT RAISE(ABORT, 'lbank_signal_outcomes is immutable'); */
+            SELECT RAISE(IGNORE);
+        END;
+        """
+    )
+
+    result = verify_managed_schema_connection(
+        conn,
+        required_tables=frozenset({"lbank_signal_outcomes"}),
+    )
+
+    assert "TRIGGER_MISMATCH" in _codes(result)
 
 
 def test_schema_verifier_rejects_non_aborting_immutable_trigger():

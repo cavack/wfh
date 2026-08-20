@@ -167,6 +167,26 @@ def test_preflight_rejects_partial_managed_schema_before_migration_2(
     assert _sha256(db_path) == before
 
 
+def test_preflight_rejects_managed_table_name_occupied_by_view_before_migration_2(
+    tmp_path: Path,
+):
+    db_path = tmp_path / "managed-view-v1.db"
+    MigrationRunner(
+        db_path=db_path,
+        migrations=discover_migrations()[:1],
+    ).apply()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE VIEW lbank_catalog AS SELECT 1 AS symbol")
+    before = _sha256(db_path)
+
+    result = classify_database(db_path=db_path)
+
+    assert result.state is PreflightState.PARTIAL_OR_INCOMPATIBLE
+    assert result.compatible is False
+    assert result.reason_codes == ("MIGRATION_SCHEMA_MISMATCH",)
+    assert _sha256(db_path) == before
+
+
 def test_preflight_rejects_reserved_index_name_on_unknown_legacy_table(
     tmp_path: Path,
 ):
@@ -175,6 +195,25 @@ def test_preflight_rejects_reserved_index_name_on_unknown_legacy_table(
         conn.execute("CREATE TABLE user_extension (id INTEGER PRIMARY KEY)")
         conn.execute(
             "CREATE INDEX idx_lbank_execution_queue ON user_extension(id)"
+        )
+    before = _sha256(db_path)
+
+    result = classify_database(db_path=db_path)
+
+    assert result.state is PreflightState.PARTIAL_OR_INCOMPATIBLE
+    assert result.compatible is False
+    assert result.reason_codes == ("LEGACY_SCHEMA_MISMATCH",)
+    assert _sha256(db_path) == before
+
+
+def test_preflight_rejects_case_variant_reserved_index_on_unknown_table(
+    tmp_path: Path,
+):
+    db_path = build_legacy_runtime_database(tmp_path / "reserved-index-case.db")
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE user_extension (id INTEGER PRIMARY KEY)")
+        conn.execute(
+            "CREATE INDEX IDX_LBANK_EXECUTION_QUEUE ON user_extension(id)"
         )
     before = _sha256(db_path)
 

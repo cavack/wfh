@@ -377,7 +377,7 @@ Add:
 ```python
 def test_runtime_baseline_clean_install_matches_manifest(tmp_path):
     path = tmp_path / "clean.db"
-    MigrationRunner(db_path=path, source_revision="test").apply()
+    path = migrate_test_database(path)
     result = verify_managed_schema(path, check_user_version=2)
     assert result.valid, result.issues
 ```
