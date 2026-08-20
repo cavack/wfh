@@ -12,7 +12,6 @@ from waterfallhunter.core.db import DBAdapter
 from waterfallhunter.core.lbank_signal_ledger import (
     LBankSignalLedger,
 )
-from waterfallhunter.core.schema_contract import SchemaContractError
 
 
 SYMBOL = "LEDGER/USDT:USDT"
@@ -167,18 +166,21 @@ def test_trigger_transition_and_signal_snapshot_are_atomic(
     assert row[16:] == (1, None)
 
 
-def test_legacy_ledger_requires_explicit_migration_without_rewriting_rows(tmp_path):
+def test_legacy_ledger_verification_is_read_only_and_explicit_migration_preserves_rows(
+    tmp_path,
+):
     db_path = build_legacy_runtime_database(tmp_path / "legacy.db")
     before = business_row_hashes(db_path, ("lbank_signal_ledger",))
 
-    with pytest.raises(SchemaContractError):
-        LBankSignalLedger(str(db_path))
+    LBankSignalLedger(str(db_path))
+    after_verify = business_row_hashes(db_path, ("lbank_signal_ledger",))
+    assert after_verify == before
 
     migrate_test_database(db_path)
     LBankSignalLedger(str(db_path))
 
-    after = business_row_hashes(db_path, ("lbank_signal_ledger",))
-    assert after == before
+    after_migration = business_row_hashes(db_path, ("lbank_signal_ledger",))
+    assert after_migration == before
 
 
 @pytest.mark.parametrize(
