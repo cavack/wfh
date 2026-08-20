@@ -9,6 +9,8 @@ from pathlib import Path
 
 @dataclass(frozen=True, slots=True)
 class DatabaseReadinessResult:
+    """Immutable result of one bounded deep-readiness probe."""
+
     ready: bool
     schema_version: int | None
     expected_schema_version: int
@@ -25,12 +27,14 @@ class DatabaseNotReadyError(RuntimeError):
     """Raised when a caller requires a ready database but the probe failed."""
 
     def __init__(self, result: DatabaseReadinessResult) -> None:
+        """Attach the failed readiness result and expose stable reason codes."""
         self.result = result
         reasons = ",".join(result.reason_codes) or "UNKNOWN"
         super().__init__(f"database is not ready: {reasons}")
 
 
 def require_ready(result: DatabaseReadinessResult) -> DatabaseReadinessResult:
+    """Return a ready result or fail closed with ``DatabaseNotReadyError``."""
     if not result.ready:
         raise DatabaseNotReadyError(result)
     return result
@@ -48,6 +52,7 @@ def _result(
     reason_codes: list[str],
     checked_at: int,
 ) -> DatabaseReadinessResult:
+    """Build the canonical readiness result and derive its aggregate state."""
     unique_reasons = tuple(dict.fromkeys(reason_codes))
     ready = (
         not unique_reasons
@@ -73,6 +78,7 @@ def _result(
 
 
 def _required_tables(conn: sqlite3.Connection) -> set[str]:
+    """Return the readiness-owned tables present in the current schema."""
     rows = conn.execute(
         "SELECT name FROM sqlite_master "
         "WHERE type='table' AND name IN ('schema_migrations', 'db_readiness_probe')"
