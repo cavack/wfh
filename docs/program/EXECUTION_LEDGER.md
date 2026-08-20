@@ -161,3 +161,91 @@ Repository-wide source searches reconfirm the existing runtime schema-mutation i
 `W1-B1 = MERGE_READY_PENDING_MERGE_APPROVAL`.
 
 This is an evidence state only. PR #24 remains Draft and unmerged. `MERGE_APPROVAL` has not been granted. W1-B2 may proceed only as development-side planning/implementation under the approved safety gates; no Production migration is implied or authorized.
+
+## Wave 1C unified signal metadata/cohort purity evidence
+
+- Draft stacked PRs: #32 (P1-C1) and #34 (P1-C2/current continuation).
+- Fresh design/main baseline during Task 10: `652f99446ed523c0a602798dde4457bab7983373`.
+- P1-C1 reviewed head: `acfe88cab5a31f31f8fb70ebc8d7219b0f450db1`.
+- Task 5 certified head: `0fb70fe5c1994d2da6f8ee59cd3e5147c8183af5`.
+- Task 10 source head before this ledger-only commit: `0b60b2d5f6cde6cb375d2942ae8ef31561d39dbe`.
+- Current model impact classification: `SEMANTIC_INFRA`.
+- Runtime schema target: v3 via `0003_signal_metadata.sql`.
+- Production migration/classification: never executed.
+
+### Sequencing and drift reconciliation
+
+The continuation checkpoint ended at temporary patcher commit `f557cea2e34a10266f9929187fe08c5025a14a13`. Fresh GitHub reconciliation showed the branch had advanced by 26 commits and that Tasks 6–9 had been implemented after a separately certified Task 5 state. Task 5 CI run `32371611995` at `0fb70fe5...` was GREEN (`520 passed`, 9 warnings; runtime/frontend/dependency/hygiene/container all PASS), so Task 6 did not start before Task 5 was genuinely GREEN.
+
+The temporary `.github/workflows/wave1c2-task5-patch.yml` is removed from the current diff. Its resulting source edits were audited; no patcher workflow remains in the PR.
+
+### Task 4–9 invariants
+
+- future signals require explicit canonical metadata before persistence;
+- catalogue CAS + ledger + metadata share one transaction and roll back together;
+- missing/unknown lineage never defaults to STRICT;
+- strict and experimental class/profile/score-version mappings are explicit and fail closed;
+- decision lineage hashes use deterministic RFC8785/JCS SHA-256 over the deterministic decision contract;
+- observation timestamps are captured at the observation/analysis boundary, not substituted with persistence time;
+- legacy classification is persisted-evidence-only, deterministic, read-only in preview, hash-gated, `BEGIN IMMEDIATE`, INSERT-only, and never rewrites legacy ledger rows;
+- unresolved/conflicting legacy rows receive no metadata and remain outside `canonical_signal_view`;
+- outcome settlement reads canonical rows and carries explicit cohort identity;
+- default reporting is STRICT-only; non-STRICT modes are explicitly research-only;
+- startup verifies schema/completeness before workers and never migrates/classifies/repairs/backfills.
+
+### TDD and review hardening
+
+- Task 5 review RED: `4 failed, 535 passed` at `75c5f3eef9abc266f8f0170e05f7dd385b372f8b`, reproducing invalid metadata timestamp coercion plus canonical score-version invariant failures.
+- Minimal fixes centrally enforced canonical class/profile/score-version mapping and rejected boolean/string/fractional/negative metadata timestamps.
+- A subsequent full run exposed one stale experimental fixture: `1 failed, 538 passed`; the fixture was aligned to canonical `score_v2_watch_v1` without weakening validation.
+- CodeRabbit current commit status on `0b60b2d5...`: SUCCESS.
+- Inline review threads: 0 unresolved.
+- A CodeRabbit suggestion to ignore `created_at` when comparing pre-existing legacy metadata was rejected because the approved continuation contract requires the pre-existing metadata row to match exactly, and the design permits repeated classification to be idempotent or fail-closed without rewrite.
+- Shared score-version constants, complexity extraction, test connection hygiene, and extra classifier fixture cases were adjudicated as maintainability/test-depth advisories rather than demonstrated safety/model defects; no certification-time refactor was introduced solely for those advisories.
+
+### Task 10 verification
+
+Authoritative GitHub Actions run `32379224230` on Ubuntu / CPython 3.13.15, PR merge revision `05d64093043af598d6d7dcc212263f96133f1d72`:
+
+- full backend: `539 passed, 9 warnings`;
+- runtime parity: PASS;
+- frontend typecheck/build: PASS;
+- dependency audit: PASS;
+- repository hygiene/secret scan: PASS;
+- container validation: PASS, including Compose validation, revision-labelled backend/frontend/watchdog builds, exact backend artifact-family tests, and OCI revision-label verification.
+
+Independent development worktree pinned exactly to `0b60b2d5...`:
+
+- focused P1-C suite: `71 passed, 5 warnings`;
+- Golden/model regression: `2 passed`; the canonical corpus test performs three deterministic replays per case and matched the baseline-bound expected outputs;
+- no unexpected Golden difference in score, eligibility, lifecycle/reason behavior, ranking/order, leverage, or model-regression outputs.
+
+A supplemental Windows/Python-3.13 full-backend run produced `538 passed, 1 failed`; the sole failure is `test_readiness_targets_exact_database_path_with_uri_special_characters[question?name.db]`, because `?` is not a valid Windows filename. The authoritative Linux/Python-3.13.15 CI passes the same complete suite `539/539`. No source or fixture was changed to mask that platform-specific limitation.
+
+### Static/security evidence and known limitation
+
+- Current CodeRabbit status: SUCCESS with zero unresolved inline threads.
+- A prior DeepSource PR report on an older head/range reported Overall Grade A and Security A; its older Python inline findings were subsequently fixed/resolved.
+- No fresh latest-head DeepSource Python rerun is exposed as current GitHub evidence.
+- No fresh latest-head Sonar Quality Gate is exposed as current GitHub evidence.
+- Those latest-head external static-analysis gates are therefore not silently assumed GREEN.
+- CodeRabbit's docstring-coverage warning remains non-functional advisory evidence rather than a required branch-protection check.
+
+### Controller review answers
+
+1. Future signal without metadata: **No — fail-closed and atomic metadata persistence is required.**
+2. Unresolved legacy in canonical view: **No — no metadata means exclusion by INNER JOIN.**
+3. Missing lineage defaulting to STRICT: **No.**
+4. Metadata failure leaving partial catalogue/ledger state: **No — transaction rolls back.**
+5. Default reports including EXPERIMENTAL: **No — default is STRICT.**
+6. Startup migrating/classifying/repairing: **No — startup is verification-only.**
+7. Classifier using current defaults to reconstruct history: **No — persisted historical evidence only.**
+8. Score/lifecycle/ranking/execution semantic change: **No unexpected change observed; Golden three-replay equality passed.**
+
+### Wave 1C controller state
+
+`W1-C = CERTIFIED_WITH_KNOWN_LIMITATIONS`.
+
+The remaining limitation is evidence completeness for fresh latest-head external static-analysis reruns (Sonar / DeepSource Python), not a known functional, safety, or model-semantic regression. This state does not qualify as `MERGE_READY_PENDING_MERGE_APPROVAL` yet.
+
+PR #34 remains Draft and unmerged. No Production backup, Production DB write, Production migration/classification/schema mutation, deployment, Docker/service restart/build on Production, server package install, Telegram test send, live trading, merge, or auto-merge was performed. `LIVE_TRADING_ENABLED=false` remains invariant.
