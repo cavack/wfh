@@ -189,12 +189,13 @@ def test_runner_fails_closed_on_applied_checksum_mismatch(tmp_path):
         "db_readiness_probe",
         packaged.sql_bytes + b"\n-- changed after application\n",
     )
+    runner = migrations.MigrationRunner(
+        db_path=db_path,
+        migrations=(tampered,),
+    )
 
     with pytest.raises(migrations.MigrationChecksumMismatch):
-        migrations.MigrationRunner(
-            db_path=db_path,
-            migrations=(tampered,),
-        ).apply()
+        runner.apply()
 
 
 def test_runner_fails_closed_when_history_and_user_version_disagree(tmp_path):
