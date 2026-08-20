@@ -3,6 +3,7 @@ import sqlite3
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from schema_test_support import migrate_test_database
 from waterfallhunter.core.db import (
     DBAdapter,
 )
@@ -102,6 +103,7 @@ def build_client(
         tmp_path
         / "registry.db"
     )
+    migrate_test_database(db_path)
 
     db = DBAdapter(
         str(
