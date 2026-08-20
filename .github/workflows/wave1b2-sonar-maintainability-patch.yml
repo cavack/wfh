@@ -1,0 +1,328 @@
+name: Wave 1B2 Sonar maintainability patch
+
+on:
+  push:
+    branches:
+      - feat/wave1b2-schema-ownership-cutover-v1
+    paths:
+      - .github/workflows/wave1b2-sonar-maintainability-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: feat/wave1b2-schema-ownership-cutover-v1
+          fetch-depth: 0
+
+      - name: Apply exact maintainability refactors
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          def sub_once(path, pattern, replacement):
+              text = path.read_text()
+              updated, count = re.subn(pattern, replacement, text, count=1, flags=re.S)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one regex match, got {count}")
+              path.write_text(updated)
+
+          migrate = Path("backend/src/waterfallhunter/migrate_database.py")
+          marker = "\ndef main(argv: Sequence[str] | None = None) -> int:\n"
+          text = migrate.read_text()
+          if text.count(marker) != 1:
+              raise SystemExit("migrate_database.py: main marker mismatch")
+          helpers = '''
+
+def _validated_request(args: argparse.Namespace) -> tuple[Path, str] | int:
+    """Validate CLI-only inputs and emit the same bounded error contracts."""
+    if not args.db_path:
+        _emit(_base_payload(ok=False, mode=None, reason_codes=("DB_PATH_REQUIRED",)))
+        return 2
+    if args.preflight and args.apply:
+        _emit(_base_payload(ok=False, mode=None, reason_codes=("MODE_CONFLICT",)))
+        return 2
+    if not args.preflight and not args.apply:
+        _emit(_base_payload(ok=False, mode=None, reason_codes=("MODE_REQUIRED",)))
+        return 2
+
+    source_revision = str(args.source_revision or "").strip()
+    if args.apply and not source_revision:
+        _emit(
+            _base_payload(
+                ok=False,
+                mode="apply",
+                reason_codes=("SOURCE_REVISION_REQUIRED",),
+            )
+        )
+        return 2
+
+    db_path = _validated_db_path(str(args.db_path))
+    if db_path is None:
+        _emit(
+            _base_payload(
+                ok=False,
+                mode="apply" if args.apply else "preflight",
+                reason_codes=("DB_PATH_INVALID",),
+            )
+        )
+        return 2
+    return db_path, source_revision
+
+
+def _postflight_valid(result: PreflightResult) -> bool:
+    return bool(
+        result.state is PreflightState.MIGRATED_COMPATIBLE
+        and result.user_version == CURRENT_RUNTIME_SCHEMA_VERSION
+        and result.applied_versions == (1, 2)
+    )
+'''
+          text = text.replace(marker, helpers + marker, 1)
+          migrate.write_text(text)
+
+          new_main = '''def main(argv: Sequence[str] | None = None) -> int:
+    """Run one explicit migration operation; never mutates without ``--apply``."""
+    args = _parser().parse_args(list(argv) if argv is not None else None)
+    request = _validated_request(args)
+    if isinstance(request, int):
+        return request
+
+    db_path, source_revision = request
+    preflight = classify_database(db_path)
+    if args.preflight:
+        _emit(_preflight_payload(preflight))
+        return 0 if preflight.compatible else 3
+    if not preflight.compatible:
+        _emit(
+            _base_payload(
+                ok=False,
+                mode="apply",
+                state=preflight.state.value,
+                reason_codes=preflight.reason_codes,
+                applied_versions=preflight.applied_versions,
+                user_version=preflight.user_version,
+            )
+        )
+        return 3
+
+    try:
+        runner = MigrationRunner(db_path=db_path, source_revision=source_revision)
+        applied = runner.apply()
+        runner.verify()
+        journal_mode = _set_wal_mode(db_path)
+        postflight = classify_database(db_path)
+    except (MigrationError, sqlite3.Error, OSError):
+        _emit(
+            _base_payload(
+                ok=False,
+                mode="apply",
+                reason_codes=("MIGRATION_FAILED",),
+            )
+        )
+        return 4
+
+    if not _postflight_valid(postflight):
+        _emit(
+            _base_payload(
+                ok=False,
+                mode="apply",
+                state=postflight.state.value,
+                reason_codes=("POSTFLIGHT_FAILED",),
+                applied_versions=postflight.applied_versions,
+                user_version=postflight.user_version,
+            )
+        )
+        return 4
+
+    payload = _base_payload(
+        ok=True,
+        mode="apply",
+        state=postflight.state.value,
+        applied_versions=applied,
+        user_version=postflight.user_version,
+    )
+    payload["journal_mode"] = journal_mode
+    _emit(payload)
+    return 0
+'''
+          sub_once(
+              migrate,
+              r'def main\(argv: Sequence\[str\] \| None = None\) -> int:\n.*?(?=\n\nif __name__ == "__main__")',
+              new_main,
+          )
+
+          preflight = Path("backend/src/waterfallhunter/core/migration_preflight.py")
+          helper_block = '''
+
+def _read_metadata(
+    conn: sqlite3.Connection,
+) -> tuple[int, frozenset[str]] | PreflightResult:
+    try:
+        row = conn.execute("PRAGMA user_version").fetchone()
+        user_version = int(row[0]) if row else 0
+        return user_version, _user_tables(conn)
+    except (sqlite3.Error, TypeError, ValueError, IndexError):
+        return _incompatible("DB_METADATA_UNREADABLE")
+
+
+def _classify_without_tables(user_version: int) -> PreflightResult:
+    if user_version == 0:
+        return _result(PreflightState.CLEAN_EMPTY, user_version=0)
+    return _incompatible(
+        "EMPTY_USER_VERSION_INVALID",
+        user_version=user_version,
+    )
+
+
+def _classify_legacy(
+    conn: sqlite3.Connection,
+    user_version: int,
+) -> PreflightResult:
+    if user_version != 0:
+        return _incompatible(
+            "LEGACY_USER_VERSION_INVALID",
+            user_version=user_version,
+        )
+    schema = verify_managed_schema_connection(
+        conn,
+        required_tables=managed_runtime_table_names(),
+        allow_missing_tables=_LEGACY_OPTIONAL_TABLES,
+        check_user_version=0,
+    )
+    if not schema.valid or not _managed_constraints_valid(conn):
+        return _incompatible(
+            "LEGACY_SCHEMA_MISMATCH",
+            user_version=0,
+            unknown_user_objects=schema.unknown_user_objects,
+        )
+    return _result(
+        PreflightState.LEGACY_CANONICAL,
+        user_version=0,
+        unknown_user_objects=schema.unknown_user_objects,
+    )
+'''
+          ptext = preflight.read_text()
+          classify_marker = "\ndef classify_database(db_path: str | Path) -> PreflightResult:\n"
+          if ptext.count(classify_marker) != 1:
+              raise SystemExit("migration_preflight.py: classify marker mismatch")
+          ptext = ptext.replace(classify_marker, helper_block + classify_marker, 1)
+          preflight.write_text(ptext)
+
+          new_classify = '''def classify_database(db_path: str | Path) -> PreflightResult:
+    """Classify one migration target without creating, repairing, or writing it."""
+    path = Path(db_path)
+    if not path.exists():
+        if not path.parent.is_dir():
+            return _incompatible("DB_PARENT_MISSING")
+        return _result(PreflightState.CLEAN_NEW, user_version=0)
+    if not path.is_file():
+        return _incompatible("DB_PATH_NOT_FILE")
+    if path.stat().st_size == 0:
+        return _result(PreflightState.CLEAN_EMPTY, user_version=0)
+
+    try:
+        conn = _open_read_only(path)
+    except sqlite3.Error:
+        return _incompatible("DB_OPEN_FAILED")
+
+    try:
+        metadata = _read_metadata(conn)
+        if isinstance(metadata, PreflightResult):
+            return metadata
+        user_version, tables = metadata
+        if not tables:
+            return _classify_without_tables(user_version)
+        if "schema_migrations" not in tables:
+            return _classify_legacy(conn, user_version)
+    finally:
+        conn.close()
+
+    return _classify_migrated(path, user_version)
+'''
+          sub_once(
+              preflight,
+              r'def classify_database\(db_path: str \| Path\) -> PreflightResult:\n.*?(?=\n\ndef require_migration_compatible)',
+              new_classify,
+          )
+
+          contract = Path("backend/src/waterfallhunter/core/schema_contract.py")
+          ctext = contract.read_text()
+          version_marker = "CURRENT_RUNTIME_SCHEMA_VERSION = 2\n"
+          constants = '''CURRENT_RUNTIME_SCHEMA_VERSION = 2
+
+_CHECK_OBSERVATIONAL_ONLY = "check(observational_only = 1)"
+_CHECK_TRADE_ELIGIBLE_NULL = "check(trade_eligible is null)"
+_CHECK_HARD_GATING_DISABLED = "check(hard_gating_allowed = 0)"
+'''
+          if ctext.count(version_marker) != 1:
+              raise SystemExit("schema_contract.py: version marker mismatch")
+          ctext = ctext.replace(version_marker, constants, 1)
+          replacements = {
+              '"check(observational_only = 1)"': '_CHECK_OBSERVATIONAL_ONLY',
+              '"check(trade_eligible is null)"': '_CHECK_TRADE_ELIGIBLE_NULL',
+              '"check(hard_gating_allowed = 0)"': '_CHECK_HARD_GATING_DISABLED',
+          }
+          for old, new in replacements.items():
+              count = ctext.count(old)
+              if count < 2:
+                  raise SystemExit(f"schema_contract.py: unexpected literal count {old}: {count}")
+              ctext = ctext.replace(old, new)
+          contract.write_text(ctext)
+
+          startup_test = Path("backend/tests/test_main_schema_startup_gate.py")
+          stext = startup_test.read_text()
+          old = '''    with pytest.raises(SchemaContractError):
+        asyncio.run(main.startup_event())
+'''
+          new = '''    startup = main.startup_event()
+    with pytest.raises(SchemaContractError):
+        asyncio.run(startup)
+'''
+          if stext.count(old) != 1:
+              raise SystemExit("startup test pattern mismatch")
+          startup_test.write_text(stext.replace(old, new, 1))
+
+          schema_test = Path("backend/tests/test_schema_contract.py")
+          ttext = schema_test.read_text()
+          old = '''    conn = sqlite3.connect(":memory:")
+    with pytest.raises(SchemaContractError):
+        require_managed_schema_connection(
+            conn,
+            required_tables=frozenset({"provider_states"}),
+        )
+'''
+          new = '''    conn = sqlite3.connect(":memory:")
+    required_tables = frozenset({"provider_states"})
+    with pytest.raises(SchemaContractError):
+        require_managed_schema_connection(
+            conn,
+            required_tables=required_tables,
+        )
+'''
+          if ttext.count(old) != 1:
+              raise SystemExit("schema test pattern mismatch")
+          schema_test.write_text(ttext.replace(old, new, 1))
+
+      - name: Verify patch shape
+        run: |
+          python -m compileall -q backend/src backend/tests
+          git diff --check
+          git diff --stat
+
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add backend/src/waterfallhunter/migrate_database.py \
+                  backend/src/waterfallhunter/core/migration_preflight.py \
+                  backend/src/waterfallhunter/core/schema_contract.py \
+                  backend/tests/test_main_schema_startup_gate.py \
+                  backend/tests/test_schema_contract.py
+          git diff --cached --quiet && exit 1
+          git commit -m "refactor: clear Wave 1B2 maintainability debt"
+          git push origin HEAD:feat/wave1b2-schema-ownership-cutover-v1
