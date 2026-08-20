@@ -1,0 +1,69 @@
+name: tmp-task9-startup-gate-patcher
+
+on:
+  push:
+    branches:
+      - feat/wave1c2-persistence-legacy-classification-v1
+    paths:
+      - .github/task9-patcher-trigger
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: feat/wave1c2-persistence-legacy-classification-v1
+          fetch-depth: 0
+      - name: Apply exact Task 9 startup gate patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("backend/src/waterfallhunter/main.py")
+          text = path.read_text(encoding="utf-8")
+
+          old_import = 'from waterfallhunter.core.signal_metadata import build_signal_metadata_input\n'
+          new_import = '''from waterfallhunter.core.signal_metadata import build_signal_metadata_input
+from waterfallhunter.core.signal_metadata_store import (
+    require_signal_metadata_completeness,
+)
+'''
+          import_count = text.count(old_import)
+          if import_count != 1:
+              raise SystemExit(f"Task 9 import anchor count was {import_count}, expected 1")
+          text = text.replace(old_import, new_import, 1)
+
+          old_startup = '''    require_managed_schema(
+        db.db_path,
+        check_user_version=CURRENT_RUNTIME_SCHEMA_VERSION,
+    )
+
+    _start_background_task(
+'''
+          new_startup = '''    require_managed_schema(
+        db.db_path,
+        check_user_version=CURRENT_RUNTIME_SCHEMA_VERSION,
+    )
+    require_signal_metadata_completeness(db.db_path)
+
+    _start_background_task(
+'''
+          startup_count = text.count(old_startup)
+          if startup_count != 1:
+              raise SystemExit(f"Task 9 startup anchor count was {startup_count}, expected 1")
+          text = text.replace(old_startup, new_startup, 1)
+
+          path.write_text(text, encoding="utf-8")
+          PY
+          git rm .github/task9-patcher-trigger
+          git rm .github/workflows/tmp-task9-startup-gate-patcher.yml
+          git config user.name "wfh-task9-patcher"
+          git config user.email "actions@github.com"
+          git add backend/src/waterfallhunter/main.py
+          git commit -m "feat: fail startup closed on incomplete signal metadata"
+          git push origin HEAD:feat/wave1c2-persistence-legacy-classification-v1
