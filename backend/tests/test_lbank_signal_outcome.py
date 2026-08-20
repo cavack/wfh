@@ -4,6 +4,7 @@ import sqlite3
 
 import pytest
 
+from schema_test_support import migrate_test_database
 from waterfallhunter.core.db import DBAdapter
 from waterfallhunter.core.lbank_signal_ledger import LBankSignalLedger
 from waterfallhunter.core.lbank_signal_outcome import (
@@ -163,7 +164,9 @@ def test_missing_candle_is_recorded_as_incomplete_data():
 
 
 def _persist_signal(tmp_path, *, triggered_at=1_000):
-    db = DBAdapter(str(tmp_path / "outcomes.db"))
+    db_path = tmp_path / "outcomes.db"
+    migrate_test_database(db_path)
+    db = DBAdapter(str(db_path))
     db.update_candidates(
         {
             SYMBOL: {
@@ -278,7 +281,9 @@ def test_worker_only_fetches_mature_signal_and_appends_once(tmp_path):
 
 
 def test_worker_health_snapshot_tracks_successful_cycle(monkeypatch, tmp_path):
-    store = LBankSignalOutcomeStore(str(tmp_path / "health.db"))
+    db_path = tmp_path / "health.db"
+    migrate_test_database(db_path)
+    store = LBankSignalOutcomeStore(str(db_path))
 
     async def fetcher(signal, start_ms, end_ms):
         return []
@@ -303,7 +308,9 @@ def test_worker_health_snapshot_tracks_successful_cycle(monkeypatch, tmp_path):
 
 
 def test_worker_health_snapshot_tracks_failed_cycle(monkeypatch, tmp_path):
-    store = LBankSignalOutcomeStore(str(tmp_path / "failure.db"))
+    db_path = tmp_path / "failure.db"
+    migrate_test_database(db_path)
+    store = LBankSignalOutcomeStore(str(db_path))
 
     async def fetcher(signal, start_ms, end_ms):
         return []

@@ -1,12 +1,14 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from schema_test_support import migrate_test_database
 from waterfallhunter.core.historical_outcome_store import HistoricalOutcomeStore
 from waterfallhunter.routes_historical_outcomes import build_historical_outcome_router
 
 
 def test_historical_outcome_route_has_locked_operational_contract(tmp_path):
-    store = HistoricalOutcomeStore(str(tmp_path / "outcomes.db"))
+    db_path = migrate_test_database(tmp_path / "outcomes.db")
+    store = HistoricalOutcomeStore(str(db_path))
     app = FastAPI()
     app.include_router(build_historical_outcome_router(store))
     client = TestClient(app)

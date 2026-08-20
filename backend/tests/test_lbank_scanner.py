@@ -2,6 +2,7 @@ import asyncio
 import sqlite3
 import time
 
+from schema_test_support import migrate_test_database
 from waterfallhunter.core.db import (
     DBAdapter,
 )
@@ -10,6 +11,11 @@ from waterfallhunter.discovery.lbank_scanner import (
     LBankCatalogScanner,
     is_meme_symbol,
 )
+
+
+def _db(db_path):
+    migrate_test_database(db_path)
+    return DBAdapter(str(db_path))
 
 
 def test_meme_classifier_covers_the_explicit_high_beta_basket_without_cati_false_positive():
@@ -165,9 +171,7 @@ def test_db_keeps_catalogue_membership_separate_from_scan_eligibility(
         / "catalog.db"
     )
 
-    db = DBAdapter(
-        str(db_path)
-    )
+    db = _db(db_path)
 
     db.update_candidates(
         {
@@ -210,9 +214,7 @@ def test_missing_contract_is_removed_only_after_two_successful_missing_snapshots
         / "catalog.db"
     )
 
-    db = DBAdapter(
-        str(db_path)
-    )
+    db = _db(db_path)
 
     symbol = (
         "TEST/USDT:USDT"
@@ -272,9 +274,7 @@ def test_seen_contract_resets_missing_snapshot_counter(
         / "catalog.db"
     )
 
-    db = DBAdapter(
-        str(db_path)
-    )
+    db = _db(db_path)
 
     symbol = (
         "TEST/USDT:USDT"
@@ -327,9 +327,7 @@ def test_scan_eligibility_change_resets_stale_candidate_state(
         / "catalog.db"
     )
 
-    db = DBAdapter(
-        str(db_path)
-    )
+    db = _db(db_path)
 
     symbol = (
         "TEST/USDT:USDT"

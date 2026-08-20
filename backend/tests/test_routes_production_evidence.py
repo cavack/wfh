@@ -1,12 +1,14 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from schema_test_support import migrate_test_database
 from waterfallhunter.core.production_evidence import ProductionEvidenceRecorder
 from waterfallhunter.routes_production_evidence import build_production_evidence_router
 
 
 def test_production_evidence_route_is_read_only_and_parameter_locked(tmp_path):
-    recorder = ProductionEvidenceRecorder(str(tmp_path / "evidence.db"))
+    db_path = migrate_test_database(tmp_path / "evidence.db")
+    recorder = ProductionEvidenceRecorder(str(db_path))
     app = FastAPI()
     app.include_router(build_production_evidence_router(recorder))
     client = TestClient(app)

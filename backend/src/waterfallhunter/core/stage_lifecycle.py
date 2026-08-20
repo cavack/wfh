@@ -2,6 +2,8 @@ import sqlite3
 import time
 from typing import Any
 
+from waterfallhunter.core.schema_contract import require_managed_schema
+
 
 class StageLifecycleStore:
     """Persist an ordered, observational strategy-stage lifecycle."""
@@ -11,34 +13,17 @@ class StageLifecycleStore:
     DAMAGE_TTL_SECONDS = 24 * 60 * 60
     SETUP_TTL_SECONDS = 8 * 60 * 60
 
-    def __init__(self, db_path: str = "/app/data/waterfall_registry.db"):
+    def __init__(
+        self,
+        db_path: str = "/app/data/waterfall_registry.db",
+        *,
+        verify_schema: bool = True,
+    ):
         self.db_path = db_path
-        self._init_db()
-
-    def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path, timeout=10.0) as conn:
-            conn.execute("PRAGMA journal_mode=WAL;")
-            conn.execute("PRAGMA synchronous=NORMAL;")
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS lbank_stage_lifecycle (
-                    symbol TEXT NOT NULL,
-                    lifecycle_id INTEGER NOT NULL,
-                    hype_seen_at INTEGER,
-                    damage_seen_at INTEGER,
-                    setup_seen_at INTEGER,
-                    setup_type TEXT,
-                    trigger_seen_at INTEGER,
-                    updated_at INTEGER NOT NULL,
-                    PRIMARY KEY (symbol, lifecycle_id)
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_lbank_stage_lifecycle_updated
-                ON lbank_stage_lifecycle (updated_at)
-                """
+        if verify_schema:
+            require_managed_schema(
+                self.db_path,
+                required_tables=frozenset({"lbank_stage_lifecycle"}),
             )
 
     @classmethod

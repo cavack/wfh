@@ -14,6 +14,7 @@ from waterfallhunter.core.derivatives import DerivativesAnalyzer
 from waterfallhunter.core.microstructure import MicrostructureAnalyzer
 from waterfallhunter.core.multi_exchange_validator import MultiExchangeValidator
 from waterfallhunter.core.position_calculator import PositionCalculator
+from waterfallhunter.core.schema_contract import require_managed_schema
 
 
 logger = logging.getLogger("WaterfallHunter.FeatureReplay")
@@ -416,43 +417,26 @@ class FeatureReplayEngine:
 
 
 class FeatureReplayStore:
-    def __init__(self, db_path: str = "/app/data/waterfall_registry.db"):
+    def __init__(
+        self,
+        db_path: str = "/app/data/waterfall_registry.db",
+        *,
+        verify_schema: bool = True,
+    ):
         self.db_path = db_path
-        self._init_db()
+        if verify_schema:
+            require_managed_schema(
+                self.db_path,
+                required_tables=frozenset(
+                    {
+                        "production_feature_replay_results_v2",
+                        "production_evidence_snapshots",
+                    }
+                ),
+            )
 
     def _connect(self):
         return sqlite3.connect(self.db_path, timeout=20.0)
-
-    def _init_db(self) -> None:
-        with self._connect() as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS production_feature_replay_results_v2 (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    snapshot_id INTEGER NOT NULL,
-                    symbol TEXT NOT NULL,
-                    decision_path TEXT NOT NULL DEFAULT 'UNKNOWN',
-                    status TEXT NOT NULL,
-                    strategy_equivalent INTEGER NOT NULL CHECK(strategy_equivalent IN (0, 1)),
-                    differences_json TEXT NOT NULL,
-                    replay_version TEXT NOT NULL,
-                    replayed_at REAL NOT NULL,
-                    observational_only INTEGER NOT NULL DEFAULT 1 CHECK(observational_only = 1),
-                    hard_gating_allowed INTEGER NOT NULL DEFAULT 0 CHECK(hard_gating_allowed = 0),
-                    trade_eligible INTEGER CHECK(trade_eligible IS NULL),
-                    FOREIGN KEY(snapshot_id) REFERENCES production_evidence_snapshots(id),
-                    UNIQUE(snapshot_id, replay_version)
-                );
-                CREATE INDEX IF NOT EXISTS idx_feature_replay_v2_status
-                ON production_feature_replay_results_v2(status, replayed_at);
-                CREATE TRIGGER IF NOT EXISTS production_feature_replay_v2_no_update
-                BEFORE UPDATE ON production_feature_replay_results_v2
-                BEGIN SELECT RAISE(ABORT, 'feature replay results are immutable'); END;
-                CREATE TRIGGER IF NOT EXISTS production_feature_replay_v2_no_delete
-                BEFORE DELETE ON production_feature_replay_results_v2
-                BEGIN SELECT RAISE(ABORT, 'feature replay results are immutable'); END;
-                """
-            )
 
     def pending(self, limit: int = 3) -> list[dict]:
         with self._connect() as conn:

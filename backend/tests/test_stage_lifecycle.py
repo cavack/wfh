@@ -1,5 +1,6 @@
 import sqlite3
 
+from schema_test_support import migrate_test_database
 from waterfallhunter.core.db import DBAdapter
 from waterfallhunter.core.stage_lifecycle import StageLifecycleStore
 
@@ -14,6 +15,12 @@ def _candidate(scan_eligible: bool = True) -> dict:
         "is_meme": False,
         "scan_eligible": scan_eligible,
     }
+
+
+def _db(tmp_path) -> DBAdapter:
+    db_path = tmp_path / "chain.db"
+    migrate_test_database(db_path)
+    return DBAdapter(str(db_path))
 
 
 def _lifecycle_id(db: DBAdapter) -> int:
@@ -40,7 +47,7 @@ def _stages(**overrides) -> dict:
 
 
 def test_stage_chain_accumulates_in_order_across_evaluations(tmp_path):
-    db = DBAdapter(str(tmp_path / "chain.db"))
+    db = _db(tmp_path)
     db.update_candidates({SYMBOL: _candidate()})
     lifecycle_id = _lifecycle_id(db)
     store = StageLifecycleStore(db.db_path)
@@ -70,7 +77,7 @@ def test_stage_chain_accumulates_in_order_across_evaluations(tmp_path):
 
 
 def test_stage_chain_rejects_out_of_order_progress(tmp_path):
-    db = DBAdapter(str(tmp_path / "chain.db"))
+    db = _db(tmp_path)
     db.update_candidates({SYMBOL: _candidate()})
     store = StageLifecycleStore(db.db_path)
 
@@ -91,7 +98,7 @@ def test_stage_chain_rejects_out_of_order_progress(tmp_path):
 
 
 def test_stage_chain_expires_setup_before_a_late_trigger(tmp_path):
-    db = DBAdapter(str(tmp_path / "chain.db"))
+    db = _db(tmp_path)
     db.update_candidates({SYMBOL: _candidate()})
     lifecycle_id = _lifecycle_id(db)
     store = StageLifecycleStore(db.db_path)
@@ -112,7 +119,7 @@ def test_stage_chain_expires_setup_before_a_late_trigger(tmp_path):
 
 
 def test_stage_chain_survives_process_restart(tmp_path):
-    db = DBAdapter(str(tmp_path / "chain.db"))
+    db = _db(tmp_path)
     db.update_candidates({SYMBOL: _candidate()})
     lifecycle_id = _lifecycle_id(db)
     StageLifecycleStore(db.db_path).advance(
@@ -132,7 +139,7 @@ def test_stage_chain_survives_process_restart(tmp_path):
 
 
 def test_stale_lifecycle_cannot_advance_after_eligibility_flip(tmp_path):
-    db = DBAdapter(str(tmp_path / "chain.db"))
+    db = _db(tmp_path)
     db.update_candidates({SYMBOL: _candidate()})
     old_id = _lifecycle_id(db)
     store = StageLifecycleStore(db.db_path)
@@ -153,7 +160,7 @@ def test_stale_lifecycle_cannot_advance_after_eligibility_flip(tmp_path):
 
 
 def test_scan_ineligible_candidate_cannot_advance(tmp_path):
-    db = DBAdapter(str(tmp_path / "chain.db"))
+    db = _db(tmp_path)
     db.update_candidates({SYMBOL: _candidate(False)})
     result = StageLifecycleStore(db.db_path).advance(
         SYMBOL,
@@ -167,7 +174,7 @@ def test_scan_ineligible_candidate_cannot_advance(tmp_path):
 
 
 def test_same_evaluation_can_confirm_the_full_chain(tmp_path):
-    db = DBAdapter(str(tmp_path / "chain.db"))
+    db = _db(tmp_path)
     db.update_candidates({SYMBOL: _candidate()})
     result = StageLifecycleStore(db.db_path).advance(
         SYMBOL,

@@ -4,6 +4,7 @@ import time
 import pytest
 
 from waterfallhunter.core.migrations import MigrationRunner
+from waterfallhunter.core.schema_contract import CURRENT_RUNTIME_SCHEMA_VERSION
 
 
 def _migrated_db(tmp_path):
@@ -18,15 +19,15 @@ def test_deep_readiness_writes_reads_rolls_back_and_leaves_zero_residue(tmp_path
     db_path = _migrated_db(tmp_path)
     result = db_readiness.probe_database(
         db_path=db_path,
-        expected_schema_version=1,
+        expected_schema_version=CURRENT_RUNTIME_SCHEMA_VERSION,
         busy_timeout_ms=100,
         check_integrity=True,
         check_foreign_keys=True,
     )
 
     assert result.ready is True
-    assert result.schema_version == 1
-    assert result.expected_schema_version == 1
+    assert result.schema_version == CURRENT_RUNTIME_SCHEMA_VERSION
+    assert result.expected_schema_version == CURRENT_RUNTIME_SCHEMA_VERSION
     assert result.read_ok is True
     assert result.write_rollback_ok is True
     assert result.integrity_ok is True
@@ -64,12 +65,12 @@ def test_deep_readiness_fails_closed_on_schema_version_mismatch(tmp_path):
     db_path = _migrated_db(tmp_path)
     result = db_readiness.probe_database(
         db_path=db_path,
-        expected_schema_version=2,
+        expected_schema_version=CURRENT_RUNTIME_SCHEMA_VERSION + 1,
         busy_timeout_ms=100,
     )
 
     assert result.ready is False
-    assert result.schema_version == 1
+    assert result.schema_version == CURRENT_RUNTIME_SCHEMA_VERSION
     assert "SCHEMA_VERSION_MISMATCH" in result.reason_codes
     assert result.write_rollback_ok is False
 
@@ -84,7 +85,7 @@ def test_deep_readiness_lock_failure_is_bounded_and_non_mutating(tmp_path):
         started = time.monotonic()
         result = db_readiness.probe_database(
             db_path=db_path,
-            expected_schema_version=1,
+            expected_schema_version=CURRENT_RUNTIME_SCHEMA_VERSION,
             busy_timeout_ms=50,
         )
         elapsed = time.monotonic() - started
@@ -119,7 +120,7 @@ def test_deep_readiness_reports_foreign_key_failure_without_repairing_data(tmp_p
 
     result = db_readiness.probe_database(
         db_path=db_path,
-        expected_schema_version=1,
+        expected_schema_version=CURRENT_RUNTIME_SCHEMA_VERSION,
         busy_timeout_ms=100,
         check_integrity=True,
         check_foreign_keys=True,
@@ -140,7 +141,7 @@ def test_optional_integrity_and_fk_checks_remain_explicitly_unavailable(tmp_path
 
     result = db_readiness.probe_database(
         db_path=_migrated_db(tmp_path),
-        expected_schema_version=1,
+        expected_schema_version=CURRENT_RUNTIME_SCHEMA_VERSION,
         busy_timeout_ms=100,
         check_integrity=False,
         check_foreign_keys=False,
@@ -170,7 +171,7 @@ def test_missing_database_path_is_not_created_by_readiness_probe(tmp_path):
     db_path = tmp_path / "does-not-exist.db"
     result = db_readiness.probe_database(
         db_path=db_path,
-        expected_schema_version=1,
+        expected_schema_version=CURRENT_RUNTIME_SCHEMA_VERSION,
         busy_timeout_ms=100,
     )
 
@@ -191,7 +192,7 @@ def test_readiness_targets_exact_database_path_with_uri_special_characters(
 
     result = db_readiness.probe_database(
         db_path=db_path,
-        expected_schema_version=1,
+        expected_schema_version=CURRENT_RUNTIME_SCHEMA_VERSION,
         busy_timeout_ms=100,
     )
 

@@ -7,6 +7,8 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from waterfallhunter.core.schema_contract import require_managed_schema
+
 
 logger = logging.getLogger(
     "WaterfallHunter.LBankSignalOutcome"
@@ -23,90 +25,14 @@ class LBankSignalOutcomeStore:
     def __init__(
         self,
         db_path: str = "/app/data/waterfall_registry.db",
+        *,
+        verify_schema: bool = True,
     ):
         self.db_path = db_path
-        self._init_db()
-
-    def _init_db(self) -> None:
-        try:
-            with sqlite3.connect(
+        if verify_schema:
+            require_managed_schema(
                 self.db_path,
-                timeout=10.0,
-            ) as conn:
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS lbank_signal_outcomes (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        signal_id INTEGER NOT NULL UNIQUE,
-                        symbol TEXT NOT NULL,
-                        outcome_status TEXT NOT NULL,
-                        signal_triggered_at INTEGER NOT NULL,
-                        observation_started_at INTEGER,
-                        observation_ended_at INTEGER,
-                        horizon_seconds INTEGER NOT NULL,
-                        price_source TEXT NOT NULL,
-                        source_exchange TEXT,
-                        source_mapped_symbol TEXT,
-                        first_tp1_at INTEGER,
-                        first_tp2_at INTEGER,
-                        first_stop_at INTEGER,
-                        min_price REAL,
-                        max_price REAL,
-                        mfe_pct REAL,
-                        mae_pct REAL,
-                        observed_candles INTEGER NOT NULL,
-                        expected_candles INTEGER NOT NULL,
-                        details_json TEXT NOT NULL,
-                        observational_only INTEGER NOT NULL DEFAULT 1
-                            CHECK (observational_only = 1),
-                        trade_eligible INTEGER
-                            CHECK (trade_eligible IS NULL),
-                        resolved_at INTEGER NOT NULL,
-                        FOREIGN KEY(signal_id)
-                            REFERENCES lbank_signal_ledger(id)
-                    )
-                    """
-                )
-                conn.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS
-                        idx_lbank_signal_outcomes_status
-                    ON lbank_signal_outcomes (
-                        outcome_status,
-                        resolved_at
-                    )
-                    """
-                )
-                conn.execute(
-                    """
-                    CREATE TRIGGER IF NOT EXISTS
-                        lbank_signal_outcomes_no_update
-                    BEFORE UPDATE ON lbank_signal_outcomes
-                    BEGIN
-                        SELECT RAISE(
-                            ABORT,
-                            'lbank_signal_outcomes is immutable'
-                        );
-                    END
-                    """
-                )
-                conn.execute(
-                    """
-                    CREATE TRIGGER IF NOT EXISTS
-                        lbank_signal_outcomes_no_delete
-                    BEFORE DELETE ON lbank_signal_outcomes
-                    BEGIN
-                        SELECT RAISE(
-                            ABORT,
-                            'lbank_signal_outcomes is immutable'
-                        );
-                    END
-                    """
-                )
-        except Exception as exc:
-            logger.error(
-                "Signal outcome store initialization failed: %s",
-                exc,
+                required_tables=frozenset({"lbank_signal_outcomes"}),
             )
 
     def pending_signals(
