@@ -128,6 +128,47 @@ def test_preflight_rejects_missing_required_legacy_table_before_write(tmp_path: 
     assert _sha256(db_path) == before
 
 
+def test_preflight_rejects_hidden_generated_column_before_write(tmp_path: Path):
+    db_path = build_legacy_runtime_database(tmp_path / "generated-column.db")
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "ALTER TABLE lbank_catalog ADD COLUMN hidden_poison INTEGER "
+            "GENERATED ALWAYS AS (0) VIRTUAL NOT NULL"
+        )
+    before = _sha256(db_path)
+
+    result = classify_database(db_path=db_path)
+
+    assert result.state is PreflightState.PARTIAL_OR_INCOMPATIBLE
+    assert result.compatible is False
+    assert result.reason_codes == ("LEGACY_SCHEMA_MISMATCH",)
+    assert _sha256(db_path) == before
+
+
+def test_preflight_rejects_desc_integer_primary_key_before_write(tmp_path: Path):
+    db_path = build_legacy_runtime_database(tmp_path / "desc-primary-key.db")
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            DROP TABLE catalog_events;
+            CREATE TABLE catalog_events (
+                id INTEGER PRIMARY KEY DESC,
+                symbol TEXT,
+                event_type TEXT,
+                timestamp INTEGER
+            );
+            """
+        )
+    before = _sha256(db_path)
+
+    result = classify_database(db_path=db_path)
+
+    assert result.state is PreflightState.PARTIAL_OR_INCOMPATIBLE
+    assert result.compatible is False
+    assert result.reason_codes == ("LEGACY_SCHEMA_MISMATCH",)
+    assert _sha256(db_path) == before
+
+
 def test_preflight_rejects_nonzero_legacy_user_version_before_write(tmp_path: Path):
     db_path = build_legacy_runtime_database(tmp_path / "bad-version.db")
     with sqlite3.connect(db_path) as conn:

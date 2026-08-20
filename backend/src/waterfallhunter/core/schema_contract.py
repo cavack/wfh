@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Iterable
 
 from waterfallhunter.core.schema_unique_constraints import (
+    _table_entries,
     verify_unique_constraints_connection,
 )
 
@@ -42,6 +43,7 @@ class ColumnSpec:
     not_null: bool = False
     default: str | None = None
     primary_key_position: int = 0
+    autoincrement: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,8 +87,9 @@ def _c(
     not_null: bool = False,
     default: str | None = None,
     pk: int = 0,
+    autoincrement: bool = False,
 ) -> ColumnSpec:
-    return ColumnSpec(name, declared_type, not_null, default, pk)
+    return ColumnSpec(name, declared_type, not_null, default, pk, autoincrement)
 
 
 def _immutable(table: str, *, message: str) -> tuple[TriggerSpec, TriggerSpec]:
@@ -118,7 +121,7 @@ _RUNTIME_SCHEMA: dict[str, ManagedTableSpec] = {
     "catalog_events": ManagedTableSpec(
         name="catalog_events",
         columns=(
-            _c("id", "INTEGER", pk=1),
+            _c("id", "INTEGER", pk=1, autoincrement=True),
             _c("symbol", "TEXT"),
             _c("event_type", "TEXT"),
             _c("timestamp", "INTEGER"),
@@ -127,7 +130,7 @@ _RUNTIME_SCHEMA: dict[str, ManagedTableSpec] = {
     "lbank_signal_ledger": ManagedTableSpec(
         name="lbank_signal_ledger",
         columns=(
-            _c("id", "INTEGER", pk=1),
+            _c("id", "INTEGER", pk=1, autoincrement=True),
             _c("symbol", "TEXT", not_null=True),
             _c("triggered_at", "INTEGER", not_null=True),
             _c("state_before", "TEXT", not_null=True),
@@ -174,7 +177,7 @@ _RUNTIME_SCHEMA: dict[str, ManagedTableSpec] = {
     "lbank_signal_outcomes": ManagedTableSpec(
         name="lbank_signal_outcomes",
         columns=(
-            _c("id", "INTEGER", pk=1),
+            _c("id", "INTEGER", pk=1, autoincrement=True),
             _c("signal_id", "INTEGER", not_null=True),
             _c("symbol", "TEXT", not_null=True),
             _c("outcome_status", "TEXT", not_null=True),
@@ -236,7 +239,7 @@ _RUNTIME_SCHEMA: dict[str, ManagedTableSpec] = {
     "production_evidence_snapshots": ManagedTableSpec(
         name="production_evidence_snapshots",
         columns=(
-            _c("id", "INTEGER", pk=1),
+            _c("id", "INTEGER", pk=1, autoincrement=True),
             _c("bucket_started_at", "INTEGER", not_null=True),
             _c("symbol", "TEXT", not_null=True),
             _c("observed_at", "REAL", not_null=True),
@@ -314,7 +317,7 @@ _RUNTIME_SCHEMA: dict[str, ManagedTableSpec] = {
     "production_feature_replay_results_v2": ManagedTableSpec(
         name="production_feature_replay_results_v2",
         columns=(
-            _c("id", "INTEGER", pk=1),
+            _c("id", "INTEGER", pk=1, autoincrement=True),
             _c("snapshot_id", "INTEGER", not_null=True),
             _c("symbol", "TEXT", not_null=True),
             _c("decision_path", "TEXT", not_null=True, default="'UNKNOWN'"),
@@ -383,7 +386,7 @@ _RUNTIME_SCHEMA: dict[str, ManagedTableSpec] = {
     "lbank_execution_observation_history": ManagedTableSpec(
         name="lbank_execution_observation_history",
         columns=(
-            _c("id", "INTEGER", pk=1),
+            _c("id", "INTEGER", pk=1, autoincrement=True),
             _c("symbol", "TEXT", not_null=True),
             _c("observation_status", "TEXT", not_null=True),
             _c("observed_at", "REAL", not_null=True),
@@ -414,7 +417,7 @@ _RUNTIME_SCHEMA: dict[str, ManagedTableSpec] = {
     "lbank_execution_decision_log": ManagedTableSpec(
         name="lbank_execution_decision_log",
         columns=(
-            _c("id", "INTEGER", pk=1),
+            _c("id", "INTEGER", pk=1, autoincrement=True),
             _c("bucket_started_at", "INTEGER", not_null=True),
             _c("source", "TEXT", not_null=True),
             _c("symbol", "TEXT", not_null=True),
@@ -445,7 +448,7 @@ _RUNTIME_SCHEMA: dict[str, ManagedTableSpec] = {
     "operational_historical_outcome_datasets": ManagedTableSpec(
         name="operational_historical_outcome_datasets",
         columns=(
-            _c("id", "INTEGER", pk=1),
+            _c("id", "INTEGER", pk=1, autoincrement=True),
             _c("report_sha256", "TEXT", not_null=True),
             _c("source", "TEXT", not_null=True),
             _c("generated_at", "TEXT"),
@@ -481,7 +484,7 @@ _RUNTIME_SCHEMA: dict[str, ManagedTableSpec] = {
     "operational_historical_signal_outcomes": ManagedTableSpec(
         name="operational_historical_signal_outcomes",
         columns=(
-            _c("id", "INTEGER", pk=1),
+            _c("id", "INTEGER", pk=1, autoincrement=True),
             _c("dataset_id", "INTEGER", not_null=True),
             _c("event_key", "TEXT", not_null=True),
             _c("symbol", "TEXT", not_null=True),
@@ -774,11 +777,54 @@ def _table_sql(conn: sqlite3.Connection, table_name: str) -> str | None:
     return row[0]
 
 
+def _autoincrement_primary_key_issues(
+    spec: ManagedTableSpec,
+    table_sql: str | None,
+) -> list[SchemaIssue]:
+    entries = _table_entries(table_sql)
+    issues: list[SchemaIssue] = []
+    for column in (item for item in spec.columns if item.autoincrement):
+        entry = next(
+            (
+                item
+                for item in entries
+                if item
+                and item[0].kind in {"word", "identifier"}
+                and item[0].value.casefold() == column.name.casefold()
+            ),
+            (),
+        )
+        expected = (
+            column.declared_type.casefold(),
+            "primary",
+            "key",
+            "autoincrement",
+        )
+        actual = tuple(
+            token.value
+            for token in entry[1:]
+            if token.kind == "word"
+        )
+        if (
+            len(entry) != len(expected) + 1
+            or any(token.kind != "word" for token in entry[1:])
+            or actual != expected
+        ):
+            issues.append(
+                SchemaIssue(
+                    "COLUMN_CONSTRAINT_MISMATCH",
+                    f"{spec.name}.{column.name}",
+                    "expected inline INTEGER PRIMARY KEY AUTOINCREMENT semantics",
+                )
+            )
+    return issues
+
+
 def _column_issues(
     conn: sqlite3.Connection,
     spec: ManagedTableSpec,
 ) -> list[SchemaIssue]:
-    rows = conn.execute(f'PRAGMA table_info("{spec.name}")').fetchall()
+    rows = conn.execute(f'PRAGMA table_xinfo("{spec.name}")').fetchall()
     actual_names = tuple(str(row[1]) for row in rows)
     expected_names = tuple(column.name for column in spec.columns)
     if set(actual_names) != set(expected_names):
@@ -792,7 +838,8 @@ def _column_issues(
 
     actual = {str(row[1]): row for row in rows}
     issues: list[SchemaIssue] = []
-    if "collate" in _sql_unquoted_tokens(_table_sql(conn, spec.name)):
+    table_sql = _table_sql(conn, spec.name)
+    if "collate" in _sql_unquoted_tokens(table_sql):
         issues.append(
             SchemaIssue(
                 "COLUMN_COLLATION_MISMATCH",
@@ -806,11 +853,13 @@ def _column_issues(
         not_null = bool(int(row[3]))
         default = _default_normalized(row[4])
         pk = int(row[5])
+        hidden = int(row[6]) if len(row) > 6 else 0
         if (
             declared_type != column.declared_type
             or not_null != column.not_null
             or default != column.default
             or pk != column.primary_key_position
+            or hidden != 0
         ):
             issues.append(
                 SchemaIssue(
@@ -819,6 +868,7 @@ def _column_issues(
                     "declared type/null/default/primary-key metadata differs",
                 )
             )
+    issues.extend(_autoincrement_primary_key_issues(spec, table_sql))
     return issues
 
 

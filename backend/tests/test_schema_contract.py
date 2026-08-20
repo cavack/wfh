@@ -113,6 +113,58 @@ def test_schema_verifier_rejects_extra_managed_column():
     assert "COLUMN_SET_MISMATCH" in _codes(result)
 
 
+def test_schema_verifier_rejects_extra_generated_column_hidden_from_table_info():
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        """
+        CREATE TABLE lbank_catalog (
+            symbol TEXT PRIMARY KEY,
+            last_price REAL,
+            quote_volume REAL,
+            is_meme BOOLEAN,
+            scan_eligible BOOLEAN DEFAULT 0,
+            status TEXT DEFAULT 'WATCH',
+            first_seen_at INTEGER,
+            last_added_at INTEGER,
+            last_seen_at INTEGER,
+            removed_at INTEGER,
+            consecutive_missing_snapshots INTEGER DEFAULT 0,
+            lifecycle_id INTEGER NOT NULL DEFAULT 1,
+            trigger_data TEXT,
+            hidden_poison INTEGER GENERATED ALWAYS AS (NULL) VIRTUAL NOT NULL
+        )
+        """
+    )
+
+    result = verify_managed_schema_connection(
+        conn,
+        required_tables=frozenset({"lbank_catalog"}),
+    )
+
+    assert "COLUMN_SET_MISMATCH" in _codes(result)
+
+
+def test_schema_verifier_rejects_desc_integer_primary_key_without_rowid_alias():
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        """
+        CREATE TABLE catalog_events (
+            id INTEGER PRIMARY KEY DESC,
+            symbol TEXT,
+            event_type TEXT,
+            timestamp INTEGER
+        )
+        """
+    )
+
+    result = verify_managed_schema_connection(
+        conn,
+        required_tables=frozenset({"catalog_events"}),
+    )
+
+    assert "COLUMN_CONSTRAINT_MISMATCH" in _codes(result)
+
+
 def test_schema_verifier_rejects_wrong_primary_key():
     conn = sqlite3.connect(":memory:")
     conn.execute(
