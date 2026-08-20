@@ -228,6 +228,29 @@ class MigrationRunner:
         self._busy_timeout_ms = int(busy_timeout_ms)
         self._source_revision = source_revision
 
+    def verify(self) -> tuple[int, ...]:
+        """Verify existing migration history without mutating the database."""
+        if not self._db_path.is_file():
+            raise MigrationError("database does not exist")
+
+        timeout_seconds = max(self._busy_timeout_ms / 1_000.0, 0.001)
+        uri = f"{self._db_path.resolve().as_uri()}?mode=ro"
+        try:
+            conn = sqlite3.connect(
+                uri,
+                uri=True,
+                timeout=timeout_seconds,
+                isolation_level=None,
+            )
+        except sqlite3.Error as exc:
+            raise MigrationError("database open failed") from exc
+
+        try:
+            conn.execute(f"PRAGMA busy_timeout={self._busy_timeout_ms}")
+            return tuple(sorted(self._verify_state(conn)))
+        finally:
+            conn.close()
+
     def apply(self) -> tuple[int, ...]:
         """Apply pending migrations and return versions applied by this runner."""
         if not self._db_path.parent.is_dir():
@@ -351,9 +374,7 @@ class MigrationRunner:
         if missing:
             raise MigrationStateError("migration history schema is incomplete")
 
-        primary_key_columns = [
-            str(row[1]) for row in rows if int(row[5]) > 0
-        ]
+        primary_key_columns = [str(row[1]) for row in rows if int(row[5]) > 0]
         if primary_key_columns != ["version"]:
             raise MigrationStateError(
                 "migration history must use version as its sole primary key"
