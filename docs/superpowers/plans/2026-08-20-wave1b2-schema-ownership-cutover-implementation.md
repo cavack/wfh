@@ -66,7 +66,7 @@
 
 **Interfaces:**
 - Consumes: SQLite metadata from `PRAGMA table_info`, `PRAGMA index_list`, `PRAGMA index_info`, `PRAGMA foreign_key_list`, and `sqlite_master`.
-- Produces: `SchemaContractError`, `ManagedTableSpec`, `RUNTIME_SCHEMA`, `verify_runtime_schema(conn, *, tables: set[str] | None = None) -> None`, `managed_runtime_table_names() -> frozenset[str]`.
+- Produces: `SchemaContractError`, `ManagedTableSpec`, `verify_managed_schema_connection(...)`, `verify_managed_schema(...)`, `require_managed_schema(...)`, and `managed_runtime_table_names() -> frozenset[str]`. The manifest itself remains private implementation state.
 
 - [ ] **Step 1: Write failing manifest coverage tests**
 
@@ -104,8 +104,8 @@ Expected: PASS; existing behavior unchanged.
 - Create: `backend/tests/test_migration_preflight.py`
 
 **Interfaces:**
-- Consumes: `MigrationRunner`, packaged migration identities, `verify_runtime_schema`.
-- Produces: `MigrationRunner.verify() -> tuple[int, ...]`, `PreflightState` enum (`CLEAN_NEW`, `CLEAN_EMPTY`, `LEGACY_CANONICAL`, `MIGRATED_COMPATIBLE`, `PARTIAL_OR_INCOMPATIBLE`), `PreflightResult`, `classify_database(path: Path) -> PreflightResult`, `require_migration_compatible(path: Path) -> PreflightResult`.
+- Consumes: `MigrationRunner`, packaged migration identities, and `verify_managed_schema_connection(...)`.
+- Produces: `MigrationRunner.verify() -> tuple[int, ...]`, `PreflightState` enum (`CLEAN_NEW`, `CLEAN_EMPTY`, `LEGACY_CANONICAL`, `MIGRATED_COMPATIBLE`, `PARTIAL_OR_INCOMPATIBLE`), `PreflightResult`, `classify_database(*, db_path: str | Path) -> PreflightResult`, and `require_migration_compatible(*, db_path: str | Path) -> PreflightResult`.
 
 - [ ] **Step 1: Write failing `MigrationRunner.verify()` tests**
 
@@ -184,7 +184,7 @@ Commit: `feat: add runtime schema baseline migration`
 - Modify: affected tests
 
 **Interfaces:**
-- Consumes: `verify_runtime_schema(conn, tables=...)`, migrated test DB helper.
+- Consumes: `require_managed_schema(..., required_tables=...)`, migrated test DB helper.
 - Produces: constructors accepting `verify_schema: bool = True`; zero DDL/ALTER behavior.
 
 - [ ] **Step 1: Convert tests to migrated fixture setup and add constructor no-mutation RED tests**
@@ -260,7 +260,7 @@ Run all tests for these four modules, then `pytest -q backend/tests`.
 - Create/modify: startup/readiness tests
 
 **Interfaces:**
-- Consumes: `verify_runtime_schema`, constructors with `verify_schema=False`.
+- Consumes: `verify_managed_schema(...)`, constructors with `verify_schema=False`.
 - Produces: one startup full-schema read-only gate before background task scheduling; deep readiness full-schema read validation.
 
 - [ ] **Step 1: Write RED tests for unprepared startup**

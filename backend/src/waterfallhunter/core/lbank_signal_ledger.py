@@ -31,7 +31,9 @@ class LBankSignalLedger:
         if verify_schema:
             require_managed_schema(
                 self.db_path,
-                required_tables=frozenset({"lbank_signal_ledger"}),
+                required_tables=frozenset(
+                    {"lbank_signal_ledger", "lbank_catalog"}
+                ),
             )
 
     @staticmethod

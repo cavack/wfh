@@ -219,14 +219,17 @@ Expected: import/module missing.
 
 - [ ] **Step 3: Implement manifest primitives and introspection**
 
-Use `PRAGMA table_info`, `index_list`, `index_info`, `foreign_key_list`, and `sqlite_master`. Normalize only whitespace/case for CHECK/trigger matching:
+Use `PRAGMA table_info`, `index_list`, `index_info`, `foreign_key_list`, and `sqlite_master`. Normalize whitespace and unquoted SQL text for CHECK/trigger matching, but preserve the exact bytes inside quoted literals:
 
 ```python
 def _normalized_sql(sql: str | None) -> str:
-    return re.sub(r"\s+", " ", str(sql or "").strip()).casefold()
+    # Scanner tracks single-quoted SQL literals (including doubled quote escapes).
+    # Outside literals: remove whitespace and case-fold. Inside literals: preserve.
+    ...
 ```
 
-Do not compare full table SQL strings.
+Do not compare full table SQL strings. Add a regression proving
+`CHECK(status = 'PENDING')` remains distinct from `CHECK(status = 'pending')`.
 
 - [ ] **Step 4: Encode all 13 current table contracts**
 
@@ -359,7 +362,13 @@ The helper may append those optional table definitions when `include_optional=Tr
 
 - [ ] **Step 5: Implement test helpers**
 
-`migrate_test_database` calls the production preflight/apply path once B2A Task 5 exists; until then it may instantiate `MigrationRunner` directly after ensuring the parent exists. `business_row_hashes` hashes ordered row JSON from `SELECT * ORDER BY rowid` using SHA-256 and is test-only.
+The committed `migrate_test_database` always invokes
+`run_migration_command(..., apply=True)` so production preflight runs before any
+apply. It then requires successful postflight and verified migration history.
+A direct `MigrationRunner.apply()` call is allowed only as temporary RED-state
+scaffolding before Task 5 and must not be committed. `business_row_hashes`
+hashes ordered row JSON from `SELECT * ORDER BY rowid` using SHA-256 and is
+test-only.
 
 - [ ] **Step 6: Verify clean schema against manifest**
 

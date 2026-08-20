@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -77,3 +78,25 @@ def test_core_store_default_verification_accepts_migrated_schema(
 
     assert store.db_path == str(db_path)
     assert _sha256(db_path) == before
+
+
+@pytest.mark.parametrize(
+    ("store_type", "dependency_table"),
+    (
+        (StageLifecycleStore, "lbank_catalog"),
+        (LBankSignalLedger, "lbank_catalog"),
+        (LBankSignalOutcomeStore, "lbank_signal_ledger"),
+    ),
+)
+def test_core_store_verification_rejects_missing_query_dependency(
+    tmp_path: Path,
+    store_type,
+    dependency_table: str,
+):
+    db_path = migrate_test_database(tmp_path / f"{store_type.__name__}.db")
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute(f'DROP TABLE "{dependency_table}"')
+
+    with pytest.raises(SchemaContractError):
+        store_type(str(db_path))

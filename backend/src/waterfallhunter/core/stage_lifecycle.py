@@ -23,7 +23,9 @@ class StageLifecycleStore:
         if verify_schema:
             require_managed_schema(
                 self.db_path,
-                required_tables=frozenset({"lbank_stage_lifecycle"}),
+                required_tables=frozenset(
+                    {"lbank_stage_lifecycle", "lbank_catalog"}
+                ),
             )
 
     @classmethod

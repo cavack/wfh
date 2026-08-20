@@ -32,7 +32,9 @@ class LBankSignalOutcomeStore:
         if verify_schema:
             require_managed_schema(
                 self.db_path,
-                required_tables=frozenset({"lbank_signal_outcomes"}),
+                required_tables=frozenset(
+                    {"lbank_signal_outcomes", "lbank_signal_ledger"}
+                ),
             )
 
     def pending_signals(

@@ -116,50 +116,30 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Run one explicit migration operation; never mutates without ``--apply``."""
-    args = _parser().parse_args(list(argv) if argv is not None else None)
+def _validate_operation_args(args: argparse.Namespace) -> tuple[Path, str] | None:
+    """Validate the operator boundary and emit the existing error payload."""
+    reason_code: str | None = None
+    mode: str | None = None
 
     if not args.db_path:
-        _emit(
-            _base_payload(
-                ok=False,
-                mode=None,
-                reason_codes=("DB_PATH_REQUIRED",),
-            )
-        )
-        return 2
+        reason_code = "DB_PATH_REQUIRED"
+    elif args.preflight and args.apply:
+        reason_code = "MODE_CONFLICT"
+    elif not args.preflight and not args.apply:
+        reason_code = "MODE_REQUIRED"
+    elif args.apply and not str(args.source_revision or "").strip():
+        reason_code = "SOURCE_REVISION_REQUIRED"
+        mode = "apply"
 
-    if args.preflight and args.apply:
+    if reason_code is not None:
         _emit(
             _base_payload(
                 ok=False,
-                mode=None,
-                reason_codes=("MODE_CONFLICT",),
+                mode=mode,
+                reason_codes=(reason_code,),
             )
         )
-        return 2
-
-    if not args.preflight and not args.apply:
-        _emit(
-            _base_payload(
-                ok=False,
-                mode=None,
-                reason_codes=("MODE_REQUIRED",),
-            )
-        )
-        return 2
-
-    source_revision = str(args.source_revision or "").strip()
-    if args.apply and not source_revision:
-        _emit(
-            _base_payload(
-                ok=False,
-                mode="apply",
-                reason_codes=("SOURCE_REVISION_REQUIRED",),
-            )
-        )
-        return 2
+        return None
 
     db_path = _validated_db_path(str(args.db_path))
     if db_path is None:
@@ -170,14 +150,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 reason_codes=("DB_PATH_INVALID",),
             )
         )
-        return 2
+        return None
 
-    preflight = classify_database(db_path)
+    return db_path, str(args.source_revision or "").strip()
 
-    if args.preflight:
-        _emit(_preflight_payload(preflight))
-        return 0 if preflight.compatible else 3
 
+def _run_apply(
+    *,
+    db_path: Path,
+    source_revision: str,
+    preflight: PreflightResult,
+) -> int:
+    """Apply, verify, and emit one result while preserving CLI exit codes."""
     if not preflight.compatible:
         _emit(
             _base_payload(
@@ -199,7 +183,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         applied = runner.apply()
         runner.verify()
         journal_mode = _set_wal_mode(db_path)
-        postflight = classify_database(db_path)
+        postflight = classify_database(db_path=db_path)
     except (MigrationError, sqlite3.Error, OSError):
         _emit(
             _base_payload(
@@ -237,6 +221,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     payload["journal_mode"] = journal_mode
     _emit(payload)
     return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run one explicit migration operation; never mutates without ``--apply``."""
+    args = _parser().parse_args(list(argv) if argv is not None else None)
+    validated = _validate_operation_args(args)
+    if validated is None:
+        return 2
+    db_path, source_revision = validated
+
+    preflight = classify_database(db_path=db_path)
+
+    if args.preflight:
+        _emit(_preflight_payload(preflight))
+        return 0 if preflight.compatible else 3
+
+    return _run_apply(
+        db_path=db_path,
+        source_revision=source_revision,
+        preflight=preflight,
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised through main(argv)

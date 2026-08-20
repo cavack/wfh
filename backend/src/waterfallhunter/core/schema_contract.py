@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from waterfallhunter.core.schema_unique_constraints import (
+    verify_unique_constraints_connection,
+)
+
 
 CURRENT_RUNTIME_SCHEMA_VERSION = 2
 
@@ -548,7 +552,24 @@ def managed_runtime_table_names() -> frozenset[str]:
 def _sql_compact(value: str | None) -> str:
     if not isinstance(value, str):
         return ""
-    return re.sub(r"\s+", "", value).casefold()
+    compact: list[str] = []
+    in_string = False
+    index = 0
+    while index < len(value):
+        character = value[index]
+        if character == "'":
+            compact.append(character)
+            if in_string and index + 1 < len(value) and value[index + 1] == "'":
+                compact.append("'")
+                index += 2
+                continue
+            in_string = not in_string
+        elif in_string:
+            compact.append(character)
+        elif not character.isspace():
+            compact.append(character.casefold())
+        index += 1
+    return "".join(compact)
 
 
 def _default_normalized(value: object) -> str | None:
@@ -766,6 +787,17 @@ def _unknown_user_tables(conn: sqlite3.Connection) -> tuple[str, ...]:
     return tuple(str(row[0]) for row in rows if str(row[0]) not in known)
 
 
+def managed_runtime_global_object_owners() -> dict[str, tuple[str, str]]:
+    """Return reserved index/trigger names and their canonical owners."""
+    owners: dict[str, tuple[str, str]] = {}
+    for table_name, spec in _RUNTIME_SCHEMA.items():
+        for index in spec.indexes:
+            owners[index.name] = ("index", table_name)
+        for trigger in spec.triggers:
+            owners[trigger.name] = ("trigger", table_name)
+    return owners
+
+
 def verify_managed_schema_connection(
     conn: sqlite3.Connection,
     *,
@@ -818,6 +850,20 @@ def verify_managed_schema_connection(
         issues.extend(_foreign_key_issues(conn, spec))
         issues.extend(_check_issues(conn, spec))
         issues.extend(_trigger_issues(conn, spec))
+
+    unique_result = verify_unique_constraints_connection(
+        conn,
+        tables=frozenset(selected),
+    )
+    for unique_issue in unique_result.issues:
+        issues.append(
+            SchemaIssue(
+                "UNIQUE_KEY_MISMATCH",
+                unique_issue.table,
+                f"expected unique keys {unique_issue.expected!r}; "
+                f"found {unique_issue.actual!r}",
+            )
+        )
 
     return SchemaVerificationResult(
         valid=not issues,

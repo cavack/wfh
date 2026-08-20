@@ -179,4 +179,4 @@ Before W1-C starts, B2 must prove:
 - five first-party CI jobs green;
 - independent static/code review clean.
 
-No Production migration is implied by completing B2 development work. Production execution still requires verified backup/restore plus separate `MIGRATION_APPROVAL`; deployment remains a separate approval.
+No Production migration is implied by completing B2 development work. Production execution still requires a verified backup/restore plus separate `MIGRATION_APPROVAL`; deployment remains a separate approval.

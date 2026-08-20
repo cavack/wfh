@@ -13,6 +13,7 @@ from waterfallhunter.core.migration_preflight import (
     classify_database,
     require_migration_compatible,
 )
+from waterfallhunter.core.migrations import MigrationRunner, discover_migrations
 
 
 _FIXTURE = Path(__file__).with_name("fixtures") / "legacy_runtime_schema_v0.fixture"
@@ -25,7 +26,7 @@ def _sha256(path: Path) -> str:
 def test_preflight_classifies_missing_path_without_creating_database(tmp_path: Path):
     db_path = tmp_path / "new.db"
 
-    result = classify_database(db_path)
+    result = classify_database(db_path=db_path)
 
     assert result.state is PreflightState.CLEAN_NEW
     assert result.compatible is True
@@ -39,7 +40,7 @@ def test_preflight_classifies_existing_empty_sqlite_without_mutation(tmp_path: P
         pass
     before = _sha256(db_path)
 
-    result = classify_database(db_path)
+    result = classify_database(db_path=db_path)
 
     assert result.state is PreflightState.CLEAN_EMPTY
     assert result.compatible is True
@@ -50,7 +51,7 @@ def test_preflight_accepts_canonical_legacy_schema_without_mutation(tmp_path: Pa
     db_path = build_legacy_runtime_database(tmp_path / "legacy.db")
     before = _sha256(db_path)
 
-    result = classify_database(db_path)
+    result = classify_database(db_path=db_path)
 
     assert result.state is PreflightState.LEGACY_CANONICAL
     assert result.compatible is True
@@ -65,7 +66,7 @@ def test_preflight_accepts_legacy_schema_with_canonical_optional_tables(tmp_path
         include_optional=True,
     )
 
-    result = classify_database(db_path)
+    result = classify_database(db_path=db_path)
 
     assert result.state is PreflightState.LEGACY_CANONICAL
     assert result.compatible is True
@@ -75,7 +76,7 @@ def test_preflight_accepts_migrated_schema_read_only(tmp_path: Path):
     db_path = migrate_test_database(tmp_path / "migrated.db")
     before = _sha256(db_path)
 
-    result = classify_database(db_path)
+    result = classify_database(db_path=db_path)
 
     assert result.state is PreflightState.MIGRATED_COMPATIBLE
     assert result.compatible is True
@@ -90,7 +91,7 @@ def test_preflight_rejects_missing_required_legacy_table_before_write(tmp_path: 
         conn.execute("DROP TABLE catalog_events")
     before = _sha256(db_path)
 
-    result = classify_database(db_path)
+    result = classify_database(db_path=db_path)
 
     assert result.state is PreflightState.PARTIAL_OR_INCOMPATIBLE
     assert result.compatible is False
@@ -98,7 +99,7 @@ def test_preflight_rejects_missing_required_legacy_table_before_write(tmp_path: 
     assert _sha256(db_path) == before
 
     with pytest.raises(MigrationPreflightError):
-        require_migration_compatible(db_path)
+        require_migration_compatible(db_path=db_path)
     assert _sha256(db_path) == before
 
 
@@ -108,7 +109,7 @@ def test_preflight_rejects_nonzero_legacy_user_version_before_write(tmp_path: Pa
         conn.execute("PRAGMA user_version=7")
     before = _sha256(db_path)
 
-    result = classify_database(db_path)
+    result = classify_database(db_path=db_path)
 
     assert result.state is PreflightState.PARTIAL_OR_INCOMPATIBLE
     assert "LEGACY_USER_VERSION_INVALID" in result.reason_codes
@@ -122,10 +123,66 @@ def test_preflight_rejects_partial_migration_metadata_without_repair(tmp_path: P
         conn.execute("PRAGMA user_version=1")
     before = _sha256(db_path)
 
-    result = classify_database(db_path)
+    result = classify_database(db_path=db_path)
 
     assert result.state is PreflightState.PARTIAL_OR_INCOMPATIBLE
     assert "MIGRATION_HISTORY_INVALID" in result.reason_codes
+    assert _sha256(db_path) == before
+
+
+def test_preflight_accepts_canonical_legacy_schema_with_only_migration_1_applied(
+    tmp_path: Path,
+):
+    db_path = build_legacy_runtime_database(tmp_path / "legacy-v1.db")
+    MigrationRunner(
+        db_path=db_path,
+        migrations=discover_migrations()[:1],
+    ).apply()
+
+    result = classify_database(db_path=db_path)
+
+    assert result.state is PreflightState.MIGRATED_COMPATIBLE
+    assert result.compatible is True
+    assert result.applied_versions == (1,)
+    assert result.user_version == 1
+
+
+def test_preflight_rejects_partial_managed_schema_before_migration_2(
+    tmp_path: Path,
+):
+    db_path = tmp_path / "partial-v1.db"
+    MigrationRunner(
+        db_path=db_path,
+        migrations=discover_migrations()[:1],
+    ).apply()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE lbank_catalog (symbol TEXT PRIMARY KEY)")
+    before = _sha256(db_path)
+
+    result = classify_database(db_path=db_path)
+
+    assert result.state is PreflightState.PARTIAL_OR_INCOMPATIBLE
+    assert result.compatible is False
+    assert result.reason_codes == ("MIGRATION_SCHEMA_MISMATCH",)
+    assert _sha256(db_path) == before
+
+
+def test_preflight_rejects_reserved_index_name_on_unknown_legacy_table(
+    tmp_path: Path,
+):
+    db_path = build_legacy_runtime_database(tmp_path / "reserved-index.db")
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE user_extension (id INTEGER PRIMARY KEY)")
+        conn.execute(
+            "CREATE INDEX idx_lbank_execution_queue ON user_extension(id)"
+        )
+    before = _sha256(db_path)
+
+    result = classify_database(db_path=db_path)
+
+    assert result.state is PreflightState.PARTIAL_OR_INCOMPATIBLE
+    assert result.compatible is False
+    assert result.reason_codes == ("LEGACY_SCHEMA_MISMATCH",)
     assert _sha256(db_path) == before
 
 
@@ -157,7 +214,7 @@ def test_preflight_rejects_weakened_legacy_unique_constraints_before_write(
         conn.executescript(sql)
     before = _sha256(db_path)
 
-    result = classify_database(db_path)
+    result = classify_database(db_path=db_path)
 
     assert result.state is PreflightState.PARTIAL_OR_INCOMPATIBLE
     assert result.compatible is False
@@ -181,7 +238,7 @@ def test_preflight_rejects_unexpected_legacy_unique_constraint_before_write(
         conn.executescript(sql)
     before = _sha256(db_path)
 
-    result = classify_database(db_path)
+    result = classify_database(db_path=db_path)
 
     assert result.state is PreflightState.PARTIAL_OR_INCOMPATIBLE
     assert result.compatible is False

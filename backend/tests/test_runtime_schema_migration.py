@@ -86,7 +86,7 @@ def test_canonical_legacy_adoption_preserves_business_and_evidence_rows(tmp_path
     db_path = build_legacy_runtime_database(tmp_path / "legacy.db")
     before_hashes = business_row_hashes(db_path, _PRESERVED_TABLES)
 
-    preflight = require_migration_compatible(db_path)
+    preflight = require_migration_compatible(db_path=db_path)
     assert preflight.state is PreflightState.LEGACY_CANONICAL
 
     runner = MigrationRunner(
@@ -140,7 +140,10 @@ def test_legacy_adoption_with_existing_optional_tables_is_idempotent(tmp_path: P
     )
     before_hashes = business_row_hashes(db_path, _PRESERVED_TABLES)
 
-    assert require_migration_compatible(db_path).state is PreflightState.LEGACY_CANONICAL
+    assert (
+        require_migration_compatible(db_path=db_path).state
+        is PreflightState.LEGACY_CANONICAL
+    )
     runner = MigrationRunner(db_path=db_path, source_revision="test")
     assert runner.apply() == (1, 2)
     assert business_row_hashes(db_path, _PRESERVED_TABLES) == before_hashes

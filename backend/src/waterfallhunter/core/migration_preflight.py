@@ -9,6 +9,7 @@ from waterfallhunter.core.migrations import MigrationError, MigrationRunner
 from waterfallhunter.core.schema_contract import (
     CURRENT_RUNTIME_SCHEMA_VERSION,
     SchemaContractError,
+    managed_runtime_global_object_owners,
     managed_runtime_table_names,
     verify_managed_schema_connection,
 )
@@ -107,6 +108,49 @@ def _managed_constraints_valid(conn: sqlite3.Connection) -> bool:
     ).valid
 
 
+def _managed_global_names_valid(conn: sqlite3.Connection) -> bool:
+    """Reject reserved managed names attached to the wrong object or table."""
+    owners = managed_runtime_global_object_owners()
+    if not owners:
+        return True
+    placeholders = ",".join("?" for _ in owners)
+    rows = conn.execute(
+        "SELECT type, name, tbl_name FROM sqlite_master "
+        f"WHERE name IN ({placeholders})",
+        tuple(sorted(owners)),
+    ).fetchall()
+    return all(
+        (str(row[0]), str(row[2])) == owners[str(row[1])]
+        for row in rows
+    )
+
+
+def _pending_runtime_schema_valid(conn: sqlite3.Connection) -> tuple[bool, tuple[str, ...]]:
+    """Validate the only two safe states before migration 2 is applied."""
+    managed_tables = managed_runtime_table_names()
+    existing_tables = _user_tables(conn) & managed_tables
+    if not existing_tables:
+        schema = verify_managed_schema_connection(
+            conn,
+            required_tables=frozenset(),
+            check_user_version=1,
+        )
+        return _managed_global_names_valid(conn), schema.unknown_user_objects
+
+    schema = verify_managed_schema_connection(
+        conn,
+        required_tables=managed_tables,
+        allow_missing_tables=_LEGACY_OPTIONAL_TABLES,
+        check_user_version=1,
+    )
+    valid = (
+        schema.valid
+        and _managed_constraints_valid(conn)
+        and _managed_global_names_valid(conn)
+    )
+    return valid, schema.unknown_user_objects
+
+
 def _classify_migrated(path: Path, user_version: int) -> PreflightResult:
     try:
         applied = MigrationRunner(db_path=path).verify()
@@ -141,13 +185,25 @@ def _classify_migrated(path: Path, user_version: int) -> PreflightResult:
                     conn,
                     check_user_version=CURRENT_RUNTIME_SCHEMA_VERSION,
                 )
-                if not schema.valid or not _managed_constraints_valid(conn):
+                if (
+                    not schema.valid
+                    or not _managed_constraints_valid(conn)
+                    or not _managed_global_names_valid(conn)
+                ):
                     return _incompatible(
                         "MIGRATION_SCHEMA_MISMATCH",
                         user_version=user_version,
                         unknown_user_objects=schema.unknown_user_objects,
                     )
                 unknown = schema.unknown_user_objects
+            elif applied == (1,):
+                pending_valid, unknown = _pending_runtime_schema_valid(conn)
+                if not pending_valid:
+                    return _incompatible(
+                        "MIGRATION_SCHEMA_MISMATCH",
+                        user_version=user_version,
+                        unknown_user_objects=unknown,
+                    )
     except (sqlite3.Error, SchemaContractError):
         return _incompatible(
             "MIGRATION_SCHEMA_MISMATCH",
@@ -162,7 +218,7 @@ def _classify_migrated(path: Path, user_version: int) -> PreflightResult:
     )
 
 
-def classify_database(db_path: str | Path) -> PreflightResult:
+def classify_database(*, db_path: str | Path) -> PreflightResult:
     """Classify one migration target without creating, repairing, or writing it."""
     path = Path(db_path)
 
@@ -200,10 +256,9 @@ def classify_database(db_path: str | Path) -> PreflightResult:
                 user_version=user_version,
             )
 
-        if "schema_migrations" in tables:
-            # Close this read-only handle before MigrationRunner.verify opens its own.
-            pass
-        else:
+        # A migrated database is classified after this read-only handle is
+        # closed, because MigrationRunner.verify opens its own handle.
+        if "schema_migrations" not in tables:
             if user_version != 0:
                 return _incompatible(
                     "LEGACY_USER_VERSION_INVALID",
@@ -215,7 +270,11 @@ def classify_database(db_path: str | Path) -> PreflightResult:
                 allow_missing_tables=_LEGACY_OPTIONAL_TABLES,
                 check_user_version=0,
             )
-            if not schema.valid or not _managed_constraints_valid(conn):
+            if (
+                not schema.valid
+                or not _managed_constraints_valid(conn)
+                or not _managed_global_names_valid(conn)
+            ):
                 return _incompatible(
                     "LEGACY_SCHEMA_MISMATCH",
                     user_version=0,
@@ -232,9 +291,9 @@ def classify_database(db_path: str | Path) -> PreflightResult:
     return _classify_migrated(path, user_version)
 
 
-def require_migration_compatible(db_path: str | Path) -> PreflightResult:
+def require_migration_compatible(*, db_path: str | Path) -> PreflightResult:
     """Return an allowed preflight result or fail closed with a typed error."""
-    result = classify_database(db_path)
+    result = classify_database(db_path=db_path)
     if not result.compatible:
         raise MigrationPreflightError(result)
     return result

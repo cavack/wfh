@@ -75,6 +75,25 @@ def test_deep_readiness_fails_closed_on_schema_version_mismatch(tmp_path):
     assert result.write_rollback_ok is False
 
 
+def test_deep_readiness_fails_closed_on_managed_schema_mismatch(tmp_path):
+    from waterfallhunter.core import db_readiness
+
+    db_path = _migrated_db(tmp_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TABLE lbank_catalog")
+
+    result = db_readiness.probe_database(
+        db_path=db_path,
+        expected_schema_version=CURRENT_RUNTIME_SCHEMA_VERSION,
+        busy_timeout_ms=100,
+    )
+
+    assert result.ready is False
+    assert result.read_ok is False
+    assert result.reason_codes == ("MANAGED_SCHEMA_MISMATCH",)
+    assert result.write_rollback_ok is False
+
+
 def test_deep_readiness_lock_failure_is_bounded_and_non_mutating(tmp_path):
     from waterfallhunter.core import db_readiness
 

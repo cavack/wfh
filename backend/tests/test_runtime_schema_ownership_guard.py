@@ -9,7 +9,7 @@ _ALLOWED_SCHEMA_MUTATION_FILES = {
     _RUNTIME_ROOT / "core" / "migrations.py",
 }
 _DDL = re.compile(
-    r"\b(?:CREATE\s+(?:TABLE|INDEX|TRIGGER)|ALTER\s+TABLE|DROP\s+(?:TABLE|INDEX|TRIGGER))\b",
+    r"\b(?:CREATE\s+(?:TABLE|(?:UNIQUE\s+)?INDEX|TRIGGER)|ALTER\s+TABLE|DROP\s+(?:TABLE|INDEX|TRIGGER))\b",
     re.IGNORECASE,
 )
 

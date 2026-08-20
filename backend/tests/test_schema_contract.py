@@ -7,6 +7,7 @@ import pytest
 from waterfallhunter.core.schema_contract import (
     CURRENT_RUNTIME_SCHEMA_VERSION,
     SchemaContractError,
+    _sql_compact,
     managed_runtime_table_names,
     require_managed_schema_connection,
     verify_managed_schema_connection,
@@ -39,6 +40,15 @@ def _codes(result) -> set[str]:
 def test_manifest_covers_exact_runtime_tables_and_version():
     assert CURRENT_RUNTIME_SCHEMA_VERSION == 2
     assert managed_runtime_table_names() == EXPECTED_RUNTIME_TABLES
+
+
+def test_sql_normalization_preserves_case_inside_quoted_literals():
+    assert _sql_compact("CHECK(status = 'PENDING')") != _sql_compact(
+        "CHECK(status = 'pending')"
+    )
+    assert _sql_compact("check ( status = 'PENDING' )") == _sql_compact(
+        "CHECK(status='PENDING')"
+    )
 
 
 def test_schema_verifier_rejects_missing_managed_table():
@@ -136,17 +146,19 @@ def _create_outcomes(
     fk_target: str = "lbank_signal_ledger",
     observational_check: str = "observational_only = 1",
     immutable_update: bool = True,
+    unique_signal_id: bool = True,
 ) -> None:
     update_raise = (
         "SELECT RAISE(ABORT, 'lbank_signal_outcomes is immutable');"
         if immutable_update
         else "SELECT RAISE(IGNORE);"
     )
+    signal_id_constraint = " UNIQUE" if unique_signal_id else ""
     conn.executescript(
         f"""
         CREATE TABLE lbank_signal_outcomes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            signal_id INTEGER NOT NULL UNIQUE,
+            signal_id INTEGER NOT NULL{signal_id_constraint},
             symbol TEXT NOT NULL,
             outcome_status TEXT NOT NULL,
             signal_triggered_at INTEGER NOT NULL,
@@ -218,6 +230,19 @@ def test_schema_verifier_rejects_non_aborting_immutable_trigger():
         required_tables=frozenset({"lbank_signal_outcomes"}),
     )
     assert "TRIGGER_MISMATCH" in _codes(result)
+
+
+def test_schema_verifier_rejects_missing_unique_key():
+    conn = sqlite3.connect(":memory:")
+    _create_signal_ledger_parent(conn)
+    _create_outcomes(conn, unique_signal_id=False)
+
+    result = verify_managed_schema_connection(
+        conn,
+        required_tables=frozenset({"lbank_signal_outcomes"}),
+    )
+
+    assert "UNIQUE_KEY_MISMATCH" in _codes(result)
 
 
 def test_schema_verifier_reports_but_preserves_unknown_table():
