@@ -4,6 +4,7 @@ import time
 
 import pytest
 
+from schema_test_support import migrate_test_database
 from waterfallhunter.core.candle_analyzer import MultiTimeframeAnalyzer
 from waterfallhunter.core.derivatives import DerivativesAnalyzer
 from waterfallhunter.core.feature_replay import (
@@ -248,7 +249,8 @@ def test_replay_distinguishes_trigger_candidate_from_persisted_trigger():
 
 
 def test_replay_results_are_idempotent_immutable_and_not_promotable(tmp_path):
-    store = FeatureReplayStore(str(tmp_path / "replay.db"))
+    db_path = migrate_test_database(tmp_path / "replay.db")
+    store = FeatureReplayStore(str(db_path))
     with store._connect() as conn:
         conn.execute("PRAGMA foreign_keys=OFF")
         conn.execute(

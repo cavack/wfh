@@ -3,6 +3,7 @@ import sqlite3
 
 import pytest
 
+from schema_test_support import migrate_test_database
 from waterfallhunter.core.production_evidence import ProductionEvidenceRecorder
 
 
@@ -79,7 +80,7 @@ def _result():
 
 
 def test_records_one_immutable_compressed_packet_per_symbol_bucket(tmp_path):
-    db_path = str(tmp_path / "evidence.db")
+    db_path = str(migrate_test_database(tmp_path / "evidence.db"))
     recorder = ProductionEvidenceRecorder(db_path, bucket_seconds=300)
     result = _result()
 
@@ -124,7 +125,7 @@ def test_records_one_immutable_compressed_packet_per_symbol_bucket(tmp_path):
 
 
 def test_final_trigger_event_is_not_hidden_by_bucket_deduplication(tmp_path):
-    db_path = str(tmp_path / "evidence.db")
+    db_path = str(migrate_test_database(tmp_path / "evidence.db"))
     recorder = ProductionEvidenceRecorder(db_path, bucket_seconds=300)
     ordinary = _result()
     final = copy.deepcopy(ordinary)
@@ -159,7 +160,7 @@ def test_final_trigger_event_is_not_hidden_by_bucket_deduplication(tmp_path):
 
 
 def test_failure_packet_is_recorded_without_claiming_completeness(tmp_path):
-    recorder = ProductionEvidenceRecorder(str(tmp_path / "evidence.db"))
+    recorder = ProductionEvidenceRecorder(str(migrate_test_database(tmp_path / "evidence.db")))
     recorder.record(
         "FAIL/USDT:USDT",
         candidate_state="WATCH",
@@ -176,7 +177,7 @@ def test_failure_packet_is_recorded_without_claiming_completeness(tmp_path):
 
 
 def test_missing_raw_confirmation_is_not_marked_production_complete(tmp_path):
-    recorder = ProductionEvidenceRecorder(str(tmp_path / "evidence.db"))
+    recorder = ProductionEvidenceRecorder(str(migrate_test_database(tmp_path / "evidence.db")))
     result = copy.deepcopy(_result())
     source = result["metrics"]["candle_analysis"]["source_capture"]
     source["confirmation_ohlcv_captured"] = False
