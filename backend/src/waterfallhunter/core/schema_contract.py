@@ -828,16 +828,19 @@ def _trigger_is_canonical(
     structure, literals = _sql_structure(sql)
     if not structure:
         return False
-    event_structure = _sql_structure(
-        f"before {trigger.event} on {table_name}"
-    )[0]
-    if event_structure not in structure:
-        return False
     abort_marker = _sql_literal_marker(trigger.abort_message)
-    return (
-        trigger.abort_message in literals
-        and f"raise(abort,{abort_marker})" in structure
+    canonical = (
+        r"createtrigger(?:ifnotexists)?"
+        + re.escape(trigger.name.casefold())
+        + "before"
+        + re.escape(trigger.event.casefold())
+        + "on"
+        + re.escape(table_name.casefold())
+        + r"beginselectraise\(abort,"
+        + re.escape(abort_marker)
+        + r"\);end;?"
     )
+    return trigger.abort_message in literals and re.fullmatch(canonical, structure) is not None
 
 
 def _trigger_issues(

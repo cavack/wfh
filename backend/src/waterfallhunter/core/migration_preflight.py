@@ -5,7 +5,11 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-from waterfallhunter.core.migrations import MigrationError, MigrationRunner
+from waterfallhunter.core.migrations import (
+    MigrationError,
+    MigrationRunner,
+    migration_infrastructure_object_names,
+)
 from waterfallhunter.core.schema_contract import (
     CURRENT_RUNTIME_SCHEMA_VERSION,
     SchemaContractError,
@@ -129,6 +133,17 @@ def _managed_global_names_valid(conn: sqlite3.Connection) -> bool:
         if (str(object_type).casefold(), str(table_name).casefold()) != expected:
             return False
     return True
+
+
+def _migration_infrastructure_names_available(conn: sqlite3.Connection) -> bool:
+    """Require every migration-owned global name to be unused before bootstrap."""
+    reserved = {
+        name.casefold() for name in migration_infrastructure_object_names()
+    }
+    rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
+    ).fetchall()
+    return all(str(row[0]).casefold() not in reserved for row in rows)
 
 
 def _managed_table_names_valid(conn: sqlite3.Connection) -> bool:
@@ -274,6 +289,15 @@ def classify_database(*, db_path: str | Path) -> PreflightResult:
             tables = _user_tables(conn)
         except (sqlite3.Error, TypeError, ValueError, IndexError):
             return _incompatible("DB_METADATA_UNREADABLE")
+
+        if (
+            "schema_migrations" not in tables
+            and not _migration_infrastructure_names_available(conn)
+        ):
+            return _incompatible(
+                "LEGACY_SCHEMA_MISMATCH",
+                user_version=user_version,
+            )
 
         if not tables:
             if user_version == 0:

@@ -163,6 +163,45 @@ def test_cli_apply_rejects_incompatible_legacy_before_migration_write(tmp_path: 
     assert "LEGACY_SCHEMA_MISMATCH" in payload["reason_codes"]
 
 
+@pytest.mark.parametrize(
+    "collision_sql",
+    [
+        "CREATE TABLE db_readiness_probe (probe_id TEXT PRIMARY KEY)",
+        """
+        CREATE TABLE user_extension (id INTEGER PRIMARY KEY);
+        CREATE TRIGGER schema_migrations_no_update
+        BEFORE UPDATE ON user_extension BEGIN SELECT 1; END;
+        """,
+    ],
+)
+def test_cli_apply_rejects_migration_infrastructure_collision_without_bootstrap(
+    tmp_path: Path,
+    capsys,
+    collision_sql: str,
+):
+    db_path = build_legacy_runtime_database(tmp_path / "infra-collision.db")
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(collision_sql)
+    before = db_path.read_bytes()
+
+    exit_code = _main()(
+        ["--db-path", str(db_path), "--apply", "--source-revision", "test"]
+    )
+
+    assert exit_code == 3
+    assert db_path.read_bytes() == before
+    with sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True) as conn:
+        history = conn.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type='table' AND name='schema_migrations'"
+        ).fetchone()
+    assert history is None
+    payload = _json_output(capsys)
+    assert payload["ok"] is False
+    assert payload["state"] == "PARTIAL_OR_INCOMPATIBLE"
+    assert payload["reason_codes"] == ["LEGACY_SCHEMA_MISMATCH"]
+
+
 def test_cli_never_emits_environment_secret_values(tmp_path: Path, capsys, monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "super-secret-token-value")
     db_path = tmp_path / "registry.db"

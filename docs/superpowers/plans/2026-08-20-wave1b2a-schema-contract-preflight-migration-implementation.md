@@ -219,7 +219,7 @@ Expected: import/module missing.
 
 - [ ] **Step 3: Implement manifest primitives and introspection**
 
-Use `PRAGMA table_info`, `index_list`, `index_info`, `foreign_key_list`, and `sqlite_master`. Tokenize executable SQL separately from comments, string literals, and quoted identifiers. CHECK fragments must match executable structure outside quoted content; trigger guards must match an executable `RAISE(ABORT, <literal>)` call whose decoded literal equals the canonical message:
+Use `PRAGMA table_info`, `index_list`, `index_info`, `foreign_key_list`, and `sqlite_master`. Tokenize executable SQL separately from comments, string literals, and quoted identifiers. CHECK fragments must match executable structure outside quoted content; trigger guards must match the complete canonical trigger DDL with no `WHEN` clause or additional statements, and its executable `RAISE(ABORT, <literal>)` call must use a decoded literal equal to the canonical message:
 
 ```python
 def _normalized_sql(sql: str | None) -> str:
@@ -473,7 +473,9 @@ Rules:
 5. `schema_migrations` present -> `MigrationRunner.verify()`; success means `MIGRATED_COMPATIBLE`, any migration-state error means incompatible;
 6. no migration metadata -> require `user_version == 0`, validate required legacy tables and any present optional tables via schema manifest;
 7. unknown non-managed objects are reported but not fatal when all required legacy objects are canonical;
-8. any partial migration infrastructure, missing required legacy table, malformed managed object, or unexpected legacy `user_version` -> incompatible.
+8. any partial migration infrastructure, missing required legacy table, malformed managed object, or unexpected legacy `user_version` -> incompatible;
+9. before history bootstrap, every case-insensitive global name owned by migrations (`schema_migrations`, `db_readiness_probe`, and both `schema_migrations_no_*` triggers) must be absent, even when an extension object uses the name or when the database contains no user tables;
+10. `MigrationRunner` repeats the reserved-name check under its write lock and either validates existing history without repair or creates the complete history table/trigger set atomically.
 
 - [ ] **Step 4: Run GREEN and byte-preservation tests**
 

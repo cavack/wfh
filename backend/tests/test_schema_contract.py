@@ -334,6 +334,66 @@ def test_schema_verifier_rejects_abort_guard_present_only_in_string_literal():
     assert "TRIGGER_MISMATCH" in _codes(result)
 
 
+@pytest.mark.parametrize(
+    ("trigger_name", "event"),
+    [
+        ("lbank_signal_outcomes_no_update", "UPDATE"),
+        ("lbank_signal_outcomes_no_delete", "DELETE"),
+    ],
+)
+def test_schema_verifier_rejects_conditional_immutable_trigger(
+    trigger_name: str,
+    event: str,
+):
+    conn = sqlite3.connect(":memory:")
+    _create_signal_ledger_parent(conn)
+    _create_outcomes(conn)
+    conn.execute(f"DROP TRIGGER {trigger_name}")
+    conn.executescript(
+        f"""
+        CREATE TRIGGER {trigger_name}
+        BEFORE {event} ON lbank_signal_outcomes
+        WHEN 0
+        BEGIN
+            SELECT RAISE(ABORT, 'lbank_signal_outcomes is immutable');
+        END;
+        """
+    )
+
+    result = verify_managed_schema_connection(
+        conn,
+        required_tables=frozenset({"lbank_signal_outcomes"}),
+    )
+
+    assert "TRIGGER_MISMATCH" in _codes(result)
+
+
+def test_schema_verifier_rejects_abort_guard_in_unreachable_trigger_expression():
+    conn = sqlite3.connect(":memory:")
+    _create_signal_ledger_parent(conn)
+    _create_outcomes(conn)
+    conn.execute("DROP TRIGGER lbank_signal_outcomes_no_update")
+    conn.executescript(
+        """
+        CREATE TRIGGER lbank_signal_outcomes_no_update
+        BEFORE UPDATE ON lbank_signal_outcomes
+        BEGIN
+            SELECT CASE WHEN 0
+                THEN RAISE(ABORT, 'lbank_signal_outcomes is immutable')
+                ELSE 1
+            END;
+        END;
+        """
+    )
+
+    result = verify_managed_schema_connection(
+        conn,
+        required_tables=frozenset({"lbank_signal_outcomes"}),
+    )
+
+    assert "TRIGGER_MISMATCH" in _codes(result)
+
+
 def test_schema_verifier_rejects_non_aborting_immutable_trigger():
     conn = sqlite3.connect(":memory:")
     _create_signal_ledger_parent(conn)

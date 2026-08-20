@@ -47,6 +47,22 @@ def test_preflight_classifies_existing_empty_sqlite_without_mutation(tmp_path: P
     assert _sha256(db_path) == before
 
 
+def test_preflight_rejects_reserved_view_in_otherwise_tableless_database(
+    tmp_path: Path,
+):
+    db_path = tmp_path / "reserved-view.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE VIEW SCHEMA_MIGRATIONS AS SELECT 1 AS version")
+    before = _sha256(db_path)
+
+    result = classify_database(db_path=db_path)
+
+    assert result.state is PreflightState.PARTIAL_OR_INCOMPATIBLE
+    assert result.compatible is False
+    assert result.reason_codes == ("LEGACY_SCHEMA_MISMATCH",)
+    assert _sha256(db_path) == before
+
+
 def test_preflight_accepts_canonical_legacy_schema_without_mutation(tmp_path: Path):
     db_path = build_legacy_runtime_database(tmp_path / "legacy.db")
     before = _sha256(db_path)
@@ -215,6 +231,40 @@ def test_preflight_rejects_case_variant_reserved_index_on_unknown_table(
         conn.execute(
             "CREATE INDEX IDX_LBANK_EXECUTION_QUEUE ON user_extension(id)"
         )
+    before = _sha256(db_path)
+
+    result = classify_database(db_path=db_path)
+
+    assert result.state is PreflightState.PARTIAL_OR_INCOMPATIBLE
+    assert result.compatible is False
+    assert result.reason_codes == ("LEGACY_SCHEMA_MISMATCH",)
+    assert _sha256(db_path) == before
+
+
+@pytest.mark.parametrize(
+    "collision_sql",
+    [
+        "CREATE TABLE db_readiness_probe (probe_id TEXT PRIMARY KEY)",
+        "CREATE VIEW SCHEMA_MIGRATIONS AS SELECT 1 AS version",
+        """
+        CREATE TABLE user_extension (id INTEGER PRIMARY KEY);
+        CREATE TRIGGER SCHEMA_MIGRATIONS_NO_UPDATE
+        BEFORE UPDATE ON user_extension BEGIN SELECT 1; END;
+        """,
+        """
+        CREATE TABLE user_extension (id INTEGER PRIMARY KEY);
+        CREATE TRIGGER schema_migrations_no_delete
+        BEFORE DELETE ON user_extension BEGIN SELECT 1; END;
+        """,
+    ],
+)
+def test_preflight_rejects_migration_infrastructure_name_collision_before_write(
+    tmp_path: Path,
+    collision_sql: str,
+):
+    db_path = build_legacy_runtime_database(tmp_path / "infra-collision.db")
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(collision_sql)
     before = _sha256(db_path)
 
     result = classify_database(db_path=db_path)

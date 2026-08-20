@@ -32,6 +32,13 @@ _EXPECTED_HISTORY_TRIGGERS = {
     "schema_migrations_no_update": "UPDATE",
     "schema_migrations_no_delete": "DELETE",
 }
+_MIGRATION_INFRASTRUCTURE_OBJECT_NAMES = frozenset(
+    {
+        _SCHEMA_MIGRATIONS_TABLE,
+        "db_readiness_probe",
+        *_EXPECTED_HISTORY_TRIGGERS,
+    }
+)
 
 
 class MigrationError(RuntimeError):
@@ -48,6 +55,11 @@ class MigrationChecksumMismatch(MigrationError):
 
 class MigrationStateError(MigrationError):
     """Raised when SQLite schema-version state is internally inconsistent."""
+
+
+def migration_infrastructure_object_names() -> frozenset[str]:
+    """Return globally reserved SQLite names owned by the migration system."""
+    return _MIGRATION_INFRASTRUCTURE_OBJECT_NAMES
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,6 +321,38 @@ class MigrationRunner:
         """Create immutable migration-history infrastructure atomically."""
         try:
             conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                "SELECT type, name, tbl_name FROM sqlite_master "
+                "WHERE name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+            history_rows = [
+                row
+                for row in rows
+                if str(row[1]).casefold() == _SCHEMA_MIGRATIONS_TABLE.casefold()
+            ]
+            if history_rows:
+                history_row = history_rows[0]
+                if (
+                    len(history_rows) != 1
+                    or str(history_row[0]).casefold() != "table"
+                    or str(history_row[1]) != _SCHEMA_MIGRATIONS_TABLE
+                    or str(history_row[2]) != _SCHEMA_MIGRATIONS_TABLE
+                ):
+                    raise MigrationStateError(
+                        "migration history name is owned by a noncanonical object"
+                    )
+                MigrationRunner._verify_history_schema(conn)
+                conn.execute("COMMIT")
+                return
+
+            reserved = {
+                name.casefold() for name in migration_infrastructure_object_names()
+            }
+            if any(str(row[1]).casefold() in reserved for row in rows):
+                raise MigrationStateError(
+                    "migration infrastructure name is already in use"
+                )
+
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -338,13 +382,16 @@ class MigrationRunner:
                 END
                 """
             )
+            MigrationRunner._verify_history_schema(conn)
             conn.execute("COMMIT")
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, MigrationError) as exc:
             if conn.in_transaction:
                 try:
                     conn.execute("ROLLBACK")
                 except sqlite3.Error:
                     pass
+            if isinstance(exc, MigrationError):
+                raise
             raise MigrationError("migration history bootstrap failed") from exc
 
     @staticmethod
