@@ -1,0 +1,122 @@
+name: Wave 1B2 migrated fixture patch
+
+on:
+  push:
+    branches:
+      - feat/wave1b2-schema-ownership-cutover-v1
+    paths:
+      - .github/workflows/wave1b2-test-fixture-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    env:
+      PYTHONPATH: backend/src:.
+      LIVE_TRADING_ENABLED: "false"
+      REGISTRY_DB_PATH: ${{ runner.temp }}/waterfall_registry.db
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: feat/wave1b2-schema-ownership-cutover-v1
+          fetch-depth: 0
+
+      - name: Patch only legacy fresh-database tests
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str, expected: int = 1) -> None:
+              target = Path(path)
+              text = target.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != expected:
+                  raise SystemExit(f"{path}: expected {expected} matches, got {count}: {old!r}")
+              target.write_text(text.replace(old, new), encoding="utf-8")
+
+          feature = "backend/tests/test_feature_replay.py"
+          replace_once(
+              feature,
+              "import pytest\n\nfrom waterfallhunter.core.candle_analyzer",
+              "import pytest\n\nfrom schema_test_support import migrate_test_database\nfrom waterfallhunter.core.candle_analyzer",
+          )
+          replace_once(
+              feature,
+              '    store = FeatureReplayStore(str(tmp_path / "replay.db"))',
+              '    db_path = migrate_test_database(tmp_path / "replay.db")\n    store = FeatureReplayStore(str(db_path))',
+          )
+
+          evidence = "backend/tests/test_production_evidence.py"
+          replace_once(
+              evidence,
+              "import pytest\n\nfrom waterfallhunter.core.production_evidence",
+              "import pytest\n\nfrom schema_test_support import migrate_test_database\nfrom waterfallhunter.core.production_evidence",
+          )
+          replace_once(
+              evidence,
+              '    db_path = str(tmp_path / "evidence.db")',
+              '    db_path = str(migrate_test_database(tmp_path / "evidence.db"))',
+              expected=2,
+          )
+          replace_once(
+              evidence,
+              '    recorder = ProductionEvidenceRecorder(str(tmp_path / "evidence.db"))',
+              '    recorder = ProductionEvidenceRecorder(str(migrate_test_database(tmp_path / "evidence.db")))',
+              expected=2,
+          )
+
+          route_feature = "backend/tests/test_routes_feature_replay.py"
+          replace_once(
+              route_feature,
+              "from fastapi.testclient import TestClient\n\nfrom waterfallhunter.core.feature_replay",
+              "from fastapi.testclient import TestClient\n\nfrom schema_test_support import migrate_test_database\nfrom waterfallhunter.core.feature_replay",
+          )
+          replace_once(
+              route_feature,
+              '    app.include_router(build_feature_replay_router(FeatureReplayStore(str(tmp_path / "replay.db"))))',
+              '    db_path = migrate_test_database(tmp_path / "replay.db")\n    app.include_router(build_feature_replay_router(FeatureReplayStore(str(db_path))))',
+          )
+
+          route_evidence = "backend/tests/test_routes_production_evidence.py"
+          replace_once(
+              route_evidence,
+              "from fastapi.testclient import TestClient\n\nfrom waterfallhunter.core.production_evidence",
+              "from fastapi.testclient import TestClient\n\nfrom schema_test_support import migrate_test_database\nfrom waterfallhunter.core.production_evidence",
+          )
+          replace_once(
+              route_evidence,
+              '    recorder = ProductionEvidenceRecorder(str(tmp_path / "evidence.db"))',
+              '    db_path = migrate_test_database(tmp_path / "evidence.db")\n    recorder = ProductionEvidenceRecorder(str(db_path))',
+          )
+          PY
+
+      - name: Install locked backend dependencies
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: backend/requirements.lock
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --only-binary=:all: --require-hashes -r backend/requirements.lock
+
+      - name: Run complete backend suite
+        run: pytest -q backend/tests
+
+      - name: Commit fixture-only patch
+        run: |
+          git config user.name "waterfallhunter-ci"
+          git config user.email "actions@users.noreply.github.com"
+          git add backend/tests/test_feature_replay.py \
+                  backend/tests/test_production_evidence.py \
+                  backend/tests/test_routes_feature_replay.py \
+                  backend/tests/test_routes_production_evidence.py
+          git diff --cached --check
+          git commit -m "test: migrate remaining schema-owner fixtures explicitly"
+          git push origin HEAD:feat/wave1b2-schema-ownership-cutover-v1
