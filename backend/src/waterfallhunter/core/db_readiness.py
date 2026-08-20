@@ -6,6 +6,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from waterfallhunter.core.schema_contract import verify_managed_schema_connection
+
 
 @dataclass(frozen=True, slots=True)
 class DatabaseReadinessResult:
@@ -137,6 +139,16 @@ def _validate_read_phase(
         conn.execute("SELECT COUNT(*) FROM db_readiness_probe").fetchone()
     except sqlite3.Error:
         return schema_version, False, ["READ_FAILED"]
+
+    try:
+        schema = verify_managed_schema_connection(
+            conn,
+            check_user_version=expected_schema_version,
+        )
+    except (sqlite3.Error, ValueError):
+        return schema_version, False, ["READ_FAILED"]
+    if not schema.valid:
+        return schema_version, False, ["MANAGED_SCHEMA_MISMATCH"]
 
     return schema_version, True, []
 

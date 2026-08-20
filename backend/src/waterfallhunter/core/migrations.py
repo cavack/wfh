@@ -32,6 +32,13 @@ _EXPECTED_HISTORY_TRIGGERS = {
     "schema_migrations_no_update": "UPDATE",
     "schema_migrations_no_delete": "DELETE",
 }
+_MIGRATION_INFRASTRUCTURE_OBJECT_NAMES = frozenset(
+    {
+        _SCHEMA_MIGRATIONS_TABLE,
+        "db_readiness_probe",
+        *_EXPECTED_HISTORY_TRIGGERS,
+    }
+)
 
 
 class MigrationError(RuntimeError):
@@ -48,6 +55,11 @@ class MigrationChecksumMismatch(MigrationError):
 
 class MigrationStateError(MigrationError):
     """Raised when SQLite schema-version state is internally inconsistent."""
+
+
+def migration_infrastructure_object_names() -> frozenset[str]:
+    """Return globally reserved SQLite names owned by the migration system."""
+    return _MIGRATION_INFRASTRUCTURE_OBJECT_NAMES
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,6 +259,29 @@ class MigrationRunner:
         self._busy_timeout_ms = int(busy_timeout_ms)
         self._source_revision = source_revision
 
+    def verify(self) -> tuple[int, ...]:
+        """Verify existing migration history without mutating the database."""
+        if not self._db_path.is_file():
+            raise MigrationError("database does not exist")
+
+        timeout_seconds = max(self._busy_timeout_ms / 1_000.0, 0.001)
+        uri = f"{self._db_path.resolve().as_uri()}?mode=ro"
+        try:
+            conn = sqlite3.connect(
+                uri,
+                uri=True,
+                timeout=timeout_seconds,
+                isolation_level=None,
+            )
+        except sqlite3.Error as exc:
+            raise MigrationError("database open failed") from exc
+
+        try:
+            conn.execute(f"PRAGMA busy_timeout={self._busy_timeout_ms}")
+            return tuple(sorted(self._verify_state(conn)))
+        finally:
+            conn.close()
+
     def apply(self) -> tuple[int, ...]:
         """Apply pending migrations and return versions applied by this runner."""
         if not self._db_path.parent.is_dir():
@@ -286,6 +321,38 @@ class MigrationRunner:
         """Create immutable migration-history infrastructure atomically."""
         try:
             conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                "SELECT type, name, tbl_name FROM sqlite_master "
+                "WHERE name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+            history_rows = [
+                row
+                for row in rows
+                if str(row[1]).casefold() == _SCHEMA_MIGRATIONS_TABLE.casefold()
+            ]
+            if history_rows:
+                history_row = history_rows[0]
+                if (
+                    len(history_rows) != 1
+                    or str(history_row[0]).casefold() != "table"
+                    or str(history_row[1]) != _SCHEMA_MIGRATIONS_TABLE
+                    or str(history_row[2]) != _SCHEMA_MIGRATIONS_TABLE
+                ):
+                    raise MigrationStateError(
+                        "migration history name is owned by a noncanonical object"
+                    )
+                MigrationRunner._verify_history_schema(conn)
+                conn.execute("COMMIT")
+                return
+
+            reserved = {
+                name.casefold() for name in migration_infrastructure_object_names()
+            }
+            if any(str(row[1]).casefold() in reserved for row in rows):
+                raise MigrationStateError(
+                    "migration infrastructure name is already in use"
+                )
+
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -315,13 +382,16 @@ class MigrationRunner:
                 END
                 """
             )
+            MigrationRunner._verify_history_schema(conn)
             conn.execute("COMMIT")
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, MigrationError) as exc:
             if conn.in_transaction:
                 try:
                     conn.execute("ROLLBACK")
                 except sqlite3.Error:
                     pass
+            if isinstance(exc, MigrationError):
+                raise
             raise MigrationError("migration history bootstrap failed") from exc
 
     @staticmethod
@@ -370,9 +440,7 @@ class MigrationRunner:
         if missing:
             raise MigrationStateError("migration history schema is incomplete")
 
-        primary_key_columns = [
-            str(row[1]) for row in rows if int(row[5]) > 0
-        ]
+        primary_key_columns = [str(row[1]) for row in rows if int(row[5]) > 0]
         if primary_key_columns != ["version"]:
             raise MigrationStateError(
                 "migration history must use version as its sole primary key"

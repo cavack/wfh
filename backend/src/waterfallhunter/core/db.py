@@ -4,6 +4,8 @@ import sqlite3
 import time
 from typing import Any, Dict, Iterable
 
+from waterfallhunter.core.schema_contract import require_managed_schema
+
 logger = logging.getLogger("WaterfallHunter.Database")
 
 
@@ -20,99 +22,14 @@ class DBAdapter:
     def __init__(
         self,
         db_path: str = "/app/data/waterfall_registry.db",
+        *,
+        verify_schema: bool = True,
     ):
         self.db_path = db_path
-        self._init_db()
-
-    def _init_db(self):
-        try:
-            with sqlite3.connect(
+        if verify_schema:
+            require_managed_schema(
                 self.db_path,
-                timeout=10.0,
-            ) as conn:
-                conn.execute(
-                    "PRAGMA journal_mode=WAL;"
-                )
-                conn.execute(
-                    "PRAGMA synchronous=NORMAL;"
-                )
-
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS lbank_catalog (
-                        symbol TEXT PRIMARY KEY,
-                        last_price REAL,
-                        quote_volume REAL,
-                        is_meme BOOLEAN,
-                        scan_eligible BOOLEAN DEFAULT 0,
-                        status TEXT DEFAULT 'WATCH',
-                        first_seen_at INTEGER,
-                        last_added_at INTEGER,
-                        last_seen_at INTEGER,
-                        removed_at INTEGER,
-                        consecutive_missing_snapshots INTEGER DEFAULT 0,
-                        lifecycle_id INTEGER NOT NULL DEFAULT 1,
-                        trigger_data TEXT
-                    )
-                    """
-                )
-
-                columns = {
-                    row[1]
-                    for row in conn.execute(
-                        "PRAGMA table_info(lbank_catalog)"
-                    )
-                }
-
-                if "last_seen_at" not in columns:
-                    conn.execute(
-                        """
-                        ALTER TABLE lbank_catalog
-                        ADD COLUMN last_seen_at INTEGER
-                        """
-                    )
-
-                if "scan_eligible" not in columns:
-                    conn.execute(
-                        """
-                        ALTER TABLE lbank_catalog
-                        ADD COLUMN scan_eligible BOOLEAN DEFAULT 0
-                        """
-                    )
-
-                if (
-                    "consecutive_missing_snapshots"
-                    not in columns
-                ):
-                    conn.execute(
-                        """
-                        ALTER TABLE lbank_catalog
-                        ADD COLUMN consecutive_missing_snapshots
-                        INTEGER DEFAULT 0
-                        """
-                    )
-
-                if "lifecycle_id" not in columns:
-                    conn.execute(
-                        "ALTER TABLE lbank_catalog "
-                        "ADD COLUMN lifecycle_id INTEGER NOT NULL DEFAULT 1"
-                    )
-
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS catalog_events (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        symbol TEXT,
-                        event_type TEXT,
-                        timestamp INTEGER
-                    )
-                    """
-                )
-
-        except Exception as exc:
-            logger.error(
-                "Database init failed: %s",
-                exc,
+                required_tables=frozenset({"lbank_catalog", "catalog_events"}),
             )
 
     def log_event(

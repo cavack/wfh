@@ -11,6 +11,43 @@ def _packaged_migration():
     return migrations.discover_migrations()[0]
 
 
+@pytest.mark.parametrize(
+    "collision_sql",
+    [
+        "CREATE TABLE db_readiness_probe (probe_id TEXT PRIMARY KEY)",
+        """
+        CREATE TABLE user_extension (id INTEGER PRIMARY KEY);
+        CREATE TRIGGER schema_migrations_no_update
+        BEFORE UPDATE ON user_extension BEGIN SELECT 1; END;
+        """,
+    ],
+)
+def test_runner_rejects_reserved_infrastructure_collision_before_bootstrap(
+    tmp_path,
+    collision_sql,
+):
+    db_path = tmp_path / "registry.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(collision_sql)
+    before = db_path.read_bytes()
+
+    runner = migrations.MigrationRunner(
+        db_path=db_path,
+        migrations=(_packaged_migration(),),
+    )
+
+    with pytest.raises(migrations.MigrationStateError):
+        runner.apply()
+
+    assert db_path.read_bytes() == before
+    with sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True) as conn:
+        history = conn.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type='table' AND name='schema_migrations'"
+        ).fetchone()
+    assert history is None
+
+
 def test_runner_rejects_history_schema_missing_required_columns(tmp_path):
     db_path = tmp_path / "registry.db"
     packaged = _packaged_migration()

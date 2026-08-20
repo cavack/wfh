@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Coroutine, Dict, Optional, Set, Any
 
+from waterfallhunter.core.schema_contract import require_managed_schema
+
 logger = logging.getLogger("WaterfallHunter.ProviderRegistry")
 
 class ProviderRole(str, Enum):
@@ -60,29 +62,18 @@ class ProviderMetadata:
         return True
 
 class StorageAdapter:
-    def __init__(self, db_path: str = "/app/data/waterfall_registry.db"):
+    def __init__(
+        self,
+        db_path: str = "/app/data/waterfall_registry.db",
+        *,
+        verify_schema: bool = True,
+    ):
         self.db_path = db_path
-        self._init_db()
-
-    def _init_db(self):
-        with sqlite3.connect(self.db_path) as conn:
-            # BUG-03 Fix: فعال‌سازی WAL mode برای کاهش I/O blocking
-            conn.execute("PRAGMA journal_mode=WAL;")
-            conn.execute("PRAGMA synchronous=NORMAL;")
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS provider_states (
-                    provider_id TEXT PRIMARY KEY,
-                    upstream_identity TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    failure_class TEXT NOT NULL,
-                    consecutive_failures INTEGER NOT NULL,
-                    circuit_open_until REAL NOT NULL,
-                    replacement_generation INTEGER NOT NULL,
-                    last_success_at REAL NOT NULL,
-                    updated_at REAL NOT NULL
-                )
-            """)
-            conn.commit()
+        if verify_schema:
+            require_managed_schema(
+                self.db_path,
+                required_tables=frozenset({"provider_states"}),
+            )
 
     def persist_provider_state(self, p: ProviderMetadata):
         with sqlite3.connect(self.db_path) as conn:

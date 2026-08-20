@@ -10,6 +10,10 @@ import os
 
 from waterfallhunter.config import settings
 from waterfallhunter.core.db import DBAdapter
+from waterfallhunter.core.schema_contract import (
+    CURRENT_RUNTIME_SCHEMA_VERSION,
+    require_managed_schema,
+)
 from waterfallhunter.discovery.lbank_scanner import LBankCatalogScanner
 from waterfallhunter.discovery.dexscreener import DexScreenerClient
 from waterfallhunter.discovery.onchain import OnChainIntelligence
@@ -74,24 +78,29 @@ app = FastAPI(
 
 db = DBAdapter(
     db_path=settings.registry_db_path,
+    verify_schema=False,
 )
 
 stage_lifecycle_store = StageLifecycleStore(
     db_path=db.db_path,
+    verify_schema=False,
 )
 
 historical_outcome_store = HistoricalOutcomeStore(
     db_path=db.db_path,
     cache_ttl_seconds=60.0,
+    verify_schema=False,
 )
 
 production_evidence_recorder = ProductionEvidenceRecorder(
     db_path=db.db_path,
     bucket_seconds=900,
+    verify_schema=False,
 )
 
 feature_replay_store = FeatureReplayStore(
     db_path=db.db_path,
+    verify_schema=False,
 )
 feature_replay_worker = FeatureReplayWorker(
     feature_replay_store,
@@ -137,10 +146,12 @@ execution_suitability_enricher = (
 
 signal_ledger = LBankSignalLedger(
     db_path=db.db_path,
+    verify_schema=False,
 )
 
 signal_outcome_store = LBankSignalOutcomeStore(
     db_path=db.db_path,
+    verify_schema=False,
 )
 
 execution_outcome_report = LBankExecutionOutcomeReport(
@@ -176,6 +187,7 @@ execution_decision_logger = (
         volume_gate_min_usdt=(
             scanner.min_volume_usdt
         ),
+        verify_schema=False,
     )
 )
 
@@ -2075,6 +2087,11 @@ async def startup_event():
             "LIVE_TRADING_ENABLED must remain "
             "false for WaterfallHunter"
         )
+
+    require_managed_schema(
+        db.db_path,
+        check_user_version=CURRENT_RUNTIME_SCHEMA_VERSION,
+    )
 
     _start_background_task(
         scanner.start_background_scanner(

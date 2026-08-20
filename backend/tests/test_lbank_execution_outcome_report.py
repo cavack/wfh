@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from schema_test_support import migrate_test_database
 from waterfallhunter.core.db import DBAdapter
 from waterfallhunter.core.lbank_execution_outcome_report import (
     LBankExecutionOutcomeReport,
@@ -15,7 +16,9 @@ from waterfallhunter.routes_execution_outcomes import (
 
 
 def _database(tmp_path):
-    db_path = str(tmp_path / "report.db")
+    path = tmp_path / "report.db"
+    migrate_test_database(path)
+    db_path = str(path)
     DBAdapter(db_path)
     LBankSignalLedger(db_path)
     LBankSignalOutcomeStore(db_path)

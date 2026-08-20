@@ -4,6 +4,8 @@ import sqlite3
 import time
 from typing import Any
 
+from waterfallhunter.core.schema_contract import require_managed_schema
+
 
 logger = logging.getLogger(
     "WaterfallHunter.LBankExecutionStore"
@@ -52,9 +54,21 @@ class LBankExecutionStore:
     def __init__(
         self,
         db_path: str = "/app/data/waterfall_registry.db",
+        *,
+        verify_schema: bool = True,
     ):
         self.db_path = db_path
-        self._init_db()
+        if verify_schema:
+            require_managed_schema(
+                self.db_path,
+                required_tables=frozenset(
+                    {
+                        "lbank_catalog",
+                        "lbank_execution_observations",
+                        "lbank_execution_observation_history",
+                    }
+                ),
+            )
 
     def _connect(
         self,
@@ -64,153 +78,6 @@ class LBankExecutionStore:
             self.db_path,
             timeout=timeout,
         )
-
-    def _init_db(
-        self,
-    ):
-        try:
-            with self._connect() as conn:
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS
-                    lbank_execution_observations (
-                        symbol TEXT PRIMARY KEY,
-
-                        observation_status TEXT
-                            NOT NULL
-                            DEFAULT 'UNKNOWN',
-
-                        observed_at REAL,
-
-                        reason TEXT,
-
-                        spread_pct REAL,
-
-                        cost_25_pct REAL,
-                        cost_50_pct REAL,
-                        cost_100_pct REAL,
-
-                        depth_10bps_min_usdt REAL,
-                        depth_25bps_min_usdt REAL,
-                        depth_50bps_min_usdt REAL,
-                        depth_100bps_min_usdt REAL,
-
-                        failures INTEGER
-                            NOT NULL
-                            DEFAULT 0,
-
-                        next_check_at REAL
-                            NOT NULL
-                            DEFAULT 0,
-
-                        payload TEXT
-                            NOT NULL
-                            DEFAULT '{}',
-
-                        updated_at REAL
-                            NOT NULL
-                    )
-                    """
-                )
-
-                conn.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS
-                    idx_lbank_execution_queue
-                    ON lbank_execution_observations (
-                        next_check_at,
-                        observed_at
-                    )
-                    """
-                )
-
-                conn.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS
-                    idx_lbank_execution_status
-                    ON lbank_execution_observations (
-                        observation_status
-                    )
-                    """
-                )
-
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS
-                    lbank_execution_observation_history (
-                        id INTEGER
-                            PRIMARY KEY
-                            AUTOINCREMENT,
-
-                        symbol TEXT
-                            NOT NULL,
-
-                        observation_status TEXT
-                            NOT NULL,
-
-                        observed_at REAL
-                            NOT NULL,
-
-                        reason TEXT,
-
-                        spread_pct REAL,
-
-                        cost_25_pct REAL,
-                        cost_50_pct REAL,
-                        cost_100_pct REAL,
-
-                        depth_10bps_min_usdt REAL,
-                        depth_25bps_min_usdt REAL,
-                        depth_50bps_min_usdt REAL,
-                        depth_100bps_min_usdt REAL,
-
-                        payload TEXT
-                            NOT NULL
-                            DEFAULT '{}',
-
-                        created_at REAL
-                            NOT NULL
-                    )
-                    """
-                )
-
-                conn.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS
-                    idx_lbank_execution_history_symbol_time
-                    ON lbank_execution_observation_history (
-                        symbol,
-                        observed_at
-                    )
-                    """
-                )
-
-                conn.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS
-                    idx_lbank_execution_history_status_time
-                    ON lbank_execution_observation_history (
-                        observation_status,
-                        observed_at
-                    )
-                    """
-                )
-
-                conn.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS
-                    idx_lbank_execution_history_observed_at
-                    ON lbank_execution_observation_history (
-                        observed_at
-                    )
-                    """
-                )
-
-        except Exception as exc:
-            logger.error(
-                "LBank execution store init failed: %s",
-                exc,
-            )
 
     @staticmethod
     def _finite(

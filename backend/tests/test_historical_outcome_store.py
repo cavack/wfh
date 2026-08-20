@@ -2,6 +2,7 @@ import sqlite3
 
 import pytest
 
+from schema_test_support import migrate_test_database
 from waterfallhunter.core.historical_outcome_store import HistoricalOutcomeStore
 
 
@@ -30,8 +31,16 @@ def _report():
     }
 
 
+def _store(tmp_path, *, cache_ttl_seconds=60.0):
+    db_path = migrate_test_database(tmp_path / "outcomes.db")
+    return HistoricalOutcomeStore(
+        str(db_path),
+        cache_ttl_seconds=cache_ttl_seconds,
+    )
+
+
 def test_import_is_atomic_idempotent_and_operationally_queryable(tmp_path):
-    store = HistoricalOutcomeStore(str(tmp_path / "outcomes.db"), cache_ttl_seconds=0)
+    store = _store(tmp_path, cache_ttl_seconds=0)
     first = store.import_report(_report(), report_sha256="a" * 64)
     second = store.import_report(_report(), report_sha256="a" * 64)
     report = store.build_report()
@@ -49,8 +58,7 @@ def test_import_is_atomic_idempotent_and_operationally_queryable(tmp_path):
 
 
 def test_import_rejects_incomplete_cost_evidence_without_partial_rows(tmp_path):
-    db_path = str(tmp_path / "outcomes.db")
-    store = HistoricalOutcomeStore(db_path)
+    store = _store(tmp_path)
     report = _report()
     report["trades"][1]["execution_costs"]["complete"] = False
 
@@ -61,8 +69,8 @@ def test_import_rejects_incomplete_cost_evidence_without_partial_rows(tmp_path):
 
 
 def test_imported_rows_are_immutable(tmp_path):
-    db_path = str(tmp_path / "outcomes.db")
-    store = HistoricalOutcomeStore(db_path)
+    store = _store(tmp_path)
+    db_path = store.db_path
     store.import_report(_report(), report_sha256="c" * 64)
 
     with sqlite3.connect(db_path) as conn, pytest.raises(sqlite3.IntegrityError, match="immutable"):

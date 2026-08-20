@@ -1,3 +1,4 @@
+from schema_test_support import migrate_test_database
 from waterfallhunter.core.db import (
     DBAdapter,
 )
@@ -100,6 +101,7 @@ def build_report(
         tmp_path
         / "registry.db"
     )
+    db_path = migrate_test_database(db_path)
 
     DBAdapter(
         str(
@@ -450,6 +452,7 @@ def test_report_does_not_change_catalogue_state(
         tmp_path
         / "registry.db"
     )
+    db_path = migrate_test_database(db_path)
 
     db = DBAdapter(
         str(

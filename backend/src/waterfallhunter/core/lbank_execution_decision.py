@@ -9,6 +9,7 @@ from typing import Any
 from waterfallhunter.core.lbank_execution_candidate import (
     LBankExecutionCandidateEnricher,
 )
+from waterfallhunter.core.schema_contract import require_managed_schema
 
 
 logger = logging.getLogger(
@@ -49,100 +50,30 @@ class LBankExecutionDecisionLogger:
         snapshot_interval_seconds: int = 3600,
         retention_days: int = 30,
         volume_gate_min_usdt: float = 2_000_000.0,
+        verify_schema: bool = True,
     ):
         self.db_path = db_path
         self.enricher = enricher
-        self.evaluation_bucket_seconds = max(
-            60,
-            int(evaluation_bucket_seconds),
-        )
-        self.snapshot_interval_seconds = max(
-            300,
-            int(snapshot_interval_seconds),
-        )
-        self.retention_seconds = max(
-            86_400,
-            int(retention_days) * 86_400,
-        )
-        self.volume_gate_min_usdt = max(
-            0.0,
-            float(volume_gate_min_usdt),
-        )
+        self.evaluation_bucket_seconds = max(60, int(evaluation_bucket_seconds))
+        self.snapshot_interval_seconds = max(300, int(snapshot_interval_seconds))
+        self.retention_seconds = max(86_400, int(retention_days) * 86_400)
+        self.volume_gate_min_usdt = max(0.0, float(volume_gate_min_usdt))
         self._pending_lock = threading.Lock()
         self._pending: dict[tuple[int, str], dict] = {}
         self.total_evaluations_observed = 0
         self.total_evaluations_flushed = 0
         self.last_flush_at: float | None = None
         self.last_snapshot_at: float | None = None
-        self._init_db()
+        if verify_schema:
+            require_managed_schema(
+                self.db_path,
+                required_tables=frozenset(
+                    {"lbank_execution_decision_log", "lbank_catalog"}
+                ),
+            )
 
     def _connect(self):
-        return sqlite3.connect(
-            self.db_path,
-            timeout=20.0,
-        )
-
-    def _init_db(self) -> None:
-        try:
-            with self._connect() as conn:
-                conn.execute("PRAGMA journal_mode=WAL;")
-                conn.execute("PRAGMA synchronous=NORMAL;")
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS
-                        lbank_execution_decision_log (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            bucket_started_at INTEGER NOT NULL,
-                            source TEXT NOT NULL,
-                            symbol TEXT NOT NULL,
-                            first_observed_at REAL NOT NULL,
-                            last_observed_at REAL NOT NULL,
-                            evaluation_count INTEGER NOT NULL,
-                            volume_gate_passed INTEGER NOT NULL,
-                            suitability_status TEXT NOT NULL,
-                            suitability_would_admit INTEGER,
-                            disagreement_kind TEXT NOT NULL,
-                            evidence_status TEXT,
-                            candidate_state TEXT,
-                            score REAL,
-                            scan_eligible INTEGER NOT NULL,
-                            quote_volume REAL,
-                            last_price REAL,
-                            observational_only INTEGER NOT NULL DEFAULT 1,
-                            trade_eligible INTEGER,
-                            UNIQUE (
-                                bucket_started_at,
-                                source,
-                                symbol
-                            )
-                        )
-                    """
-                )
-                conn.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS
-                        idx_lbank_execution_decision_time
-                    ON lbank_execution_decision_log (
-                        last_observed_at
-                    )
-                    """
-                )
-                conn.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS
-                        idx_lbank_execution_decision_comparison
-                    ON lbank_execution_decision_log (
-                        source,
-                        disagreement_kind,
-                        bucket_started_at
-                    )
-                    """
-                )
-        except Exception as exc:
-            logger.error(
-                "Decision-log database initialization failed: %s",
-                exc,
-            )
+        return sqlite3.connect(self.db_path, timeout=20.0)
 
     @staticmethod
     def _finite(value: Any) -> float | None:
