@@ -45,6 +45,14 @@ def test_package_migration_discovery_is_contiguous_and_hashes_exact_bytes():
     assert migration.checksum_sha256 == hashlib.sha256(raw).hexdigest()
 
 
+def test_packaged_migrations_include_runtime_baseline():
+    discovered = _migrations_module().discover_migrations()
+
+    assert [item.version for item in discovered] == [1, 2]
+    assert discovered[1].name == "runtime_schema_baseline"
+    assert discovered[1].filename == "0002_runtime_schema_baseline.sql"
+
+
 def test_validate_migrations_rejects_duplicate_versions():
     migrations = _migrations_module()
     first = migrations.Migration.from_bytes(
