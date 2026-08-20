@@ -177,3 +177,24 @@ def test_missing_database_path_is_not_created_by_readiness_probe(tmp_path):
     assert result.ready is False
     assert "DB_PATH_MISSING" in result.reason_codes
     assert db_path.exists() is False
+
+
+@pytest.mark.parametrize("filename", ["hash#name.db", "question?name.db"])
+def test_readiness_targets_exact_database_path_with_uri_special_characters(
+    tmp_path,
+    filename,
+):
+    from waterfallhunter.core import db_readiness
+
+    db_path = tmp_path / filename
+    MigrationRunner(db_path=db_path).apply()
+
+    result = db_readiness.probe_database(
+        db_path=db_path,
+        expected_schema_version=1,
+        busy_timeout_ms=100,
+    )
+
+    assert result.ready is True
+    assert result.reason_codes == ()
+    assert db_path.exists() is True
