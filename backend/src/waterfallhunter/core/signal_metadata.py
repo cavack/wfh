@@ -80,6 +80,64 @@ class SignalMetadataInput(BaseModel):
         return self
 
 
+def _required_timestamp(metrics: dict[str, Any], field: str) -> int:
+    value = metrics.get(field)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{field} must be an explicit non-negative integer timestamp")
+    return value
+
+
+def _optional_timestamp(metrics: dict[str, Any], field: str) -> int | None:
+    value = metrics.get(field)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{field} must be null or a non-negative integer timestamp")
+    return value
+
+
+def build_signal_metadata_input(
+    metrics: dict[str, Any],
+    decision_contract_hash: str,
+) -> SignalMetadataInput:
+    """Build explicit future lineage without defaults or wall-clock inference."""
+
+    if not isinstance(metrics, dict):
+        raise ValueError("signal metadata metrics must be a mapping")
+
+    strategy_profile = metrics.get("strategy_profile")
+    score_version = metrics.get("score_version")
+    lineage = {
+        STRICT_STRATEGY_PROFILE: (SignalClass.STRICT, "score_v2"),
+        EXPERIMENTAL_STRATEGY_PROFILE: (
+            SignalClass.EXPERIMENTAL,
+            "score_v2_watch_v1",
+        ),
+    }.get(strategy_profile)
+    if lineage is None:
+        raise ValueError("strategy_profile must be an exact recognized future profile")
+
+    signal_class, expected_score_version = lineage
+    if score_version != expected_score_version:
+        raise ValueError("score_version does not match the explicit strategy profile")
+
+    return SignalMetadataInput(
+        signal_class=signal_class,
+        strategy_profile=strategy_profile,
+        score_version=score_version,
+        model_generation=MODEL_GENERATION,
+        decision_contract_hash=decision_contract_hash,
+        analysis_observed_at=_required_timestamp(metrics, "analysis_observed_at"),
+        reference_observed_at=_optional_timestamp(
+            metrics,
+            "reference_observed_at",
+        ),
+        metadata_contract_version=METADATA_CONTRACT_VERSION,
+        classification_method=ClassificationMethod.FUTURE_PIPELINE_EXPLICIT,
+        classification_evidence_hash=None,
+    )
+
+
 def canonical_sha256(value: Any) -> str:
     """Return SHA-256 over RFC8785/JCS canonical bytes."""
 
