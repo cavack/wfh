@@ -116,7 +116,7 @@ class LBankSignalLedger:
                 or not expected_state
                 or score_value is None
             ):
-                raise ValueError("invalid signal identity, score, or metadata time")
+                raise ValueError("invalid signal identity or score")
 
             metrics_json = self._json(metrics)
             position_json = self._json(position)
