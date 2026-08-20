@@ -137,7 +137,7 @@ def probe_database(
         )
 
     timeout_seconds = max(busy_timeout_ms / 1_000.0, 0.001)
-    uri = f"file:{path.resolve().as_posix()}?mode=rw"
+    uri = f"{path.resolve().as_uri()}?mode=rw"
 
     try:
         conn = sqlite3.connect(
