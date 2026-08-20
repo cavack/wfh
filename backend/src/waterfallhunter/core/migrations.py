@@ -32,6 +32,8 @@ class MigrationStateError(MigrationError):
 
 @dataclass(frozen=True, slots=True)
 class Migration:
+    """Immutable migration identity, exact SQL bytes, and content checksum."""
+
     version: int
     name: str
     filename: str
@@ -47,6 +49,7 @@ class Migration:
         filename: str,
         sql_bytes: bytes,
     ) -> "Migration":
+        """Build a migration after enforcing canonical filename identity."""
         if version < 1:
             raise MigrationDiscoveryError("migration versions must be positive")
         if not name:
@@ -74,6 +77,7 @@ class Migration:
 
 
 def validate_migrations(migrations: Iterable[Migration]) -> tuple[Migration, ...]:
+    """Return a canonical contiguous migration sequence or fail closed."""
     ordered = tuple(sorted(tuple(migrations), key=lambda item: item.version))
     if not ordered:
         return ()
@@ -98,6 +102,7 @@ def validate_migrations(migrations: Iterable[Migration]) -> tuple[Migration, ...
 def discover_migrations(
     package: str = "waterfallhunter.migrations",
 ) -> tuple[Migration, ...]:
+    """Discover and validate packaged SQL migrations using exact file bytes."""
     discovered: list[Migration] = []
 
     try:
@@ -131,6 +136,7 @@ def discover_migrations(
 
 
 def _split_sql_statements(sql_bytes: bytes) -> tuple[str, ...]:
+    """Split UTF-8 SQL only at SQLite-complete statement boundaries."""
     try:
         sql = sql_bytes.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -168,6 +174,7 @@ class MigrationRunner:
         busy_timeout_ms: int = 5_000,
         source_revision: str | None = None,
     ) -> None:
+        """Configure a runner without opening or mutating the target database."""
         if busy_timeout_ms < 0:
             raise ValueError("busy_timeout_ms must be non-negative")
         self._db_path = Path(db_path)
@@ -178,6 +185,7 @@ class MigrationRunner:
         self._source_revision = source_revision
 
     def apply(self) -> tuple[int, ...]:
+        """Apply pending migrations and return their versions in applied order."""
         if not self._db_path.parent.is_dir():
             raise MigrationError("database parent directory does not exist")
 
@@ -212,6 +220,7 @@ class MigrationRunner:
 
     @staticmethod
     def _bootstrap_history(conn: sqlite3.Connection) -> None:
+        """Create immutable migration-history infrastructure atomically."""
         try:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
@@ -253,6 +262,7 @@ class MigrationRunner:
             raise MigrationError("migration history bootstrap failed") from exc
 
     def _verify_state(self, conn: sqlite3.Connection) -> set[int]:
+        """Validate history shape, checksums, and ``user_version`` consistency."""
         try:
             rows = conn.execute(
                 "SELECT version, name, checksum_sha256 "
@@ -293,6 +303,7 @@ class MigrationRunner:
         return set(history_versions)
 
     def _apply_one(self, conn: sqlite3.Connection, migration: Migration) -> None:
+        """Apply one migration and advance history/version in one transaction."""
         statements = _split_sql_statements(migration.sql_bytes)
         if not statements:
             raise MigrationError("migration SQL must contain at least one statement")
