@@ -1,5 +1,6 @@
 import sqlite3
 
+from schema_test_support import migrate_test_database
 from waterfallhunter.core.db import DBAdapter
 from waterfallhunter.core.lbank_execution_decision import (
     AGREE_ACCEPT,
@@ -28,6 +29,12 @@ class FakeEnricher:
                 },
             )
         )
+
+
+def _db_path(tmp_path) -> str:
+    db_path = tmp_path / "registry.db"
+    migrate_test_database(db_path)
+    return str(db_path)
 
 
 def candidate(*, scan_eligible, volume):
@@ -73,7 +80,7 @@ def test_comparison_kind_maps_proxy_disagreements():
 def test_evaluations_are_aggregated_and_persisted_without_trade_decision(
     tmp_path,
 ):
-    db_path = str(tmp_path / "registry.db")
+    db_path = _db_path(tmp_path)
     DBAdapter(db_path)
     logger = LBankExecutionDecisionLogger(
         db_path,
@@ -119,7 +126,7 @@ def test_volume_gate_is_independent_from_combined_scan_eligibility(
     tmp_path,
 ):
     logger = LBankExecutionDecisionLogger(
-        str(tmp_path / "registry.db"),
+        _db_path(tmp_path),
         enricher=FakeEnricher({}),
         volume_gate_min_usdt=2_000_000.0,
     )
@@ -131,7 +138,7 @@ def test_volume_gate_is_independent_from_combined_scan_eligibility(
 def test_catalogue_snapshot_covers_both_proxy_error_directions(
     tmp_path,
 ):
-    db_path = str(tmp_path / "registry.db")
+    db_path = _db_path(tmp_path)
     db = DBAdapter(db_path)
     symbols = {
         "GOOD/USDT:USDT": candidate(
@@ -218,7 +225,7 @@ def test_catalogue_snapshot_covers_both_proxy_error_directions(
 def test_catalogue_snapshot_is_throttled_per_bucket(
     tmp_path,
 ):
-    db_path = str(tmp_path / "registry.db")
+    db_path = _db_path(tmp_path)
     db = DBAdapter(db_path)
     db.update_candidates(
         {
