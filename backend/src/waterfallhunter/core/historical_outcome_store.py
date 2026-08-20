@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from waterfallhunter.core.schema_contract import require_managed_schema
+
 
 class HistoricalOutcomeStore:
     """Operational, immutable store for provenance-labelled historical outcomes."""
@@ -18,72 +20,22 @@ class HistoricalOutcomeStore:
         db_path: str = "/app/data/waterfall_registry.db",
         *,
         cache_ttl_seconds: float = 60.0,
+        verify_schema: bool = True,
     ):
         self.db_path = db_path
         self.cache_ttl_seconds = max(0.0, float(cache_ttl_seconds))
         self._lock = threading.Lock()
         self._cache_at = 0.0
         self._cache: dict | None = None
-        self._init_db()
-
-    def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path, timeout=10.0) as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS operational_historical_outcome_datasets (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    report_sha256 TEXT NOT NULL UNIQUE,
-                    source TEXT NOT NULL,
-                    generated_at TEXT,
-                    window_start_ms INTEGER NOT NULL,
-                    window_end_ms INTEGER NOT NULL,
-                    days INTEGER NOT NULL,
-                    strategy TEXT NOT NULL,
-                    cost_basis TEXT NOT NULL,
-                    strategy_equivalent INTEGER NOT NULL CHECK(strategy_equivalent IN (0, 1)),
-                    source_provenance_json TEXT NOT NULL,
-                    imported_at INTEGER NOT NULL,
-                    observational_only INTEGER NOT NULL DEFAULT 1 CHECK(observational_only = 1),
-                    hard_gating_allowed INTEGER NOT NULL DEFAULT 0 CHECK(hard_gating_allowed = 0)
-                );
-
-                CREATE TABLE IF NOT EXISTS operational_historical_signal_outcomes (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    dataset_id INTEGER NOT NULL,
-                    event_key TEXT NOT NULL UNIQUE,
-                    symbol TEXT NOT NULL,
-                    signal_timestamp_ms INTEGER NOT NULL,
-                    exit_timestamp_ms INTEGER,
-                    outcome TEXT NOT NULL,
-                    gross_realized_r REAL,
-                    net_realized_r REAL NOT NULL,
-                    exit_reason TEXT,
-                    cost_basis TEXT NOT NULL,
-                    details_json TEXT NOT NULL,
-                    observational_only INTEGER NOT NULL DEFAULT 1 CHECK(observational_only = 1),
-                    trade_eligible INTEGER CHECK(trade_eligible IS NULL),
-                    FOREIGN KEY(dataset_id) REFERENCES operational_historical_outcome_datasets(id)
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_operational_historical_symbol
-                ON operational_historical_signal_outcomes(dataset_id, symbol, signal_timestamp_ms);
-
-                CREATE TRIGGER IF NOT EXISTS operational_historical_datasets_no_update
-                BEFORE UPDATE ON operational_historical_outcome_datasets
-                BEGIN SELECT RAISE(ABORT, 'operational historical datasets are immutable'); END;
-
-                CREATE TRIGGER IF NOT EXISTS operational_historical_datasets_no_delete
-                BEFORE DELETE ON operational_historical_outcome_datasets
-                BEGIN SELECT RAISE(ABORT, 'operational historical datasets are immutable'); END;
-
-                CREATE TRIGGER IF NOT EXISTS operational_historical_outcomes_no_update
-                BEFORE UPDATE ON operational_historical_signal_outcomes
-                BEGIN SELECT RAISE(ABORT, 'operational historical outcomes are immutable'); END;
-
-                CREATE TRIGGER IF NOT EXISTS operational_historical_outcomes_no_delete
-                BEFORE DELETE ON operational_historical_signal_outcomes
-                BEGIN SELECT RAISE(ABORT, 'operational historical outcomes are immutable'); END;
-                """
+        if verify_schema:
+            require_managed_schema(
+                self.db_path,
+                required_tables=frozenset(
+                    {
+                        "operational_historical_outcome_datasets",
+                        "operational_historical_signal_outcomes",
+                    }
+                ),
             )
 
     @staticmethod
