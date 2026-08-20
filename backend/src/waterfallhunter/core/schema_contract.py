@@ -1096,7 +1096,7 @@ def verify_managed_schema_connection(
                 "UNIQUE_KEY_MISMATCH",
                 unique_issue.table,
                 f"expected unique keys {unique_issue.expected!r}; "
-                f"found {unique_issue.actual!r}",
+                f"found {unique_issue.actual!r}; {unique_issue.detail}",
             )
         )
 

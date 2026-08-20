@@ -288,6 +288,10 @@ def test_preflight_rejects_migration_infrastructure_name_collision_before_write(
     ("canonical", "weakened"),
     [
         ("signal_id INTEGER NOT NULL UNIQUE,", "signal_id INTEGER NOT NULL,"),
+        (
+            "signal_id INTEGER NOT NULL UNIQUE,",
+            "signal_id INTEGER NOT NULL UNIQUE ON CONFLICT REPLACE,",
+        ),
         ("UNIQUE(bucket_started_at, symbol)", "CHECK(bucket_started_at >= 0)"),
         ("UNIQUE(snapshot_id, replay_version)", "CHECK(snapshot_id >= 0)"),
         (

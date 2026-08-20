@@ -238,6 +238,7 @@ def _create_outcomes(
     observational_check: str = "observational_only = 1",
     immutable_update: bool = True,
     unique_signal_id: bool = True,
+    unique_conflict_policy: str | None = None,
     extra_table_check: str | None = None,
 ) -> None:
     update_raise = (
@@ -246,6 +247,11 @@ def _create_outcomes(
         else "SELECT RAISE(IGNORE);"
     )
     signal_id_constraint = " UNIQUE" if unique_signal_id else ""
+    conflict_clause = (
+        f" ON CONFLICT {unique_conflict_policy}"
+        if unique_conflict_policy is not None
+        else ""
+    )
     extra_check_clause = (
         f", CHECK ({extra_table_check})" if extra_table_check is not None else ""
     )
@@ -253,7 +259,7 @@ def _create_outcomes(
         f"""
         CREATE TABLE lbank_signal_outcomes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            signal_id INTEGER NOT NULL{signal_id_constraint},
+            signal_id INTEGER NOT NULL{signal_id_constraint}{conflict_clause},
             symbol TEXT NOT NULL,
             outcome_status TEXT NOT NULL,
             signal_triggered_at INTEGER NOT NULL,
@@ -572,6 +578,38 @@ def test_schema_verifier_rejects_missing_unique_key():
     )
 
     assert "UNIQUE_KEY_MISMATCH" in _codes(result)
+
+
+@pytest.mark.parametrize(
+    "conflict_policy",
+    ("REPLACE", "IGNORE", "FAIL", "ROLLBACK"),
+)
+def test_schema_verifier_rejects_noncanonical_unique_conflict_policy(
+    conflict_policy: str,
+):
+    conn = sqlite3.connect(":memory:")
+    _create_signal_ledger_parent(conn)
+    _create_outcomes(conn, unique_conflict_policy=conflict_policy)
+
+    result = verify_managed_schema_connection(
+        conn,
+        required_tables=frozenset({"lbank_signal_outcomes"}),
+    )
+
+    assert "UNIQUE_KEY_MISMATCH" in _codes(result)
+
+
+def test_schema_verifier_accepts_explicit_abort_unique_conflict_policy():
+    conn = sqlite3.connect(":memory:")
+    _create_signal_ledger_parent(conn)
+    _create_outcomes(conn, unique_conflict_policy="ABORT")
+
+    result = verify_managed_schema_connection(
+        conn,
+        required_tables=frozenset({"lbank_signal_outcomes"}),
+    )
+
+    assert "UNIQUE_KEY_MISMATCH" not in _codes(result)
 
 
 def test_schema_verifier_reports_but_preserves_unknown_table():
