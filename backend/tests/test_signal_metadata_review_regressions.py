@@ -84,47 +84,58 @@ def _insert_metadata(
     )
 
 
-def _remove_check_containing(sql: str, marker: str) -> str:
+def _balanced_parenthesis_end(sql: str, open_index: int) -> int:
+    depth = 0
+    quote: str | None = None
+    index = open_index
+    while index < len(sql):
+        char = sql[index]
+        if quote is not None:
+            if char == quote:
+                if index + 1 < len(sql) and sql[index + 1] == quote:
+                    index += 2
+                    continue
+                quote = None
+        elif char in ("'", '"'):
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        index += 1
+    raise AssertionError("unterminated CHECK expression")
+
+
+def _check_span(sql: str, marker: str) -> tuple[int, int]:
+    marker_folded = marker.casefold()
     for match in re.finditer(r"CHECK\s*\(", sql, flags=re.IGNORECASE):
-        start = match.start()
-        depth = 0
-        quote: str | None = None
-        index = match.end() - 1
-        while index < len(sql):
-            char = sql[index]
-            if quote is not None:
-                if char == quote:
-                    if index + 1 < len(sql) and sql[index + 1] == quote:
-                        index += 2
-                        continue
-                    quote = None
-                index += 1
-                continue
-            if char in ("'", '"'):
-                quote = char
-            elif char == "(":
-                depth += 1
-            elif char == ")":
-                depth -= 1
-                if depth == 0:
-                    end = index + 1
-                    block = sql[start:end]
-                    if marker.casefold() not in block.casefold():
-                        break
-                    tail = end
-                    while tail < len(sql) and sql[tail].isspace():
-                        tail += 1
-                    if tail < len(sql) and sql[tail] == ",":
-                        tail += 1
-                    else:
-                        head = start
-                        while head > 0 and sql[head - 1].isspace():
-                            head -= 1
-                        if head > 0 and sql[head - 1] == ",":
-                            start = head - 1
-                    return sql[:start] + sql[tail:]
-            index += 1
+        end = _balanced_parenthesis_end(sql, match.end() - 1)
+        if marker_folded in sql[match.start():end].casefold():
+            return match.start(), end
     raise AssertionError(f"CHECK containing {marker!r} not found")
+
+
+def _include_adjacent_comma(sql: str, start: int, end: int) -> tuple[int, int]:
+    tail = end
+    while tail < len(sql) and sql[tail].isspace():
+        tail += 1
+    if tail < len(sql) and sql[tail] == ",":
+        return start, tail + 1
+
+    head = start
+    while head > 0 and sql[head - 1].isspace():
+        head -= 1
+    if head > 0 and sql[head - 1] == ",":
+        head -= 1
+    return head, end
+
+
+def _remove_check_containing(sql: str, marker: str) -> str:
+    start, end = _check_span(sql, marker)
+    start, end = _include_adjacent_comma(sql, start, end)
+    return sql[:start] + sql[end:]
 
 
 def _remove_projection(sql: str, projection: str) -> str:
