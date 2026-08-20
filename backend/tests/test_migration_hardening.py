@@ -47,12 +47,13 @@ def test_incomplete_sql_fails_before_state_advances(tmp_path):
         "incomplete",
         b"CREATE TABLE incomplete_table (id INTEGER PRIMARY KEY",
     )
+    runner = migrations.MigrationRunner(
+        db_path=db_path,
+        migrations=(first, incomplete),
+    )
 
     with pytest.raises(migrations.MigrationError):
-        migrations.MigrationRunner(
-            db_path=db_path,
-            migrations=(first, incomplete),
-        ).apply()
+        runner.apply()
 
     with sqlite3.connect(db_path) as conn:
         table_count = conn.execute(
@@ -99,9 +100,10 @@ def test_malformed_migration_history_missing_columns_is_typed_state_failure(tmp_
             "CREATE TABLE schema_migrations ("
             "version INTEGER PRIMARY KEY, checksum_sha256 TEXT)"
         )
+    runner = migrations.MigrationRunner(db_path=db_path)
 
     with pytest.raises(migrations.MigrationStateError):
-        migrations.MigrationRunner(db_path=db_path).apply()
+        runner.apply()
 
 
 def test_malformed_migration_history_invalid_version_is_typed_state_failure(tmp_path):
@@ -115,6 +117,7 @@ def test_malformed_migration_history_invalid_version_is_typed_state_failure(tmp_
             "INSERT INTO schema_migrations (version, name, checksum_sha256) "
             "VALUES ('not-an-int', 'broken', 'broken')"
         )
+    runner = migrations.MigrationRunner(db_path=db_path)
 
     with pytest.raises(migrations.MigrationStateError):
-        migrations.MigrationRunner(db_path=db_path).apply()
+        runner.apply()
