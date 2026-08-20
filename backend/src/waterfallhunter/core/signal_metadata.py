@@ -51,9 +51,7 @@ class SignalMetadataInput(BaseModel):
     decision_contract_hash: Sha256Hex
     analysis_observed_at: NonNegativeTimestamp
     reference_observed_at: NonNegativeTimestamp | None = None
-    metadata_contract_version: Literal["signal_metadata_v1"] = (
-        METADATA_CONTRACT_VERSION
-    )
+    metadata_contract_version: Literal["signal_metadata_v1"] = "signal_metadata_v1"
     classification_method: ClassificationMethod
     classification_evidence_hash: Sha256Hex | None = None
 
