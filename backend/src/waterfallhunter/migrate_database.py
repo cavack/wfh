@@ -59,9 +59,40 @@ def _preflight_payload(result: PreflightResult) -> dict:
     )
 
 
+def _validated_db_path(raw_value: str) -> Path | None:
+    """Accept one canonical local SQLite file path from the operator boundary."""
+    if "\x00" in raw_value:
+        return None
+
+    candidate = Path(raw_value)
+    if not candidate.is_absolute() or candidate.is_symlink():
+        return None
+
+    try:
+        resolved = candidate.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return None
+
+    # Reject parent-symlink and traversal aliases so the validated target is
+    # exactly the file SQLite will open. Production uses /app/data directly;
+    # tests use canonical absolute tmp paths.
+    if resolved != candidate:
+        return None
+
+    if candidate.exists() and not candidate.is_file():
+        return None
+
+    return candidate
+
+
 def _set_wal_mode(db_path: Path) -> str:
     """Set the persistent journal mode only after successful explicit migration."""
-    with sqlite3.connect(db_path, timeout=5.0, isolation_level=None) as conn:
+    with sqlite3.connect(
+        db_path,
+        timeout=5.0,
+        isolation_level=None,
+        uri=False,
+    ) as conn:
         row = conn.execute("PRAGMA journal_mode=WAL").fetchone()
         mode = str(row[0] if row else "").lower()
         if mode != "wal":
@@ -130,7 +161,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2
 
-    db_path = Path(args.db_path)
+    db_path = _validated_db_path(str(args.db_path))
+    if db_path is None:
+        _emit(
+            _base_payload(
+                ok=False,
+                mode="apply" if args.apply else "preflight",
+                reason_codes=("DB_PATH_INVALID",),
+            )
+        )
+        return 2
+
     preflight = classify_database(db_path)
 
     if args.preflight:
