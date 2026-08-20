@@ -77,11 +77,19 @@ class LBankSignalLedger:
             expected_state = str(expected_state).strip().upper()
             score_value = self._finite(score)
             metadata_value = SignalMetadataInput.model_validate(metadata)
-            metadata_time = int(
-                time.time()
+            metadata_time = (
+                int(time.time())
                 if metadata_created_at is None
                 else metadata_created_at
             )
+            if (
+                isinstance(metadata_time, bool)
+                or not isinstance(metadata_time, int)
+                or metadata_time < 0
+            ):
+                raise ValueError(
+                    "invalid signal identity, score, or metadata time"
+                )
             metrics = (
                 trigger_metrics
                 if isinstance(trigger_metrics, dict)
@@ -107,7 +115,6 @@ class LBankSignalLedger:
                 not symbol
                 or not expected_state
                 or score_value is None
-                or metadata_time < 0
             ):
                 raise ValueError("invalid signal identity, score, or metadata time")
 
