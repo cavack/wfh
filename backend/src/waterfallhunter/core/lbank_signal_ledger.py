@@ -5,6 +5,8 @@ import sqlite3
 import time
 from typing import Any
 
+from waterfallhunter.core.schema_contract import require_managed_schema
+
 
 logger = logging.getLogger(
     "WaterfallHunter.LBankSignalLedger"
@@ -22,111 +24,14 @@ class LBankSignalLedger:
     def __init__(
         self,
         db_path: str = "/app/data/waterfall_registry.db",
+        *,
+        verify_schema: bool = True,
     ):
         self.db_path = db_path
-        self._init_db()
-
-    def _init_db(self) -> None:
-        try:
-            with sqlite3.connect(
+        if verify_schema:
+            require_managed_schema(
                 self.db_path,
-                timeout=10.0,
-            ) as conn:
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS lbank_signal_ledger (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        symbol TEXT NOT NULL,
-                        triggered_at INTEGER NOT NULL,
-                        state_before TEXT NOT NULL,
-                        score REAL NOT NULL,
-                        entry_price REAL,
-                        stop_loss REAL,
-                        take_profit_1 REAL,
-                        take_profit_2 REAL,
-                        position_setup_json TEXT NOT NULL,
-                        trigger_metrics_json TEXT NOT NULL,
-                        execution_status TEXT NOT NULL,
-                        execution_evidence_status TEXT,
-                        execution_observed_samples INTEGER,
-                        execution_observation_span_hours REAL,
-                        execution_availability_rate REAL,
-                        execution_cost_100_p90_pct REAL,
-                        execution_spread_p90_pct REAL,
-                        execution_depth_25bps_p50_usdt REAL,
-                        execution_failed_checks_json TEXT NOT NULL,
-                        execution_suitability_json TEXT NOT NULL,
-                        quote_volume_at_trigger REAL,
-                        volume_gate_passed INTEGER
-                            CHECK (volume_gate_passed IN (0, 1)),
-                        proxy_execution_disagreement TEXT,
-                        observational_only INTEGER NOT NULL DEFAULT 1
-                            CHECK (observational_only = 1),
-                        trade_eligible INTEGER
-                            CHECK (trade_eligible IS NULL),
-                        created_at INTEGER NOT NULL
-                    )
-                    """
-                )
-                columns = {
-                    row[1]
-                    for row in conn.execute(
-                        "PRAGMA table_info(lbank_signal_ledger)"
-                    )
-                }
-                migrations = {
-                    "quote_volume_at_trigger": "REAL",
-                    "volume_gate_passed": (
-                        "INTEGER CHECK (volume_gate_passed IN (0, 1))"
-                    ),
-                    "proxy_execution_disagreement": "TEXT",
-                }
-                for column, definition in migrations.items():
-                    if column not in columns:
-                        conn.execute(
-                            f"ALTER TABLE lbank_signal_ledger "
-                            f"ADD COLUMN {column} {definition}"
-                        )
-                conn.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS
-                        idx_lbank_signal_ledger_symbol_triggered
-                    ON lbank_signal_ledger (
-                        symbol,
-                        triggered_at
-                    )
-                    """
-                )
-                conn.execute(
-                    """
-                    CREATE TRIGGER IF NOT EXISTS
-                        lbank_signal_ledger_no_update
-                    BEFORE UPDATE ON lbank_signal_ledger
-                    BEGIN
-                        SELECT RAISE(
-                            ABORT,
-                            'lbank_signal_ledger is immutable'
-                        );
-                    END
-                    """
-                )
-                conn.execute(
-                    """
-                    CREATE TRIGGER IF NOT EXISTS
-                        lbank_signal_ledger_no_delete
-                    BEFORE DELETE ON lbank_signal_ledger
-                    BEGIN
-                        SELECT RAISE(
-                            ABORT,
-                            'lbank_signal_ledger is immutable'
-                        );
-                    END
-                    """
-                )
-        except Exception as exc:
-            logger.error(
-                "Signal ledger initialization failed: %s",
-                exc,
+                required_tables=frozenset({"lbank_signal_ledger"}),
             )
 
     @staticmethod
