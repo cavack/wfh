@@ -570,6 +570,19 @@ _RUNTIME_SCHEMA: dict[str, ManagedTableSpec] = {
             "check(analysis_observed_at >= 0)",
             "check(reference_observed_at is null or reference_observed_at >= 0)",
             "check(metadata_contract_version = 'signal_metadata_v1')",
+            "check(classification_method in ('FUTURE_PIPELINE_EXPLICIT', 'LEGACY_PROFILE_EXACT_MATCH'))",
+            (
+                "check((classification_method = 'FUTURE_PIPELINE_EXPLICIT' "
+                "and classification_evidence_hash is null) or "
+                "(classification_method = 'LEGACY_PROFILE_EXACT_MATCH' "
+                "and length(classification_evidence_hash) = 64 "
+                "and classification_evidence_hash not glob '*[^0-9a-f]*'))"
+            ),
+            (
+                "check((signal_class = 'STRICT' and strategy_profile = 'strict_score_v2') "
+                "or (signal_class = 'EXPERIMENTAL' "
+                "and strategy_profile = 'experimental_pretrigger_v1'))"
+            ),
         ),
         triggers=_immutable(
             "signal_metadata",
@@ -588,7 +601,14 @@ _RUNTIME_VIEWS: dict[str, ManagedViewSpec] = {
             "s.id as signal_id",
             "m.signal_class",
             "m.strategy_profile",
+            "m.score_version",
+            "m.model_generation",
             "m.decision_contract_hash",
+            "m.analysis_observed_at",
+            "m.reference_observed_at",
+            "m.metadata_contract_version",
+            "m.classification_method",
+            "m.classification_evidence_hash",
         ),
         forbidden_fragments=(
             "left join signal_metadata",
