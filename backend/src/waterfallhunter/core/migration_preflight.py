@@ -49,6 +49,7 @@ _LEGACY_OPTIONAL_TABLES = frozenset(
         "lbank_execution_observations",
         "lbank_execution_observation_history",
         "provider_states",
+        "signal_metadata",
     }
 )
 

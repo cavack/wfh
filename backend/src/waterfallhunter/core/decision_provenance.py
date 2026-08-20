@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from waterfallhunter.core.score_v2 import ScoreV2
+from waterfallhunter.core.signal_metadata import canonical_sha256
 from waterfallhunter.core.stage_lifecycle import StageLifecycleStore
 
 
@@ -105,3 +106,9 @@ def build_decision_contract(
         "recorder": {"bucket_seconds": int(recorder_bucket_seconds)},
         "runtime_settings": _public_settings(settings),
     }
+
+
+def decision_contract_sha256(contract: dict[str, Any]) -> str:
+    """Return the RFC8785/JCS SHA-256 identity for a decision contract."""
+
+    return canonical_sha256(contract)
