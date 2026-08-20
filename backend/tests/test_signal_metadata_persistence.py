@@ -58,10 +58,15 @@ def _metadata(signal_class: SignalClass) -> SignalMetadataInput:
         if signal_class is SignalClass.STRICT
         else EXPERIMENTAL_STRATEGY_PROFILE
     )
+    score_version = (
+        "score_v2"
+        if signal_class is SignalClass.STRICT
+        else "score_v2_watch_v1"
+    )
     return SignalMetadataInput(
         signal_class=signal_class,
         strategy_profile=strategy_profile,
-        score_version="score_v2",
+        score_version=score_version,
         model_generation=MODEL_GENERATION,
         decision_contract_hash="a" * 64,
         analysis_observed_at=1_700_000_000,
@@ -184,6 +189,22 @@ def test_future_metadata_producer_rejects_missing_unknown_or_mismatched_lineage(
         build_signal_metadata_input(metrics, "d" * 64)
 
 
+def test_signal_metadata_input_rejects_noncanonical_score_version() -> None:
+    with pytest.raises(ValueError):
+        SignalMetadataInput(
+            signal_class=SignalClass.EXPERIMENTAL,
+            strategy_profile=EXPERIMENTAL_STRATEGY_PROFILE,
+            score_version="score_v2",
+            model_generation=MODEL_GENERATION,
+            decision_contract_hash="f" * 64,
+            analysis_observed_at=1_700_000_000,
+            reference_observed_at=1_699_999_990,
+            metadata_contract_version=METADATA_CONTRACT_VERSION,
+            classification_method=ClassificationMethod.FUTURE_PIPELINE_EXPLICIT,
+            classification_evidence_hash=None,
+        )
+
+
 def test_future_metadata_producer_requires_actual_analysis_observation_time() -> None:
     metrics = _producer_metrics(
         strategy_profile=STRICT_STRATEGY_PROFILE,
@@ -250,10 +271,47 @@ def test_experimental_signal_persists_explicit_experimental_lineage(tmp_path) ->
     assert signal_id == 1
     with sqlite3.connect(db.db_path) as conn:
         row = conn.execute(
-            "SELECT signal_class, strategy_profile FROM signal_metadata"
+            "SELECT signal_class, strategy_profile, score_version FROM signal_metadata"
         ).fetchone()
     assert row is not None, "No metadata row found"
-    assert row == ("EXPERIMENTAL", EXPERIMENTAL_STRATEGY_PROFILE)
+    assert row == (
+        "EXPERIMENTAL",
+        EXPERIMENTAL_STRATEGY_PROFILE,
+        "score_v2_watch_v1",
+    )
+
+
+@pytest.mark.parametrize(
+    "metadata_created_at",
+    [True, "1700000020", 1_700_000_020.5],
+)
+def test_metadata_created_at_rejects_non_integer_values_without_mutation(
+    tmp_path,
+    metadata_created_at,
+) -> None:
+    db = _armed_db(tmp_path)
+    ledger = LBankSignalLedger(db.db_path)
+
+    signal_id = ledger.persist_trigger(
+        SYMBOL,
+        "ARMED",
+        score=91.5,
+        trigger_metrics=_metrics(),
+        execution_suitability=_execution(),
+        triggered_at=1_700_000_010,
+        metadata=_metadata(SignalClass.STRICT),
+        metadata_created_at=metadata_created_at,
+    )
+
+    assert signal_id is None
+    assert _counts(db.db_path) == (0, 0)
+    with sqlite3.connect(db.db_path) as conn:
+        status_row = conn.execute(
+            "SELECT status FROM lbank_catalog WHERE symbol = ?",
+            (SYMBOL,),
+        ).fetchone()
+    assert status_row is not None
+    assert status_row[0] == "ARMED"
 
 
 def test_metadata_insert_failure_rolls_back_catalogue_ledger_and_metadata(
