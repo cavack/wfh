@@ -216,18 +216,13 @@ Use strict validation that rejects bool/non-finite/negative values and requires 
 
 - [ ] **Step 2: Implement a constructor that never invents status from age**
 
-Target API:
+Target callable signature (exact):
 
-```python
-def freshness_axis(
-    *,
-    status: FreshnessStatus | str,
-    observed_at: int | float | None,
-    evaluated_at: int | float,
-    reason: str | None = None,
-) -> FreshnessAxis:
-    ...
+```text
+freshness_axis(*, status: FreshnessStatus | str, observed_at: int | float | None, evaluated_at: int | float, reason: str | None = None) -> FreshnessAxis
 ```
+
+Implementation must validate `evaluated_at` first, validate `observed_at` only for LIVE/STALE, compute `age_seconds = evaluated_at - observed_at`, reject future observations, and return `age_seconds=None` only for UNAVAILABLE.
 
 Rules:
 

@@ -31,6 +31,37 @@
 - Every source task follows RED → exact failure → minimal GREEN → focused regression → full regression → independent review → fix/re-review.
 - Golden/model fixture changes require enumerated expected semantic differences. Never normalize a fixture merely to make CI green.
 
+## Execution Acceleration Policy — Faster Without Lowering Assurance
+
+Use concurrency only where it cannot change semantics or hide ordering failures.
+
+**Run in parallel whenever independent:**
+
+- fresh GitHub reads: PR metadata, exact-head status, changed-file/diff inspection, branch protection, and review evidence;
+- CI lanes that are already independent: backend, frontend, dependency audit, container validation, and repository hygiene;
+- focused test files inside one already-established RED/GREEN slice when they do not mutate shared fixtures;
+- static/security review and controller diff review after the exact candidate head is frozen;
+- documentation/evidence capture that reads immutable exact-head outputs.
+
+**Keep strictly serial:**
+
+- the stacked merge chain and each child retarget/revalidation;
+- RED evidence before implementation GREEN for the same behavior;
+- P1-D certification before P1-E, and P1-E certification before P1-F;
+- mutations that touch the same branch/file/fixture or depend on the previous commit;
+- every Production approval and operation gate.
+
+**Fast verification path:**
+
+1. batch read-only GitHub queries instead of repeating one-by-one inspection;
+2. use surgical local edits/worktrees, then verify the pushed exact SHA through GitHub;
+3. run the narrow focused suite after each micro-commit;
+4. run full backend/runtime-parity/frontend/container regression once at each slice certification boundary and once at final Wave 1D certification;
+5. if a CI failure is proven infrastructure/flaky with no source change, re-run only the failed job; never use retry to conceal a deterministic failure;
+6. cache/reuse immutable evidence only when its exact commit SHA and inputs still match; otherwise refresh it.
+
+No required check, Golden differential review, independent review, or approval gate may be skipped for speed.
+
 ## Plan Decomposition
 
 1. `docs/superpowers/plans/2026-08-20-wave1d-p1d-probability-cleanup-implementation.md`

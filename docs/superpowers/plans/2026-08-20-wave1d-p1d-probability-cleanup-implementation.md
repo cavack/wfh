@@ -194,7 +194,11 @@ Do not change the existing Entry/SL/TP/cost/min-notional math in this task.
 Keep:
 
 ```python
-history = await ex_instance.fetch_ohlcv(...)
+history = await ex_instance.fetch_ohlcv(
+    mapped_sym,
+    timeframe="5m",
+    limit=1000,
+)
 ```
 
 and keep `source_capture.position.raw_ohlcv` / `evaluated_at_ms` because those rows/timestamps remain replay evidence and `history[-24:]` still determines `recent_high`.
@@ -303,8 +307,15 @@ After removal, do not change this into `points / 90 * 100`. Implement:
 
 ```python
 configured_weight = sum(cls.WEIGHTS.values())  # 90.0, transitional only
-available_weight = sum(...)
-points = sum(...)
+available_components = [
+    packet for packet in components.values() if packet["available"]
+]
+available_weight = sum(
+    float(packet["weight"]) for packet in available_components
+)
+points = sum(
+    float(packet["points"]) for packet in available_components
+)
 normalized = points / available_weight * 100.0 if available_weight else None
 confidence = available_weight / configured_weight if configured_weight else 0.0
 ranking_score = points if available_weight else None
