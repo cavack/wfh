@@ -44,6 +44,9 @@ from waterfallhunter.core.lbank_signal_ledger import (
     LBankSignalLedger,
 )
 from waterfallhunter.core.signal_metadata import build_signal_metadata_input
+from waterfallhunter.core.signal_metadata_store import (
+    require_signal_metadata_completeness,
+)
 from waterfallhunter.core.lbank_signal_outcome import (
     LBankSignalOutcomeStore,
     LBankSignalSettlementWorker,
@@ -2134,6 +2137,7 @@ async def startup_event():
         db.db_path,
         check_user_version=CURRENT_RUNTIME_SCHEMA_VERSION,
     )
+    require_signal_metadata_completeness(db.db_path)
 
     _start_background_task(
         scanner.start_background_scanner(
