@@ -2,6 +2,7 @@ import sqlite3
 
 import pytest
 
+from schema_test_support import migrate_test_database
 from waterfallhunter.core.db import (
     DBAdapter,
 )
@@ -19,6 +20,7 @@ from waterfallhunter.core.lbank_execution_store import (
 def seed_catalog(
     db_path,
 ):
+    migrate_test_database(db_path)
     db = DBAdapter(
         str(db_path)
     )
