@@ -19,6 +19,10 @@ _REQUIRED_HISTORY_COLUMNS = {
     "applied_at": ("INTEGER", 1, 0),
     "source_revision": ("TEXT", 0, 0),
 }
+_EXPECTED_HISTORY_TRIGGERS = {
+    "schema_migrations_no_update": "UPDATE",
+    "schema_migrations_no_delete": "DELETE",
+}
 
 
 class MigrationError(RuntimeError):
@@ -186,6 +190,23 @@ def _split_sql_statements(sql_bytes: bytes) -> tuple[str, ...]:
     return tuple(statement for statement in statements if statement)
 
 
+def _history_trigger_sql_is_canonical(
+    *,
+    trigger_name: str,
+    operation: str,
+    sql: str,
+) -> bool:
+    """Return whether a history trigger exactly enforces the canonical abort rule."""
+    normalized = re.sub(r"\s+", " ", sql.strip())
+    pattern = (
+        rf"CREATE TRIGGER(?: IF NOT EXISTS)? {re.escape(trigger_name)} "
+        rf"BEFORE {re.escape(operation)} ON {_SCHEMA_MIGRATIONS_TABLE} "
+        r"BEGIN SELECT RAISE\s*\(\s*ABORT\s*,\s*"
+        r"'schema_migrations is immutable'\s*\)\s*;\s*END;?"
+    )
+    return re.fullmatch(pattern, normalized, flags=re.IGNORECASE) is not None
+
+
 class MigrationRunner:
     """Apply immutable, checksum-verified SQLite migrations."""
 
@@ -285,12 +306,43 @@ class MigrationRunner:
             raise MigrationError("migration history bootstrap failed") from exc
 
     @staticmethod
-    def _verify_history_schema(conn: sqlite3.Connection) -> None:
-        """Fail closed unless migration history has the required columns/constraints."""
+    def _verify_history_triggers(conn: sqlite3.Connection) -> None:
+        """Fail closed unless both canonical immutability triggers are installed."""
         try:
             rows = conn.execute(
-                f"PRAGMA table_info({_SCHEMA_MIGRATIONS_TABLE})"
+                "SELECT name, tbl_name, sql FROM sqlite_master "
+                "WHERE type='trigger' AND name IN (?, ?)",
+                tuple(_EXPECTED_HISTORY_TRIGGERS),
             ).fetchall()
+        except sqlite3.Error as exc:
+            raise MigrationStateError("migration history triggers are unreadable") from exc
+
+        triggers = {str(row[0]): row for row in rows}
+        if set(triggers) != set(_EXPECTED_HISTORY_TRIGGERS):
+            raise MigrationStateError("migration history immutability triggers are missing")
+
+        for trigger_name, operation in _EXPECTED_HISTORY_TRIGGERS.items():
+            row = triggers[trigger_name]
+            target_table = str(row[1]).casefold()
+            trigger_sql = row[2]
+            if target_table != _SCHEMA_MIGRATIONS_TABLE.casefold():
+                raise MigrationStateError(
+                    "migration history immutability trigger target is invalid"
+                )
+            if not isinstance(trigger_sql, str) or not _history_trigger_sql_is_canonical(
+                trigger_name=trigger_name,
+                operation=operation,
+                sql=trigger_sql,
+            ):
+                raise MigrationStateError(
+                    "migration history immutability trigger definition is invalid"
+                )
+
+    @staticmethod
+    def _verify_history_schema(conn: sqlite3.Connection) -> None:
+        """Fail closed unless migration history has the required canonical schema."""
+        try:
+            rows = conn.execute("PRAGMA table_info(schema_migrations)").fetchall()
         except sqlite3.Error as exc:
             raise MigrationStateError("migration history schema is unreadable") from exc
 
@@ -298,6 +350,14 @@ class MigrationRunner:
         missing = set(_REQUIRED_HISTORY_COLUMNS) - set(columns)
         if missing:
             raise MigrationStateError("migration history schema is incomplete")
+
+        primary_key_columns = [
+            str(row[1]) for row in rows if int(row[5]) > 0
+        ]
+        if primary_key_columns != ["version"]:
+            raise MigrationStateError(
+                "migration history must use version as its sole primary key"
+            )
 
         for name, (required_type, required_notnull, required_pk) in (
             _REQUIRED_HISTORY_COLUMNS.items()
@@ -314,6 +374,8 @@ class MigrationRunner:
                 raise MigrationStateError(
                     "migration history schema constraints are invalid"
                 )
+
+        MigrationRunner._verify_history_triggers(conn)
 
     def _verify_state(self, conn: sqlite3.Connection) -> set[int]:
         """Validate history schema, rows, checksums, and ``user_version``."""
