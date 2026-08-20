@@ -84,6 +84,98 @@ def test_runner_rejects_history_schema_with_weakened_constraints(tmp_path, ddl):
         runner.apply()
 
 
+def test_runner_rejects_history_schema_with_extra_composite_primary_key(tmp_path):
+    """Reject a composite PK even when required-column PK ordinals look valid."""
+    db_path = tmp_path / "registry.db"
+    packaged = _packaged_migration()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE schema_migrations ("
+            "version INTEGER, name TEXT NOT NULL, checksum_sha256 TEXT NOT NULL, "
+            "applied_at INTEGER NOT NULL, source_revision TEXT, scope TEXT NOT NULL, "
+            "PRIMARY KEY(version, scope))"
+        )
+        conn.execute(
+            "INSERT INTO schema_migrations "
+            "(version, name, checksum_sha256, applied_at, source_revision, scope) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (packaged.version, packaged.name, packaged.checksum_sha256, 1, None, "default"),
+        )
+        conn.execute("PRAGMA user_version=1")
+
+    runner = migrations.MigrationRunner(db_path=db_path, migrations=(packaged,))
+
+    with pytest.raises(migrations.MigrationStateError):
+        runner.apply()
+
+
+def test_runner_rejects_immutability_trigger_on_wrong_target(tmp_path):
+    """Reject a same-named UPDATE trigger that protects an unrelated table."""
+    db_path = tmp_path / "registry.db"
+    packaged = _packaged_migration()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE schema_migrations ("
+            "version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum_sha256 TEXT NOT NULL, "
+            "applied_at INTEGER NOT NULL, source_revision TEXT)"
+        )
+        conn.execute("CREATE TABLE unrelated (value INTEGER)")
+        conn.execute(
+            "CREATE TRIGGER schema_migrations_no_update "
+            "BEFORE UPDATE ON unrelated BEGIN SELECT 1; END"
+        )
+        conn.execute(
+            "CREATE TRIGGER schema_migrations_no_delete "
+            "BEFORE DELETE ON schema_migrations "
+            "BEGIN SELECT RAISE(ABORT, 'schema_migrations is immutable'); END"
+        )
+        conn.execute(
+            "INSERT INTO schema_migrations "
+            "(version, name, checksum_sha256, applied_at, source_revision) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (packaged.version, packaged.name, packaged.checksum_sha256, 1, None),
+        )
+        conn.execute("PRAGMA user_version=1")
+
+    runner = migrations.MigrationRunner(db_path=db_path, migrations=(packaged,))
+
+    with pytest.raises(migrations.MigrationStateError):
+        runner.apply()
+
+
+def test_runner_rejects_immutability_trigger_without_abort(tmp_path):
+    """Reject a same-named DELETE trigger that does not abort the mutation."""
+    db_path = tmp_path / "registry.db"
+    packaged = _packaged_migration()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE schema_migrations ("
+            "version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum_sha256 TEXT NOT NULL, "
+            "applied_at INTEGER NOT NULL, source_revision TEXT)"
+        )
+        conn.execute(
+            "CREATE TRIGGER schema_migrations_no_update "
+            "BEFORE UPDATE ON schema_migrations "
+            "BEGIN SELECT RAISE(ABORT, 'schema_migrations is immutable'); END"
+        )
+        conn.execute(
+            "CREATE TRIGGER schema_migrations_no_delete "
+            "BEFORE DELETE ON schema_migrations BEGIN SELECT 1; END"
+        )
+        conn.execute(
+            "INSERT INTO schema_migrations "
+            "(version, name, checksum_sha256, applied_at, source_revision) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (packaged.version, packaged.name, packaged.checksum_sha256, 1, None),
+        )
+        conn.execute("PRAGMA user_version=1")
+
+    runner = migrations.MigrationRunner(db_path=db_path, migrations=(packaged,))
+
+    with pytest.raises(migrations.MigrationStateError):
+        runner.apply()
+
+
 def test_validate_migrations_rejects_forged_checksum():
     packaged = _packaged_migration()
     forged = migrations.Migration(
