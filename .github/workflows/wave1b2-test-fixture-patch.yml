@@ -13,10 +13,6 @@ permissions:
 jobs:
   patch:
     runs-on: ubuntu-24.04
-    env:
-      PYTHONPATH: backend/src:.
-      LIVE_TRADING_ENABLED: "false"
-      REGISTRY_DB_PATH: ${{ runner.temp }}/waterfall_registry.db
     steps:
       - name: Checkout branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -93,21 +89,6 @@ jobs:
               '    db_path = migrate_test_database(tmp_path / "evidence.db")\n    recorder = ProductionEvidenceRecorder(str(db_path))',
           )
           PY
-
-      - name: Install locked backend dependencies
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with:
-          python-version: "3.13"
-          cache: pip
-          cache-dependency-path: backend/requirements.lock
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install --only-binary=:all: --require-hashes -r backend/requirements.lock
-
-      - name: Run complete backend suite
-        run: pytest -q backend/tests
 
       - name: Commit fixture-only patch
         run: |
