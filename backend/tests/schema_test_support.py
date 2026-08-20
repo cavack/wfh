@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import sqlite3
+from contextlib import redirect_stdout
 from pathlib import Path
 
-from waterfallhunter.core.migrations import MigrationRunner
+from waterfallhunter.migrate_database import main as run_migration_command
 
 
 _FIXTURE = Path(__file__).with_name("fixtures") / "legacy_runtime_schema_v0.fixture"
@@ -73,9 +75,25 @@ CREATE TABLE provider_states (
 
 
 def migrate_test_database(path: Path) -> Path:
-    """Create/upgrade one disposable DB through the first-party migration runner."""
-    MigrationRunner(db_path=path, source_revision="test").apply()
-    return path
+    """Create/upgrade one disposable DB through the guarded migration command."""
+    canonical = path.resolve()
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    output = io.StringIO()
+    with redirect_stdout(output):
+        status = run_migration_command(
+            (
+                "--db-path",
+                str(canonical),
+                "--source-revision",
+                "test",
+                "--apply",
+            )
+        )
+    if status != 0:
+        raise RuntimeError(
+            f"test database migration rejected with status {status}: {output.getvalue().strip()}"
+        )
+    return canonical
 
 
 def _insert_representative_rows(conn: sqlite3.Connection) -> None:
