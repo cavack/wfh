@@ -78,7 +78,7 @@ class Migration:
 
 def validate_migrations(migrations: Iterable[Migration]) -> tuple[Migration, ...]:
     """Return a canonical contiguous migration sequence or fail closed."""
-    ordered = tuple(sorted(tuple(migrations), key=lambda item: item.version))
+    ordered = tuple(sorted(migrations, key=lambda item: item.version))
     if not ordered:
         return ()
 
