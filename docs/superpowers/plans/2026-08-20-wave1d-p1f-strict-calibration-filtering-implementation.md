@@ -181,21 +181,21 @@ Build `dataset_identity_hash` over:
 ```python
 {
     "contract_version": "calibration_dataset_manifest_v1",
-    "signal_class_scope": [...],
-    "strategy_profile_scope": [...],
-    "score_version_scope": [...],
-    "model_generation_scope": [...],
-    "decision_contract_hash_scope": [...],
-    "observation_window_start": ...,
-    "observation_window_end": ...,
-    "included_sample_count": ...,
-    "excluded_sample_count": ...,
-    "exclusion_reason_counts": {...},
-    "outcome_horizon_seconds": ...,
-    "outcome_price_source": ...,
-    "sample_set_sha256": ...,
-    "research_only": ...,
-    "promotion_allowed": ...,
+    "signal_class_scope": canonical_signal_class_scope,
+    "strategy_profile_scope": canonical_strategy_profile_scope,
+    "score_version_scope": canonical_score_version_scope,
+    "model_generation_scope": canonical_model_generation_scope,
+    "decision_contract_hash_scope": canonical_decision_contract_hash_scope,
+    "observation_window_start": observation_window_start,
+    "observation_window_end": observation_window_end,
+    "included_sample_count": included_sample_count,
+    "excluded_sample_count": excluded_sample_count,
+    "exclusion_reason_counts": canonical_exclusion_reason_counts,
+    "outcome_horizon_seconds": outcome_horizon_seconds,
+    "outcome_price_source": outcome_price_source,
+    "sample_set_sha256": sample_set_sha256,
+    "research_only": research_only,
+    "promotion_allowed": promotion_allowed,
 }
 ```
 
@@ -278,9 +278,9 @@ model_generation
 
 A malformed canonical row is excluded from calibration/report dataset construction with deterministic reason code `MISSING_OR_INVALID_LINEAGE`; it is never coerced to STRICT.
 
-- [ ] **Step 5: Build sample identity without outcome hindsight leakage into cohort identity**
+- [ ] **Step 5: Build reproducible sample identity**
 
-Sample identity should bind immutable input identity and the settled outcome record identity needed to reproduce the dataset, for example:
+Sample identity binds immutable signal lineage plus the settled outcome record identity needed to reproduce the dataset:
 
 ```python
 sample_identity = {
@@ -296,11 +296,11 @@ sample_identity = {
 }
 ```
 
-Hash the sorted sample identities into `sample_set_sha256`. This binds the actual dataset without using future values to make earlier entry/selection decisions.
+Hash sorted sample identities into `sample_set_sha256`. Outcome fields are used only when constructing the post-settlement research/calibration dataset; they must never feed an earlier entry/ranking/reassessment decision.
 
 - [ ] **Step 6: Count deterministic exclusions**
 
-At minimum report counts for:
+At minimum support counts for:
 
 ```text
 SIGNAL_CLASS_OUT_OF_SCOPE
@@ -308,7 +308,7 @@ MISSING_OR_INVALID_LINEAGE
 OUTSIDE_OBSERVATION_WINDOW (when a window is supplied)
 ```
 
-The consumer must not bypass `canonical_signal_view` to reinterpret unresolved legacy rows. Non-canonical legacy rows remain outside the authoritative candidate set by design; if completeness metadata supplies a count, report it separately as `NON_CANONICAL_SIGNAL_EXCLUDED` without assigning a class.
+The consumer must not bypass `canonical_signal_view` to reinterpret unresolved legacy rows. Non-canonical legacy rows remain outside the authoritative candidate set by design; if the existing metadata-completeness layer supplies an aggregate count, report it separately as `NON_CANONICAL_SIGNAL_EXCLUDED` without assigning a class.
 
 - [ ] **Step 7: Attach manifest to report**
 
@@ -347,14 +347,14 @@ Expected: PASS.
 Existing historical backtest reports do not prove canonical STRICT lineage. Add a test that calibration may still compute research statistics but cannot emit promotion authority:
 
 ```python
-result = calibrate(report_without_manifest, ...)
+result = calibrate(report_without_manifest, current_score_contract, candidate_weights)
 
 assert result["research_only"] is True
 assert result["promotion_allowed"] is False
 assert result["promotion_blockers"] == ["MISSING_DATASET_MANIFEST"]
 ```
 
-Do not require old research fixtures to masquerade as STRICT.
+Use the existing test helper values for `current_score_contract` and `candidate_weights`; do not change calibration selection math.
 
 - [ ] **Step 2: RED non-STRICT manifest behavior**
 
@@ -368,7 +368,7 @@ assert "NON_STRICT_DATASET" in result["promotion_blockers"]
 
 - [ ] **Step 3: Validate supplied manifests using the canonical model**
 
-Add a helper:
+Add:
 
 ```python
 def _validated_dataset_manifest(report: dict) -> CalibrationDatasetManifest | None:
@@ -378,7 +378,7 @@ def _validated_dataset_manifest(report: dict) -> CalibrationDatasetManifest | No
     return CalibrationDatasetManifest.model_validate(raw)
 ```
 
-Malformed supplied manifests should raise a clear `ValueError` rather than being ignored.
+Malformed supplied manifests raise a clear validation error rather than being ignored.
 
 - [ ] **Step 4: Keep historical selection math unchanged**
 
@@ -397,16 +397,16 @@ P1-F wraps provenance/promotion eligibility; it does not tune ScoreV2.
 
 - [ ] **Step 5: Make manifest policy dominate promotion claims**
 
-The output should carry:
+The output carries:
 
 ```python
 "dataset_manifest": manifest.model_dump(mode="json") if manifest else None,
 "research_only": research_only,
 "promotion_allowed": False,
-"promotion_blockers": sorted(...),
+"promotion_blockers": sorted(promotion_blockers),
 ```
 
-Existing `promotion_eligibility` can remain as research diagnostic, but it must not override `promotion_allowed=False`.
+Existing `promotion_eligibility` remains a research diagnostic but cannot override `promotion_allowed=False`.
 
 - [ ] **Step 6: Run focused calibration tests**
 
@@ -426,26 +426,42 @@ Expected: PASS with existing selection behavior unchanged.
 
 - [ ] **Step 1: Prove missing lineage cannot enter strict dataset**
 
-Use schema/test helpers to create the closest legal fixture and assert a signal absent from `canonical_signal_view` never appears in the strict report/manifest sample set.
-
-Do not repair the row inside the consumer test.
+Use the existing schema/test helpers to insert a ledger signal without canonical metadata and assert it is absent from `canonical_signal_view`, the strict report, and the manifest sample set. Do not repair the row inside the consumer test.
 
 - [ ] **Step 2: Prove current defaults/JSON cannot reconstruct strictness**
 
 Insert a legacy ledger row whose `trigger_metrics_json` says `strategy_profile=strict_score_v2` but which has no canonical metadata. Assert it is excluded from strict report/calibration input.
 
-- [ ] **Step 3: Prove EXPERIMENTAL cannot leak into default counts or hash**
+- [ ] **Step 3: Prove EXPERIMENTAL cannot contaminate STRICT included samples or metrics**
 
-Add an experimental canonical signal alongside strict rows and assert the strict report's:
+Create dataset A with STRICT rows only. Create dataset B with the exact same STRICT rows plus one canonical EXPERIMENTAL row.
 
-```text
-signal_count
-included_sample_count
-sample_set_sha256
-dataset_identity_hash
+Assert:
+
+```python
+assert report_b["settlement"]["signal_count"] == report_a["settlement"]["signal_count"]
+assert report_b["dataset_manifest"]["included_sample_count"] == report_a["dataset_manifest"]["included_sample_count"]
+assert report_b["dataset_manifest"]["sample_set_sha256"] == report_a["dataset_manifest"]["sample_set_sha256"]
+assert report_b["by_execution_status"] == report_a["by_execution_status"]
 ```
 
-are unchanged relative to the same strict dataset without the experimental row except for the explicit exclusion count/reason if that count is part of identity.
+Because exclusion reason counts are deliberately part of semantic dataset identity, adding the out-of-scope EXPERIMENTAL row must also be observable as exclusion provenance:
+
+```python
+assert report_b["dataset_manifest"]["excluded_sample_count"] == (
+    report_a["dataset_manifest"]["excluded_sample_count"] + 1
+)
+assert report_b["dataset_manifest"]["exclusion_reason_counts"][
+    "SIGNAL_CLASS_OUT_OF_SCOPE"
+] == report_a["dataset_manifest"]["exclusion_reason_counts"].get(
+    "SIGNAL_CLASS_OUT_OF_SCOPE", 0
+) + 1
+assert report_b["dataset_manifest"]["dataset_identity_hash"] != (
+    report_a["dataset_manifest"]["dataset_identity_hash"]
+)
+```
+
+This distinction is intentional: the STRICT included sample set and aggregate metrics are unchanged, while the manifest records that a different source population required an exclusion.
 
 - [ ] **Step 4: Run**
 
