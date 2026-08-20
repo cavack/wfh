@@ -101,7 +101,10 @@ def _user_tables(conn: sqlite3.Connection) -> frozenset[str]:
 
 
 def _managed_constraints_valid(conn: sqlite3.Connection) -> bool:
-    return verify_unique_constraints_connection(conn).valid
+    return verify_unique_constraints_connection(
+        conn,
+        tables=managed_runtime_table_names(),
+    ).valid
 
 
 def _classify_migrated(path: Path, user_version: int) -> PreflightResult:
