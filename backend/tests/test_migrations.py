@@ -30,19 +30,20 @@ def test_package_migration_discovery_is_contiguous_and_hashes_exact_bytes():
 
     discovered = migrations.discover_migrations()
 
-    assert len(discovered) == 1
-    migration = discovered[0]
-    assert migration.version == 1
-    assert migration.name == "db_readiness_probe"
-    assert migration.filename == "0001_db_readiness_probe.sql"
+    assert [item.version for item in discovered] == [1, 2]
+    assert [item.name for item in discovered] == [
+        "db_readiness_probe",
+        "runtime_schema_baseline",
+    ]
 
-    raw = (
-        resources.files("waterfallhunter.migrations")
-        .joinpath("0001_db_readiness_probe.sql")
-        .read_bytes()
-    )
-    assert migration.sql_bytes == raw
-    assert migration.checksum_sha256 == hashlib.sha256(raw).hexdigest()
+    for migration in discovered:
+        raw = (
+            resources.files("waterfallhunter.migrations")
+            .joinpath(migration.filename)
+            .read_bytes()
+        )
+        assert migration.sql_bytes == raw
+        assert migration.checksum_sha256 == hashlib.sha256(raw).hexdigest()
 
 
 def test_packaged_migrations_include_runtime_baseline():
