@@ -163,3 +163,27 @@ def test_preflight_rejects_weakened_legacy_unique_constraints_before_write(
     assert result.compatible is False
     assert "LEGACY_SCHEMA_MISMATCH" in result.reason_codes
     assert _sha256(db_path) == before
+
+
+def test_preflight_rejects_unexpected_legacy_unique_constraint_before_write(
+    tmp_path: Path,
+):
+    sql = _FIXTURE.read_text(encoding="utf-8")
+    marker = "trigger_data TEXT\n);"
+    assert sql.count(marker) == 1
+    sql = sql.replace(
+        marker,
+        "trigger_data TEXT,\n    UNIQUE(last_price)\n);",
+    )
+
+    db_path = tmp_path / "over-constrained.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(sql)
+    before = _sha256(db_path)
+
+    result = classify_database(db_path)
+
+    assert result.state is PreflightState.PARTIAL_OR_INCOMPATIBLE
+    assert result.compatible is False
+    assert "LEGACY_SCHEMA_MISMATCH" in result.reason_codes
+    assert _sha256(db_path) == before
