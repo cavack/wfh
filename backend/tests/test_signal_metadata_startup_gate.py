@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import sqlite3
 from pathlib import Path
 
@@ -54,6 +55,7 @@ def _insert_ledger_row(
             triggered_at,
         ),
     )
+    assert cursor.lastrowid is not None
     return int(cursor.lastrowid)
 
 
@@ -97,6 +99,24 @@ def _insert_metadata(
             1_700_000_001,
         ),
     )
+
+
+def _patch_startup_workers(monkeypatch, main):
+    started: list[object] = []
+
+    def fake_start_background_task(awaitable):
+        started.append(awaitable)
+        if inspect.iscoroutine(awaitable):
+            awaitable.close()
+
+    class FakeSettlementWorker:
+        async def run_forever(self, *, interval_seconds: float = 900.0) -> None:
+            return None
+
+    monkeypatch.setattr(main, "_start_background_task", fake_start_background_task)
+    monkeypatch.setattr(main, "_build_lbank_execution_shadow_worker", lambda: None)
+    monkeypatch.setattr(main, "_build_signal_settlement_worker", FakeSettlementWorker)
+    return started
 
 
 def test_zero_signal_database_is_complete_and_read_only(tmp_path: Path) -> None:
@@ -204,3 +224,39 @@ def test_missing_database_is_rejected_without_creation(tmp_path: Path) -> None:
         verify_signal_metadata_completeness(db_path)
 
     assert db_path.exists() is False
+
+
+@pytest.mark.asyncio
+async def test_startup_rejects_incomplete_metadata_before_background_workers(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import waterfallhunter.main as main
+
+    db_path = migrate_test_database(tmp_path / "startup-incomplete.db")
+    with sqlite3.connect(db_path) as conn:
+        _insert_ledger_row(conn)
+
+    monkeypatch.setattr(main.db, "db_path", str(db_path))
+    started = _patch_startup_workers(monkeypatch, main)
+
+    with pytest.raises(SignalMetadataError, match="SIGNAL_METADATA_INCOMPLETE"):
+        await main.startup_event()
+
+    assert started == []
+
+
+@pytest.mark.asyncio
+async def test_startup_complete_metadata_reaches_worker_scheduling(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import waterfallhunter.main as main
+
+    db_path = migrate_test_database(tmp_path / "startup-complete.db")
+    monkeypatch.setattr(main.db, "db_path", str(db_path))
+    started = _patch_startup_workers(monkeypatch, main)
+
+    await main.startup_event()
+
+    assert started
