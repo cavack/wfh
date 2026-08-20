@@ -90,3 +90,31 @@ def test_sql_splitter_preserves_semicolons_inside_string_literals(tmp_path):
     with sqlite3.connect(db_path) as conn:
         value = conn.execute("SELECT value FROM literal_semicolon").fetchone()[0]
     assert value == "alpha;beta"
+
+
+def test_malformed_migration_history_missing_columns_is_typed_state_failure(tmp_path):
+    db_path = tmp_path / "registry.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE schema_migrations ("
+            "version INTEGER PRIMARY KEY, checksum_sha256 TEXT)"
+        )
+
+    with pytest.raises(migrations.MigrationStateError):
+        migrations.MigrationRunner(db_path=db_path).apply()
+
+
+def test_malformed_migration_history_invalid_version_is_typed_state_failure(tmp_path):
+    db_path = tmp_path / "registry.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE schema_migrations ("
+            "version TEXT, name TEXT, checksum_sha256 TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO schema_migrations (version, name, checksum_sha256) "
+            "VALUES ('not-an-int', 'broken', 'broken')"
+        )
+
+    with pytest.raises(migrations.MigrationStateError):
+        migrations.MigrationRunner(db_path=db_path).apply()
