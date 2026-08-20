@@ -132,7 +132,7 @@ Remaining observational components keep their existing relative weights/behavior
 - relative weakness
 - freshness
 
-The implementation may normalize over the remaining available weights, but must not invent a replacement 10-point predictive component.
+The five remaining numeric weights stay exactly `25/20/20/15/10` (cascade readiness / signal score / execution quality / relative weakness / freshness), for a new configured total of `90`. Normalization and confidence use that `90` total. The removed 10 points are neither redistributed nor retained as a phantom missing-weight penalty, and no replacement predictive component is invented.
 
 A version bump is required for the ranking packet because its component contract changes.
 
@@ -255,7 +255,7 @@ Any dataset/report intended to feed later calibration must carry a deterministic
 - deterministic exclusion reason counts;
 - outcome horizon definition;
 - outcome price-source semantics;
-- query/filter identity or deterministic manifest hash;
+- deterministic `dataset_identity_hash` over canonical semantic cohort/filter/provenance/input identity, excluding volatile `generated_at`;
 - `research_only` flag;
 - `promotion_allowed` flag.
 
