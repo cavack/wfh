@@ -4,7 +4,7 @@
 
 **Goal:** Make analysis freshness and LBank reference-price freshness independent, explicit, reproducible, and fail-closed without inventing a new global age threshold or turning freshness into predictive evidence.
 
-**Architecture:** Introduce a small pure freshness domain helper that validates timestamps/ages and represents each axis as `LIVE | STALE | UNAVAILABLE`. Status is supplied from already-authoritative source freshness verdicts, not inferred from a new Wave 1D threshold. Preserve the scanner's existing 90-second LBank reference TTL as the reference-source policy while exposing stale snapshots rather than collapsing them to `(None, None)`. Capture and retain `analysis_observed_at` independently in live metrics. Align `EvidenceQualityPacket` to Final Design contract version 1.1, enforce timestamp/age pair integrity, expose both freshness axes in dashboard payloads, and provide deterministic decision qualifiers for later typed decision assembly.
+**Architecture:** Introduce a small pure freshness domain helper that validates timestamps/ages and represents each axis as `LIVE | STALE | UNAVAILABLE`. Status is supplied from already-authoritative source freshness verdicts, not inferred from a new Wave 1D threshold. Preserve the scanner's existing 90-second LBank reference TTL as the reference-source policy while exposing stale snapshots rather than collapsing them to `(None, None)`. Capture and retain `analysis_observed_at` independently in live metrics. Align `EvidenceQualityPacket` to Final Design contract version 1.1, enforce timestamp/age pair integrity, expose both freshness axes in dashboard payloads, and provide deterministic decision qualifiers for later typed decision assembly. Analysis freshness can block a new strict confirmation; reference freshness controls authoritative execution levels and execution eligibility but must not erase an otherwise valid deterministic confirmation.
 
 **Tech Stack:** Python 3.13, Pydantic v2, FastAPI payload formatting, pytest, existing LBank scanner reference TTL policy, GitHub Actions, Docker/Compose.
 
@@ -19,9 +19,9 @@
 - Freshness is evidence quality / eligibility semantics, not directional predictive evidence.
 - Do not modify FinalRanking weights or use `EvidenceQualityPacket` as a new ranking component.
 - Initial signal identity/class/profile/metadata timestamps remain immutable.
-- A later stale reference does not rewrite historical signal metadata.
-- Missing/stale reference cannot make execution levels authoritative.
-- Missing/stale analysis cannot create a new strict execution-eligible confirmation.
+- A later stale reference does not rewrite historical signal metadata or change a deterministic confirmed signal into rejected.
+- Missing/stale reference makes execution levels non-authoritative and blocks execution eligibility at that observation boundary; the decision can remain `CONFIRMED` with `EXECUTION_LEVELS_UNAVAILABLE`/`STALE_REFERENCE` qualifiers as applicable.
+- Missing/stale analysis cannot create a new strict confirmation; `STALE_ANALYSIS` is reserved for actual stale analysis, while unavailable analysis uses `INSUFFICIENT_EVIDENCE`.
 - No schema migration; Wave 1C `signal_metadata` already persists analysis/reference observation timestamps.
 - No Production operations.
 
@@ -69,18 +69,20 @@ from waterfallhunter.core.freshness import (
 
 
 @pytest.mark.parametrize(
-    ("analysis", "reference", "eligible", "qualifiers"),
+    ("analysis", "reference", "confirmation_eligible", "levels_authoritative", "qualifiers"),
     [
-        (FreshnessStatus.LIVE, FreshnessStatus.LIVE, True, ()),
+        (FreshnessStatus.LIVE, FreshnessStatus.LIVE, True, True, ()),
         (
             FreshnessStatus.STALE,
             FreshnessStatus.LIVE,
             False,
+            True,
             (DecisionQualifier.STALE_ANALYSIS,),
         ),
         (
             FreshnessStatus.LIVE,
             FreshnessStatus.STALE,
+            True,
             False,
             (
                 DecisionQualifier.EXECUTION_LEVELS_UNAVAILABLE,
@@ -90,6 +92,7 @@ from waterfallhunter.core.freshness import (
         (
             FreshnessStatus.STALE,
             FreshnessStatus.STALE,
+            False,
             False,
             (
                 DecisionQualifier.EXECUTION_LEVELS_UNAVAILABLE,
@@ -99,16 +102,42 @@ from waterfallhunter.core.freshness import (
         ),
     ],
 )
-def test_freshness_axes_are_independent(analysis, reference, eligible, qualifiers):
+def test_freshness_axes_are_independent(
+    analysis,
+    reference,
+    confirmation_eligible,
+    levels_authoritative,
+    qualifiers,
+):
     result = assess_freshness_pair(
         analysis_status=analysis,
         reference_status=reference,
     )
-    assert result.strict_execution_eligible is eligible
+    assert result.strict_confirmation_eligible is confirmation_eligible
+    assert result.execution_levels_authoritative is levels_authoritative
+    assert result.strict_execution_eligible is (
+        confirmation_eligible and levels_authoritative
+    )
     assert result.qualifiers == qualifiers
 ```
 
-Add equivalent `UNAVAILABLE` cases: unavailable analysis blocks strict confirmation; unavailable reference blocks authoritative execution levels.
+Add explicit `UNAVAILABLE` cases:
+
+```text
+analysis UNAVAILABLE + reference LIVE
+  -> strict_confirmation_eligible=false
+  -> INSUFFICIENT_EVIDENCE
+
+analysis LIVE + reference UNAVAILABLE
+  -> strict_confirmation_eligible=true
+  -> execution_levels_authoritative=false
+  -> strict_execution_eligible=false
+  -> EXECUTION_LEVELS_UNAVAILABLE
+
+both UNAVAILABLE
+  -> confirmation false, levels false
+  -> EXECUTION_LEVELS_UNAVAILABLE + INSUFFICIENT_EVIDENCE
+```
 
 Run:
 
@@ -120,7 +149,7 @@ Expected RED: module/types do not exist.
 
 - [ ] **Step 2: Add age derivation and invalid timestamp tests**
 
-Required cases:
+Required case:
 
 ```python
 assert freshness_axis(
@@ -139,7 +168,7 @@ observed_at > evaluated_at
 bool timestamps
 NaN/inf timestamps
 status LIVE/STALE with missing observed_at
-status UNAVAILABLE with a fabricated age
+status UNAVAILABLE with a fabricated observed_at/age
 ```
 
 Expected RED until the pure validator exists.
@@ -220,19 +249,37 @@ class FreshnessAssessment(BaseModel):
 
     analysis_status: FreshnessStatus
     reference_status: FreshnessStatus
-    strict_execution_eligible: bool
+    strict_confirmation_eligible: bool
     execution_levels_authoritative: bool
+    strict_execution_eligible: bool
     qualifiers: tuple[DecisionQualifier, ...]
 ```
 
-Qualifier rules:
+Qualifier/consequence rules:
 
 ```text
-analysis STALE/UNAVAILABLE -> STALE_ANALYSIS, strict_execution_eligible=false
-reference STALE/UNAVAILABLE -> STALE_REFERENCE + EXECUTION_LEVELS_UNAVAILABLE,
-                              execution_levels_authoritative=false,
-                              strict_execution_eligible=false
-LIVE/LIVE -> no freshness qualifier
+analysis STALE
+  -> STALE_ANALYSIS
+  -> strict_confirmation_eligible=false
+
+analysis UNAVAILABLE
+  -> INSUFFICIENT_EVIDENCE
+  -> strict_confirmation_eligible=false
+
+reference STALE
+  -> STALE_REFERENCE + EXECUTION_LEVELS_UNAVAILABLE
+  -> execution_levels_authoritative=false
+  -> strict_execution_eligible=false
+  -> does not by itself erase deterministic confirmation
+
+reference UNAVAILABLE
+  -> EXECUTION_LEVELS_UNAVAILABLE
+  -> execution_levels_authoritative=false
+  -> strict_execution_eligible=false
+  -> does not by itself erase deterministic confirmation
+
+LIVE/LIVE
+  -> no freshness qualifier
 ```
 
 Canonicalize qualifier ordering using enum value sorting, consistent with `DecisionStatus`.
@@ -261,20 +308,16 @@ Update `_valid_evidence_packet()` to use:
 _envelope("evidence_quality", "1.1")
 ```
 
-Add tests:
-
-```python
-def test_evidence_quality_requires_reference_timestamp_and_age_as_a_pair():
-    ...
-```
+Add tests for reference timestamp/age pair integrity.
 
 Invalid combinations:
 
 ```text
 reference_observed_at set + reference_age_seconds None
 reference_observed_at None + reference_age_seconds set
-analysis age inconsistent with generated/evaluation timestamp when constructed by the canonical builder
 ```
+
+Age-at-evaluation consistency is tested through the canonical freshness builder because `EvidenceQualityPacket` does not carry a separate dedicated `evaluated_at` field beyond envelope generation semantics.
 
 - [ ] **Step 2: Bump only the EvidenceQuality contract version**
 
@@ -305,8 +348,6 @@ if (self.reference_observed_at is None) != (self.reference_age_seconds is None):
     raise ValueError("reference observation timestamp and age must be present together")
 ```
 
-Full age-at-evaluation consistency remains in `freshness_axis()` because the Pydantic packet does not carry a separate `evaluated_at` field beyond the envelope timestamp semantics.
-
 - [ ] **Step 4: Run focused contract tests**
 
 ```bash
@@ -325,12 +366,7 @@ Expected: PASS.
 
 - [ ] **Step 1: RED a structured reference snapshot**
 
-Add tests for the existing `reference_ttl_seconds=90.0` policy:
-
-```python
-def test_reference_snapshot_distinguishes_live_stale_and_unavailable(monkeypatch):
-    ...
-```
+Add tests for the existing `reference_ttl_seconds=90.0` policy.
 
 Required behavior:
 
@@ -395,7 +431,7 @@ assert candidate["metrics"] is not None  # analysis is not erased by reference s
 
 Also test the inverse: fresh reference + unavailable analysis never becomes analysis LIVE.
 
-Current code should RED because `is_live` reference status controls whether metrics survive.
+Current code should RED because reference `is_live` controls whether metrics survive.
 
 - [ ] **Step 2: Store `analysis_observed_at` in the compact live-analysis packet**
 
@@ -418,7 +454,7 @@ Do not replace it with persistence time or current dashboard render time.
 
 - [ ] **Step 3: Add approved compact fields**
 
-Allow `compact_metrics()` to carry `analysis_observed_at` and any explicit source freshness status/reason needed by the formatter. Do not expose raw provider payloads.
+Allow `compact_metrics()` to carry `analysis_observed_at` and the explicit source freshness status/reason produced for the current analysis. Do not expose raw provider payloads.
 
 - [ ] **Step 4: Make `get_formatted_candidates()` evaluate axes independently**
 
@@ -432,21 +468,31 @@ no completed analysis/pending/failed non-stale analysis -> UNAVAILABLE
 explicit stale-source verdict from the validator/source packet -> STALE
 ```
 
-Do not infer STALE from a newly invented age threshold. Always expose `analysis_age_seconds` when an analysis timestamp exists, even though age itself does not define the status.
+Do not infer STALE from a newly invented age threshold. Always expose `analysis_age_seconds` when a LIVE or STALE analysis timestamp exists; `UNAVAILABLE` has no fabricated observation timestamp.
 
 Do not condition `metrics` existence on reference being LIVE.
 
-- [ ] **Step 5: Fail closed at the current decision boundary**
+- [ ] **Step 5: Apply freshness consequences without collapsing decision axes**
 
-Before a new strict trigger can persist/alert, construct the freshness assessment for the current evaluation. Require:
+At the current decision boundary:
 
-```python
-assessment.strict_execution_eligible is True
+```text
+analysis LIVE is required to create a new strict deterministic confirmation
+analysis STALE/UNAVAILABLE prevents a new strict confirmation
+reference LIVE is required for authoritative execution levels and strict execution eligibility
+reference STALE/UNAVAILABLE adds execution-level qualifiers but does not by itself delete an otherwise valid deterministic confirmation
 ```
 
-for a fresh strict confirmation. If analysis or reference is explicitly stale/unavailable, do not create a new strict execution-eligible confirmation. Use deterministic freshness qualifiers/reason codes in the decision-facing packet/helper; do not mutate historical class/profile.
+This preserves the Final Design distinction:
 
-Experimental research behavior remains non-trade-eligible and must not be silently promoted by this gate.
+```text
+signal_class = STRICT
+lifecycle_state = TRIGGERED
+decision_status.primary = CONFIRMED
+decision_status.qualifiers may include EXECUTION_LEVELS_UNAVAILABLE / STALE_REFERENCE
+```
+
+Experimental research behavior remains non-trade-eligible and must not be silently promoted.
 
 - [ ] **Step 6: Run focused tests**
 
@@ -506,7 +552,7 @@ Allowed P1-E differences:
 new explicit analysis/reference freshness fields/statuses
 reference stale state retained as stale metadata instead of collapsed to absent
 analysis metrics no longer erased solely because reference is unavailable/stale
-freshness qualifiers/reasons block new strict execution eligibility where required
+freshness qualifiers/reasons separate confirmation from execution-level authority
 EvidenceQualityPacket version 1.1
 ```
 
