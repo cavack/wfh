@@ -381,7 +381,7 @@ pytest -q backend/tests/test_signal_metadata_schema.py backend/tests/test_signal
 
 - [ ] **Step 3: Implement read-only verification**
 
-Open SQLite via `Path.resolve().as_uri() + '?mode=ro'` and call `sqlite3.connect(database_uri, uri=True, ...)` so `mode=ro` is enforced. Also set `PRAGMA query_only=ON`, count ledger, metadata, canonical rows, missing rows and orphans, and prove a missing target path remains absent. `require_signal_metadata_completeness()` raises stable `SignalMetadataError` beginning `SIGNAL_METADATA_INCOMPLETE` when incomplete. It never migrates, inserts, updates, deletes, repairs, or creates a DB.
+Open SQLite via `Path.resolve().as_uri() + '?mode=ro'` and call `sqlite3.connect(database_uri, uri=True, ...)` so `mode=ro` is enforced. Also set `PRAGMA query_only=ON`; count ledger, metadata, canonical, missing, orphan, and invalid metadata rows; and prove a missing target path remains absent. Independently validate every metadata row against the exact class/profile/score-version triples and the full metadata contract even when a weakened schema/view permits the row. Any invalid row makes completeness fail with `INVALID_METADATA`, and `require_signal_metadata_completeness()` raises a stable `SignalMetadataError` beginning `SIGNAL_METADATA_INCOMPLETE`. It never migrates, inserts, updates, deletes, repairs, or creates a DB.
 
 - [ ] **Step 4: Verify and commit P1-C1 foundation**
 
@@ -413,12 +413,13 @@ After the design/plan PR is merged, open a clean draft **P1-C1** PR targeting `m
 - Create: `backend/tests/test_signal_metadata_persistence.py`
 - Create: `backend/tests/test_managed_sqlite_foreign_keys.py`
 - Modify: `backend/tests/test_lbank_signal_ledger.py`
+- Modify every existing test caller: `backend/tests/test_lbank_signal_outcome.py` and `backend/tests/test_lbank_execution_outcome_report.py` in addition to the ledger tests.
 
 **Interface:** `persist_trigger(..., metadata: SignalMetadataInput, metadata_created_at: int | None = None) -> int | None`.
 
 - [ ] **Step 1: Write RED atomicity tests**
 
-Test STRICT and EXPERIMENTAL inserts. Test metadata failure rolls back catalogue status + ledger + metadata. Test stale CAS inserts neither ledger nor metadata. Attempt orphan inserts through the production writer connection and require `sqlite3.IntegrityError`. Add a repository guard proving every first-party managed-schema writer uses the common foreign-key-enforcing connection factory; read-only verifiers and the migration owner are explicit audited exceptions.
+Test STRICT and EXPERIMENTAL inserts. Test metadata failure rolls back catalogue status + ledger + metadata. Test stale CAS inserts neither ledger nor metadata. Update all seven existing `persist_trigger()` test callers to pass a valid `SignalMetadataInput` fixture and retain every trigger-path assertion; a repository search test must prevent an unconverted caller. Attempt orphan inserts through the production writer connection and require `sqlite3.IntegrityError`. Add a repository guard proving every first-party managed-schema writer uses the common foreign-key-enforcing connection factory; read-only verifiers and the migration owner are explicit audited exceptions.
 
 - [ ] **Step 2: Run RED**
 
@@ -437,7 +438,9 @@ Validate `SignalMetadataInput` before DB mutation. Route writable managed-databa
 ```bash
 pytest -q backend/tests/test_signal_metadata_persistence.py \
           backend/tests/test_managed_sqlite_foreign_keys.py \
-          backend/tests/test_lbank_signal_ledger.py
+          backend/tests/test_lbank_signal_ledger.py \
+          backend/tests/test_lbank_signal_outcome.py \
+          backend/tests/test_lbank_execution_outcome_report.py
 git add backend/src/waterfallhunter/core/lbank_signal_ledger.py \
         backend/src/waterfallhunter/core/managed_sqlite.py \
         backend/src/waterfallhunter/core/db.py \
@@ -453,7 +456,9 @@ git add backend/src/waterfallhunter/core/lbank_signal_ledger.py \
         backend/src/waterfallhunter/core/stage_lifecycle.py \
         backend/tests/test_signal_metadata_persistence.py \
         backend/tests/test_managed_sqlite_foreign_keys.py \
-        backend/tests/test_lbank_signal_ledger.py
+        backend/tests/test_lbank_signal_ledger.py \
+        backend/tests/test_lbank_signal_outcome.py \
+        backend/tests/test_lbank_execution_outcome_report.py
 git commit -m "feat: persist signal metadata atomically with ledger"
 ```
 
@@ -533,7 +538,7 @@ Include complete EXPERIMENTAL evidence, missing decision hash, missing analysis 
 
 - [ ] **Step 2: Write RED classifier tests**
 
-Prove `experimental_pretrigger_v1` alone is insufficient, evidence hashes are deterministic, preview is read-only, mismatched `expected_report_hash` fails before write, and unresolved/conflicting rows receive no metadata. Add a TOCTOU regression in which database state changes after preview but before apply obtains its write lock; apply must reject the stale hash before inserting metadata.
+Prove `experimental_pretrigger_v1` alone is insufficient, evidence hashes are deterministic, preview is read-only, mismatched `expected_report_hash` fails before write, and unresolved/conflicting rows receive no metadata. Add a TOCTOU regression in which database state changes after preview but before apply obtains its write lock; apply must reject the stale hash before inserting metadata. Add an identical-rerun test proving no row is rewritten, plus a conflicting-rerun test proving the whole operation rolls back.
 
 - [ ] **Step 3: Implement pure classification**
 
@@ -541,7 +546,7 @@ Build the evidence envelope only from persisted historical fields actually used.
 
 - [ ] **Step 4: Implement preview/apply**
 
-Preview opens read-only, classifies every ledger row, and returns deterministic counts/IDs/report hash. Apply requires schema v3, obtains `BEGIN IMMEDIATE`, recomputes the complete classification report and hash from the locked database state, compares that locked-state hash with `expected_report_hash`, and rolls back before insertion on mismatch. Only the recomputed matching decision set may be applied. Apply inserts only RESOLVED metadata rows using `INSERT`, never `INSERT OR REPLACE`, verifies any pre-existing row is byte/field equivalent, and never UPDATEs/DELETEs metadata.
+Preview opens read-only, classifies every ledger row, and returns deterministic counts/IDs/report hash. Apply requires schema v3, obtains `BEGIN IMMEDIATE`, recomputes the complete classification report and hash from the locked database state, compares that locked-state hash with `expected_report_hash`, and rolls back before insertion on mismatch. Only the recomputed matching decision set may be applied. For each RESOLVED signal under that lock: INSERT only when metadata is absent; skip only an exact pre-existing match; and fail/roll back the entire operation on any mismatch. `created_at` participates in equivalence: an explicit retry value must equal the stored value, while a retry with `created_at=None` preserves and compares against the stored timestamp rather than generating a new value for an existing row. Never use `INSERT OR REPLACE`, UPDATE, or DELETE.
 
 - [ ] **Step 5: Verify unresolved rows remain non-canonical**
 
