@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from schema_test_support import migrate_test_database
+from signal_metadata_test_support import strict_signal_metadata
 from waterfallhunter.core.db import DBAdapter
 from waterfallhunter.core.lbank_execution_outcome_report import (
     LBankExecutionOutcomeReport,
@@ -72,6 +73,7 @@ def _seed_outcome(
             "observational_only": True,
             "trade_eligible": None,
         },
+        metadata=strict_signal_metadata(analysis_observed_at=triggered_at),
         quote_volume=3_000_000.0,
         volume_gate_passed=True,
         proxy_execution_disagreement=comparison_kind,
@@ -163,6 +165,7 @@ def test_report_exposes_oldest_mature_backlog_age(tmp_path):
             "observational_only": True,
             "trade_eligible": None,
         },
+        metadata=strict_signal_metadata(analysis_observed_at=triggered_at),
         triggered_at=triggered_at,
     ) == 1
 

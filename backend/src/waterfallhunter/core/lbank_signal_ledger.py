@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from waterfallhunter.core.schema_contract import require_managed_schema
+from waterfallhunter.core.signal_metadata import SignalMetadataInput
 
 
 logger = logging.getLogger(
@@ -63,6 +64,8 @@ class LBankSignalLedger:
         score: float,
         trigger_metrics: dict,
         execution_suitability: dict,
+        metadata: SignalMetadataInput,
+        metadata_created_at: int | None = None,
         quote_volume: float | None = None,
         volume_gate_passed: bool | None = None,
         proxy_execution_disagreement: str | None = None,
@@ -73,6 +76,20 @@ class LBankSignalLedger:
             symbol = str(symbol).strip().upper()
             expected_state = str(expected_state).strip().upper()
             score_value = self._finite(score)
+            metadata_value = SignalMetadataInput.model_validate(metadata)
+            metadata_time = (
+                int(time.time())
+                if metadata_created_at is None
+                else metadata_created_at
+            )
+            if (
+                isinstance(metadata_time, bool)
+                or not isinstance(metadata_time, int)
+                or metadata_time < 0
+            ):
+                raise ValueError(
+                    "invalid signal identity, score, or metadata time"
+                )
             metrics = (
                 trigger_metrics
                 if isinstance(trigger_metrics, dict)
@@ -94,7 +111,11 @@ class LBankSignalLedger:
                 else triggered_at
             )
 
-            if not symbol or not expected_state or score_value is None:
+            if (
+                not symbol
+                or not expected_state
+                or score_value is None
+            ):
                 raise ValueError("invalid signal identity or score")
 
             metrics_json = self._json(metrics)
@@ -211,8 +232,45 @@ class LBankSignalLedger:
                         int(time.time()),
                     ),
                 )
+                raw_signal_id = inserted.lastrowid
+                if raw_signal_id is None:
+                    raise RuntimeError("signal ledger insert did not return a row id")
+                signal_id = int(raw_signal_id)
 
-                return int(inserted.lastrowid)
+                conn.execute(
+                    """
+                    INSERT INTO signal_metadata (
+                        signal_id,
+                        signal_class,
+                        strategy_profile,
+                        score_version,
+                        model_generation,
+                        decision_contract_hash,
+                        analysis_observed_at,
+                        reference_observed_at,
+                        metadata_contract_version,
+                        classification_method,
+                        classification_evidence_hash,
+                        created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        signal_id,
+                        metadata_value.signal_class.value,
+                        metadata_value.strategy_profile,
+                        metadata_value.score_version,
+                        metadata_value.model_generation,
+                        metadata_value.decision_contract_hash,
+                        metadata_value.analysis_observed_at,
+                        metadata_value.reference_observed_at,
+                        metadata_value.metadata_contract_version,
+                        metadata_value.classification_method.value,
+                        metadata_value.classification_evidence_hash,
+                        metadata_time,
+                    ),
+                )
+
+                return signal_id
 
         except Exception as exc:
             logger.error(

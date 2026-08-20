@@ -5,6 +5,7 @@ import sqlite3
 import pytest
 
 from schema_test_support import migrate_test_database
+from signal_metadata_test_support import strict_signal_metadata
 from waterfallhunter.core.db import DBAdapter
 from waterfallhunter.core.lbank_signal_ledger import LBankSignalLedger
 from waterfallhunter.core.lbank_signal_outcome import (
@@ -198,6 +199,7 @@ def _persist_signal(tmp_path, *, triggered_at=1_000):
             "observational_only": True,
             "trade_eligible": None,
         },
+        metadata=strict_signal_metadata(analysis_observed_at=triggered_at),
         triggered_at=triggered_at,
     )
     assert signal_id == 1

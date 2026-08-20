@@ -50,21 +50,23 @@ class LBankSignalOutcomeStore:
                 rows = conn.execute(
                     """
                     SELECT
-                        s.id,
+                        s.signal_id AS id,
                         s.symbol,
                         s.triggered_at,
                         s.entry_price,
                         s.stop_loss,
                         s.take_profit_1,
                         s.take_profit_2,
-                        s.trigger_metrics_json
-                    FROM lbank_signal_ledger AS s
+                        s.trigger_metrics_json,
+                        s.signal_class,
+                        s.strategy_profile
+                    FROM canonical_signal_view AS s
                     LEFT JOIN lbank_signal_outcomes AS o
-                        ON o.signal_id = s.id
+                        ON o.signal_id = s.signal_id
                     WHERE
                         o.signal_id IS NULL
                         AND s.triggered_at <= ?
-                    ORDER BY s.triggered_at, s.id
+                    ORDER BY s.triggered_at, s.signal_id
                     LIMIT ?
                     """,
                     (

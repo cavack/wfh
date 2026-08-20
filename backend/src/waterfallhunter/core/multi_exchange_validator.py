@@ -12,6 +12,7 @@ from waterfallhunter.core.microstructure import MicrostructureAnalyzer
 from waterfallhunter.core.multi_exchange import MultiExchangeGateway
 from waterfallhunter.core.position_calculator import PositionCalculator
 from waterfallhunter.core.score_v2 import ScoreV2
+from waterfallhunter.core.signal_metadata import STRICT_STRATEGY_PROFILE
 from waterfallhunter.core.ws_streamer import WebSocketManager
 
 
@@ -2175,6 +2176,7 @@ class MultiExchangeValidator:
         else:
             base_score = score_result["score"]
             metrics["trade_eligible"] = True
+            metrics["strategy_profile"] = STRICT_STRATEGY_PROFILE
 
         status = (
             "TRIGGERED"

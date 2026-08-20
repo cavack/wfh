@@ -39,9 +39,11 @@ def test_strict_and_experimental_profiles_are_explicit() -> None:
     experimental = _metadata(
         signal_class=SignalClass.EXPERIMENTAL,
         strategy_profile=EXPERIMENTAL_STRATEGY_PROFILE,
+        score_version="score_v2_watch_v1",
     )
     assert experimental.signal_class is SignalClass.EXPERIMENTAL
     assert experimental.strategy_profile == EXPERIMENTAL_STRATEGY_PROFILE
+    assert experimental.score_version == "score_v2_watch_v1"
 
 
 @pytest.mark.parametrize(
