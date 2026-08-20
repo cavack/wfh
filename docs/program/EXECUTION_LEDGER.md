@@ -249,3 +249,38 @@ A supplemental Windows/Python-3.13 full-backend run produced `538 passed, 1 fail
 The remaining limitation is evidence completeness for fresh latest-head external static-analysis reruns (Sonar / DeepSource Python), not a known functional, safety, or model-semantic regression. This state does not qualify as `MERGE_READY_PENDING_MERGE_APPROVAL` yet.
 
 PR #34 remains Draft and unmerged. No Production backup, Production DB write, Production migration/classification/schema mutation, deployment, Docker/service restart/build on Production, server package install, Telegram test send, live trading, merge, or auto-merge was performed. `LIVE_TRADING_ENABLED=false` remains invariant.
+
+### Task 10 external-review closure
+
+The prior `CERTIFIED_WITH_KNOWN_LIMITATIONS` state is superseded by fresh latest-head evidence collected after the certification ledger commit.
+
+- Source head before this final evidence-only ledger update: `c05c492a31991a33b3d4f980a167af76f259c92a`.
+- The only source delta after `00a825d...` narrowed an already-validated error message; commit `c05c492...` changed one string literal and no persistence/model/control-flow semantics.
+- Current GitHub Actions run `32386835967`: backend, frontend, dependency-audit, repository-hygiene, and container-validation all PASS.
+- Backend on Ubuntu / CPython 3.13.15: `539 passed, 9 warnings`; runtime parity PASS; `LIVE_TRADING_ENABLED=false`.
+- Exact-head focused P1-C suite on the isolated development worktree: `71 passed, 5 warnings`.
+- Exact-head Golden/model regression: `2 passed`; canonical cases retain deterministic three-replay equality.
+
+#### Independent review closure
+
+- CodeRabbit run `2681d0d0-ea4f-4afc-8ca6-7a9ea50aaff0` found one Minor logging-accuracy issue only; it was fixed by `c05c492...`.
+- Follow-up CodeRabbit run `c2ba33df-3980-4aa1-96bb-bef81c08f9b7` over `00a825d... -> c05c492...` generated no actionable comments.
+- Current CodeRabbit check is PASS; no new unresolved inline review thread was introduced.
+- CodeRabbit's docstring-coverage item remains a non-functional advisory, not a branch-protection or Task-10 safety/model gate.
+
+#### Sonar/security gate closure
+
+- `gh pr checks 32 --repo cavack/wfh` reports `SonarCloud Code Analysis` PASS for P1-C1, covering migration 3, metadata schema/view, and managed-schema foundation scope.
+- SonarQube Cloud API for project `cavack_wfh`, pull request 32: Quality Gate `OK`; new security rating `1` (A), new reliability rating `1` (A), new maintainability rating `1` (A), new duplicated-lines density `0.0`, and new security hotspots reviewed `100.0%`.
+- PR #32 unresolved Sonar vulnerabilities: `0`; TO_REVIEW security hotspots: `0`.
+- `gh pr checks 34 --repo cavack/wfh` reports `SonarCloud Code Analysis` PASS for P1-C2/current Task-10 head, covering atomic persistence, future metadata producer, classifier, canonical consumers, reporting, and startup gate.
+- SonarQube Cloud API for project `cavack_wfh`, pull request 34: Quality Gate `OK`; new security rating `1` (A), new reliability rating `1` (A), new maintainability rating `1` (A), new duplicated-lines density `0.0`, and new security hotspots reviewed `100.0%`.
+- PR #34 unresolved Sonar vulnerabilities: `0`; TO_REVIEW security hotspots: `0`.
+- A supplementary manual security-diff review found no reportable vulnerability in changed SQL/query construction, transaction boundaries, legacy read-only/hash-gated classification, metadata validation, canonical consumer filtering, or startup fail-closed behavior.
+- A fresh DeepSource rerun was requested but is not used as a Task-10 gate; the approved implementation plan requires Sonar/security diff review and independent CodeRabbit/controller review, both now satisfied.
+
+### Superseding Wave 1C controller state
+
+`W1-C = MERGE_READY_PENDING_MERGE_APPROVAL`.
+
+All development-side Task-10 gates are now satisfied. This is an evidence/certification state only. It does not authorize merge, Production backup, Production DB write, migration/classification, deployment, Production restart/build, Telegram send, package installation, or live trading. PR #34 remains Draft and unmerged; `MERGE_APPROVAL` has not been granted.
