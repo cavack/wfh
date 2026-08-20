@@ -63,11 +63,7 @@ def verify_unique_constraints_connection(
     tables: frozenset[str] | None = None,
 ) -> UniqueConstraintVerificationResult:
     """Verify the exact canonical UNIQUE-key set without mutating SQLite."""
-    selected = (
-        frozenset(CANONICAL_UNIQUE_KEYS)
-        if tables is None
-        else frozenset(tables) & frozenset(CANONICAL_UNIQUE_KEYS)
-    )
+    selected = frozenset(CANONICAL_UNIQUE_KEYS) if tables is None else frozenset(tables)
     existing = {
         str(row[0])
         for row in conn.execute(
@@ -79,7 +75,7 @@ def verify_unique_constraints_connection(
         if table not in existing:
             # Missing-table handling belongs to the primary schema verifier.
             continue
-        expected = CANONICAL_UNIQUE_KEYS[table]
+        expected = CANONICAL_UNIQUE_KEYS.get(table, frozenset())
         actual = _actual_unique_keys(conn, table)
         if actual != expected:
             issues.append(
