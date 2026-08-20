@@ -12,6 +12,13 @@ from typing import Iterable
 
 _MIGRATION_FILENAME = re.compile(r"^(?P<version>\d{4})_(?P<name>[a-z0-9_]+)\.sql$")
 _SCHEMA_MIGRATIONS_TABLE = "schema_migrations"
+_REQUIRED_HISTORY_COLUMNS = {
+    "version": ("INTEGER", None, 1),
+    "name": ("TEXT", 1, 0),
+    "checksum_sha256": ("TEXT", 1, 0),
+    "applied_at": ("INTEGER", 1, 0),
+    "source_revision": ("TEXT", 0, 0),
+}
 
 
 class MigrationError(RuntimeError):
@@ -77,8 +84,24 @@ class Migration:
 
 
 def validate_migrations(migrations: Iterable[Migration]) -> tuple[Migration, ...]:
-    """Return a canonical contiguous migration sequence or fail closed."""
-    ordered = tuple(sorted(migrations, key=lambda item: item.version))
+    """Return canonical exact-byte migrations in one contiguous sequence."""
+    canonical: list[Migration] = []
+    for migration in migrations:
+        if not isinstance(migration, Migration):
+            raise MigrationDiscoveryError("migration set contains an invalid object")
+        rebuilt = Migration.from_bytes(
+            version=migration.version,
+            name=migration.name,
+            filename=migration.filename,
+            sql_bytes=migration.sql_bytes,
+        )
+        if migration.checksum_sha256 != rebuilt.checksum_sha256:
+            raise MigrationDiscoveryError(
+                "migration checksum does not match exact SQL bytes"
+            )
+        canonical.append(rebuilt)
+
+    ordered = tuple(sorted(canonical, key=lambda item: item.version))
     if not ordered:
         return ()
 
@@ -185,7 +208,7 @@ class MigrationRunner:
         self._source_revision = source_revision
 
     def apply(self) -> tuple[int, ...]:
-        """Apply pending migrations and return their versions in applied order."""
+        """Apply pending migrations and return versions applied by this runner."""
         if not self._db_path.parent.is_dir():
             raise MigrationError("database parent directory does not exist")
 
@@ -210,8 +233,8 @@ class MigrationRunner:
             for migration in self._migrations:
                 if migration.version in applied_versions:
                     continue
-                self._apply_one(conn, migration)
-                newly_applied.append(migration.version)
+                if self._apply_one(conn, migration):
+                    newly_applied.append(migration.version)
                 applied_versions = self._verify_state(conn)
 
             return tuple(newly_applied)
@@ -261,8 +284,40 @@ class MigrationRunner:
                     pass
             raise MigrationError("migration history bootstrap failed") from exc
 
+    @staticmethod
+    def _verify_history_schema(conn: sqlite3.Connection) -> None:
+        """Fail closed unless migration history has the required columns/constraints."""
+        try:
+            rows = conn.execute(
+                f"PRAGMA table_info({_SCHEMA_MIGRATIONS_TABLE})"
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise MigrationStateError("migration history schema is unreadable") from exc
+
+        columns = {str(row[1]): row for row in rows}
+        missing = set(_REQUIRED_HISTORY_COLUMNS) - set(columns)
+        if missing:
+            raise MigrationStateError("migration history schema is incomplete")
+
+        for name, (required_type, required_notnull, required_pk) in (
+            _REQUIRED_HISTORY_COLUMNS.items()
+        ):
+            row = columns[name]
+            declared_type = str(row[2]).strip().upper()
+            notnull = int(row[3])
+            primary_key = int(row[5])
+            if declared_type != required_type or primary_key != required_pk:
+                raise MigrationStateError(
+                    "migration history schema constraints are invalid"
+                )
+            if required_notnull is not None and notnull != required_notnull:
+                raise MigrationStateError(
+                    "migration history schema constraints are invalid"
+                )
+
     def _verify_state(self, conn: sqlite3.Connection) -> set[int]:
-        """Validate history shape, checksums, and ``user_version`` consistency."""
+        """Validate history schema, rows, checksums, and ``user_version``."""
+        self._verify_history_schema(conn)
         try:
             rows = conn.execute(
                 "SELECT version, name, checksum_sha256 "
@@ -302,14 +357,29 @@ class MigrationRunner:
 
         return set(history_versions)
 
-    def _apply_one(self, conn: sqlite3.Connection, migration: Migration) -> None:
-        """Apply one migration and advance history/version in one transaction."""
+    def _apply_one(self, conn: sqlite3.Connection, migration: Migration) -> bool:
+        """Apply one migration under a serialized pending check.
+
+        Returns ``True`` when this runner applies the migration and ``False``
+        when another runner committed it before this runner acquired the lock.
+        """
         statements = _split_sql_statements(migration.sql_bytes)
         if not statements:
             raise MigrationError("migration SQL must contain at least one statement")
 
         try:
             conn.execute("BEGIN IMMEDIATE")
+            applied_versions = self._verify_state(conn)
+            if migration.version in applied_versions:
+                conn.execute("COMMIT")
+                return False
+
+            expected_version = max(applied_versions, default=0) + 1
+            if migration.version != expected_version:
+                raise MigrationStateError(
+                    "migration application order disagrees with history"
+                )
+
             for statement in statements:
                 conn.execute(statement)
             conn.execute(
@@ -332,6 +402,7 @@ class MigrationRunner:
             )
             conn.execute(f"PRAGMA user_version={migration.version}")
             conn.execute("COMMIT")
+            return True
         except Exception as exc:
             if conn.in_transaction:
                 try:
