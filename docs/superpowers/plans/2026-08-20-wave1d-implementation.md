@@ -14,8 +14,10 @@
 
 - Canonical repository: `cavack/wfh`.
 - The approved Wave 1D design is the specification; Audit/Product Requirements are requirement inventory, while Final Design v6.1 controls architecture/dependency order.
-- Do not implement Wave 1D source changes on top of the existing deep Wave 0→1C PR stack. First merge the already-certified stack into `main` under explicit `MERGE_APPROVAL`, then branch P1-D from the resulting fresh `main`.
-- Existing merge order is `#22 → #23 → #24 → #25 → #31 → #32 → #34`; after each parent merge, retarget the child to `main`, re-run fresh diff/CI/review/mergeability checks, then merge only if GREEN. PR #35 is independent and is not part of this chain.
+- Do not implement Wave 1D source changes on top of the existing deep Wave 0→1C PR stack.
+- First merge the already-certified Wave 0→1C stack into `main` under explicit `MERGE_APPROVAL`.
+- Then retarget documentation PR #36 to that new `main`, verify its docs-only diff/CI/review again, and merge #36 only under explicit `MERGE_APPROVAL`. P1-D must branch from a fresh `main` that already contains the approved Wave 1D spec and implementation plans.
+- Existing source-stack merge order is `#22 → #23 → #24 → #25 → #31 → #32 → #34`; after each parent merge, retarget the child to `main`, re-run fresh diff/CI/review/mergeability checks, then merge only if GREEN. PR #35 is independent and is not part of this chain.
 - `LIVE_TRADING_ENABLED=false` remains invariant.
 - LBank USDT Perpetual remains the user-facing execution source of truth.
 - `margin_mode=ISOLATED`; Cross Margin remains forbidden.
@@ -47,12 +49,13 @@ Required evidence:
 main SHA
 main branch protection and required checks
 PR #22/#23/#24/#25/#31/#32/#34 heads, bases, Draft state, mergeability
+PR #36 head/base/Draft state and exact docs-only changed-file set
 current CI/status checks for the exact head being merged
 ```
 
-Expected result: no unexplained drift from the certified Wave 1C chain. Any drift is reconciled before merge.
+Expected result: no unexplained drift from the certified Wave 1C chain or the approved Wave 1D docs. Any drift is reconciled before merge.
 
-- [ ] **Step 2: Merge the Wave 0→1C stack only after explicit `MERGE_APPROVAL`**
+- [ ] **Step 2: Merge the Wave 0→1C source stack only after explicit `MERGE_APPROVAL`**
 
 For each PR in order:
 
@@ -67,7 +70,21 @@ merge child only when GREEN
 
 Expected result: Wave 1C source and docs land on `main` without flattening child deltas incorrectly.
 
-- [ ] **Step 3: Establish a fresh post-merge baseline**
+- [ ] **Step 3: Retarget and merge approved Wave 1D documentation only under merge approval**
+
+After #34 is merged:
+
+```text
+retarget #36 base -> main
+verify diff contains only the approved Wave 1D spec + four implementation-plan documents
+verify no source/runtime file appears in #36
+run/read fresh CI + CodeRabbit/Sonar/review on exact retargeted head
+merge #36 only if GREEN and covered by explicit MERGE_APPROVAL
+```
+
+Expected result: canonical `main` contains the approved design and executable plans before source implementation begins.
+
+- [ ] **Step 4: Establish a fresh post-documentation baseline**
 
 Run/read:
 
@@ -77,16 +94,16 @@ PYTHONPATH=backend/src:. python scripts/verify_runtime_parity.py
 cd frontend && npm ci && npm run typecheck && npm run build
 ```
 
-Also require GitHub required checks and container-validation on the exact merged `main`.
+Also require GitHub required checks and container-validation on the exact resulting `main`.
 
-Expected result: post-Wave1C `main` is GREEN and becomes the sole branch point for P1-D.
+Expected result: post-Wave1C + approved Wave1D-docs `main` is GREEN and becomes the sole branch point for P1-D.
 
 ---
 
 ### Task 1: Execute P1-D Probability Cleanup
 
 - [ ] Follow every task in `2026-08-20-wave1d-p1d-probability-cleanup-implementation.md`.
-- [ ] Branch from the fresh post-Wave1C `main`, not PR #36 or the old stacked feature chain.
+- [ ] Branch from the fresh post-documentation `main`, not PR #36 or the old stacked feature chain.
 - [ ] Do not start P1-E until P1-D focused tests, full regression, Golden differential review, static/security checks, CodeRabbit, and controller review are GREEN.
 
 Expected P1-D intentional semantic delta:
@@ -147,6 +164,7 @@ pytest -q \
   backend/tests/test_final_ranking.py \
   backend/tests/test_dashboard.py \
   backend/tests/test_notifier.py \
+  backend/tests/test_feature_replay.py \
   backend/tests/test_freshness_contracts.py \
   backend/tests/test_canonical_contracts.py \
   backend/tests/test_stale_trigger_safety.py \
