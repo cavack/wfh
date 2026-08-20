@@ -94,7 +94,6 @@ def test_stale_trigger_persistence_failure_suppresses_telegram(
 
     def reject_persistence(*args, **kwargs):
         persisted.append((args, kwargs))
-        return None
 
     monkeypatch.setattr(
         main.signal_ledger,

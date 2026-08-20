@@ -224,6 +224,7 @@ def test_strict_signal_persists_metadata_with_ledger_atomically(tmp_path) -> Non
             (signal_id,),
         ).fetchone()
 
+    assert row is not None, f"No metadata row found for signal_id {signal_id}"
     assert row == (
         1,
         "STRICT",
@@ -251,6 +252,7 @@ def test_experimental_signal_persists_explicit_experimental_lineage(tmp_path) ->
         row = conn.execute(
             "SELECT signal_class, strategy_profile FROM signal_metadata"
         ).fetchone()
+    assert row is not None, "No metadata row found"
     assert row == ("EXPERIMENTAL", EXPERIMENTAL_STRATEGY_PROFILE)
 
 
@@ -273,10 +275,12 @@ def test_metadata_insert_failure_rolls_back_catalogue_ledger_and_metadata(
     assert _persist(ledger, _metadata(SignalClass.STRICT)) is None
 
     with sqlite3.connect(db.db_path) as conn:
-        status = conn.execute(
+        status_row = conn.execute(
             "SELECT status FROM lbank_catalog WHERE symbol = ?",
             (SYMBOL,),
-        ).fetchone()[0]
+        ).fetchone()
+    assert status_row is not None, f"No catalog row found for {SYMBOL}"
+    status = status_row[0]
     assert status == "ARMED"
     assert _counts(db.db_path) == (0, 0)
 

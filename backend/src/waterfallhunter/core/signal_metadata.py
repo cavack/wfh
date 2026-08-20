@@ -106,6 +106,9 @@ def build_signal_metadata_input(
         raise ValueError("signal metadata metrics must be a mapping")
 
     strategy_profile = metrics.get("strategy_profile")
+    if not isinstance(strategy_profile, str):
+        raise ValueError("strategy_profile must be an exact recognized future profile")
+
     score_version = metrics.get("score_version")
     lineage = {
         STRICT_STRATEGY_PROFILE: (SignalClass.STRICT, "score_v2"),

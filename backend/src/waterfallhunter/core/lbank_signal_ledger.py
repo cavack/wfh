@@ -225,7 +225,10 @@ class LBankSignalLedger:
                         int(time.time()),
                     ),
                 )
-                signal_id = int(inserted.lastrowid)
+                raw_signal_id = inserted.lastrowid
+                if raw_signal_id is None:
+                    raise RuntimeError("signal ledger insert did not return a row id")
+                signal_id = int(raw_signal_id)
 
                 conn.execute(
                     """
