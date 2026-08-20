@@ -49,6 +49,14 @@ _SECRET_KEY_NAMES = frozenset(
         "secret_key",
     }
 )
+_DELIVERY_PAYLOAD_KEYS_COMPACT = frozenset(
+    key.replace("_", "") for key in _DELIVERY_PAYLOAD_KEYS
+)
+_SECRET_KEY_NAMES_COMPACT = frozenset(
+    key.replace("_", "") for key in _SECRET_KEY_NAMES
+)
+_RFC8785_MAX_SAFE_INTEGER = (1 << 53) - 1
+_RFC8785_MIN_SAFE_INTEGER = -_RFC8785_MAX_SAFE_INTEGER
 
 
 def _normalized_payload_key(key: str) -> str:
@@ -57,9 +65,15 @@ def _normalized_payload_key(key: str) -> str:
 
 def _payload_key_is_forbidden(key: str) -> bool:
     normalized = _normalized_payload_key(key)
-    if normalized in _DELIVERY_PAYLOAD_KEYS or normalized in _SECRET_KEY_NAMES:
+    compact = normalized.replace("_", "")
+    if (
+        normalized in _DELIVERY_PAYLOAD_KEYS
+        or normalized in _SECRET_KEY_NAMES
+        or compact in _DELIVERY_PAYLOAD_KEYS_COMPACT
+        or compact in _SECRET_KEY_NAMES_COMPACT
+    ):
         return True
-    return any(word in normalized for word in _SECRET_KEY_WORDS)
+    return any(word in compact for word in _SECRET_KEY_WORDS)
 
 
 def _freeze_json_mapping(
@@ -81,7 +95,11 @@ def _freeze_json_mapping(
 
 
 def _freeze_json(value: Any, *, reject_payload_keys: bool = False) -> Any:
-    if value is None or isinstance(value, (str, bool, int)):
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if isinstance(value, int):
+        if not _RFC8785_MIN_SAFE_INTEGER <= value <= _RFC8785_MAX_SAFE_INTEGER:
+            raise ValueError("contract JSON integers must fit RFC 8785 safe integer domain")
         return value
     if isinstance(value, float):
         if not math.isfinite(value):
