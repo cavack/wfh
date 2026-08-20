@@ -3,9 +3,12 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from schema_test_support import (
     build_legacy_runtime_database,
     business_row_hashes,
+    migrate_test_database,
 )
 from waterfallhunter.core.migration_preflight import (
     PreflightState,
@@ -53,6 +56,30 @@ def test_clean_install_reaches_current_runtime_schema(tmp_path: Path):
     assert result.valid is True, result.issues
 
     assert runner.apply() == ()
+
+
+def test_shared_test_migration_helper_rejects_incompatible_database_before_write(
+    tmp_path: Path,
+):
+    db_path = tmp_path / "incompatible.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE unrelated (id INTEGER PRIMARY KEY)")
+
+    with pytest.raises(RuntimeError):
+        migrate_test_database(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        user_version = conn.execute("PRAGMA user_version").fetchone()[0]
+        migration_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
+        ).fetchone()
+        unrelated = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='unrelated'"
+        ).fetchone()
+
+    assert user_version == 0
+    assert migration_table is None
+    assert unrelated is not None
 
 
 def test_canonical_legacy_adoption_preserves_business_and_evidence_rows(tmp_path: Path):
