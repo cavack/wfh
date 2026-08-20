@@ -127,6 +127,27 @@ def _remove_check_containing(sql: str, marker: str) -> str:
     raise AssertionError(f"CHECK containing {marker!r} not found")
 
 
+def _remove_projection(sql: str, projection: str) -> str:
+    match = re.search(re.escape(projection), sql)
+    if match is None:
+        raise AssertionError(f"projection {projection!r} not found")
+
+    start, end = match.span()
+    tail = end
+    while tail < len(sql) and sql[tail].isspace():
+        tail += 1
+    if tail < len(sql) and sql[tail] == ",":
+        tail += 1
+        return sql[:start] + sql[tail:]
+
+    head = start
+    while head > 0 and sql[head - 1].isspace():
+        head -= 1
+    if head > 0 and sql[head - 1] == ",":
+        head -= 1
+    return sql[:head] + sql[end:]
+
+
 def _rewrite_sqlite_schema(
     db_path: Path,
     *,
@@ -207,12 +228,7 @@ def test_schema_verifier_rejects_missing_canonical_metadata_projection(
         ).fetchone()
         assert row is not None and isinstance(row[0], str)
         original = str(row[0])
-        rewritten = re.sub(
-            rf"\s*{re.escape(projection)}\s*,?",
-            "",
-            original,
-            count=1,
-        )
+        rewritten = _remove_projection(original, projection)
         assert rewritten != original
         conn.execute("DROP VIEW canonical_signal_view")
         conn.execute(rewritten)
