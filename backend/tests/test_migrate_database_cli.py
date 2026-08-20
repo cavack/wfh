@@ -4,6 +4,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from schema_test_support import build_legacy_runtime_database
 
 
@@ -63,6 +65,38 @@ def test_cli_apply_requires_nonempty_source_revision(tmp_path: Path, capsys):
     assert db_path.exists() is False
     payload = _json_output(capsys)
     assert payload["reason_codes"] == ["SOURCE_REVISION_REQUIRED"]
+
+
+@pytest.mark.parametrize(
+    "unsafe_db_path",
+    (
+        "registry.db",
+        ":memory:",
+        "file:registry.db?mode=memory&cache=shared",
+    ),
+)
+def test_cli_rejects_non_absolute_or_sqlite_pseudo_targets(unsafe_db_path: str, capsys):
+    exit_code = _main()(["--db-path", unsafe_db_path, "--preflight"])
+
+    assert exit_code == 2
+    payload = _json_output(capsys)
+    assert payload["ok"] is False
+    assert payload["reason_codes"] == ["DB_PATH_INVALID"]
+
+
+def test_cli_rejects_symlink_database_target_without_writing(tmp_path: Path, capsys):
+    target = build_legacy_runtime_database(tmp_path / "legacy.db")
+    before = target.read_bytes()
+    alias = tmp_path / "registry.db"
+    alias.symlink_to(target)
+
+    exit_code = _main()(["--db-path", str(alias), "--preflight"])
+
+    assert exit_code == 2
+    assert target.read_bytes() == before
+    payload = _json_output(capsys)
+    assert payload["ok"] is False
+    assert payload["reason_codes"] == ["DB_PATH_INVALID"]
 
 
 def test_cli_preflight_is_read_only_for_legacy_database(tmp_path: Path, capsys):
