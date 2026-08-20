@@ -15,6 +15,9 @@ from waterfallhunter.core.migration_preflight import (
 )
 
 
+_FIXTURE = Path(__file__).with_name("fixtures") / "legacy_runtime_schema_v0.sql"
+
+
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -123,4 +126,40 @@ def test_preflight_rejects_partial_migration_metadata_without_repair(tmp_path: P
 
     assert result.state is PreflightState.PARTIAL_OR_INCOMPATIBLE
     assert "MIGRATION_HISTORY_INVALID" in result.reason_codes
+    assert _sha256(db_path) == before
+
+
+@pytest.mark.parametrize(
+    ("canonical", "weakened"),
+    [
+        ("signal_id INTEGER NOT NULL UNIQUE,", "signal_id INTEGER NOT NULL,"),
+        ("UNIQUE(bucket_started_at, symbol)", "CHECK(bucket_started_at >= 0)"),
+        ("UNIQUE(snapshot_id, replay_version)", "CHECK(snapshot_id >= 0)"),
+        (
+            "UNIQUE (bucket_started_at, source, symbol)",
+            "CHECK (bucket_started_at >= 0)",
+        ),
+        ("report_sha256 TEXT NOT NULL UNIQUE,", "report_sha256 TEXT NOT NULL,"),
+        ("event_key TEXT NOT NULL UNIQUE,", "event_key TEXT NOT NULL,"),
+    ],
+)
+def test_preflight_rejects_weakened_legacy_unique_constraints_before_write(
+    tmp_path: Path,
+    canonical: str,
+    weakened: str,
+):
+    sql = _FIXTURE.read_text(encoding="utf-8")
+    assert sql.count(canonical) == 1
+    sql = sql.replace(canonical, weakened)
+
+    db_path = tmp_path / "weakened.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(sql)
+    before = _sha256(db_path)
+
+    result = classify_database(db_path)
+
+    assert result.state is PreflightState.PARTIAL_OR_INCOMPATIBLE
+    assert result.compatible is False
+    assert "LEGACY_SCHEMA_MISMATCH" in result.reason_codes
     assert _sha256(db_path) == before
