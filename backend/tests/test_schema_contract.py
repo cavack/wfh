@@ -163,6 +163,70 @@ def test_schema_verifier_rejects_wrong_named_index_columns():
     assert "INDEX_MISMATCH" in _codes(result)
 
 
+@pytest.mark.parametrize(
+    "index_clause",
+    [
+        "(updated_at) WHERE 0",
+        "(updated_at COLLATE NOCASE)",
+        "(updated_at DESC)",
+    ],
+)
+def test_schema_verifier_rejects_noncanonical_named_index_structure(
+    index_clause: str,
+):
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(
+        f"""
+        CREATE TABLE lbank_stage_lifecycle (
+            symbol TEXT NOT NULL,
+            lifecycle_id INTEGER NOT NULL,
+            hype_seen_at INTEGER,
+            damage_seen_at INTEGER,
+            setup_seen_at INTEGER,
+            setup_type TEXT,
+            trigger_seen_at INTEGER,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY(symbol, lifecycle_id)
+        );
+        CREATE INDEX idx_lbank_stage_lifecycle_updated
+        ON lbank_stage_lifecycle {index_clause};
+        """
+    )
+
+    result = verify_managed_schema_connection(
+        conn,
+        required_tables=frozenset({"lbank_stage_lifecycle"}),
+    )
+
+    assert "INDEX_MISMATCH" in _codes(result)
+
+
+def test_schema_verifier_rejects_noncanonical_column_collation():
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        """
+        CREATE TABLE provider_states (
+            provider_id TEXT COLLATE NOCASE PRIMARY KEY,
+            upstream_identity TEXT NOT NULL,
+            status TEXT NOT NULL,
+            failure_class TEXT NOT NULL,
+            consecutive_failures INTEGER NOT NULL,
+            circuit_open_until REAL NOT NULL,
+            replacement_generation INTEGER NOT NULL,
+            last_success_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        )
+        """
+    )
+
+    result = verify_managed_schema_connection(
+        conn,
+        required_tables=frozenset({"provider_states"}),
+    )
+
+    assert "COLUMN_COLLATION_MISMATCH" in _codes(result)
+
+
 def _create_signal_ledger_parent(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE TABLE lbank_signal_ledger (id INTEGER PRIMARY KEY)")
 

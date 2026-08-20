@@ -219,7 +219,7 @@ Expected: import/module missing.
 
 - [ ] **Step 3: Implement manifest primitives and introspection**
 
-Use `PRAGMA table_info`, `index_list`, `index_info`, `foreign_key_list`, and `sqlite_master`. Tokenize executable SQL separately from comments, string literals, and quoted identifiers. CHECK fragments must match executable structure outside quoted content; trigger guards must match the complete canonical trigger DDL with no `WHEN` clause or additional statements, and its executable `RAISE(ABORT, <literal>)` call must use a decoded literal equal to the canonical message:
+Use `PRAGMA table_info`, `index_list`, `index_xinfo`, `foreign_key_list`, and `sqlite_master`. Named indexes must match uniqueness, ordered key columns, direction, collation, and non-partial status. Reject explicit managed-column `COLLATE` clauses because the canonical schema uses SQLite's default `BINARY` collation. Tokenize executable SQL separately from comments, string literals, and quoted identifiers. CHECK fragments must match executable structure outside quoted content; trigger guards must match the complete canonical trigger DDL with no `WHEN` clause or additional statements, and its executable `RAISE(ABORT, <literal>)` call must use a decoded literal equal to the canonical message:
 
 ```python
 def _normalized_sql(sql: str | None) -> str:

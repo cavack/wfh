@@ -668,6 +668,66 @@ def _sql_structure(value: str | None) -> tuple[str, tuple[str, ...]]:
     return "".join(compact), tuple(literals)
 
 
+def _sql_unquoted_tokens(value: str | None) -> tuple[str, ...]:
+    """Return executable word tokens outside comments and quoted content."""
+    if not isinstance(value, str):
+        return ()
+
+    tokens: list[str] = []
+    token: list[str] = []
+    index = 0
+    while index < len(value):
+        character = value[index]
+        following = value[index + 1] if index + 1 < len(value) else ""
+
+        if character == "-" and following == "-":
+            if token:
+                tokens.append("".join(token).casefold())
+                token.clear()
+            index += 2
+            while index < len(value) and value[index] not in "\r\n":
+                index += 1
+            continue
+        if character == "/" and following == "*":
+            if token:
+                tokens.append("".join(token).casefold())
+                token.clear()
+            comment_end = value.find("*/", index + 2)
+            if comment_end < 0:
+                return ()
+            index = comment_end + 2
+            continue
+        if character in {"'", '"', "`", "["}:
+            if token:
+                tokens.append("".join(token).casefold())
+                token.clear()
+            closing = "]" if character == "[" else character
+            index += 1
+            closed = False
+            while index < len(value):
+                if value[index] == closing:
+                    if index + 1 < len(value) and value[index + 1] == closing:
+                        index += 2
+                        continue
+                    index += 1
+                    closed = True
+                    break
+                index += 1
+            if not closed:
+                return ()
+            continue
+        if character.isalnum() or character == "_":
+            token.append(character)
+        elif token:
+            tokens.append("".join(token).casefold())
+            token.clear()
+        index += 1
+
+    if token:
+        tokens.append("".join(token).casefold())
+    return tuple(tokens)
+
+
 def _default_normalized(value: object) -> str | None:
     if value is None:
         return None
@@ -702,6 +762,14 @@ def _column_issues(
 
     actual = {str(row[1]): row for row in rows}
     issues: list[SchemaIssue] = []
+    if "collate" in _sql_unquoted_tokens(_table_sql(conn, spec.name)):
+        issues.append(
+            SchemaIssue(
+                "COLUMN_COLLATION_MISMATCH",
+                spec.name,
+                "managed columns must use the canonical default collation",
+            )
+        )
     for column in spec.columns:
         row = actual[column.name]
         declared_type = str(row[2] or "").strip().upper()
@@ -730,7 +798,7 @@ def _index_issues(
 ) -> list[SchemaIssue]:
     rows = conn.execute(f'PRAGMA index_list("{spec.name}")').fetchall()
     actual_user_indexes = {
-        str(row[1]): bool(int(row[2]))
+        str(row[1]): row
         for row in rows
         if len(row) < 4 or str(row[3]).casefold() == "c"
     }
@@ -747,16 +815,33 @@ def _index_issues(
 
     issues: list[SchemaIssue] = []
     for index in spec.indexes:
-        columns = tuple(
-            str(row[2])
-            for row in conn.execute(f'PRAGMA index_info("{index.name}")').fetchall()
+        index_row = actual_user_indexes[index.name]
+        unique = bool(int(index_row[2]))
+        partial = bool(int(index_row[4])) if len(index_row) > 4 else False
+        key_parts = tuple(
+            (
+                str(row[2]),
+                bool(int(row[3])),
+                str(row[4] or "").upper(),
+            )
+            for row in conn.execute(
+                f'PRAGMA index_xinfo("{index.name}")'
+            ).fetchall()
+            if len(row) < 6 or bool(int(row[5]))
         )
-        if columns != index.columns or actual_user_indexes[index.name] != index.unique:
+        expected_parts = tuple(
+            (column, False, "BINARY") for column in index.columns
+        )
+        if (
+            key_parts != expected_parts
+            or unique != index.unique
+            or partial
+        ):
             issues.append(
                 SchemaIssue(
                     "INDEX_MISMATCH",
                     index.name,
-                    "index uniqueness or ordered columns differ",
+                    "index uniqueness, key order, collation, direction, or predicate differs",
                 )
             )
     return issues
