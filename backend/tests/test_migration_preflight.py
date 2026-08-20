@@ -15,7 +15,7 @@ from waterfallhunter.core.migration_preflight import (
 )
 
 
-_FIXTURE = Path(__file__).with_name("fixtures") / "legacy_runtime_schema_v0.sql"
+_FIXTURE = Path(__file__).with_name("fixtures") / "legacy_runtime_schema_v0.fixture"
 
 
 def _sha256(path: Path) -> str:
