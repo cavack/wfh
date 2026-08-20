@@ -61,6 +61,14 @@ class SignalMetadataInput(BaseModel):
             self.signal_class,
             self.strategy_profile,
         )
+        expected_score_version = {
+            SignalClass.STRICT: "score_v2",
+            SignalClass.EXPERIMENTAL: "score_v2_watch_v1",
+        }.get(self.signal_class)
+        if expected_score_version != self.score_version:
+            raise ValueError(
+                "signal class and score version do not match canonical lineage"
+            )
         if (
             self.classification_method
             is ClassificationMethod.FUTURE_PIPELINE_EXPLICIT
