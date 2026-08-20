@@ -1,5 +1,7 @@
 import sqlite3
 
+import pytest
+
 from schema_test_support import migrate_test_database
 from waterfallhunter.core.contracts import SignalClass
 from waterfallhunter.core.db import DBAdapter
@@ -11,6 +13,7 @@ from waterfallhunter.core.signal_metadata import (
     MODEL_GENERATION,
     STRICT_STRATEGY_PROFILE,
     SignalMetadataInput,
+    build_signal_metadata_input,
 )
 
 
@@ -69,6 +72,19 @@ def _metadata(signal_class: SignalClass) -> SignalMetadataInput:
     )
 
 
+def _producer_metrics(
+    *,
+    strategy_profile: str,
+    score_version: str,
+) -> dict:
+    return {
+        "strategy_profile": strategy_profile,
+        "score_version": score_version,
+        "analysis_observed_at": 1_700_000_000,
+        "reference_observed_at": 1_699_999_990,
+    }
+
+
 def _armed_db(tmp_path):
     db_path = migrate_test_database(tmp_path / "signal-metadata.db")
     db = DBAdapter(db_path=str(db_path))
@@ -104,6 +120,79 @@ def _counts(db_path: str) -> tuple[int, int]:
             "SELECT COUNT(*) FROM signal_metadata"
         ).fetchone()[0]
     return int(ledger_count), int(metadata_count)
+
+
+def test_future_metadata_producer_builds_explicit_strict_lineage() -> None:
+    metadata = build_signal_metadata_input(
+        _producer_metrics(
+            strategy_profile=STRICT_STRATEGY_PROFILE,
+            score_version="score_v2",
+        ),
+        "b" * 64,
+    )
+
+    assert metadata.signal_class is SignalClass.STRICT
+    assert metadata.strategy_profile == STRICT_STRATEGY_PROFILE
+    assert metadata.score_version == "score_v2"
+    assert metadata.analysis_observed_at == 1_700_000_000
+    assert metadata.reference_observed_at == 1_699_999_990
+    assert metadata.decision_contract_hash == "b" * 64
+    assert metadata.model_generation == MODEL_GENERATION
+    assert metadata.classification_method is ClassificationMethod.FUTURE_PIPELINE_EXPLICIT
+    assert metadata.classification_evidence_hash is None
+
+
+def test_future_metadata_producer_builds_only_exact_experimental_lineage() -> None:
+    metadata = build_signal_metadata_input(
+        _producer_metrics(
+            strategy_profile=EXPERIMENTAL_STRATEGY_PROFILE,
+            score_version="score_v2_watch_v1",
+        ),
+        "c" * 64,
+    )
+
+    assert metadata.signal_class is SignalClass.EXPERIMENTAL
+    assert metadata.strategy_profile == EXPERIMENTAL_STRATEGY_PROFILE
+    assert metadata.score_version == "score_v2_watch_v1"
+
+
+@pytest.mark.parametrize(
+    "metrics",
+    [
+        {
+            "score_version": "score_v2",
+            "analysis_observed_at": 1_700_000_000,
+        },
+        _producer_metrics(
+            strategy_profile="unknown_profile",
+            score_version="score_v2",
+        ),
+        _producer_metrics(
+            strategy_profile=STRICT_STRATEGY_PROFILE,
+            score_version="score_v2_watch_v1",
+        ),
+        _producer_metrics(
+            strategy_profile=EXPERIMENTAL_STRATEGY_PROFILE,
+            score_version="score_v2",
+        ),
+    ],
+)
+def test_future_metadata_producer_rejects_missing_unknown_or_mismatched_lineage(
+    metrics: dict,
+) -> None:
+    with pytest.raises(ValueError):
+        build_signal_metadata_input(metrics, "d" * 64)
+
+
+def test_future_metadata_producer_requires_actual_analysis_observation_time() -> None:
+    metrics = _producer_metrics(
+        strategy_profile=STRICT_STRATEGY_PROFILE,
+        score_version="score_v2",
+    )
+    metrics.pop("analysis_observed_at")
+
+    with pytest.raises(ValueError):
+        build_signal_metadata_input(metrics, "e" * 64)
 
 
 def test_strict_signal_persists_metadata_with_ledger_atomically(tmp_path) -> None:
