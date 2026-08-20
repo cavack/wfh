@@ -12,6 +12,9 @@ from waterfallhunter.core.schema_contract import (
     managed_runtime_table_names,
     verify_managed_schema_connection,
 )
+from waterfallhunter.core.schema_unique_constraints import (
+    verify_unique_constraints_connection,
+)
 
 
 class PreflightState(str, Enum):
@@ -97,6 +100,10 @@ def _user_tables(conn: sqlite3.Connection) -> frozenset[str]:
     )
 
 
+def _managed_constraints_valid(conn: sqlite3.Connection) -> bool:
+    return verify_unique_constraints_connection(conn).valid
+
+
 def _classify_migrated(path: Path, user_version: int) -> PreflightResult:
     try:
         applied = MigrationRunner(db_path=path).verify()
@@ -131,7 +138,7 @@ def _classify_migrated(path: Path, user_version: int) -> PreflightResult:
                     conn,
                     check_user_version=CURRENT_RUNTIME_SCHEMA_VERSION,
                 )
-                if not schema.valid:
+                if not schema.valid or not _managed_constraints_valid(conn):
                     return _incompatible(
                         "MIGRATION_SCHEMA_MISMATCH",
                         user_version=user_version,
@@ -205,7 +212,7 @@ def classify_database(db_path: str | Path) -> PreflightResult:
                 allow_missing_tables=_LEGACY_OPTIONAL_TABLES,
                 check_user_version=0,
             )
-            if not schema.valid:
+            if not schema.valid or not _managed_constraints_valid(conn):
                 return _incompatible(
                     "LEGACY_SCHEMA_MISMATCH",
                     user_version=0,
