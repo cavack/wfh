@@ -30,9 +30,17 @@ B1 does not remove or rewrite these sites. B2 must reconcile each runtime source
 | `backend/src/waterfallhunter/core/lbank_execution_decision.py` | Execution decision/evidence persistence | Observational decision schema | Cut over; must remain non-trading and non-authoritative for signal eligibility unless separately designed. |
 | `backend/src/waterfallhunter/core/historical_outcome_store.py` | Imported/historical outcome persistence | Research/historical schema | Cut over; preserve historical-vs-production provenance separation. |
 | `backend/src/waterfallhunter/core/provider_registry.py` | Provider operational state | Operational schema | Cut over or explicitly retire only after current gateway/provider consumers are mapped. |
-| `backend/src/waterfallhunter/core/ws_streamer.py` | Streaming persistence/operational support | Operational schema found by `CREATE TABLE` search | Inspect exact ownership/consumer path during B2 before migration extraction. |
-| `backend/src/waterfallhunter/core/lbank_execution.py` | LBank execution support | Execution-support schema found by `CREATE TABLE` search | Inspect exact ownership/consumer path during B2; retain PAPER_ONLY/read-only execution boundary. |
-| `backend/src/waterfallhunter/main.py` | Application/runtime orchestration | Application-owned table creation found by source search | Eliminate application-layer schema mutation in B2; route schema ownership to migration runner. |
+
+## Reviewed runtime files that are not schema owners
+
+A fresh DDL search found no `CREATE TABLE`, `CREATE INDEX`, `CREATE TRIGGER`,
+`ALTER TABLE`, or `PRAGMA table_info` ownership in these files. They are
+therefore excluded from the B2 schema-owner queue unless later source changes
+introduce explicit DDL:
+
+- `backend/src/waterfallhunter/core/ws_streamer.py`
+- `backend/src/waterfallhunter/core/lbank_execution.py`
+- `backend/src/waterfallhunter/main.py`
 
 ## Script/test-only schema sites
 

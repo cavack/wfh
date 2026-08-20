@@ -11,6 +11,15 @@ from typing import Iterable
 
 
 _MIGRATION_FILENAME = re.compile(r"^(?P<version>\d{4})_(?P<name>[a-z0-9_]+)\.sql$")
+_SQL_TRIVIA = r"(?:\s|--[^\r\n]*(?:\r\n|\r|\n|\Z)|/\*.*?\*/)"
+_COMMENT_ONLY_SQL = re.compile(
+    rf"\A(?:{_SQL_TRIVIA})*\Z",
+    flags=re.DOTALL,
+)
+_LEADING_SQL_TRIVIA = re.compile(rf"\A(?:{_SQL_TRIVIA})*", flags=re.DOTALL)
+_TRANSACTION_CONTROL = re.compile(
+    r"(?:BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE)\b", flags=re.IGNORECASE
+)
 _SCHEMA_MIGRATIONS_TABLE = "schema_migrations"
 _REQUIRED_HISTORY_COLUMNS = {
     "version": ("INTEGER", None, 1),
@@ -181,6 +190,8 @@ def _split_sql_statements(sql_bytes: bytes) -> tuple[str, ...]:
             buffer.clear()
 
     remainder = "".join(buffer).strip()
+    if remainder and _COMMENT_ONLY_SQL.fullmatch(remainder):
+        remainder = ""
     if remainder:
         if sqlite3.complete_statement(remainder):
             statements.append(remainder)
@@ -188,6 +199,14 @@ def _split_sql_statements(sql_bytes: bytes) -> tuple[str, ...]:
             raise MigrationError("migration SQL contains an incomplete statement")
 
     return tuple(statement for statement in statements if statement)
+
+
+def _reject_transaction_control(statements: Iterable[str]) -> None:
+    """Reject SQL that can escape the runner-owned migration transaction."""
+    for statement in statements:
+        executable = _LEADING_SQL_TRIVIA.sub("", statement, count=1)
+        if _TRANSACTION_CONTROL.match(executable):
+            raise MigrationError("migration SQL must not control transactions")
 
 
 def _history_trigger_sql_is_canonical(
@@ -428,6 +447,7 @@ class MigrationRunner:
         statements = _split_sql_statements(migration.sql_bytes)
         if not statements:
             raise MigrationError("migration SQL must contain at least one statement")
+        _reject_transaction_control(statements)
 
         try:
             conn.execute("BEGIN IMMEDIATE")
