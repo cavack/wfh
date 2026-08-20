@@ -62,7 +62,7 @@ class Migration:
         match = _MIGRATION_FILENAME.fullmatch(filename)
         if match is None:
             raise MigrationDiscoveryError("migration filename is not canonical")
-        if int(match.group("version")) != int(version) or match.group("name") != str(name):
+        if int(match.group("version")) != version or match.group("name") != str(name):
             raise MigrationDiscoveryError(
                 "migration filename does not match declared version/name"
             )
