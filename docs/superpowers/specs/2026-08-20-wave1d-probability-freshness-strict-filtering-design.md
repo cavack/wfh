@@ -18,20 +18,32 @@ It has three independently reviewable boundaries:
 2. **P1-E Freshness Contracts** — make analysis freshness and reference-price freshness independent, explicit, reproducible, and fail-closed.
 3. **P1-F Strict Outcome / Calibration Filtering** — make every production-facing outcome/calibration input STRICT-only by default with explicit cohort and lineage provenance.
 
-These three workstreams converge before P2 Typed API. They do not create or promote a calibrated predictive model.
+These three workstreams converge before P2 Typed API. They do not create, fit, recalibrate, or promote a predictive probability model or a scientifically promoted Final Signal Score.
 
 ## 2. Source-of-truth constraints
 
-This design follows Final Design v6.1 and the Production Baseline Audit:
+This design follows Final Design v6.1, the consolidated Product Requirements, the Production Baseline Audit, and the canonical GitHub source:
 
 - Final Design G7: default production calibration/report scope is `signal_class=STRICT`; EXPERIMENTAL outcomes must never leak into strict aggregates.
 - Final Design G8: no decision/ranking/dashboard/Telegram reference to `tp_24h_probability`.
 - Final Design dependency graph: P1-D, P1-E, and P1-F follow P1-C and converge before P2 Typed API.
+- Final Design / Product Requirements: Evidence Quality, Predictive Evidence Score, Final Signal Score, Execution Risk, and Calibrated Outcome Layer are separate concepts.
+- Evidence Quality is not directional predictive evidence.
 - Audit finding: `FinalRanking` currently reads `tp_24h_probability`, calls it `empirical_probability`, and assigns 10 ranking points.
 - Audit finding: Telegram still renders the same metric as `TP 24h: xx%`.
 - Product requirement F-10: the current metric is an unconditional 24h downside hit-rate, not signal success probability.
 - Product requirement F-13 / AC-17: analysis freshness and reference freshness must be independent.
-- Product requirement F-14 / AC-18: ScoreV2 / Final Signal Score is an Evidence Score / prioritization score, not probability.
+- Product requirement F-14 / AC-18: ScoreV2 / Final Signal Score is an evidence/prioritization score, not probability.
+
+### 2.1 Production reconciliation note
+
+The currently deployed Ubuntu runtime remains `LEGACY_RUNTIME_UNVERIFIED_REVISION` under Final Design v6.1.
+
+Read-only reconciliation performed before this revision established that most current backend core, discovery, frontend, and watchdog source files match canonical GitHub `main` exactly, while the deployed runtime retains localized legacy drift around Ollama/AI configuration, `config.py`, `main.py`, Compose/runtime versions, and lacks the Wave 0–1C migration/metadata foundations.
+
+This does **not** make the deployed runtime a Git source-of-truth and does not permit retrospective assignment of a Git SHA. Wave 1D is designed against the canonical Wave 1C Git head, not against mutable files under `/srv/waterfallhunter`.
+
+No Production file was changed during this reconciliation.
 
 ## 3. Non-goals
 
@@ -39,10 +51,15 @@ Wave 1D does **not**:
 
 - train, fit, calibrate, or promote a true probability model;
 - invent a new probability proxy;
-- change ScoreV2 weights or threshold policy except where a component must be removed because its semantics are invalid;
+- recalibrate, optimize, or scientifically promote Final Signal Score weighting;
+- redistribute the invalid probability weight into other ranking components;
+- introduce a replacement predictive component merely to keep a 100-point legacy ranking total;
+- change ScoreV2 component weights or threshold policy;
+- turn Evidence Quality/freshness into directional predictive evidence;
 - change lifecycle semantics to Lifecycle V2;
 - add portfolio simulation, leverage policy, or live execution;
 - add Product Layer UI architecture;
+- reintroduce or remove legacy Production-only AI/Ollama behavior as part of this wave;
 - perform Production backup, migration, legacy classification, deployment, restart, Telegram send, or live trading;
 - merge any PR without explicit `MERGE_APPROVAL`;
 - introduce a new freshness threshold without evidence and separate review.
@@ -63,6 +80,8 @@ Wave 1C certified development state
   -> P2 Typed API
 ```
 
+This serialization is an execution/TDD strategy, not an architecture dependency claim.
+
 Reason: all three touch shared decision/report semantics. Serial TDD keeps regression attribution deterministic and avoids conflicting changes to contracts, ranking, and consumers.
 
 ## 5. Global invariants
@@ -77,7 +96,9 @@ The following invariants apply to all P1-D/P1-E/P1-F changes:
 - Missing lineage never defaults to STRICT.
 - Unresolved/conflicting legacy rows remain outside canonical production cohorts.
 - No consumer may reconstruct historical signal class from current defaults.
-- No probability-like label may be attached to ScoreV2, watch score, final ranking score, or the current unconditional hit-rate.
+- No probability-like label may be attached to ScoreV2, watch score, FinalRanking score, Final Signal Score, or the current unconditional hit-rate.
+- Evidence Quality/freshness may gate or qualify usability, but is not itself directional evidence.
+- Existing non-probability FinalRanking weights are legacy/unvalidated observational behavior until later scientific calibration; preserving them during a minimal-change transition does not promote or validate them.
 - No new model-semantic difference may be normalized into Golden fixtures without explicit review.
 - Every semantic change must have RED evidence before the minimal GREEN implementation.
 
@@ -92,18 +113,20 @@ The current runtime then:
 - stores the value as `tp_24h_probability`;
 - rejects a position setup when the metric cannot be computed;
 - feeds the metric into `FinalRanking` as `empirical_probability` with 10 points;
+- treats availability of that invalid component as part of ranking evidence confidence;
 - exposes it through user-facing notification/dashboard semantics.
 
-This is statistically misleading and creates an invalid eligibility/ranking coupling.
+This is statistically misleading and creates invalid eligibility, ranking, and evidence-completeness coupling.
 
 ### 6.2 Target semantics
 
-The runtime decision path must not require, score, or display this metric.
+The runtime decision path must not require, score, display, or use availability of this metric as a confidence penalty.
 
 Required behavior:
 
 - absence of completed historical candle samples must **not** reject an otherwise valid execution setup;
 - `FinalRanking` must have no probability component derived from this metric;
+- absence of the removed metric must not reduce ranking confidence/evidence completeness;
 - no canonical decision packet, dashboard-facing payload, or Telegram-facing payload may label the metric as probability/confidence/success chance;
 - `calibrated_probability` remains `None`;
 - Final Signal Score remains explicitly non-probabilistic.
@@ -120,11 +143,13 @@ Any retained packet must state `research_only=true` and must not be consumed by 
 
 No migration of historical JSON is required solely to rename the old field. Historical payloads remain historical evidence and must not be silently rewritten.
 
-### 6.4 FinalRanking after cleanup
+### 6.4 FinalRanking transitional policy after cleanup
 
-The current 10-point invalid probability component is removed.
+The current invalid probability component and its availability/confidence penalty are removed.
 
-Remaining observational components keep their existing relative weights/behavior unless an implementation-level dependency forces a separately reviewed change:
+Wave 1D must **not** convert that removal into an implicit recalibration of FinalRanking or Final Signal Score.
+
+For a minimal-change implementation, the remaining observational components may preserve their pre-existing numeric weights as a transitional implementation detail:
 
 - cascade readiness
 - signal score
@@ -132,17 +157,36 @@ Remaining observational components keep their existing relative weights/behavior
 - relative weakness
 - freshness
 
-The five remaining numeric weights stay exactly `25/20/20/15/10` (cascade readiness / signal score / execution quality / relative weakness / freshness), for a new configured total of `90`. Normalization and confidence use that `90` total. The removed 10 points are neither redistributed nor retained as a phantom missing-weight penalty, and no replacement predictive component is invented.
+If those legacy numeric weights are retained, that retention means only **“unchanged because this wave is not authorized to recalibrate them.”** It does not mean the remaining weights, their sum, or their normalization are scientifically validated, optimal, calibrated, or promoted as the target Final Signal Score contract.
+
+Rules:
+
+- no removed probability weight is redistributed;
+- no replacement component is invented;
+- no phantom missing-weight penalty remains;
+- no new 100-point total is manufactured for cosmetic continuity;
+- no freshness/evidence-quality value is newly promoted into directional evidence;
+- any necessary arithmetic normalization change must be the smallest deterministic change required to remove the invalid component and must be documented as transitional observational behavior;
+- any proposal to re-estimate, optimize, calibrate, or promote Final Signal Score weights belongs to later strict OOS scientific work and requires its own evidence/review.
 
 A version bump is required for the ranking packet because its component contract changes.
+
+The resulting ranking must remain explicitly:
+
+- observational;
+- uncalibrated as a success probability;
+- non-authoritative for trade eligibility;
+- not a claim that its surviving legacy weights are scientifically validated.
 
 Expected semantic diff is restricted to:
 
 - removal of the probability component;
-- resulting ranking score/confidence/order changes that are mechanically attributable to that removal;
-- removal of probability-dependent rejection in PositionCalculator.
+- removal of probability-availability confidence penalty;
+- mechanically resulting observational ranking score/confidence/order changes;
+- removal of probability-dependent rejection in PositionCalculator;
+- contract/version/labels required to make the transitional status explicit.
 
-Any unrelated score, lifecycle, eligibility, Entry/TP/SL, leverage, or execution-policy diff is a blocker.
+Any unrelated ScoreV2, lifecycle, signal-class, eligibility, Entry/TP/SL, leverage, or execution-policy diff is a blocker.
 
 ## 7. P1-E — Freshness Contracts
 
@@ -202,7 +246,8 @@ Required consequences:
 - stale/unavailable **reference** prevents authoritative execution levels at that observation boundary;
 - stale reference adds `STALE_REFERENCE` and, where levels cannot be trusted, `EXECUTION_LEVELS_UNAVAILABLE`;
 - signal identity and persisted signal class are not rewritten because reference data later goes stale;
-- freshness changes must not silently alter historical signal metadata lineage.
+- freshness changes must not silently alter historical signal metadata lineage;
+- this wave does not assign a newly invented directional weight to freshness.
 
 ### 7.5 Four-state acceptance matrix
 
@@ -271,15 +316,18 @@ P1-F does not produce `P(TP2 before SL | setup, score_bucket, regime, execution_
 
 That probability belongs to Wave 5 after strict dataset collection and walk-forward/holdout/OOS calibration with sample size, uncertainty, calibration curves, and Brier score.
 
+P1-F also does not promote new Final Signal Score weights. It creates the cohort/provenance conditions required for later scientific evaluation of such weights.
+
 ## 9. Contract/versioning policy
 
 Semantic changes require versioned output contracts.
 
 At minimum:
 
-- FinalRanking packet version changes when the probability component is removed.
-- Any new explicit freshness status contract is versioned.
-- Calibration dataset manifest is versioned independently from ScoreV2.
+- FinalRanking packet version changes when the probability component is removed;
+- the new version must preserve the distinction between transitional observational ranking and a scientifically promoted Final Signal Score;
+- any new explicit freshness status contract is versioned;
+- calibration dataset manifest is versioned independently from ScoreV2.
 
 Historical persisted packets are not rewritten to pretend they were produced under the new semantic contract.
 
@@ -295,13 +343,16 @@ Rationale:
 - freshness ages are derivable observations, not immutable stored identity;
 - calibration manifests can be generated as explicit research/report artifacts.
 
-If implementation discovers that a new persisted Production column/table is necessary, work stops and returns to design review. No migration may be introduced silently under this approved design.
+If implementation discovers that a new persisted Production column/table is necessary, work stops and returns to design review. No migration may be introduced silently under this design.
+
+The existing Wave 1C Production migration/classification remains separately gated by `MIGRATION_APPROVAL`; Wave 1D design approval does not authorize it.
 
 ## 11. Error handling / fail-closed rules
 
 - invalid/missing canonical lineage: exclude from strict calibration;
 - invalid timestamp/age relationship: fail packet validation or mark freshness unavailable; never assume LIVE;
 - missing probability proxy: no error in the runtime decision path;
+- missing probability proxy: no ranking evidence-confidence penalty;
 - missing true calibrated probability: valid state is `None`, not fallback to score/hit-rate;
 - malformed/heterogeneous calibration manifest: promotion not allowed;
 - research-only cohort accidentally requested through production default: reject or force explicit research mode.
@@ -316,6 +367,7 @@ Prove current failures before implementation:
 
 - PositionCalculator rejects when the old hit-rate is unavailable;
 - FinalRanking includes `empirical_probability`;
+- missing `empirical_probability` reduces current ranking confidence;
 - user-facing formatter/notifier exposes `tp_24h_probability` where still present;
 - canonical decision semantics can be confused with probability-like labels.
 
@@ -323,9 +375,12 @@ Prove current failures before implementation:
 
 - no runtime rejection caused solely by missing hit-rate samples;
 - no probability component in FinalRanking;
+- no confidence/evidence-completeness penalty caused by absence of the removed metric;
 - no runtime consumer reference to `tp_24h_probability` for decision/ranking/dashboard/Telegram semantics;
 - true `calibrated_probability` remains `None`;
-- expected ranking delta is fully attributable to component removal.
+- resulting FinalRanking is explicitly versioned/observational/transitional, not presented as calibrated probability or scientifically promoted Final Signal Score;
+- expected ranking delta is fully attributable to the approved cleanup and minimal deterministic arithmetic consequences;
+- surviving legacy weights are not described as calibrated, optimal, or promoted.
 
 ### P1-E focused RED tests
 
@@ -339,7 +394,8 @@ Prove current failures before implementation:
 
 - independent status and age semantics pass all matrix tests;
 - reason/qualifier behavior is deterministic;
-- no signal-class/lineage mutation occurs from freshness evaluation.
+- no signal-class/lineage mutation occurs from freshness evaluation;
+- no newly invented directional freshness weight is introduced.
 
 ### P1-F focused RED tests
 
@@ -353,22 +409,32 @@ Prove current failures before implementation:
 - EXPERIMENTAL/MIXED require explicit research mode;
 - research mode is non-promotable;
 - manifest identity/exclusion counts are deterministic;
-- no unresolved/conflicting legacy signal enters a strict dataset.
+- no unresolved/conflicting legacy signal enters a strict dataset;
+- no score/probability model is promoted merely because a clean manifest exists.
 
 ## 13. Golden/model regression policy
 
-Wave 1D contains one intentional semantic change: removal of the invalid probability proxy from runtime decision/ranking behavior.
+Wave 1D contains intentional semantic cleanup around the invalid probability proxy and independent freshness semantics.
 
 Therefore Golden review is differential, not a blind equality assertion.
 
-Allowed differences must be enumerated before fixture update and limited to approved P1-D semantics.
+Allowed differences must be enumerated before fixture update and limited to approved P1-D/P1-E semantics.
+
+For P1-D, allowed ranking differences are only those mechanically caused by:
+
+- removing the invalid probability component;
+- removing its availability/confidence penalty;
+- the smallest deterministic normalization/arithmetic adjustment needed after removal;
+- the required ranking contract/version/label change.
+
+Those allowed differences must **not** be interpreted as evidence that the surviving ranking weights are calibrated or scientifically optimal.
 
 All of the following remain blockers if they change unexpectedly:
 
 - ScoreV2 component computation;
 - signal class / strategy profile;
 - lifecycle state;
-- eligibility gates unrelated to the old hit-rate dependency;
+- eligibility gates unrelated to the old hit-rate or approved freshness correction;
 - reason codes unrelated to probability/freshness correction;
 - Entry/TP1/TP2/SL arithmetic;
 - LBank contract identity;
@@ -393,6 +459,8 @@ For every implementation slice:
 - CodeRabbit independent review;
 - controller semantic review;
 - all valid functional/integrity/security findings fixed with regression tests.
+
+Runtime parity here refers to the canonical future artifact family; the current deployed legacy runtime remains `LEGACY_RUNTIME_UNVERIFIED_REVISION` and is not retrospectively treated as a verified Git artifact.
 
 ## 15. Planned PR topology
 
@@ -426,12 +494,15 @@ It does not grant:
 - `DEPLOYMENT_APPROVAL`;
 - Production DB writes/classification;
 - Production Docker/service changes;
+- Production source/config changes;
 - Telegram test sends;
 - live trading.
 
 Wave 1D implementation should remain development-side until its own final certification reaches `MERGE_READY_PENDING_MERGE_APPROVAL`.
 
-The planned first host-touch point remains after the required development merges/certification and a fresh Production read-only preflight. At that point the controller must explicitly provide the user with exact host commands and stop at each independent approval gate.
+The planned first mutating host-touch point remains after the required development merges/certification and a fresh Production read-only preflight. At that point the controller must explicitly provide the user with exact host commands and stop at each independent approval gate.
+
+The current legacy Ollama/config/Compose drift is recorded as runtime evidence. It is not automatically preserved or reintroduced into canonical source by Wave 1D, and no Production behavior is changed by this design document.
 
 ## 17. Acceptance criteria
 
@@ -439,19 +510,25 @@ Wave 1D may be certified development-side only if all are true:
 
 1. no decision/ranking/dashboard/Telegram semantic consumer uses `tp_24h_probability` as probability/confidence;
 2. missing old hit-rate data cannot reject an otherwise valid position setup;
-3. `calibrated_probability` has no proxy fallback and remains nullable;
-4. Final Signal Score is explicitly non-probabilistic;
-5. analysis and reference freshness are independent and pass the LIVE/STALE/UNAVAILABLE matrix;
-6. stale analysis cannot be masked by fresh reference price;
-7. stale reference cannot remain authoritative for execution levels;
-8. production outcome/calibration/report defaults are STRICT-only;
-9. EXPERIMENTAL/MIXED modes are explicit, research-only, and non-promotable;
-10. missing/unknown lineage never defaults to STRICT;
-11. calibration inputs carry deterministic cohort/provenance manifests;
-12. no Production schema migration was introduced without design re-approval;
-13. all expected semantic diffs are explicitly enumerated and all unexpected Golden/model diffs are blockers;
-14. full CI, artifact, static/security, and independent review gates pass;
-15. no Production mutation, deployment, Telegram send, live trade, or merge occurred without its separate approval.
+3. absence of the removed hit-rate cannot reduce FinalRanking evidence confidence/completeness;
+4. `calibrated_probability` has no proxy fallback and remains nullable;
+5. Final Signal Score is explicitly non-probabilistic;
+6. FinalRanking after cleanup is explicitly versioned, observational, transitional, and not represented as scientifically calibrated/promoted;
+7. no probability weight was redistributed or replaced merely to preserve a legacy total;
+8. surviving legacy ranking weights are not claimed to be calibrated/optimal/promoted;
+9. analysis and reference freshness are independent and pass the LIVE/STALE/UNAVAILABLE matrix;
+10. stale analysis cannot be masked by fresh reference price;
+11. stale reference cannot remain authoritative for execution levels;
+12. freshness is not newly assigned directional predictive weight;
+13. production outcome/calibration/report defaults are STRICT-only;
+14. EXPERIMENTAL/MIXED modes are explicit, research-only, and non-promotable;
+15. missing/unknown lineage never defaults to STRICT;
+16. calibration inputs carry deterministic cohort/provenance manifests;
+17. no Production schema migration was introduced without design re-approval;
+18. all expected semantic diffs are explicitly enumerated and all unexpected Golden/model diffs are blockers;
+19. full CI, artifact, static/security, and independent review gates pass;
+20. current Production remains `LEGACY_RUNTIME_UNVERIFIED_REVISION` until a separately approved verified deployment replaces it;
+21. no Production mutation, deployment, Telegram send, live trade, or merge occurred without its separate approval.
 
 Only after these criteria pass may the controller state become:
 
