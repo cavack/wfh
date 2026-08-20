@@ -97,3 +97,5 @@ jobs:
           git add backend/src/waterfallhunter/main.py backend/src/waterfallhunter/core/multi_exchange_validator.py
           git commit -m 'feat: emit explicit signal lineage at persistence boundary'
           git push origin HEAD:feat/wave1c2-persistence-legacy-classification-v1
+
+# one-shot trigger marker; remove after successful patch application
