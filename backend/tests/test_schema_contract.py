@@ -137,6 +137,11 @@ def _create_outcomes(
     observational_check: str = "observational_only = 1",
     immutable_update: bool = True,
 ) -> None:
+    update_raise = (
+        "SELECT RAISE(ABORT, 'lbank_signal_outcomes is immutable');"
+        if immutable_update
+        else "SELECT RAISE(IGNORE);"
+    )
     conn.executescript(
         f"""
         CREATE TABLE lbank_signal_outcomes (
@@ -171,7 +176,7 @@ def _create_outcomes(
         CREATE TRIGGER lbank_signal_outcomes_no_update
         BEFORE UPDATE ON lbank_signal_outcomes
         BEGIN
-            SELECT RAISE({'ABORT' if immutable_update else 'IGNORE'}, 'lbank_signal_outcomes is immutable');
+            {update_raise}
         END;
         CREATE TRIGGER lbank_signal_outcomes_no_delete
         BEFORE DELETE ON lbank_signal_outcomes
