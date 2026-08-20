@@ -21,6 +21,7 @@
 - No ScoreV2 weight/gate/version change, lifecycle threshold/transition change, ranking change, Entry/TP/SL/leverage change, or Telegram delivery-policy change.
 - Runtime schema version target is exactly `3`.
 - Runtime constructors remain verify-only; runtime startup does not auto-migrate or repair.
+- Every writable connection to the managed SQLite database enables and verifies `PRAGMA foreign_keys=ON` before beginning a transaction; no production writer may rely on SQLite's disabled-by-default setting.
 - Future signal persistence must atomically commit catalogue CAS + ledger row + metadata row or roll back all three.
 - `canonical_signal_view` must use explicit fields and `INNER JOIN`.
 - Legacy ledger rows are immutable and are never rewritten.
@@ -55,6 +56,8 @@ Each implementation PR is draft until its focused/full tests, security/static re
 - `backend/src/waterfallhunter/core/legacy_signal_classifier.py`
   - Owns deterministic legacy-evidence extraction/classification and append-only metadata insertion for explicit classification runs on disposable/restored/dev DBs.
   - Never consults current application defaults to reinterpret history.
+- `backend/src/waterfallhunter/core/managed_sqlite.py`
+  - Owns the first-party writable connection factory, enables and verifies `PRAGMA foreign_keys=ON`, and closes/fails before mutation if enforcement cannot be enabled.
 - `backend/src/waterfallhunter/migrations/0003_signal_metadata.sql`
   - Owns schema version 3 DDL for `signal_metadata`, immutable triggers, and `canonical_signal_view`.
 
@@ -378,7 +381,7 @@ pytest -q backend/tests/test_signal_metadata_schema.py backend/tests/test_signal
 
 - [ ] **Step 3: Implement read-only verification**
 
-Open SQLite via `Path.resolve().as_uri() + '?mode=ro'`, count ledger, metadata, canonical rows, missing rows and orphans. `require_signal_metadata_completeness()` raises stable `SignalMetadataError` beginning `SIGNAL_METADATA_INCOMPLETE` when incomplete. It never migrates, inserts, updates, deletes, repairs, or creates a DB.
+Open SQLite via `Path.resolve().as_uri() + '?mode=ro'` and call `sqlite3.connect(database_uri, uri=True, ...)` so `mode=ro` is enforced. Also set `PRAGMA query_only=ON`, count ledger, metadata, canonical rows, missing rows and orphans, and prove a missing target path remains absent. `require_signal_metadata_completeness()` raises stable `SignalMetadataError` beginning `SIGNAL_METADATA_INCOMPLETE` when incomplete. It never migrates, inserts, updates, deletes, repairs, or creates a DB.
 
 - [ ] **Step 4: Verify and commit P1-C1 foundation**
 
@@ -404,15 +407,18 @@ After the design/plan PR is merged, open a clean draft **P1-C1** PR targeting `m
 ### Task 4: Atomic Future Ledger + Metadata Persistence
 
 **Files:**
+- Create: `backend/src/waterfallhunter/core/managed_sqlite.py`
 - Modify: `backend/src/waterfallhunter/core/lbank_signal_ledger.py`
+- Modify writer wrappers: `db.py`, `db_readiness.py`, `feature_replay.py`, `historical_outcome_store.py`, `lbank_execution_decision.py`, `lbank_execution_stats.py`, `lbank_execution_store.py`, `lbank_signal_outcome.py`, `production_evidence.py`, `provider_registry.py`, and `stage_lifecycle.py`.
 - Create: `backend/tests/test_signal_metadata_persistence.py`
+- Create: `backend/tests/test_managed_sqlite_foreign_keys.py`
 - Modify: `backend/tests/test_lbank_signal_ledger.py`
 
 **Interface:** `persist_trigger(..., metadata: SignalMetadataInput, metadata_created_at: int | None = None) -> int | None`.
 
 - [ ] **Step 1: Write RED atomicity tests**
 
-Test STRICT and EXPERIMENTAL inserts. Test metadata failure rolls back catalogue status + ledger + metadata. Test stale CAS inserts neither ledger nor metadata.
+Test STRICT and EXPERIMENTAL inserts. Test metadata failure rolls back catalogue status + ledger + metadata. Test stale CAS inserts neither ledger nor metadata. Attempt orphan inserts through the production writer connection and require `sqlite3.IntegrityError`. Add a repository guard proving every first-party managed-schema writer uses the common foreign-key-enforcing connection factory; read-only verifiers and the migration owner are explicit audited exceptions.
 
 - [ ] **Step 2: Run RED**
 
@@ -424,14 +430,29 @@ Expected: `persist_trigger()` does not yet accept metadata.
 
 - [ ] **Step 3: Insert metadata inside the existing transaction**
 
-Validate `SignalMetadataInput` before DB mutation. After ledger insert and before returning, execute one parameterized `INSERT INTO signal_metadata (...) VALUES (...)` using the inserted ledger id. Do not catch metadata insertion separately; any exception must cause the `with sqlite3.connect(...)` transaction to roll back the preceding catalogue CAS and ledger insert.
+Validate `SignalMetadataInput` before DB mutation. Route writable managed-database connections through `managed_sqlite.py`; the factory must enable `PRAGMA foreign_keys=ON`, read it back as `1`, and fail closed before `BEGIN` otherwise. Migrate every production writer wrapper to that factory, including ledger, outcome, replay/evidence, lifecycle/provider/execution, historical-outcome, and legacy-classification writers. After ledger insert and before returning, execute one parameterized `INSERT INTO signal_metadata (...) VALUES (...)` using the inserted ledger id. Do not catch metadata insertion separately; any exception must cause the transaction to roll back the preceding catalogue CAS and ledger insert.
 
 - [ ] **Step 4: Run GREEN and commit**
 
 ```bash
-pytest -q backend/tests/test_signal_metadata_persistence.py backend/tests/test_lbank_signal_ledger.py
+pytest -q backend/tests/test_signal_metadata_persistence.py \
+          backend/tests/test_managed_sqlite_foreign_keys.py \
+          backend/tests/test_lbank_signal_ledger.py
 git add backend/src/waterfallhunter/core/lbank_signal_ledger.py \
+        backend/src/waterfallhunter/core/managed_sqlite.py \
+        backend/src/waterfallhunter/core/db.py \
+        backend/src/waterfallhunter/core/db_readiness.py \
+        backend/src/waterfallhunter/core/feature_replay.py \
+        backend/src/waterfallhunter/core/historical_outcome_store.py \
+        backend/src/waterfallhunter/core/lbank_execution_decision.py \
+        backend/src/waterfallhunter/core/lbank_execution_stats.py \
+        backend/src/waterfallhunter/core/lbank_execution_store.py \
+        backend/src/waterfallhunter/core/lbank_signal_outcome.py \
+        backend/src/waterfallhunter/core/production_evidence.py \
+        backend/src/waterfallhunter/core/provider_registry.py \
+        backend/src/waterfallhunter/core/stage_lifecycle.py \
         backend/tests/test_signal_metadata_persistence.py \
+        backend/tests/test_managed_sqlite_foreign_keys.py \
         backend/tests/test_lbank_signal_ledger.py
 git commit -m "feat: persist signal metadata atomically with ledger"
 ```
@@ -512,7 +533,7 @@ Include complete EXPERIMENTAL evidence, missing decision hash, missing analysis 
 
 - [ ] **Step 2: Write RED classifier tests**
 
-Prove `experimental_pretrigger_v1` alone is insufficient, evidence hashes are deterministic, preview is read-only, mismatched `expected_report_hash` fails before write, and unresolved/conflicting rows receive no metadata.
+Prove `experimental_pretrigger_v1` alone is insufficient, evidence hashes are deterministic, preview is read-only, mismatched `expected_report_hash` fails before write, and unresolved/conflicting rows receive no metadata. Add a TOCTOU regression in which database state changes after preview but before apply obtains its write lock; apply must reject the stale hash before inserting metadata.
 
 - [ ] **Step 3: Implement pure classification**
 
@@ -520,7 +541,7 @@ Build the evidence envelope only from persisted historical fields actually used.
 
 - [ ] **Step 4: Implement preview/apply**
 
-Preview opens read-only, classifies every ledger row, and returns deterministic counts/IDs/report hash. Apply requires schema v3 and exact preview hash, uses `BEGIN IMMEDIATE`, inserts only RESOLVED metadata rows using `INSERT`, never `INSERT OR REPLACE`, verifies any pre-existing row is byte/field equivalent, and never UPDATEs/DELETEs metadata.
+Preview opens read-only, classifies every ledger row, and returns deterministic counts/IDs/report hash. Apply requires schema v3, obtains `BEGIN IMMEDIATE`, recomputes the complete classification report and hash from the locked database state, compares that locked-state hash with `expected_report_hash`, and rolls back before insertion on mismatch. Only the recomputed matching decision set may be applied. Apply inserts only RESOLVED metadata rows using `INSERT`, never `INSERT OR REPLACE`, verifies any pre-existing row is byte/field equivalent, and never UPDATEs/DELETEs metadata.
 
 - [ ] **Step 5: Verify unresolved rows remain non-canonical**
 
