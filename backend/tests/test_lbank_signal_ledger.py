@@ -3,10 +3,16 @@ import sqlite3
 
 import pytest
 
+from schema_test_support import (
+    build_legacy_runtime_database,
+    business_row_hashes,
+    migrate_test_database,
+)
 from waterfallhunter.core.db import DBAdapter
 from waterfallhunter.core.lbank_signal_ledger import (
     LBankSignalLedger,
 )
+from waterfallhunter.core.schema_contract import SchemaContractError
 
 
 SYMBOL = "LEDGER/USDT:USDT"
@@ -54,8 +60,10 @@ def _execution() -> dict:
 
 
 def _armed_db(tmp_path):
+    db_path = tmp_path / "signal.db"
+    migrate_test_database(db_path)
     db = DBAdapter(
-        db_path=str(tmp_path / "signal.db")
+        db_path=str(db_path)
     )
     db.update_candidates(
         {SYMBOL: _ready_candidate()}
@@ -159,74 +167,18 @@ def test_trigger_transition_and_signal_snapshot_are_atomic(
     assert row[16:] == (1, None)
 
 
-def test_legacy_ledger_is_migrated_without_rewriting_rows(tmp_path):
-    db_path = str(tmp_path / "legacy.db")
-    DBAdapter(db_path)
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            """
-            CREATE TABLE lbank_signal_ledger (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                symbol TEXT NOT NULL,
-                triggered_at INTEGER NOT NULL,
-                state_before TEXT NOT NULL,
-                score REAL NOT NULL,
-                entry_price REAL,
-                stop_loss REAL,
-                take_profit_1 REAL,
-                take_profit_2 REAL,
-                position_setup_json TEXT NOT NULL,
-                trigger_metrics_json TEXT NOT NULL,
-                execution_status TEXT NOT NULL,
-                execution_evidence_status TEXT,
-                execution_observed_samples INTEGER,
-                execution_observation_span_hours REAL,
-                execution_availability_rate REAL,
-                execution_cost_100_p90_pct REAL,
-                execution_spread_p90_pct REAL,
-                execution_depth_25bps_p50_usdt REAL,
-                execution_failed_checks_json TEXT NOT NULL,
-                execution_suitability_json TEXT NOT NULL,
-                observational_only INTEGER NOT NULL DEFAULT 1,
-                trade_eligible INTEGER,
-                created_at INTEGER NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO lbank_signal_ledger (
-                symbol, triggered_at, state_before, score,
-                position_setup_json, trigger_metrics_json,
-                execution_status, execution_failed_checks_json,
-                execution_suitability_json, observational_only,
-                trade_eligible, created_at
-            ) VALUES ('OLD', 1, 'ARMED', 90, '{}', '{}',
-                      'UNKNOWN', '[]', '{}', 1, NULL, 1)
-            """
-        )
+def test_legacy_ledger_requires_explicit_migration_without_rewriting_rows(tmp_path):
+    db_path = build_legacy_runtime_database(tmp_path / "legacy.db")
+    before = business_row_hashes(db_path, ("lbank_signal_ledger",))
 
-    LBankSignalLedger(db_path)
+    with pytest.raises(SchemaContractError):
+        LBankSignalLedger(str(db_path))
 
-    with sqlite3.connect(db_path) as conn:
-        columns = {
-            row[1]
-            for row in conn.execute("PRAGMA table_info(lbank_signal_ledger)")
-        }
-        row = conn.execute(
-            """
-            SELECT quote_volume_at_trigger, volume_gate_passed,
-                   proxy_execution_disagreement
-            FROM lbank_signal_ledger WHERE symbol = 'OLD'
-            """
-        ).fetchone()
+    migrate_test_database(db_path)
+    LBankSignalLedger(str(db_path))
 
-    assert {
-        "quote_volume_at_trigger",
-        "volume_gate_passed",
-        "proxy_execution_disagreement",
-    }.issubset(columns)
-    assert row == (None, None, None)
+    after = business_row_hashes(db_path, ("lbank_signal_ledger",))
+    assert after == before
 
 
 @pytest.mark.parametrize(
