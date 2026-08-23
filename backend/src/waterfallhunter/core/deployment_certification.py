@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any, Literal
 
+import sqlite3
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from waterfallhunter.core.deployment_provenance import (
@@ -13,17 +15,37 @@ from waterfallhunter.core.deployment_provenance import (
 )
 from waterfallhunter.core.signal_metadata import canonical_sha256
 from waterfallhunter.core.schema_contract import CURRENT_RUNTIME_SCHEMA_VERSION
+from waterfallhunter.core.sqlite_backup_certification import (
+    BackupCertificationError,
+    audit_sqlite_snapshot,
+)
 
 
 MINIMUM_SHADOW_SOAK_SECONDS = 86_400
 MAXIMUM_SHADOW_ERROR_RATE = 0.001
+MAXIMUM_READINESS_AGE_SECONDS = 3_600
+MAXIMUM_BACKUP_AGE_SECONDS = 604_800
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
 IMAGE_DIGEST_PATTERN = r"^sha256:[0-9a-f]{64}$"
+
+_BACKUP_ARTIFACT_COMPARABLE_FIELDS = (
+    "audit_sha256",
+    "logical_content_sha256",
+    "schema_sha256",
+    "user_version",
+    "table_counts",
+    "object_counts",
+    "integrity_check",
+    "foreign_key_violation_count",
+)
 
 
 class VerificationEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    source_revision: str = Field(min_length=40, max_length=40)
+    tested_image_digest: str = Field(pattern=IMAGE_DIGEST_PATTERN)
+    verification_report_sha256: str = Field(pattern=SHA256_PATTERN)
     backend_tests_passed: StrictBool
     frontend_tests_passed: StrictBool
     e2e_tests_passed: StrictBool
@@ -34,16 +56,33 @@ class VerificationEvidence(BaseModel):
     secret_scan_passed: StrictBool
     blocker_review_findings: int = Field(ge=0, strict=True)
 
+    @model_validator(mode="after")
+    def _revision_shape(self) -> "VerificationEvidence":
+        if any(character not in "0123456789abcdef" for character in self.source_revision):
+            raise ValueError("verification revision must be lowercase hexadecimal")
+        return self
+
 
 class ReadinessEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    source_revision: str = Field(min_length=40, max_length=40)
+    running_image_digest: str = Field(pattern=IMAGE_DIGEST_PATTERN)
+    runtime_fingerprint_sha256: str = Field(pattern=SHA256_PATTERN)
+    environment: Literal["STAGING_SHADOW"]
+    observed_at: int = Field(ge=1, strict=True)
     livez_ok: StrictBool
     healthz_ok: StrictBool
     readyz_ok: StrictBool
     schema_ready: StrictBool
     database_ready: StrictBool
     observed_schema_version: int = Field(ge=0, strict=True)
+
+    @model_validator(mode="after")
+    def _revision_shape(self) -> "ReadinessEvidence":
+        if any(character not in "0123456789abcdef" for character in self.source_revision):
+            raise ValueError("readiness revision must be lowercase hexadecimal")
+        return self
 
 
 class ShadowSoakEvidence(BaseModel):
@@ -174,6 +213,8 @@ def _complete_backup_contract_valid(
         "device_separation_enforced",
         "backup_path",
         "restore_target_path",
+        "backup_started_at",
+        "backup_completed_at",
         "backup_audit",
         "restore_audit",
         "restore_matches_backup",
@@ -187,6 +228,8 @@ def _complete_backup_contract_valid(
     source_identity = backup.get("source_identity")
     backup_path = Path(str(backup.get("backup_path", "")))
     restore_path = Path(str(backup.get("restore_target_path", "")))
+    started_at = backup.get("backup_started_at")
+    completed_at = backup.get("backup_completed_at")
     return (
         required.issubset(backup)
         and backup.get("contract_version") == "sqlite_backup_certification_v1"
@@ -195,6 +238,10 @@ def _complete_backup_contract_valid(
         and isinstance(source_identity, dict)
         and set(source_identity) == {"device_id", "inode"}
         and all(isinstance(value, int) and value >= 0 for value in source_identity.values())
+        and isinstance(started_at, int)
+        and isinstance(completed_at, int)
+        and started_at >= 1
+        and completed_at >= started_at
         and backup.get("source_failure_domain") != backup.get("destination_failure_domain")
         and backup.get("device_separation_enforced") is True
         and backup_path.is_absolute()
@@ -212,10 +259,51 @@ def _complete_backup_contract_valid(
     )
 
 
+def _backup_artifact_revalidation_reasons(backup: dict[str, Any]) -> list[str]:
+    backup_path = Path(str(backup.get("backup_path", "")))
+    expected = backup.get("backup_audit")
+    if not isinstance(expected, dict):
+        return ["BACKUP_ARTIFACT_UNREADABLE"]
+    try:
+        if (
+            not backup_path.is_absolute()
+            or backup_path.is_symlink()
+            or not backup_path.is_file()
+        ):
+            return ["BACKUP_ARTIFACT_UNREADABLE"]
+        current = audit_sqlite_snapshot(backup_path)
+    except (BackupCertificationError, OSError, ValueError, TypeError, sqlite3.Error):
+        return ["BACKUP_ARTIFACT_UNREADABLE"]
+    mismatches = [
+        field
+        for field in _BACKUP_ARTIFACT_COMPARABLE_FIELDS
+        if current.get(field) != expected.get(field)
+    ]
+    if mismatches:
+        return ["BACKUP_ARTIFACT_TAMPERED"]
+    return []
+
+
+def _backup_freshness_reasons(
+    backup: dict[str, Any],
+    *,
+    now: int,
+) -> list[str]:
+    completed_at = backup.get("backup_completed_at")
+    if not isinstance(completed_at, int) or completed_at < 1:
+        return ["BACKUP_FRESHNESS_UNPROVEN"]
+    if completed_at > now:
+        return ["BACKUP_TIMESTAMP_IN_FUTURE"]
+    if now - completed_at > MAXIMUM_BACKUP_AGE_SECONDS:
+        return ["BACKUP_EVIDENCE_STALE"]
+    return []
+
+
 def _backup_reasons(
     backup: dict[str, Any],
     *,
     expected_source_path: str,
+    now: int,
 ) -> list[str]:
     complete = _complete_backup_contract_valid(
         backup,
@@ -229,7 +317,11 @@ def _backup_reasons(
         (backup.get("source_path") != expected_source_path, "BACKUP_SOURCE_IDENTITY_MISMATCH"),
         (not complete, "BACKUP_CERTIFICATION_CONTRACT_INVALID"),
     )
-    return [reason for failed, reason in checks if failed]
+    reasons = [reason for failed, reason in checks if failed]
+    if not reasons:
+        reasons.extend(_backup_freshness_reasons(backup, now=now))
+        reasons.extend(_backup_artifact_revalidation_reasons(backup))
+    return reasons
 
 
 def _rehearsal_reasons(
@@ -241,6 +333,7 @@ def _rehearsal_reasons(
     backup_audit = backup.get("backup_audit", {})
     rollback_audit = rehearsal.get("rollback_audit")
     migration_result = rehearsal.get("migration_result")
+    post_migration_audit = rehearsal.get("post_migration_audit")
     migration_path = Path(str(rehearsal.get("migration_target", "")))
     rollback_path = Path(str(rehearsal.get("rollback_target", "")))
     backup_parent = Path(str(backup.get("backup_path", ""))).parent
@@ -260,13 +353,20 @@ def _rehearsal_reasons(
         "production_deployment_authorized",
         "rehearsal_sha256",
     }
+    post_migration_schema_aligned = (
+        isinstance(migration_result, dict)
+        and isinstance(post_migration_audit, dict)
+        and migration_result.get("user_version") == CURRENT_RUNTIME_SCHEMA_VERSION
+        and post_migration_audit.get("user_version") == CURRENT_RUNTIME_SCHEMA_VERSION
+        and migration_result.get("user_version") == post_migration_audit.get("user_version")
+    )
     complete = (
         required.issubset(rehearsal)
         and rehearsal.get("contract_version") == "sqlite_migration_rollback_rehearsal_v1"
         and isinstance(migration_result, dict)
         and migration_result.get("ok") is True
-        and migration_result.get("user_version") == CURRENT_RUNTIME_SCHEMA_VERSION
-        and _snapshot_audit_valid(rehearsal.get("post_migration_audit"))
+        and post_migration_schema_aligned
+        and _snapshot_audit_valid(post_migration_audit)
         and _snapshot_audit_valid(rollback_audit)
         and _snapshot_audit_valid(backup_audit)
         and _audits_match(backup_audit, rollback_audit)
@@ -285,12 +385,24 @@ def _rehearsal_reasons(
         (rehearsal.get("status") != "MIGRATION_AND_ROLLBACK_REHEARSED", "MIGRATION_AND_ROLLBACK_NOT_REHEARSED"),
         (rehearsal.get("backup_certification_sha256") != backup.get("certification_sha256"), "REHEARSAL_BACKUP_IDENTITY_MISMATCH"),
         (rehearsal.get("source_revision") != source_revision, "REHEARSAL_REVISION_MISMATCH"),
+        (
+            isinstance(migration_result, dict)
+            and isinstance(post_migration_audit, dict)
+            and not post_migration_schema_aligned,
+            "POST_MIGRATION_SCHEMA_VERSION_MISMATCH",
+        ),
         (not complete, "MIGRATION_REHEARSAL_CONTRACT_INVALID"),
     )
     return [reason for failed, reason in checks if failed]
 
 
-def _verification_reasons(evidence: VerificationEvidence) -> list[str]:
+def _verification_reasons(
+    evidence: VerificationEvidence,
+    *,
+    source_revision: str,
+    ci_revision: str,
+    tested_image_digest: Any,
+) -> list[str]:
     fields = (
         "backend_tests_passed",
         "frontend_tests_passed",
@@ -308,6 +420,10 @@ def _verification_reasons(evidence: VerificationEvidence) -> list[str]:
     ]
     if evidence.blocker_review_findings != 0:
         reasons.append("BLOCKER_REVIEW_FINDINGS_REMAIN")
+    if evidence.source_revision != source_revision or evidence.source_revision != ci_revision:
+        reasons.append("VERIFICATION_REVISION_MISMATCH")
+    if evidence.tested_image_digest != tested_image_digest:
+        reasons.append("VERIFICATION_IMAGE_MISMATCH")
     return reasons
 
 
@@ -317,8 +433,12 @@ def _runtime_reasons(
     *,
     source_revision: str,
     built_image_digest: Any,
+    running_image_digest: Any,
+    runtime_fingerprint_sha256: Any,
+    now: int,
 ) -> list[str]:
     duration_seconds = soak.ended_at - soak.started_at
+    readiness_age = now - readiness.observed_at
     checks = (
         (
             not all(
@@ -333,8 +453,21 @@ def _runtime_reasons(
             "RUNTIME_READINESS_INCOMPLETE",
         ),
         (readiness.observed_schema_version != CURRENT_RUNTIME_SCHEMA_VERSION, "RUNTIME_SCHEMA_VERSION_MISMATCH"),
+        (readiness.source_revision != source_revision, "READINESS_REVISION_MISMATCH"),
+        (readiness.running_image_digest != running_image_digest, "READINESS_IMAGE_MISMATCH"),
+        (
+            readiness.runtime_fingerprint_sha256 != runtime_fingerprint_sha256,
+            "READINESS_RUNTIME_FINGERPRINT_MISMATCH",
+        ),
+        (readiness.environment != soak.environment, "READINESS_ENVIRONMENT_MISMATCH"),
+        (readiness.observed_at > now, "READINESS_OBSERVED_AT_INVALID"),
+        (readiness_age > MAXIMUM_READINESS_AGE_SECONDS, "READINESS_EVIDENCE_STALE"),
         (soak.source_revision != source_revision, "SHADOW_SOAK_REVISION_MISMATCH"),
         (soak.built_image_digest != built_image_digest, "SHADOW_SOAK_IMAGE_MISMATCH"),
+        (
+            soak.runtime_fingerprint_sha256 != runtime_fingerprint_sha256,
+            "SHADOW_SOAK_RUNTIME_FINGERPRINT_MISMATCH",
+        ),
         (duration_seconds < MINIMUM_SHADOW_SOAK_SECONDS, "SHADOW_SOAK_DURATION_INSUFFICIENT"),
         (soak.request_error_rate > MAXIMUM_SHADOW_ERROR_RATE, "SHADOW_SOAK_ERROR_RATE_EXCEEDED"),
         (soak.oom_events != 0, "SHADOW_SOAK_OOM_EVENTS_PRESENT"),
@@ -346,32 +479,47 @@ def _runtime_reasons(
 
 def evaluate_deployment_certification(
     request: DeploymentCertificationRequest | dict[str, Any],
+    *,
+    now: int | None = None,
 ) -> dict[str, Any]:
     packet = (
         request
         if isinstance(request, DeploymentCertificationRequest)
         else DeploymentCertificationRequest.model_validate(request)
     )
+    observed_now = int(time.time() if now is None else now)
+    if observed_now < 1:
+        raise ValueError("certification evaluation time must be a positive UTC epoch")
     provenance = evaluate_deployment_provenance(packet.artifact_provenance)
     backup = packet.backup_certification
     rehearsal = packet.migration_rollback_rehearsal
+    links = provenance["links"]
     reasons = [
         *_provenance_reasons(packet, provenance),
         *_backup_reasons(
             backup,
             expected_source_path=packet.expected_production_database_path,
+            now=observed_now,
         ),
         *_rehearsal_reasons(
             rehearsal,
             backup=backup,
             source_revision=packet.source_revision,
         ),
-        *_verification_reasons(packet.verification),
+        *_verification_reasons(
+            packet.verification,
+            source_revision=packet.source_revision,
+            ci_revision=packet.ci_revision,
+            tested_image_digest=links["tested_image_digest"],
+        ),
         *_runtime_reasons(
             packet.readiness,
             packet.shadow_soak,
             source_revision=packet.source_revision,
-            built_image_digest=provenance["links"]["built_image_digest"],
+            built_image_digest=links["built_image_digest"],
+            running_image_digest=links["running_image_digest"],
+            runtime_fingerprint_sha256=links["runtime_fingerprint_sha256"],
+            now=observed_now,
         ),
     ]
 

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 import stat
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -52,9 +54,17 @@ def test_online_backup_restore_is_integrity_and_count_certified(tmp_path: Path) 
         enforce_distinct_device=False,
     )
 
+    source_stat = source.stat()
     assert report["status"] == "BACKUP_RESTORE_CERTIFIED"
     assert report["source_path"] == str(source.resolve())
     assert set(report["source_identity"]) == {"device_id", "inode"}
+    assert report["source_identity"] == {
+        "device_id": source_stat.st_dev,
+        "inode": source_stat.st_ino,
+    }
+    assert isinstance(report["backup_started_at"], int)
+    assert isinstance(report["backup_completed_at"], int)
+    assert report["backup_completed_at"] >= report["backup_started_at"] >= 1
     assert report["restore_matches_backup"] is True
     assert report["backup_audit"]["integrity_check"] == "ok"
     assert report["backup_audit"]["foreign_key_violation_count"] == 0
@@ -69,6 +79,49 @@ def test_online_backup_restore_is_integrity_and_count_certified(tmp_path: Path) 
     assert audit_sqlite_snapshot(backup)["audit_sha256"] == report["backup_audit"][
         "audit_sha256"
     ]
+
+
+def test_backup_fails_closed_when_source_identity_changes_after_open(
+    tmp_path: Path,
+) -> None:
+    source_dir = tmp_path / "source"
+    destination_dir = tmp_path / "independent"
+    source_dir.mkdir()
+    destination_dir.mkdir()
+    source = source_dir / "registry.db"
+    replacement = source_dir / "replacement.db"
+    _database(source)
+    _database(replacement)
+
+    from waterfallhunter.core import sqlite_backup_certification as module
+
+    real_bound = module._open_read_only_identity_bound
+
+    def bound_then_replace(path: Path):
+        connection, descriptor, identity = real_bound(path)
+        path.unlink()
+        os.link(replacement, path)
+        return connection, descriptor, identity
+
+    with mock.patch.object(
+        module,
+        "_open_read_only_identity_bound",
+        side_effect=bound_then_replace,
+    ):
+        with pytest.raises(
+            BackupCertificationError,
+            match="BACKUP_SOURCE_IDENTITY_CHANGED",
+        ):
+            create_certified_backup(
+                source=source,
+                backup=destination_dir / "backup.db",
+                restore_target=destination_dir / "restore.db",
+                source_failure_domain="production-block-volume",
+                destination_failure_domain="independent-object-mount",
+                enforce_distinct_device=False,
+            )
+
+    assert not (destination_dir / "backup.db").exists()
 
 
 def test_backup_fails_before_writing_when_failure_domain_is_not_independent(

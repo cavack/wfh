@@ -29,8 +29,12 @@ PYTHONPATH=backend/src:. python scripts/certify_sqlite_backup.py \
 
 The command uses SQLite Online Backup API, rejects same-device/same-domain
 targets, never overwrites, runs full integrity and foreign-key checks, records
-all table counts and schema identity, performs an isolated restore, and compares
-the restored snapshot. A local `/srv` copy is not an independent backup.
+all table counts and schema identity, binds source identity to the opened backup
+inode, hash-binds `backup_started_at`/`backup_completed_at`, performs an
+isolated restore, and compares the restored snapshot. A local `/srv` copy is not
+an independent backup. Deployment certification rejects backups older than seven
+days (`MAXIMUM_BACKUP_AGE_SECONDS`) and re-audits the immutable backup file
+read-only before accepting rollback evidence.
 
 ## 2. Staging migration and rollback rehearsal
 
@@ -58,13 +62,18 @@ Build one `deployment_certification_request_v1` JSON packet containing:
 
 - exact Git/CI revision and complete `deployment_provenance_v1` links;
 - the backup and rehearsal reports above;
-- backend, frontend, E2E, migration, load, fault, security and secret-scan PASS;
+- backend, frontend, E2E, migration, load, fault, security and secret-scan PASS
+  bound to the exact tested revision, tested image digest, and an immutable
+  verification report hash;
 - zero blocker review findings;
-- liveness, health, readiness, schema readiness and database readiness;
+- liveness, health, readiness, schema readiness and database readiness bound to
+  source revision, running image digest, runtime fingerprint, staging
+  environment, and `observed_at` (max age one hour);
 - at least 24 hours paper-only shadow soak, request error rate at or below
   0.1%, zero OOM/schema errors, and zero live-order paths. The soak packet must
   bind its start/end, staging environment, source revision, built-image digest,
-  and runtime fingerprint to the artifact being certified.
+  and runtime fingerprint to the artifact being certified. Provenance must
+  include the same `runtime_fingerprint_sha256`.
 
 Evaluate it offline:
 

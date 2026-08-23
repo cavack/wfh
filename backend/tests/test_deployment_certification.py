@@ -1,87 +1,77 @@
 from __future__ import annotations
 
+import sqlite3
+import time
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
 from waterfallhunter.core.deployment_certification import (
+    MAXIMUM_BACKUP_AGE_SECONDS,
+    MAXIMUM_READINESS_AGE_SECONDS,
     evaluate_deployment_certification,
 )
+from waterfallhunter.core.schema_contract import CURRENT_RUNTIME_SCHEMA_VERSION
 from waterfallhunter.core.signal_metadata import canonical_sha256
+from waterfallhunter.core.sqlite_backup_certification import create_certified_backup
+from waterfallhunter.core.migration_rehearsal import rehearse_migration_and_rollback
 
 
 REVISION = "a" * 40
 DIGEST = "sha256:" + "b" * 64
-DATABASE_PATH = "/var/lib/wfh/waterfall_registry.db"
+FINGERPRINT = "9" * 64
+VERIFICATION_REPORT = "7" * 64
 
 
 def _hashed(document: dict, field: str) -> dict:
     return {**document, field: canonical_sha256(document)}
 
 
-def _audit(*, file_sha256: str, schema_version: int = 5) -> dict:
-    return _hashed(
-        {
-            "contract_version": "sqlite_snapshot_audit_v1",
-            "file_sha256": file_sha256,
-            "file_size_bytes": 4_096,
-            "integrity_check": "ok",
-            "foreign_key_violation_count": 0,
-            "user_version": schema_version,
-            "schema_version": schema_version,
-            "object_counts": {"table": 1, "index": 0, "trigger": 0, "view": 0},
-            "table_counts": {"signals": 10},
-            "schema_sha256": "f" * 64,
-            "logical_content_sha256": "8" * 64,
-        },
-        "audit_sha256",
+def _empty_database(path: Path) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA user_version=0")
+
+
+def _request(tmp_path: Path, *, now: int | None = None) -> tuple[dict, int]:
+    observed_now = int(time.time() if now is None else now)
+    source_dir = tmp_path / "source"
+    destination_dir = tmp_path / "independent"
+    source_dir.mkdir()
+    destination_dir.mkdir()
+    source = source_dir / "registry.db"
+    _empty_database(source)
+    backup = create_certified_backup(
+        source=source,
+        backup=destination_dir / "backup.db",
+        restore_target=destination_dir / "restore.db",
+        source_failure_domain="production",
+        destination_failure_domain="independent",
+        enforce_distinct_device=False,
     )
-
-
-def _request() -> dict:
-    backup_audit = _audit(file_sha256="1" * 64)
-    restore_audit = _audit(file_sha256="2" * 64)
+    # Tests cannot allocate independent block devices; keep the real artifact and
+    # hash-bind the production-required device-separation claim separately.
     backup = _hashed(
         {
-            "contract_version": "sqlite_backup_certification_v1",
-            "status": "BACKUP_RESTORE_CERTIFIED",
-            "source_path": DATABASE_PATH,
-            "source_identity": {"device_id": 1, "inode": 2},
-            "source_failure_domain": "production",
-            "destination_failure_domain": "independent",
+            **{
+                key: value
+                for key, value in backup.items()
+                if key != "certification_sha256"
+            },
             "device_separation_enforced": True,
-            "backup_path": "/independent/backup.db",
-            "restore_target_path": "/independent/restore.db",
-            "backup_audit": backup_audit,
-            "restore_audit": restore_audit,
-            "restore_matches_backup": True,
-            "rollback_source_sha256": backup_audit["file_sha256"],
-            "production_migration_authorized": False,
-            "production_deployment_authorized": False,
         },
         "certification_sha256",
     )
-    rehearsal = _hashed(
-        {
-            "contract_version": "sqlite_migration_rollback_rehearsal_v1",
-            "status": "MIGRATION_AND_ROLLBACK_REHEARSED",
-            "source_revision": REVISION,
-            "backup_certification_sha256": backup["certification_sha256"],
-            "baseline_audit_sha256": backup_audit["audit_sha256"],
-            "migration_target": "/independent/migration.db",
-            "migration_result": {"ok": True, "user_version": 5},
-            "post_migration_audit": _audit(file_sha256="3" * 64),
-            "rollback_target": "/independent/rollback.db",
-            "rollback_audit": _audit(file_sha256="4" * 64),
-            "rollback_matches_baseline": True,
-            "production_migration_authorized": False,
-            "production_deployment_authorized": False,
-        },
-        "rehearsal_sha256",
+    rehearsal = rehearse_migration_and_rollback(
+        backup_certification=backup,
+        migration_target=(destination_dir / "migration.db").resolve(),
+        rollback_target=(destination_dir / "rollback.db").resolve(),
+        source_revision=REVISION,
     )
-    return {
+    request = {
         "source_revision": REVISION,
         "ci_revision": REVISION,
-        "expected_production_database_path": DATABASE_PATH,
+        "expected_production_database_path": str(source.resolve()),
         "artifact_provenance": {
             "git_sha": REVISION,
             "dependency_lock_sha256": "c" * 64,
@@ -91,10 +81,14 @@ def _request() -> dict:
             "tested_image_digest": DIGEST,
             "deployment_manifest_sha256": "e" * 64,
             "running_image_digest": DIGEST,
+            "runtime_fingerprint_sha256": FINGERPRINT,
         },
         "backup_certification": backup,
         "migration_rollback_rehearsal": rehearsal,
         "verification": {
+            "source_revision": REVISION,
+            "tested_image_digest": DIGEST,
+            "verification_report_sha256": VERIFICATION_REPORT,
             "backend_tests_passed": True,
             "frontend_tests_passed": True,
             "e2e_tests_passed": True,
@@ -106,20 +100,25 @@ def _request() -> dict:
             "blocker_review_findings": 0,
         },
         "readiness": {
+            "source_revision": REVISION,
+            "running_image_digest": DIGEST,
+            "runtime_fingerprint_sha256": FINGERPRINT,
+            "environment": "STAGING_SHADOW",
+            "observed_at": observed_now - 60,
             "livez_ok": True,
             "healthz_ok": True,
             "readyz_ok": True,
             "schema_ready": True,
             "database_ready": True,
-            "observed_schema_version": 5,
+            "observed_schema_version": CURRENT_RUNTIME_SCHEMA_VERSION,
         },
         "shadow_soak": {
             "source_revision": REVISION,
             "built_image_digest": DIGEST,
-            "runtime_fingerprint_sha256": "9" * 64,
+            "runtime_fingerprint_sha256": FINGERPRINT,
             "environment": "STAGING_SHADOW",
-            "started_at": 1_000_000,
-            "ended_at": 1_086_400,
+            "started_at": observed_now - 100_000,
+            "ended_at": observed_now - 10_000,
             "request_error_rate": 0,
             "oom_events": 0,
             "schema_errors": 0,
@@ -127,10 +126,14 @@ def _request() -> dict:
             "paper_only": True,
         },
     }
+    return request, observed_now
 
 
-def test_complete_evidence_is_only_ready_for_explicit_owner_approval() -> None:
-    report = evaluate_deployment_certification(_request())
+def test_complete_evidence_is_only_ready_for_explicit_owner_approval(
+    tmp_path: Path,
+) -> None:
+    request, observed_now = _request(tmp_path)
+    report = evaluate_deployment_certification(request, now=observed_now)
 
     assert report["status"] == "READY_FOR_EXPLICIT_OWNER_APPROVAL"
     assert report["blocking_reasons"] == []
@@ -140,14 +143,14 @@ def test_complete_evidence_is_only_ready_for_explicit_owner_approval() -> None:
     assert len(report["report_sha256"]) == 64
 
 
-def test_missing_backup_soak_and_test_evidence_fails_closed() -> None:
-    request = _request()
+def test_missing_backup_soak_and_test_evidence_fails_closed(tmp_path: Path) -> None:
+    request, observed_now = _request(tmp_path)
     request["backup_certification"]["status"] = "MISSING"
     request["verification"]["fault_tests_passed"] = False
     request["shadow_soak"]["ended_at"] = request["shadow_soak"]["started_at"] + 3_600
     request["shadow_soak"]["oom_events"] = 1
 
-    report = evaluate_deployment_certification(request)
+    report = evaluate_deployment_certification(request, now=observed_now)
 
     assert report["status"] == "NOT_READY"
     assert "BACKUP_CERTIFICATION_HASH_INVALID" in report["blocking_reasons"]
@@ -158,14 +161,16 @@ def test_missing_backup_soak_and_test_evidence_fails_closed() -> None:
     assert report["deployment_allowed"] is False
 
 
-def test_schema_source_and_soak_identity_are_bound_to_certified_artifact() -> None:
-    request = _request()
+def test_schema_source_and_soak_identity_are_bound_to_certified_artifact(
+    tmp_path: Path,
+) -> None:
+    request, observed_now = _request(tmp_path)
     request["readiness"]["observed_schema_version"] = 1
     request["expected_production_database_path"] = "/var/lib/wfh/wrong.db"
     request["shadow_soak"]["source_revision"] = "0" * 40
     request["shadow_soak"]["built_image_digest"] = "sha256:" + "0" * 64
 
-    report = evaluate_deployment_certification(request)
+    report = evaluate_deployment_certification(request, now=observed_now)
 
     assert "RUNTIME_SCHEMA_VERSION_MISMATCH" in report["blocking_reasons"]
     assert "BACKUP_SOURCE_IDENTITY_MISMATCH" in report["blocking_reasons"]
@@ -173,9 +178,144 @@ def test_schema_source_and_soak_identity_are_bound_to_certified_artifact() -> No
     assert "SHADOW_SOAK_IMAGE_MISMATCH" in report["blocking_reasons"]
 
 
-def test_pass_evidence_rejects_coerced_booleans() -> None:
-    request = _request()
+def test_pass_evidence_rejects_coerced_booleans(tmp_path: Path) -> None:
+    request, _observed_now = _request(tmp_path)
     request["verification"]["backend_tests_passed"] = 1
 
     with pytest.raises(ValidationError):
         evaluate_deployment_certification(request)
+
+
+def test_shadow_soak_runtime_fingerprint_must_match_provenance(
+    tmp_path: Path,
+) -> None:
+    request, observed_now = _request(tmp_path)
+    request["shadow_soak"]["runtime_fingerprint_sha256"] = "0" * 64
+
+    report = evaluate_deployment_certification(request, now=observed_now)
+
+    assert "SHADOW_SOAK_RUNTIME_FINGERPRINT_MISMATCH" in report["blocking_reasons"]
+    assert report["status"] == "NOT_READY"
+
+
+def test_post_migration_audit_schema_must_match_runtime_contract(
+    tmp_path: Path,
+) -> None:
+    request, observed_now = _request(tmp_path)
+    mismatched = dict(request["migration_rollback_rehearsal"]["post_migration_audit"])
+    mismatched["user_version"] = CURRENT_RUNTIME_SCHEMA_VERSION - 1
+    mismatched.pop("audit_sha256", None)
+    request["migration_rollback_rehearsal"]["post_migration_audit"] = _hashed(
+        mismatched,
+        "audit_sha256",
+    )
+    request["migration_rollback_rehearsal"] = _hashed(
+        {
+            key: value
+            for key, value in request["migration_rollback_rehearsal"].items()
+            if key != "rehearsal_sha256"
+        },
+        "rehearsal_sha256",
+    )
+
+    report = evaluate_deployment_certification(request, now=observed_now)
+
+    assert "POST_MIGRATION_SCHEMA_VERSION_MISMATCH" in report["blocking_reasons"]
+    assert report["status"] == "NOT_READY"
+
+
+def test_deployment_certification_revalidates_backup_artifact(tmp_path: Path) -> None:
+    request, observed_now = _request(tmp_path)
+    backup_path = Path(request["backup_certification"]["backup_path"])
+    with sqlite3.connect(backup_path) as connection:
+        connection.execute("CREATE TABLE tamper(id INTEGER PRIMARY KEY)")
+        connection.commit()
+
+    report = evaluate_deployment_certification(request, now=observed_now)
+
+    assert "BACKUP_ARTIFACT_TAMPERED" in report["blocking_reasons"]
+    assert report["status"] == "NOT_READY"
+
+
+def test_deployment_certification_rejects_unreadable_backup_bytes(
+    tmp_path: Path,
+) -> None:
+    request, observed_now = _request(tmp_path)
+    Path(request["backup_certification"]["backup_path"]).write_bytes(b"tampered")
+
+    report = evaluate_deployment_certification(request, now=observed_now)
+
+    assert "BACKUP_ARTIFACT_UNREADABLE" in report["blocking_reasons"]
+    assert report["status"] == "NOT_READY"
+
+
+def test_deployment_certification_rejects_missing_backup_artifact(
+    tmp_path: Path,
+) -> None:
+    request, observed_now = _request(tmp_path)
+    Path(request["backup_certification"]["backup_path"]).unlink()
+
+    report = evaluate_deployment_certification(request, now=observed_now)
+
+    assert "BACKUP_ARTIFACT_UNREADABLE" in report["blocking_reasons"]
+    assert report["status"] == "NOT_READY"
+
+
+def test_readiness_must_bind_running_artifact_and_freshness(tmp_path: Path) -> None:
+    request, observed_now = _request(tmp_path)
+    request["readiness"]["source_revision"] = "0" * 40
+    request["readiness"]["running_image_digest"] = "sha256:" + "0" * 64
+    request["readiness"]["runtime_fingerprint_sha256"] = "0" * 64
+    request["readiness"]["observed_at"] = observed_now - MAXIMUM_READINESS_AGE_SECONDS - 1
+
+    report = evaluate_deployment_certification(request, now=observed_now)
+
+    assert "READINESS_REVISION_MISMATCH" in report["blocking_reasons"]
+    assert "READINESS_IMAGE_MISMATCH" in report["blocking_reasons"]
+    assert "READINESS_RUNTIME_FINGERPRINT_MISMATCH" in report["blocking_reasons"]
+    assert "READINESS_EVIDENCE_STALE" in report["blocking_reasons"]
+    assert report["status"] == "NOT_READY"
+
+
+def test_stale_backup_certificate_is_rejected(tmp_path: Path) -> None:
+    request, observed_now = _request(tmp_path)
+    body = {
+        key: value
+        for key, value in request["backup_certification"].items()
+        if key != "certification_sha256"
+    }
+    body["backup_started_at"] = observed_now - MAXIMUM_BACKUP_AGE_SECONDS - 120
+    body["backup_completed_at"] = observed_now - MAXIMUM_BACKUP_AGE_SECONDS - 60
+    request["backup_certification"] = _hashed(body, "certification_sha256")
+    request["migration_rollback_rehearsal"] = _hashed(
+        {
+            **{
+                key: value
+                for key, value in request["migration_rollback_rehearsal"].items()
+                if key != "rehearsal_sha256"
+            },
+            "backup_certification_sha256": request["backup_certification"][
+                "certification_sha256"
+            ],
+        },
+        "rehearsal_sha256",
+    )
+
+    report = evaluate_deployment_certification(request, now=observed_now)
+
+    assert "BACKUP_EVIDENCE_STALE" in report["blocking_reasons"]
+    assert report["status"] == "NOT_READY"
+
+
+def test_verification_evidence_must_bind_revision_and_tested_image(
+    tmp_path: Path,
+) -> None:
+    request, observed_now = _request(tmp_path)
+    request["verification"]["source_revision"] = "0" * 40
+    request["verification"]["tested_image_digest"] = "sha256:" + "0" * 64
+
+    report = evaluate_deployment_certification(request, now=observed_now)
+
+    assert "VERIFICATION_REVISION_MISMATCH" in report["blocking_reasons"]
+    assert "VERIFICATION_IMAGE_MISMATCH" in report["blocking_reasons"]
+    assert report["status"] == "NOT_READY"
