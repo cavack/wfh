@@ -2,6 +2,7 @@ import logging
 import asyncio
 import traceback
 import json
+import math
 import time
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
@@ -937,8 +938,10 @@ def _store_live_metrics(
     )
 
 
-def get_formatted_candidates():
-    now = time.time()
+def get_formatted_candidates(*, evaluation_time: float | None = None):
+    now = time.time() if evaluation_time is None else float(evaluation_time)
+    if not math.isfinite(now) or now < 0:
+        raise ValueError("evaluation_time must be a non-negative finite timestamp")
 
     active_from_db = (
         db.get_all_active_candidates()
@@ -977,19 +980,31 @@ def get_formatted_candidates():
                 and observed_at is not None
             )
 
+            analysis_observed_at = live_data.get(
+                "analysis_observed_at"
+            )
             data[
-                "observed_at"
-            ] = observed_at
-
+                "analysis_observed_at"
+            ] = analysis_observed_at
             data[
-                "age_seconds"
+                "analysis_age_seconds"
             ] = (
                 round(
                     now
-                    - observed_at,
+                    - analysis_observed_at,
                     1,
                 )
-                if observed_at is not None
+                if (
+                    isinstance(analysis_observed_at, (int, float))
+                    and not isinstance(analysis_observed_at, bool)
+                    and 0 <= analysis_observed_at <= now
+                )
+                else None
+            )
+            data["reference_observed_at"] = observed_at
+            data["reference_age_seconds"] = (
+                round(now - observed_at, 1)
+                if observed_at is not None and 0 <= observed_at <= now
                 else None
             )
 
@@ -1101,13 +1116,10 @@ def get_formatted_candidates():
                 "quote_volume"
             ] = None
 
-            data[
-                "observed_at"
-            ] = None
-
-            data[
-                "age_seconds"
-            ] = None
+            data["analysis_observed_at"] = None
+            data["analysis_age_seconds"] = None
+            data["reference_observed_at"] = None
+            data["reference_age_seconds"] = None
 
             data[
                 "score"
@@ -1159,6 +1171,7 @@ def get_formatted_candidates():
     final_ranking = FinalRanking.rank(
         active_from_db,
         limit=3,
+        evaluation_time=now,
     )
 
     signal_funnel = SignalFunnel.build(
@@ -1243,12 +1256,12 @@ async def evaluate_candidate(
 ):
     analysis_observed_at = int(time.time())
 
-    scanner.active_candidates.setdefault(
+    active_candidate = scanner.active_candidates.setdefault(
         symbol,
         {},
-    )[
-        "analysis_status"
-    ] = "pending"
+    )
+    active_candidate["analysis_status"] = "pending"
+    active_candidate["analysis_observed_at"] = analysis_observed_at
 
     (
         lbank_price,
@@ -1256,6 +1269,7 @@ async def evaluate_candidate(
     ) = scanner.get_live_reference(
         symbol
     )
+    active_candidate["reference_observed_at"] = reference_observed_at
 
     current_state = data[
         "status"
