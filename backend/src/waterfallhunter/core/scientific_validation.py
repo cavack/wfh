@@ -14,7 +14,7 @@ from waterfallhunter.core.signal_metadata import canonical_sha256
 
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
 DAY_SECONDS = 86_400
-MAX_VALIDATION_ROWS = 1_000_000
+MAX_VALIDATION_ROWS = 100_000
 
 
 class ScientificValidationRow(BaseModel):
@@ -44,7 +44,29 @@ class ScientificValidationRow(BaseModel):
             raise ValueError("feature evidence cannot be observed after the signal")
         if self.label_observed_at <= self.signal_triggered_at:
             raise ValueError("label observation must follow the signal")
+        material = self.model_dump(mode="json", exclude={"source_row_sha256"})
+        if self.source_row_sha256 != canonical_sha256(material):
+            raise ValueError("scientific source row hash mismatch")
         return self
+
+
+def scientific_source_manifest_sha256(
+    *,
+    source_revision: str,
+    generated_at: int,
+    target_horizon_seconds: int,
+    rows: tuple[ScientificValidationRow, ...],
+) -> str:
+    ordered = sorted(rows, key=lambda row: (row.signal_triggered_at, row.signal_id))
+    return canonical_sha256(
+        {
+            "contract_version": "strict_scientific_source_manifest_v1",
+            "source_revision": source_revision,
+            "generated_at": generated_at,
+            "target_horizon_seconds": target_horizon_seconds,
+            "source_row_sha256": [row.source_row_sha256 for row in ordered],
+        }
+    )
 
 
 class ScientificValidationPolicy(BaseModel):
@@ -144,6 +166,14 @@ class ScientificValidationRequest(BaseModel):
         }
         if horizons and horizons != {self.target_horizon_seconds}:
             raise ValueError("every row must use the declared target horizon")
+        expected_manifest = scientific_source_manifest_sha256(
+            source_revision=self.source_revision,
+            generated_at=self.generated_at,
+            target_horizon_seconds=self.target_horizon_seconds,
+            rows=self.rows,
+        )
+        if self.source_dataset_manifest_sha256 != expected_manifest:
+            raise ValueError("scientific source dataset manifest hash mismatch")
         return self
 
 
@@ -190,7 +220,7 @@ def validate_strict_scientific_evidence(
         "source_dataset_manifest_sha256": packet.source_dataset_manifest_sha256,
         "derived_dataset_manifest": manifest,
         "validation_policy": active_policy.model_dump(mode="json"),
-        "candidate_registry": list(_CANDIDATES),
+        "candidate_registry": [dict(candidate) for candidate in _CANDIDATES],
         "split_summary": _split_summary(split, active_policy),
         "walk_forward": walk_forward,
         "promotion_allowed": False,
@@ -633,7 +663,7 @@ def _sigmoid(value: float) -> float:
 def _fit_isotonic(probabilities: list[float], labels: list[bool]) -> dict[str, Any]:
     grouped: list[dict[str, float]] = []
     for probability, label in sorted(zip(probabilities, labels, strict=True)):
-        if grouped and math.isclose(grouped[-1]["maximum_probability"], probability):
+        if grouped and grouped[-1]["maximum_probability"] == probability:
             grouped[-1]["weight"] += 1
             grouped[-1]["positive"] += int(label)
         else:
@@ -663,11 +693,8 @@ def _fit_isotonic(probabilities: list[float], labels: list[bool]) -> dict[str, A
         "contract_version": "isotonic_probability_calibrator_v1",
         "blocks": [
             {
-                "maximum_raw_probability": round(block["maximum_probability"], 12),
-                "calibrated_probability": round(
-                    block["positive"] / block["weight"],
-                    12,
-                ),
+                "maximum_raw_probability": block["maximum_probability"],
+                "calibrated_probability": block["positive"] / block["weight"],
                 "sample_size": int(block["weight"]),
             }
             for block in blocks
@@ -716,34 +743,53 @@ def _probability_metrics(labels: list[bool], probabilities: list[float]) -> dict
                 "observed_rate": round(observed_rate, 8),
             }
         )
-    ranking = sorted(
-        zip(clipped, numeric, strict=True),
-        key=lambda item: item[0],
-        reverse=True,
-    )
-    positive_count = sum(numeric)
-    average_precision = (
-        sum(
-            sum(item[1] for item in ranking[: index + 1]) / (index + 1)
-            for index, item in enumerate(ranking)
-            if item[1] == 1
-        )
-        / positive_count
-        if positive_count
-        else 0.0
-    )
-    precision_k = max(1, math.ceil(len(ranking) * 0.10))
-    precision_at_k = sum(item[1] for item in ranking[:precision_k]) / precision_k
+    rank_metrics = _tied_rank_metrics(clipped, numeric)
     return {
         "sample_size": len(labels),
         "positive_rate": round(sum(numeric) / len(numeric), 8),
         "brier_score": round(brier, 8),
         "log_loss": round(log_loss, 8),
         "expected_calibration_error": round(ece, 8),
-        "pr_auc_average_precision": round(average_precision, 8),
-        "precision_at_top_10pct": round(precision_at_k, 8),
-        "precision_at_top_10pct_count": precision_k,
+        **rank_metrics,
         "calibration_bins": calibration_bins,
+    }
+
+
+def _tied_rank_metrics(
+    probabilities: list[float],
+    labels: list[float],
+) -> dict[str, Any]:
+    groups: dict[float, list[float]] = {}
+    for probability, label in zip(probabilities, labels, strict=True):
+        groups.setdefault(probability, []).append(label)
+    ordered_groups = [groups[value] for value in sorted(groups, reverse=True)]
+    positives = sum(labels)
+    seen = 0
+    true_positives = 0.0
+    previous_recall = 0.0
+    average_precision = 0.0
+    for group in ordered_groups:
+        seen += len(group)
+        true_positives += sum(group)
+        recall = true_positives / positives if positives else 0.0
+        precision = true_positives / seen
+        average_precision += (recall - previous_recall) * precision
+        previous_recall = recall
+
+    precision_k = max(1, math.ceil(len(labels) * 0.10))
+    remaining = precision_k
+    expected_positives = 0.0
+    for group in ordered_groups:
+        if remaining <= 0:
+            break
+        consumed = min(remaining, len(group))
+        expected_positives += sum(group) * consumed / len(group)
+        remaining -= consumed
+    return {
+        "pr_auc_average_precision": round(average_precision, 8),
+        "precision_at_top_10pct": round(expected_positives / precision_k, 8),
+        "precision_at_top_10pct_count": precision_k,
+        "rank_tie_policy": "THRESHOLD_GROUP_EXPECTATION",
     }
 
 
@@ -806,7 +852,15 @@ def _block_bootstrap(
         labels = [rows[index].target_tp2_hit_within_horizon for index in indices]
         sampled_probabilities = [probabilities[index] for index in indices]
         brier_samples.append(
-            float(_probability_metrics(labels, sampled_probabilities)["brier_score"])
+            sum(
+                (probability - (1.0 if label else 0.0)) ** 2
+                for label, probability in zip(
+                    labels,
+                    sampled_probabilities,
+                    strict=True,
+                )
+            )
+            / len(labels)
         )
         selected = [
             rows[index].net_utility_r
@@ -962,7 +1016,7 @@ def _model_card_unavailable(
     manifest: dict[str, Any],
     reasons: list[str],
 ) -> dict[str, Any]:
-    return {
+    body = {
         "contract_version": "strict_model_card_v1",
         "status": "NOT_TRAINED",
         "intended_use": "PAPER_ONLY_RESEARCH",
@@ -972,6 +1026,7 @@ def _model_card_unavailable(
         "probability_display_allowed": False,
         "live_execution_allowed": False,
     }
+    return {**body, "model_card_sha256": canonical_sha256(body)}
 
 
 def _model_card(

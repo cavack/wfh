@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-
 import pytest
 from pydantic import ValidationError
 
@@ -9,8 +7,14 @@ from waterfallhunter.core.scientific_validation import (
     DAY_SECONDS,
     ScientificValidationPolicy,
     ScientificValidationRequest,
+    ScientificValidationRow,
+    _apply_isotonic,
+    _fit_isotonic,
+    _probability_metrics,
+    scientific_source_manifest_sha256,
     validate_strict_scientific_evidence,
 )
+from waterfallhunter.core.signal_metadata import canonical_sha256
 
 
 def _request(*, days: int = 70, row_count: int = 180) -> ScientificValidationRequest:
@@ -20,8 +24,7 @@ def _request(*, days: int = 70, row_count: int = 180) -> ScientificValidationReq
     for index in range(row_count):
         triggered_at = start + index * interval
         target = index % 2 == 0
-        rows.append(
-            {
+        row = {
                 "signal_id": f"strict-{index:04d}",
                 "signal_class": "STRICT",
                 "strategy_profile": "strict_score_v2",
@@ -36,20 +39,41 @@ def _request(*, days: int = 70, row_count: int = 180) -> ScientificValidationReq
                 "net_utility_r": 1.0 if target else -0.75,
                 "execution_costs_complete": True,
                 "execution_cost_basis": "REALIZED",
-                "source_row_sha256": hashlib.sha256(
-                    f"strict-source:{index}".encode()
-                ).hexdigest(),
             }
-        )
+        rows.append({**row, "source_row_sha256": canonical_sha256(row)})
+    revision = "b" * 40
+    generated_at = rows[-1]["label_observed_at"]
+    validated_rows = tuple(ScientificValidationRow.model_validate(row) for row in rows)
     return ScientificValidationRequest.model_validate(
         {
-            "source_dataset_manifest_sha256": "a" * 64,
-            "source_revision": "b" * 40,
-            "generated_at": rows[-1]["label_observed_at"],
+            "source_dataset_manifest_sha256": scientific_source_manifest_sha256(
+                source_revision=revision,
+                generated_at=generated_at,
+                target_horizon_seconds=DAY_SECONDS,
+                rows=validated_rows,
+            ),
+            "source_revision": revision,
+            "generated_at": generated_at,
             "target_horizon_seconds": DAY_SECONDS,
             "rows": rows,
         }
     )
+
+
+def _refresh_source_identity(payload: dict) -> dict:
+    for row in payload["rows"]:
+        material = {key: value for key, value in row.items() if key != "source_row_sha256"}
+        row["source_row_sha256"] = canonical_sha256(material)
+    validated_rows = tuple(
+        ScientificValidationRow.model_validate(row) for row in payload["rows"]
+    )
+    payload["source_dataset_manifest_sha256"] = scientific_source_manifest_sha256(
+        source_revision=payload["source_revision"],
+        generated_at=payload["generated_at"],
+        target_horizon_seconds=payload["target_horizon_seconds"],
+        rows=validated_rows,
+    )
+    return payload
 
 
 def test_complete_validation_is_deterministic_purged_and_owner_gated() -> None:
@@ -107,7 +131,9 @@ def test_holdout_changes_cannot_change_champion_selection() -> None:
         changed_rows.append(payload)
     changed_payload = request.model_dump(mode="json")
     changed_payload["rows"] = changed_rows
-    changed_request = ScientificValidationRequest.model_validate(changed_payload)
+    changed_request = ScientificValidationRequest.model_validate(
+        _refresh_source_identity(changed_payload)
+    )
 
     changed = validate_strict_scientific_evidence(changed_request)
 
@@ -135,6 +161,7 @@ def test_insufficient_strict_evidence_fails_closed_with_model_card() -> None:
     assert report["champion_challenger"]["available"] is False
     assert report["untouched_holdout"]["available"] is False
     assert report["model_card"]["status"] == "NOT_TRAINED"
+    assert len(report["model_card"]["model_card_sha256"]) == 64
 
 
 def test_complete_data_with_negative_net_utility_still_does_not_promote() -> None:
@@ -143,7 +170,7 @@ def test_complete_data_with_negative_net_utility_still_does_not_promote() -> Non
     for row in payload["rows"]:
         row["net_utility_r"] = -1.0
 
-    report = validate_strict_scientific_evidence(payload)
+    report = validate_strict_scientific_evidence(_refresh_source_identity(payload))
 
     assert report["evidence_gate_status"] == "PERFORMANCE_GATE_FAILED"
     assert report["promotion_decision"] == "DO_NOT_PROMOTE"
@@ -157,7 +184,7 @@ def test_complete_data_with_symbol_concentration_still_does_not_promote() -> Non
     for row in payload["rows"]:
         row["canonical_symbol"] = "ONE-ASSET-USDT-PERP"
 
-    report = validate_strict_scientific_evidence(payload)
+    report = validate_strict_scientific_evidence(_refresh_source_identity(payload))
 
     assert report["evidence_gate_status"] == "PERFORMANCE_GATE_FAILED"
     assert "HOLDOUT_SYMBOL_CONCENTRATION_EXCEEDS_POLICY" in report["blocking_reasons"]
@@ -181,7 +208,9 @@ def test_validation_rejects_non_strict_future_or_mixed_horizon_rows() -> None:
     with pytest.raises(ValidationError, match="feature evidence"):
         ScientificValidationRequest.model_validate({**base, "rows": [future]})
     with pytest.raises(ValidationError, match="declared target horizon"):
-        ScientificValidationRequest.model_validate({**base, "rows": [mixed_horizon]})
+        ScientificValidationRequest.model_validate(
+            _refresh_source_identity({**base, "rows": [mixed_horizon]})
+        )
 
 
 def test_validation_rejects_coerced_time_and_ambiguous_revision() -> None:
@@ -201,3 +230,44 @@ def test_policy_is_hash_bound() -> None:
 
     with pytest.raises(ValidationError, match="policy hash mismatch"):
         ScientificValidationPolicy.model_validate(material)
+
+
+def test_source_rows_and_manifest_are_content_bound() -> None:
+    payload = _request().model_dump(mode="json")
+    payload["rows"][0]["net_utility_r"] = 99
+
+    with pytest.raises(ValidationError, match="source row hash mismatch"):
+        ScientificValidationRequest.model_validate(payload)
+
+    payload = _request().model_dump(mode="json")
+    payload["source_dataset_manifest_sha256"] = "0" * 64
+    with pytest.raises(ValidationError, match="dataset manifest hash mismatch"):
+        ScientificValidationRequest.model_validate(payload)
+
+
+def test_report_candidate_registry_does_not_mutate_global_specs() -> None:
+    first = validate_strict_scientific_evidence(_request())
+    first["candidate_registry"][1]["iterations"] = 1
+
+    second = validate_strict_scientific_evidence(_request())
+
+    assert second["candidate_registry"][1]["iterations"] == 1_000
+
+
+def test_rank_metrics_are_invariant_to_order_with_tied_scores() -> None:
+    probabilities = [0.5] * 10
+    labels = [True, False] * 5
+
+    first = _probability_metrics(labels, probabilities)
+    second = _probability_metrics(list(reversed(labels)), probabilities)
+
+    assert first["pr_auc_average_precision"] == second["pr_auc_average_precision"] == 0.5
+    assert first["precision_at_top_10pct"] == second["precision_at_top_10pct"] == 0.5
+
+
+def test_isotonic_application_uses_exact_fitted_boundaries() -> None:
+    values = [0.12345678901234, 0.12345678901235, 0.9]
+    calibrator = _fit_isotonic(values, [False, True, True])
+
+    assert calibrator["blocks"][0]["maximum_raw_probability"] == values[0]
+    assert _apply_isotonic(calibrator, values[0]) == 0.0

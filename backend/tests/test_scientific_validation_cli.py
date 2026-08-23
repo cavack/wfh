@@ -10,12 +10,20 @@ from scripts.validate_strict_scientific_model import (
     build_report,
     write_report_atomic,
 )
-from waterfallhunter.core.scientific_validation import DAY_SECONDS
+from waterfallhunter.core.scientific_validation import (
+    DAY_SECONDS,
+    scientific_source_manifest_sha256,
+)
 
 
 def test_cli_helpers_emit_fail_closed_hash_bound_report(tmp_path) -> None:
     payload = {
-        "source_dataset_manifest_sha256": "a" * 64,
+        "source_dataset_manifest_sha256": scientific_source_manifest_sha256(
+            source_revision="b" * 40,
+            generated_at=100,
+            target_horizon_seconds=DAY_SECONDS,
+            rows=(),
+        ),
         "source_revision": "b" * 40,
         "generated_at": 100,
         "target_horizon_seconds": DAY_SECONDS,
