@@ -193,18 +193,18 @@ export function BacktestLab() {
 
       <div className="mt-6 rounded-2xl border border-slate-700/80 bg-slate-950/55 p-4 sm:p-5">
         <div className="grid gap-4 lg:grid-cols-[1fr_13rem]">
-          <label className="text-xs font-medium text-slate-300">Dataset manifest SHA-256
+          <label className="text-xs font-medium text-slate-300"><span className="block">Dataset manifest SHA-256</span>
             <input value={manifestHash} onChange={(event) => setManifestHash(event.target.value.trim())} placeholder="64 lowercase hexadecimal characters" spellCheck={false} className={`mt-2 w-full rounded-xl border bg-slate-950 px-3 py-2.5 font-mono text-xs outline-none ${manifestHash && !validHash ? "border-rose-500/60" : "border-slate-700 focus:border-cyan-500"}`} />
           </label>
-          <label className="text-xs font-medium text-slate-300">Initial paper equity
+          <label className="text-xs font-medium text-slate-300"><span className="block">Initial paper equity</span>
             <input type="number" min="0.01" step="0.01" value={initialEquity} onChange={(event) => setInitialEquity(event.target.value)} className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm outline-none focus:border-cyan-500" />
           </label>
         </div>
         <div className="mt-4 grid gap-4 lg:grid-cols-2">
-          <label className="text-xs font-medium text-slate-300">Portfolio events JSON
+          <label className="text-xs font-medium text-slate-300"><span className="block">Portfolio events JSON</span>
             <textarea value={eventsText} onChange={(event) => setEventsText(event.target.value)} spellCheck={false} className="mt-2 h-44 w-full resize-y rounded-xl border border-slate-700 bg-slate-950 p-3 font-mono text-xs leading-5 outline-none focus:border-cyan-500" />
           </label>
-          <label className="text-xs font-medium text-slate-300">Signal-level research rows JSON
+          <label className="text-xs font-medium text-slate-300"><span className="block">Signal-level research rows JSON</span>
             <textarea value={signalsText} onChange={(event) => setSignalsText(event.target.value)} spellCheck={false} className="mt-2 h-44 w-full resize-y rounded-xl border border-slate-700 bg-slate-950 p-3 font-mono text-xs leading-5 outline-none focus:border-cyan-500" />
           </label>
         </div>
