@@ -211,6 +211,12 @@ def test_signal_level_and_portfolio_realizable_reports_remain_separate() -> None
     assert portfolio_report["report_type"] == "PORTFOLIO_REALIZABLE"
     assert "rows" not in portfolio_report
     assert "event_log" not in signal_report
+    assert portfolio_report["cost_attribution"] == {
+        "entry_cost": 0.0,
+        "exit_cost": 0.0,
+        "modeled_trading_cost": 0.0,
+        "net_funding": 0.0,
+    }
 
 
 def test_partial_fill_scales_isolated_exposure_and_rejection_is_attributed() -> None:

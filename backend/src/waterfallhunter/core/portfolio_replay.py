@@ -356,6 +356,19 @@ class _ReplayState:
         risk_policy: RiskPolicy,
         dataset_manifest_hash: str,
     ) -> dict[str, Any]:
+        open_positions = sorted(
+            self.positions.values(),
+            key=lambda item: item.position_id,
+        )
+        entry_cost = sum(
+            float(item["entry_cost"]) for item in self.closed_positions
+        ) + sum(position.entry_cost for position in open_positions)
+        exit_cost = sum(
+            float(item["exit_cost"]) for item in self.closed_positions
+        )
+        net_funding = sum(
+            float(item["funding"]) for item in self.closed_positions
+        ) + sum(position.funding for position in open_positions)
         return {
             "contract_version": "paper_portfolio_replay_v1",
             "report_type": "PORTFOLIO_REALIZABLE",
@@ -376,6 +389,12 @@ class _ReplayState:
                 for item in self.skipped_signals
                 if str(item.get("reason") or "").startswith("PORTFOLIO_")
             ),
+            "cost_attribution": {
+                "entry_cost": round(entry_cost, 8),
+                "exit_cost": round(exit_cost, 8),
+                "modeled_trading_cost": round(entry_cost + exit_cost, 8),
+                "net_funding": round(net_funding, 8),
+            },
             "closed_positions": self.closed_positions,
             "open_positions": [
                 {
@@ -388,10 +407,7 @@ class _ReplayState:
                     "funding": round(position.funding, 8),
                     "unrealized_pnl": round(position.unrealized_pnl(), 8),
                 }
-                for position in sorted(
-                    self.positions.values(),
-                    key=lambda item: item.position_id,
-                )
+                for position in open_positions
             ],
         }
 

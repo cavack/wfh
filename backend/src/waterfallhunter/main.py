@@ -89,6 +89,7 @@ from waterfallhunter.routes_feature_replay import build_feature_replay_router
 from waterfallhunter.routes_lifecycle_v2_shadow import (
     build_lifecycle_v2_shadow_router,
 )
+from waterfallhunter.routes_backtest_lab import build_backtest_lab_router
 from waterfallhunter.core.lbank_execution_outcome_report import (
     LBankExecutionOutcomeReport,
 )
@@ -189,6 +190,8 @@ app.include_router(
         db.db_path
     )
 )
+
+app.include_router(build_backtest_lab_router())
 
 execution_suitability_enricher = (
     LBankExecutionCandidateEnricher(
