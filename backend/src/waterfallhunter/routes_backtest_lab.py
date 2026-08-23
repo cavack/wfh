@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 from typing import Any, Literal
 
@@ -13,6 +15,7 @@ from waterfallhunter.core.execution_planning import (
     SHA256_HEX_PATTERN,
     RiskPolicy,
 )
+from waterfallhunter.core.canonical_json import canonical_json_bytes
 from waterfallhunter.core.portfolio_replay import (
     PortfolioEvent,
     build_signal_level_research_report,
@@ -31,7 +34,7 @@ class SignalResearchRow(BaseModel):
     model_config = ConfigDict(extra="allow", frozen=True)
 
     signal_id: str = Field(min_length=1)
-    signal_triggered_at: int = Field(ge=0)
+    signal_triggered_at: int = Field(ge=0, strict=True)
 
 
 class BacktestLabRequest(BaseModel):
@@ -40,6 +43,8 @@ class BacktestLabRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     contract_version: Literal["backtest_lab_request_v1"] = "backtest_lab_request_v1"
+    artifact_key_id: Literal["wfh-backtest-hmac-v1"]
+    artifact_hmac_sha256: str = Field(pattern=SHA256_HEX_PATTERN)
     dataset_manifest_hash: str = Field(pattern=SHA256_HEX_PATTERN)
     initial_equity: float = Field(gt=0, le=1_000_000_000, allow_inf_nan=False)
     events: tuple[PortfolioEvent, ...] = Field(max_length=MAX_REPLAY_EVENTS)
@@ -73,6 +78,19 @@ class BacktestLabResponse(BaseModel):
     limitations: tuple[str, ...]
 
 
+def backtest_attestation_sha256(
+    payload: BacktestLabRequest,
+    *,
+    artifact_hmac_key: str,
+) -> str:
+    material = payload.model_dump(mode="json", exclude={"artifact_hmac_sha256"})
+    return hmac.new(
+        artifact_hmac_key.encode("utf-8"),
+        canonical_json_bytes(material),
+        hashlib.sha256,
+    ).hexdigest()
+
+
 def _run_replay(payload: BacktestLabRequest) -> BacktestLabResponse:
     policy = RiskPolicy.v1()
     portfolio_report = replay_paper_portfolio(
@@ -104,7 +122,7 @@ def _run_replay(payload: BacktestLabRequest) -> BacktestLabResponse:
     )
 
 
-def build_backtest_lab_router() -> APIRouter:
+def build_backtest_lab_router(*, artifact_hmac_key: str | None = None) -> APIRouter:
     router = APIRouter()
 
     @router.get(
@@ -129,6 +147,8 @@ def build_backtest_lab_router() -> APIRouter:
             "maximum_replay_events": MAX_REPLAY_EVENTS,
             "maximum_signal_rows": MAX_SIGNAL_ROWS,
             "maximum_processing_payload_bytes": MAX_REPLAY_PAYLOAD_BYTES,
+            "artifact_authentication": "HMAC_SHA256_REQUIRED",
+            "artifact_key_id": "wfh-backtest-hmac-v1",
             "risk_policy": policy.model_dump(mode="json"),
             "caller_risk_overrides_allowed": False,
             "database_writes": False,
@@ -140,9 +160,24 @@ def build_backtest_lab_router() -> APIRouter:
     @router.post(
         "/api/backtest-lab/replay",
         response_model=BacktestLabResponse,
-        responses={422: {"description": "Invalid or unsafe replay request"}},
+        responses={
+            413: {"description": "Request body exceeds ingress limit"},
+            422: {"description": "Invalid or unsafe replay request"},
+            503: {"description": "Artifact verification is not configured"},
+        },
     )
     async def backtest_lab_replay(payload: BacktestLabRequest):
+        if artifact_hmac_key is None or len(artifact_hmac_key.encode("utf-8")) < 32:
+            raise HTTPException(
+                status_code=503,
+                detail="backtest artifact verification is unavailable",
+            )
+        expected = backtest_attestation_sha256(
+            payload,
+            artifact_hmac_key=artifact_hmac_key,
+        )
+        if not hmac.compare_digest(expected, payload.artifact_hmac_sha256):
+            raise HTTPException(status_code=422, detail="backtest artifact attestation invalid")
         try:
             return await asyncio.to_thread(_run_replay, payload)
         except ValueError as exc:

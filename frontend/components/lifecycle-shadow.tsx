@@ -39,23 +39,27 @@ export function LifecycleShadow() {
   const [unavailable, setUnavailable] = useState(false);
   useEffect(() => {
     let active = true;
+    let controller: AbortController | undefined;
     const load = async () => {
+      controller?.abort();
+      const requestController = new AbortController();
+      controller = requestController;
       try {
         const [reportResponse, contractResponse] = await Promise.all([
-          fetch("/dashboard/api/lifecycle-v2-shadow?limit=100", { cache: "no-store" }),
-          fetch("/dashboard/api/lifecycle-v2-contract", { cache: "no-store" }),
+          fetch("/dashboard/api/lifecycle-v2-shadow?limit=100", { cache: "no-store", signal: requestController.signal }),
+          fetch("/dashboard/api/lifecycle-v2-contract", { cache: "no-store", signal: requestController.signal }),
         ]);
         const payload = await reportResponse.json() as ShadowReport;
         const contract = await contractResponse.json() as { shadow_only?: boolean; promotion_allowed?: boolean };
         if (!reportResponse.ok || !contractResponse.ok || payload.shadow_only !== true || payload.promotion_allowed !== false || contract.shadow_only !== true || contract.promotion_allowed !== false) throw new Error("unsafe lifecycle contract");
-        if (active) { setReport(payload); setUnavailable(false); }
+        if (active && !requestController.signal.aborted) { setReport(payload); setUnavailable(false); }
       } catch {
-        if (active) { setReport(undefined); setUnavailable(true); }
+        if (active && !requestController.signal.aborted) { setReport(undefined); setUnavailable(true); }
       }
     };
     void load();
     const timer = window.setInterval(load, 60_000);
-    return () => { active = false; window.clearInterval(timer); };
+    return () => { active = false; controller?.abort(); window.clearInterval(timer); };
   }, []);
 
   const events = report?.events ?? [];

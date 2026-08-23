@@ -19,6 +19,7 @@ from waterfallhunter.core.portfolio_replay import (
     build_signal_level_research_report,
     replay_paper_portfolio,
 )
+from waterfallhunter.core.signal_metadata import canonical_sha256
 
 
 MANIFEST_HASH = "d" * 64
@@ -368,6 +369,72 @@ def test_exit_bearing_events_require_an_explicit_modeled_cost() -> None:
             event_type="CLOSE",
             position_id="position",
             price=100.0,
+        )
+
+
+def test_cost_attribution_sums_raw_costs_before_rounding() -> None:
+    second_plan = _plan("signal-2")
+    second_plan["cluster_id"] = "OTHER"
+    second_plan["execution_plan_hash"] = canonical_sha256(
+        {key: value for key, value in second_plan.items() if key != "execution_plan_hash"}
+    )
+    replay = replay_paper_portfolio(
+        [
+            _open("open-1", "position-1", "signal-1", occurred_at=100),
+            PortfolioEvent(
+                event_id="open-2",
+                occurred_at=101,
+                event_type="OPEN",
+                position_id="position-2",
+                signal_id="signal-2",
+                cluster_id="OTHER",
+                execution_plan=second_plan,
+            ),
+            PortfolioEvent(event_id="close-1", occurred_at=110, event_type="CLOSE", position_id="position-1", price=99, exit_cost=0.000000006),
+            PortfolioEvent(event_id="close-2", occurred_at=111, event_type="CLOSE", position_id="position-2", price=99, exit_cost=0.000000006),
+        ],
+        initial_equity=200,
+        risk_policy=RiskPolicy.v1(),
+        dataset_manifest_hash=MANIFEST_HASH,
+    )
+
+    assert replay["cost_attribution"]["exit_cost"] == 0.00000001
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("entry_cost", -0.01, "entry_cost must be non-negative"),
+        ("liquidation_fee_rate", 1.0, "liquidation_fee_rate must be below one"),
+    ],
+)
+def test_rehashed_execution_plan_still_rejects_unsafe_numeric_fields(
+    field: str,
+    value: float,
+    message: str,
+) -> None:
+    plan = _plan("signal")
+    plan[field] = value
+    plan["execution_plan_hash"] = canonical_sha256(
+        {key: item for key, item in plan.items() if key != "execution_plan_hash"}
+    )
+
+    with pytest.raises(ValueError, match=message):
+        replay_paper_portfolio(
+            [
+                PortfolioEvent(
+                    event_id="open",
+                    occurred_at=100,
+                    event_type="OPEN",
+                    position_id="position",
+                    signal_id="signal",
+                    cluster_id="MEME_HIGH_BETA",
+                    execution_plan=plan,
+                )
+            ],
+            initial_equity=200,
+            risk_policy=RiskPolicy.v1(),
+            dataset_manifest_hash=MANIFEST_HASH,
         )
 
 

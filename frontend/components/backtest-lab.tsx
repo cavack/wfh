@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, useMemo, useState } from "react";
+import { ChangeEvent, useMemo, useRef, useState } from "react";
 import { Download, FileUp, FlaskConical, Play, ShieldAlert } from "lucide-react";
 
 type ReplayEvent = {
@@ -103,25 +103,41 @@ export function BacktestLab() {
   const [initialEquity, setInitialEquity] = useState("1000");
   const [eventsText, setEventsText] = useState("[]");
   const [signalsText, setSignalsText] = useState("[]");
+  const [artifactHmac, setArtifactHmac] = useState("");
   const [result, setResult] = useState<BacktestResponse>();
   const [error, setError] = useState<string>();
   const [running, setRunning] = useState(false);
+  const inputRevision = useRef(0);
 
   const validHash = /^[0-9a-f]{64}$/.test(manifestHash);
+  const validAttestation = /^[0-9a-f]{64}$/.test(artifactHmac);
   const events = result?.portfolio_report.event_log ?? [];
   const skipped = result?.portfolio_report.skipped_signals ?? [];
   const report = result?.portfolio_report;
-  const canRun = validHash && !running && Number(initialEquity) > 0;
+  const canRun = validHash && validAttestation && !running && Number(initialEquity) > 0;
   const replayLabel = useMemo(
     () => report?.replay_sha256 ? report.replay_sha256.slice(0, 12) : "not run",
     [report?.replay_sha256],
   );
 
+  const invalidateResult = () => {
+    inputRevision.current += 1;
+    setResult(undefined);
+    setError(undefined);
+  };
+  const invalidateAttestation = () => {
+    invalidateResult();
+    setArtifactHmac("");
+  };
+
   const run = async () => {
     setRunning(true);
     setError(undefined);
+    const runRevision = inputRevision.current;
     try {
       const request = {
+        artifact_key_id: "wfh-backtest-hmac-v1",
+        artifact_hmac_sha256: artifactHmac,
         dataset_manifest_hash: manifestHash,
         initial_equity: Number(initialEquity),
         events: parseArray(eventsText, "Events"),
@@ -138,10 +154,12 @@ export function BacktestLab() {
       if (safe.execution_mode !== "PAPER_ONLY" || safe.strategy_equivalent !== false || safe.claims_allowed !== false || safe.promotion_allowed !== false) {
         throw new Error("Unsafe or incompatible replay contract received.");
       }
-      setResult(safe);
+      if (runRevision === inputRevision.current) setResult(safe);
     } catch (reason) {
-      setResult(undefined);
-      setError(reason instanceof Error ? reason.message : "Replay failed.");
+      if (runRevision === inputRevision.current) {
+        setResult(undefined);
+        setError(reason instanceof Error ? reason.message : "Replay failed.");
+      }
     } finally {
       setRunning(false);
     }
@@ -155,10 +173,15 @@ export function BacktestLab() {
       if (file.size > 10_000_000) throw new Error("Dataset file exceeds the 10 MB limit.");
       const parsed = JSON.parse(await file.text()) as Record<string, unknown>;
       if (!Array.isArray(parsed.events)) throw new Error("Dataset file must contain an events array.");
+      if (typeof parsed.dataset_manifest_hash !== "string") throw new Error("Dataset manifest hash is required.");
+      if (typeof parsed.initial_equity !== "number" || !Number.isFinite(parsed.initial_equity) || parsed.initial_equity <= 0) throw new Error("Positive initial equity is required.");
+      if (parsed.artifact_key_id !== "wfh-backtest-hmac-v1" || typeof parsed.artifact_hmac_sha256 !== "string") throw new Error("Server-verifiable artifact attestation is required.");
+      invalidateResult();
       setEventsText(JSON.stringify(parsed.events, null, 2));
-      if (Array.isArray(parsed.signal_rows)) setSignalsText(JSON.stringify(parsed.signal_rows, null, 2));
-      if (typeof parsed.dataset_manifest_hash === "string") setManifestHash(parsed.dataset_manifest_hash);
-      if (typeof parsed.initial_equity === "number") setInitialEquity(String(parsed.initial_equity));
+      setSignalsText(JSON.stringify(Array.isArray(parsed.signal_rows) ? parsed.signal_rows : [], null, 2));
+      setManifestHash(parsed.dataset_manifest_hash);
+      setInitialEquity(String(parsed.initial_equity));
+      setArtifactHmac(parsed.artifact_hmac_sha256);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Dataset import failed.");
     } finally {
@@ -194,18 +217,21 @@ export function BacktestLab() {
       <div className="mt-6 rounded-2xl border border-slate-700/80 bg-slate-950/55 p-4 sm:p-5">
         <div className="grid gap-4 lg:grid-cols-[1fr_13rem]">
           <label className="text-xs font-medium text-slate-300"><span className="block">Dataset manifest SHA-256</span>
-            <input value={manifestHash} onChange={(event) => setManifestHash(event.target.value.trim())} placeholder="64 lowercase hexadecimal characters" spellCheck={false} className={`mt-2 w-full rounded-xl border bg-slate-950 px-3 py-2.5 font-mono text-xs outline-none ${manifestHash && !validHash ? "border-rose-500/60" : "border-slate-700 focus:border-cyan-500"}`} />
+            <input value={manifestHash} onChange={(event) => { invalidateAttestation(); setManifestHash(event.target.value.trim()); }} placeholder="64 lowercase hexadecimal characters" spellCheck={false} className={`mt-2 w-full rounded-xl border bg-slate-950 px-3 py-2.5 font-mono text-xs outline-none ${manifestHash && !validHash ? "border-rose-500/60" : "border-slate-700 focus:border-cyan-500"}`} />
           </label>
           <label className="text-xs font-medium text-slate-300"><span className="block">Initial paper equity</span>
-            <input type="number" min="0.01" step="0.01" value={initialEquity} onChange={(event) => setInitialEquity(event.target.value)} className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm outline-none focus:border-cyan-500" />
+            <input type="number" min="0.01" step="0.01" value={initialEquity} onChange={(event) => { invalidateAttestation(); setInitialEquity(event.target.value); }} className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm outline-none focus:border-cyan-500" />
           </label>
         </div>
+        <label className="mt-4 block text-xs font-medium text-slate-300"><span className="block">Trusted artifact HMAC-SHA256</span>
+          <input value={artifactHmac} onChange={(event) => { invalidateResult(); setArtifactHmac(event.target.value.trim()); }} placeholder="Generated by the server-side bundle signer" spellCheck={false} className={`mt-2 w-full rounded-xl border bg-slate-950 px-3 py-2.5 font-mono text-xs outline-none ${artifactHmac && !validAttestation ? "border-rose-500/60" : "border-slate-700 focus:border-cyan-500"}`} />
+        </label>
         <div className="mt-4 grid gap-4 lg:grid-cols-2">
           <label className="text-xs font-medium text-slate-300"><span className="block">Portfolio events JSON</span>
-            <textarea value={eventsText} onChange={(event) => setEventsText(event.target.value)} spellCheck={false} className="mt-2 h-44 w-full resize-y rounded-xl border border-slate-700 bg-slate-950 p-3 font-mono text-xs leading-5 outline-none focus:border-cyan-500" />
+            <textarea value={eventsText} onChange={(event) => { invalidateAttestation(); setEventsText(event.target.value); }} spellCheck={false} className="mt-2 h-44 w-full resize-y rounded-xl border border-slate-700 bg-slate-950 p-3 font-mono text-xs leading-5 outline-none focus:border-cyan-500" />
           </label>
           <label className="text-xs font-medium text-slate-300"><span className="block">Signal-level research rows JSON</span>
-            <textarea value={signalsText} onChange={(event) => setSignalsText(event.target.value)} spellCheck={false} className="mt-2 h-44 w-full resize-y rounded-xl border border-slate-700 bg-slate-950 p-3 font-mono text-xs leading-5 outline-none focus:border-cyan-500" />
+            <textarea value={signalsText} onChange={(event) => { invalidateAttestation(); setSignalsText(event.target.value); }} spellCheck={false} className="mt-2 h-44 w-full resize-y rounded-xl border border-slate-700 bg-slate-950 p-3 font-mono text-xs leading-5 outline-none focus:border-cyan-500" />
           </label>
         </div>
         <div className="mt-4 flex flex-wrap items-center gap-3">

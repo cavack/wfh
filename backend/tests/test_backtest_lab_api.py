@@ -6,17 +6,36 @@ from fastapi.testclient import TestClient
 from waterfallhunter.core.execution_planning import RiskPolicy
 from waterfallhunter.routes_backtest_lab import (
     MAX_REPLAY_EVENTS,
+    BacktestLabRequest,
+    backtest_attestation_sha256,
     build_backtest_lab_router,
 )
 
 
 MANIFEST_HASH = "e" * 64
+ARTIFACT_KEY = "test-only-backtest-artifact-key-32-bytes"
 
 
 def _client() -> TestClient:
     app = FastAPI()
-    app.include_router(build_backtest_lab_router())
+    app.include_router(build_backtest_lab_router(artifact_hmac_key=ARTIFACT_KEY))
     return TestClient(app)
+
+
+def _signed(payload: dict) -> dict:
+    provisional = {
+        "artifact_key_id": "wfh-backtest-hmac-v1",
+        "artifact_hmac_sha256": "0" * 64,
+        **payload,
+    }
+    request = BacktestLabRequest.model_validate(provisional)
+    return {
+        **provisional,
+        "artifact_hmac_sha256": backtest_attestation_sha256(
+            request,
+            artifact_hmac_key=ARTIFACT_KEY,
+        ),
+    }
 
 
 def test_contract_is_fixed_read_only_and_rejects_unknown_queries() -> None:
@@ -37,7 +56,7 @@ def test_contract_is_fixed_read_only_and_rejects_unknown_queries() -> None:
 
 def test_empty_replay_is_deterministic_and_explicitly_non_equivalent() -> None:
     client = _client()
-    request = {
+    request = _signed({
         "dataset_manifest_hash": MANIFEST_HASH,
         "initial_equity": 1_000,
         "events": [],
@@ -48,7 +67,7 @@ def test_empty_replay_is_deterministic_and_explicitly_non_equivalent() -> None:
                 "outcome": "UNAVAILABLE",
             }
         ],
-    }
+    })
 
     first = client.post("/api/backtest-lab/replay", json=request)
     second = client.post("/api/backtest-lab/replay", json=request)
@@ -79,11 +98,11 @@ def test_replay_rejects_invalid_hash_policy_override_and_duplicate_events() -> N
 
     invalid_hash = client.post(
         "/api/backtest-lab/replay",
-        json={**base, "dataset_manifest_hash": "invalid"},
+        json=_signed(base) | {"dataset_manifest_hash": "invalid"},
     )
     override = client.post(
         "/api/backtest-lab/replay",
-        json={**base, "risk_policy": {"max_open_positions": 100}},
+        json=_signed(base) | {"risk_policy": {"max_open_positions": 100}},
     )
     event = {
         "event_id": "duplicate",
@@ -95,7 +114,7 @@ def test_replay_rejects_invalid_hash_policy_override_and_duplicate_events() -> N
     }
     duplicate = client.post(
         "/api/backtest-lab/replay",
-        json={**base, "events": [event, event]},
+        json=_signed({**base, "events": [event, event]}),
     )
 
     assert invalid_hash.status_code == 422
@@ -121,6 +140,8 @@ def test_replay_event_count_is_bounded() -> None:
     response = client.post(
         "/api/backtest-lab/replay",
         json={
+            "artifact_key_id": "wfh-backtest-hmac-v1",
+            "artifact_hmac_sha256": "0" * 64,
             "dataset_manifest_hash": MANIFEST_HASH,
             "initial_equity": 1_000,
             "events": events,
@@ -128,3 +149,37 @@ def test_replay_event_count_is_bounded() -> None:
     )
 
     assert response.status_code == 422
+
+
+def test_replay_requires_server_attestation_and_strict_signal_time() -> None:
+    client = _client()
+    base = {
+        "dataset_manifest_hash": MANIFEST_HASH,
+        "initial_equity": 1_000,
+        "events": [],
+        "signal_rows": [],
+    }
+    signed = _signed(base)
+
+    tampered = client.post(
+        "/api/backtest-lab/replay",
+        json={**signed, "initial_equity": 2_000},
+    )
+    coerced_time = client.post(
+        "/api/backtest-lab/replay",
+        json={
+            **signed,
+            "signal_rows": [{"signal_id": "signal", "signal_triggered_at": "100"}],
+        },
+    )
+    unavailable_app = FastAPI()
+    unavailable_app.include_router(build_backtest_lab_router())
+    unavailable = TestClient(unavailable_app).post(
+        "/api/backtest-lab/replay",
+        json=signed,
+    )
+
+    assert tampered.status_code == 422
+    assert tampered.json()["detail"] == "backtest artifact attestation invalid"
+    assert coerced_time.status_code == 422
+    assert unavailable.status_code == 503

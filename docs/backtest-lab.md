@@ -11,6 +11,9 @@ promotion gate, or an order path.
   field and unknown fields are rejected.
 - `strategy_equivalent`, `claims_allowed`, and `promotion_allowed` are always
   `false`.
+- Every bundle must carry an HMAC-SHA256 attestation created with the
+  operator-held `BACKTEST_ARTIFACT_HMAC_KEY`. The API returns 503 when the key
+  is not configured and 422 for an invalid or stale attestation.
 - Replay performs no database write and does not update lifecycle, ranking,
   alerts, notifications, or execution state.
 - Missing execution evidence is not synthesized. An `OPEN` event must carry a
@@ -31,6 +34,8 @@ the fixed safety flags. Query parameters are rejected.
 ```json
 {
   "contract_version": "backtest_lab_request_v1",
+  "artifact_key_id": "wfh-backtest-hmac-v1",
+  "artifact_hmac_sha256": "<server-verifiable-hmac-sha256>",
   "dataset_manifest_hash": "<lowercase-sha256>",
   "initial_equity": 1000,
   "events": [],
@@ -58,14 +63,21 @@ profitability.
 
 ## Dashboard workflow
 
-1. Prepare an independently generated manifest bundle containing `events`,
+1. Prepare an independently generated unsigned bundle containing `events`,
    optional `signal_rows`, `dataset_manifest_hash`, and `initial_equity`.
-2. Import the JSON bundle or paste the arrays and hash into Backtest Lab.
-3. Run the bounded replay. Invalid, incomplete, duplicate, or unsafe material
+2. On an authorized operator environment, attest it without printing the key:
+
+   ```bash
+   PYTHONPATH=backend/src:. python scripts/sign_backtest_bundle.py \
+     --input unsigned.json --output signed.json
+   ```
+
+3. Import the signed JSON bundle into Backtest Lab.
+4. Run the bounded replay. Invalid, incomplete, duplicate, or unsafe material
    is rejected with HTTP 422.
-4. Review equity/drawdown, capacity rejects, cost attribution, skipped signals,
+5. Review equity/drawdown, capacity rejects, cost attribution, skipped signals,
    and event-level reasons.
-5. Export the hash-bound JSON result for offline review.
+6. Export the hash-bound JSON result for offline review.
 
 A successful run still cannot set `strategy_equivalent=true`. That decision
 requires the independent STRICT, replay-equivalence, walk-forward, purged,

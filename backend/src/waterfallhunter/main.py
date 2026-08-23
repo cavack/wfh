@@ -90,6 +90,7 @@ from waterfallhunter.routes_lifecycle_v2_shadow import (
     build_lifecycle_v2_shadow_router,
 )
 from waterfallhunter.routes_backtest_lab import build_backtest_lab_router
+from waterfallhunter.core.request_body_limit import RequestBodyLimitMiddleware
 from waterfallhunter.core.lbank_execution_outcome_report import (
     LBankExecutionOutcomeReport,
 )
@@ -117,6 +118,11 @@ app = FastAPI(
     title="WaterfallHunter API - Production",
     version="7.5.1-Stable",
     lifespan=app_lifespan,
+)
+app.add_middleware(
+    RequestBodyLimitMiddleware,
+    path="/api/backtest-lab/replay",
+    maximum_bytes=10_000_000,
 )
 
 db = DBAdapter(
@@ -191,7 +197,11 @@ app.include_router(
     )
 )
 
-app.include_router(build_backtest_lab_router())
+app.include_router(
+    build_backtest_lab_router(
+        artifact_hmac_key=settings.backtest_artifact_hmac_key,
+    )
+)
 
 execution_suitability_enricher = (
     LBankExecutionCandidateEnricher(
