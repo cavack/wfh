@@ -23,18 +23,47 @@ def _payload(symbol: str = "TEST") -> dict:
 
 def test_snapshot_boundary_rejects_mismatched_counts_and_nonfinite_clock() -> None:
     buffer = DashboardEventBuffer()
+    invalid_count_payload = {**_payload(), "total": 0}
     with pytest.raises(ValidationError, match="candidate count"):
         buffer.publish_snapshot(
-            {**_payload(), "total": 0},
+            invalid_count_payload,
             generated_at=10.0,
             full_snapshot=True,
         )
+    valid_payload = _payload()
     with pytest.raises(ValidationError):
         buffer.publish_snapshot(
-            _payload(),
+            valid_payload,
             generated_at=float("nan"),
             full_snapshot=True,
         )
+
+
+def test_preview_and_latest_snapshot_are_read_only() -> None:
+    buffer = DashboardEventBuffer()
+    preview = buffer.preview_snapshot(_payload(), generated_at=10.0)
+
+    assert preview.snapshot_version == 1
+    assert buffer.snapshot_version == 0
+    assert buffer.latest_snapshot() is None
+    published = buffer.publish_snapshot(_payload(), generated_at=11.0, full_snapshot=True)
+    assert buffer.latest_snapshot() == published.payload
+    assert buffer.snapshot_version == 1
+
+
+def test_periodic_snapshot_deduplicates_unchanged_business_payload() -> None:
+    buffer = DashboardEventBuffer()
+    first = buffer.publish_snapshot_if_changed(_payload(), generated_at=10.0)
+    duplicate = buffer.publish_snapshot_if_changed(_payload(), generated_at=11.0)
+    changed = buffer.publish_snapshot_if_changed(
+        _payload("CHANGED"),
+        generated_at=12.0,
+    )
+
+    assert first is not None
+    assert duplicate is None
+    assert changed is not None
+    assert changed.snapshot_version == 2
 
 
 def test_sse_contract_has_hash_monotonic_ids_and_parseable_wire_format() -> None:

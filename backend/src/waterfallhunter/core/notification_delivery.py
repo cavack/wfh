@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import random
 import sqlite3
 from collections.abc import Awaitable, Callable
+from contextlib import closing
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -14,6 +16,9 @@ from typing import Any, Protocol
 
 from waterfallhunter.core.managed_sqlite import connect_managed_sqlite
 from waterfallhunter.core.schema_contract import require_managed_schema
+
+
+logger = logging.getLogger("WaterfallHunter.NotificationDelivery")
 
 
 class DeliveryDisposition(str, Enum):
@@ -71,6 +76,7 @@ class DurableNotificationWorker:
         max_attempts: int = 6,
         base_backoff_seconds: int = 5,
         max_backoff_seconds: int = 900,
+        transport_timeout_seconds: float | None = None,
         jitter: Callable[[], float] = random.random,
         verify_schema: bool = True,
     ):
@@ -87,6 +93,11 @@ class DurableNotificationWorker:
         self.max_attempts = max_attempts
         self.base_backoff_seconds = base_backoff_seconds
         self.max_backoff_seconds = max_backoff_seconds
+        self.transport_timeout_seconds = float(
+            lease_seconds if transport_timeout_seconds is None else transport_timeout_seconds
+        )
+        if not math.isfinite(self.transport_timeout_seconds) or self.transport_timeout_seconds <= 0:
+            raise ValueError("transport timeout must be positive and finite")
         self.jitter = jitter
         if verify_schema:
             require_managed_schema(
@@ -189,15 +200,18 @@ class DurableNotificationWorker:
         if event is None:
             return None
         try:
-            result = await self.transport.deliver(
-                {
-                    "event_id": event.event_id,
-                    "idempotency_key": event.event_key,
-                    "event_type": event.event_type,
-                    "payload_contract_version": event.payload_contract_version,
-                    "payload_json": event.payload_json,
-                    "payload_hash": event.payload_hash,
-                }
+            result = await asyncio.wait_for(
+                self.transport.deliver(
+                    {
+                        "event_id": event.event_id,
+                        "idempotency_key": event.event_key,
+                        "event_type": event.event_type,
+                        "payload_contract_version": event.payload_contract_version,
+                        "payload_json": event.payload_json,
+                        "payload_hash": event.payload_hash,
+                    }
+                ),
+                timeout=self.transport_timeout_seconds,
             )
         except (asyncio.TimeoutError, TimeoutError):
             result = DeliveryResult(
@@ -205,6 +219,10 @@ class DurableNotificationWorker:
                 error_code="TRANSPORT_TIMEOUT",
             )
         except Exception:
+            logger.exception(
+                "Notification transport failed for event %s",
+                event.event_id,
+            )
             result = DeliveryResult(
                 DeliveryDisposition.TRANSIENT_FAILURE,
                 error_code="TRANSPORT_EXCEPTION",
@@ -320,16 +338,19 @@ def notification_delivery_health(
     if not path.is_file():
         raise NotificationDeliveryError("DELIVERY_HEALTH_DATABASE_UNAVAILABLE")
     try:
-        with sqlite3.connect(
-            f"{path.resolve().as_uri()}?mode=ro",
-            uri=True,
-            timeout=5.0,
+        with closing(
+            sqlite3.connect(
+                f"{path.resolve().as_uri()}?mode=ro",
+                uri=True,
+                timeout=5.0,
+            )
         ) as conn:
-            conn.execute("PRAGMA query_only=ON")
-            rows = conn.execute(
-                "SELECT status, COUNT(*), MIN(created_at) "
-                "FROM domain_outbox_events GROUP BY status ORDER BY status"
-            ).fetchall()
+            with conn:
+                conn.execute("PRAGMA query_only=ON")
+                rows = conn.execute(
+                    "SELECT status, COUNT(*), MIN(created_at) "
+                    "FROM domain_outbox_events GROUP BY status ORDER BY status"
+                ).fetchall()
     except sqlite3.Error as exc:
         raise NotificationDeliveryError("DELIVERY_HEALTH_QUERY_FAILED") from exc
     counts = {str(row[0]): int(row[1]) for row in rows}

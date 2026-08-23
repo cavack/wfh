@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { Activity, Wifi, WifiOff } from "lucide-react";
 import { MarketContext } from "@/components/market-context";
 import { OutcomeEvidence } from "@/components/outcome-evidence";
@@ -15,17 +16,29 @@ import { dashboardSnapshot, dashboardStreamEvent } from "@/lib/dashboard-contrac
 
 type ConnectionMode = "stream" | "polling" | "reconnecting";
 
-function StreamStatus({ mode }: { mode: ConnectionMode }) {
+function connectionLabel(mode: ConnectionMode): string {
+  if (mode === "stream") return "Live stream";
+  if (mode === "polling") return "Polling fallback";
+  return "Reconnecting…";
+}
+
+function boundedJitter(maximum: number): number {
+  const sample = new Uint32Array(1);
+  globalThis.crypto.getRandomValues(sample);
+  return Math.floor((sample[0] / 0xffffffff) * maximum);
+}
+
+function StreamStatus({ mode }: Readonly<{ mode: ConnectionMode }>) {
   const connected = mode === "stream";
   return (
     <div className="ml-auto flex items-center gap-2 text-sm text-slate-300">
       {connected ? <Wifi size={16} className="text-emerald-400" /> : <WifiOff size={16} className="text-amber-400" />}
-      {mode === "stream" ? "Live stream" : mode === "polling" ? "Polling fallback" : "Reconnecting…"}
+      {connectionLabel(mode)}
     </div>
   );
 }
 
-function CandidatePanel({ symbol, candidate, hasFreshSnapshot }: { symbol: string; candidate: Candidate; hasFreshSnapshot: boolean }) {
+function CandidatePanel({ symbol, candidate, hasFreshSnapshot }: Readonly<{ symbol: string; candidate: Candidate; hasFreshSnapshot: boolean }>) {
   return (
     <article className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/80 shadow-lg shadow-slate-950/30">
       <ScoreCard symbol={symbol} candidate={candidate} hasFreshSnapshot={hasFreshSnapshot} />
@@ -61,6 +74,7 @@ export default function Dashboard() {
     let active = true;
     let pollTimer: ReturnType<typeof setTimeout> | undefined;
     let pollAttempt = 0;
+    let streaming = false;
     const stream = new EventSource("/dashboard/api/stream");
 
     const acceptSnapshot = (snapshot: DashboardSnapshot) => {
@@ -71,19 +85,22 @@ export default function Dashboard() {
 
     const schedulePoll = (delay: number) => {
       if (!active || pollTimer !== undefined) return;
-      const jitter = Math.floor(Math.random() * Math.max(250, delay * 0.2));
+      const jitter = boundedJitter(Math.max(250, delay * 0.2));
       pollTimer = setTimeout(async () => {
         pollTimer = undefined;
+        if (!active || streaming) return;
         try {
           const response = await fetch("/dashboard/api/candidates", { cache: "no-store" });
           const snapshot = response.ok ? dashboardSnapshot(await response.json()) : undefined;
           if (!snapshot) throw new Error("invalid dashboard snapshot");
           acceptSnapshot(snapshot);
           pollAttempt = 0;
+          if (streaming) return;
           setMode("polling");
           schedulePoll(5_000);
         } catch {
           pollAttempt += 1;
+          if (streaming) return;
           setMode("reconnecting");
           schedulePoll(Math.min(30_000, 1_000 * (2 ** Math.min(pollAttempt, 5))));
         }
@@ -91,12 +108,14 @@ export default function Dashboard() {
     };
 
     stream.onopen = () => {
+      streaming = true;
       if (pollTimer !== undefined) clearTimeout(pollTimer);
       pollTimer = undefined;
       pollAttempt = 0;
       setMode("stream");
     };
     stream.onerror = () => {
+      streaming = false;
       setMode("reconnecting");
       schedulePoll(1_000);
     };
@@ -105,8 +124,10 @@ export default function Dashboard() {
         const packet = dashboardStreamEvent(JSON.parse(event.data));
         if (!packet) throw new Error("invalid dashboard stream event");
         if (packet.payload) acceptSnapshot(packet.payload);
+        streaming = true;
         setMode("stream");
       } catch {
+        streaming = false;
         setMode("reconnecting");
         schedulePoll(1_000);
       }
@@ -146,6 +167,23 @@ export default function Dashboard() {
     </section>
   );
 
+  let emptyState: ReactNode = null;
+  if (data === null) {
+    emptyState = (
+      <div className="rounded-2xl border border-dashed border-slate-700 bg-slate-900/60 py-24 text-center">
+        <p className="text-lg font-medium">Initializing live state…</p>
+        <p className="mt-2 text-sm text-slate-400">Waiting for a schema-valid stream snapshot or polling fallback.</p>
+      </div>
+    );
+  } else if (rows.length === 0) {
+    emptyState = (
+      <div className="rounded-2xl border border-dashed border-slate-700 bg-slate-900/60 py-24 text-center">
+        <p className="text-lg font-medium">No active candidates in the latest valid snapshot</p>
+        <p className="mt-2 text-sm text-slate-400">This is a real READY snapshot, not an initializing placeholder.</p>
+      </div>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-slate-950 px-4 py-6 text-slate-100 sm:px-6 lg:px-10">
       <header className="mx-auto mb-8 flex max-w-7xl items-center gap-3 border-b border-slate-800 pb-5">
@@ -182,17 +220,7 @@ export default function Dashboard() {
 
       <section className="mx-auto mb-5 max-w-7xl">
         {rows.length > 0 && <p className="mb-3 text-xs text-slate-500">All candidates remain ordered by the existing Score V2/watch score view. The Top 3 panel is a separate observational ranking and does not alter state or eligibility.</p>}
-        {data === null ? (
-          <div className="rounded-2xl border border-dashed border-slate-700 bg-slate-900/60 py-24 text-center">
-            <p className="text-lg font-medium">Initializing live state…</p>
-            <p className="mt-2 text-sm text-slate-400">Waiting for a schema-valid stream snapshot or polling fallback.</p>
-          </div>
-        ) : rows.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-slate-700 bg-slate-900/60 py-24 text-center">
-            <p className="text-lg font-medium">No active candidates in the latest valid snapshot</p>
-            <p className="mt-2 text-sm text-slate-400">This is a real READY snapshot, not an initializing placeholder.</p>
-          </div>
-        ) : null}
+        {emptyState}
       </section>
 
       {renderGroup("Confirmed STRICT signals", groups.strictConfirmed)}

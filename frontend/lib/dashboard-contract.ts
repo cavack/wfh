@@ -11,7 +11,7 @@ function finite(value: unknown): value is number {
 }
 
 function positiveIntegerText(value: unknown): value is string {
-  return typeof value === "string" && /^[1-9][0-9]*$/.test(value);
+  return typeof value === "string" && /^[1-9]\d*$/.test(value);
 }
 
 export function dashboardSnapshot(value: unknown): DashboardSnapshot | undefined {
@@ -25,7 +25,7 @@ export function dashboardSnapshot(value: unknown): DashboardSnapshot | undefined
     || !finite(packet.generated_at)
     || !Number.isInteger(packet.total)
     || (packet.total as number) < 0
-    || !record(packet.candidates)
+    || !record(packet?.candidates)
     || !record(packet.final_ranking)
     || !record(packet.signal_funnel)) return undefined;
   if (Object.keys(packet.candidates as JsonObject).length !== packet.total) return undefined;
@@ -44,7 +44,7 @@ export function dashboardStreamEvent(value: unknown): DashboardStreamEvent | und
     || !finite(packet.generated_at)
     || !(packet.last_event_id === null || positiveIntegerText(packet.last_event_id))
     || typeof packet.payload_hash !== "string"
-    || !/^[0-9a-f]{64}$/.test(packet.payload_hash)
+    || !/^[0-9a-f]{64}$/.test(packet?.payload_hash as string)
     || typeof packet.replayed !== "boolean"
     || typeof packet.full_snapshot !== "boolean") return undefined;
   if (packet.event_type === "heartbeat") {

@@ -20,7 +20,7 @@ export interface DashboardStreamEvent {
   snapshot_version: number;
   schema_version: "1.0";
   generated_at: number;
-  last_event_id: string | null;
+  last_event_id?: string | null;
   payload_hash: string;
   payload: DashboardSnapshot | null;
   replayed: boolean;

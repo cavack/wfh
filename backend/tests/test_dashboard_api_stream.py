@@ -18,7 +18,8 @@ PAYLOAD = {
 
 
 def test_polling_endpoint_returns_a_valid_versioned_no_store_snapshot(monkeypatch) -> None:
-    monkeypatch.setattr(main, "_dashboard_event_buffer", DashboardEventBuffer())
+    buffer = DashboardEventBuffer()
+    monkeypatch.setattr(main, "_dashboard_event_buffer", buffer)
     monkeypatch.setattr(main, "get_formatted_candidates", lambda **_: PAYLOAD)
     response = Response()
 
@@ -30,6 +31,8 @@ def test_polling_endpoint_returns_a_valid_versioned_no_store_snapshot(monkeypatc
     assert snapshot.state == "READY"
     assert snapshot.total == 1
     assert response.headers["Cache-Control"] == "no-store"
+    assert buffer.snapshot_version == 0
+    assert buffer.replay_after("1") is None
 
 
 def test_stream_replays_after_last_event_id_and_sets_proxy_safe_headers(monkeypatch) -> None:

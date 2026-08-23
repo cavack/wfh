@@ -4,6 +4,8 @@ import asyncio
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from schema_test_support import migrate_test_database
 from signal_metadata_test_support import strict_signal_metadata
 from waterfallhunter.core.db import DBAdapter
@@ -12,6 +14,7 @@ from waterfallhunter.core.notification_delivery import (
     DeliveryDisposition,
     DeliveryResult,
     DurableNotificationWorker,
+    NotificationDeliveryError,
     notification_delivery_health,
 )
 
@@ -27,6 +30,13 @@ class FakeTransport:
         if isinstance(result, Exception):
             raise result
         return result
+
+
+class HangingTransport:
+    async def deliver(self, event: dict) -> DeliveryResult:
+        del event
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
 
 
 def _database(path: Path) -> str:
@@ -88,7 +98,8 @@ def test_success_is_delivered_once_with_material_idempotency_key(tmp_path: Path)
 
     outcome = asyncio.run(worker.dispatch_once(now=200))
 
-    assert outcome is not None and outcome.state == "DELIVERED"
+    assert outcome is not None
+    assert outcome.state == "DELIVERED"
     assert _state(db_path) == ("DELIVERED", 1, 200, None, None, None)
     assert transport.calls[0]["event_id"] == transport.calls[0]["idempotency_key"]
     assert asyncio.run(worker.dispatch_once(now=201)) is None
@@ -120,7 +131,8 @@ def test_rate_limit_and_timeout_use_bounded_retry_then_dead_letter(tmp_path: Pat
     assert asyncio.run(worker.dispatch_once(now=206)) is None
 
     second = asyncio.run(worker.dispatch_once(now=207))
-    assert second is not None and second.state == "DEAD_LETTER"
+    assert second is not None
+    assert second.state == "DEAD_LETTER"
     assert second.error_code == "TRANSPORT_TIMEOUT"
     assert _state(db_path)[0:2] == ("DEAD_LETTER", 2)
     with sqlite3.connect(db_path) as conn:
@@ -162,3 +174,61 @@ def test_pending_queue_lag_has_an_operator_alert(tmp_path: Path) -> None:
 
     assert health["oldest_pending_age_seconds"] == 301
     assert health["alerts"] == ["NOTIFICATION_QUEUE_LAG_HIGH"]
+
+
+def test_hanging_transport_is_bounded_by_explicit_timeout(tmp_path: Path) -> None:
+    db_path = _database(tmp_path / "timeout.db")
+    worker = DurableNotificationWorker(
+        db_path,
+        HangingTransport(),
+        worker_id="worker-timeout",
+        transport_timeout_seconds=0.01,
+        max_attempts=1,
+    )
+
+    outcome = asyncio.run(worker.dispatch_once(now=200))
+
+    assert outcome is not None
+    assert outcome.state == "DEAD_LETTER"
+    assert outcome.error_code == "TRANSPORT_TIMEOUT"
+
+
+def test_completion_after_lease_recovery_fails_cas_and_preserves_uncertainty(
+    tmp_path: Path,
+) -> None:
+    db_path = _database(tmp_path / "lease-cas.db")
+    transport = FakeTransport(DeliveryResult(DeliveryDisposition.DELIVERED))
+    first = DurableNotificationWorker(db_path, transport, worker_id="worker-a", lease_seconds=10)
+    second = DurableNotificationWorker(db_path, transport, worker_id="worker-b", lease_seconds=10)
+    claimed = first.claim_next(now=200)
+    assert claimed is not None
+    assert second.recover_expired_leases(now=210) == 1
+
+    with pytest.raises(NotificationDeliveryError, match="DELIVERY_COMPLETION_CAS_FAILED"):
+        first._complete(
+            claimed,
+            result=DeliveryResult(DeliveryDisposition.DELIVERED),
+            now=211,
+        )
+
+    assert _state(db_path)[0] == "DELIVERY_UNCERTAIN"
+
+
+def test_permanent_transport_failure_dead_letters_without_retry(tmp_path: Path) -> None:
+    db_path = _database(tmp_path / "permanent.db")
+    worker = DurableNotificationWorker(
+        db_path,
+        FakeTransport(
+            DeliveryResult(
+                DeliveryDisposition.PERMANENT_FAILURE,
+                error_code="INVALID_DESTINATION",
+            )
+        ),
+        worker_id="worker-a",
+    )
+
+    outcome = asyncio.run(worker.dispatch_once(now=200))
+
+    assert outcome is not None
+    assert outcome.state == "DEAD_LETTER"
+    assert outcome.error_code == "INVALID_DESTINATION"

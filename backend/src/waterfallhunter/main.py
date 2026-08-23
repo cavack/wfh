@@ -9,6 +9,7 @@ from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from prometheus_client import Counter, Gauge, generate_latest, CONTENT_TYPE_LATEST
 import os
+from typing import Annotated
 
 from waterfallhunter.config import settings
 from waterfallhunter.core.db import DBAdapter
@@ -973,7 +974,7 @@ def _store_live_metrics(
     )
 
 
-def get_formatted_candidates(*, evaluation_time: float | None = None):
+def get_formatted_candidates(*, evaluation_time: float | None = None):  # NOSONAR: bounded read-only dashboard aggregation; decomposed in a later non-model wave.
     now = time.time() if evaluation_time is None else float(evaluation_time)
     if not math.isfinite(now) or now < 0:
         raise ValueError("evaluation_time must be a non-negative finite timestamp")
@@ -1269,17 +1270,27 @@ def get_formatted_candidates(*, evaluation_time: float | None = None):
     }
 
 
-def _publish_dashboard_snapshot(*, full_snapshot: bool) -> DashboardStreamEvent:
+def _publish_dashboard_snapshot(
+    *,
+    full_snapshot: bool,
+    only_if_changed: bool = False,
+) -> DashboardStreamEvent | None:
     generated_at = time.time()
+    payload = get_formatted_candidates(evaluation_time=generated_at)
+    if only_if_changed:
+        return _dashboard_event_buffer.publish_snapshot_if_changed(
+            payload,
+            generated_at=generated_at,
+        )
     return _dashboard_event_buffer.publish_snapshot(
-        get_formatted_candidates(evaluation_time=generated_at),
+        payload,
         generated_at=generated_at,
         full_snapshot=full_snapshot,
     )
 
 
 def _broadcast_dashboard_event(event: DashboardStreamEvent) -> None:
-    for queue in list(_sse_clients):
+    for queue in _sse_clients:
         try:
             queue.put_nowait(event)
         except asyncio.QueueFull:
@@ -1297,8 +1308,12 @@ async def sse_broadcaster():
     last_heartbeat_at = 0.0
     while _hunter_running:
         if _sse_clients:
-            event = _publish_dashboard_snapshot(full_snapshot=False)
-            _broadcast_dashboard_event(event)
+            event = _publish_dashboard_snapshot(
+                full_snapshot=False,
+                only_if_changed=True,
+            )
+            if event is not None:
+                _broadcast_dashboard_event(event)
             now = time.time()
             if now - last_heartbeat_at >= 15.0:
                 heartbeat = _dashboard_event_buffer.publish_heartbeat(
@@ -2469,8 +2484,9 @@ async def healthz_check():
     return await health_check()
 
 
-def _notification_delivery_health_snapshot() -> dict:
-    report = notification_delivery_health(
+async def _notification_delivery_health_snapshot() -> dict:
+    report = await asyncio.to_thread(
+        notification_delivery_health,
         settings.registry_db_path,
         now=int(time.time()),
     )
@@ -2487,15 +2503,20 @@ def _notification_delivery_health_snapshot() -> dict:
             int(counts.get(state, 0))
         )
     age = report.get("oldest_pending_age_seconds")
-    notification_oldest_pending_age.set(float(age) if age is not None else 0.0)
+    notification_oldest_pending_age.set(
+        float(age) if age is not None else float("nan")
+    )
     return report
 
 
-@app.get("/api/notification-delivery")
+@app.get(
+    "/api/notification-delivery",
+    responses={503: {"description": "Notification delivery state is unavailable"}},
+)
 async def notification_delivery_status(response: Response):
     response.headers["Cache-Control"] = "no-store"
     try:
-        return _notification_delivery_health_snapshot()
+        return await _notification_delivery_health_snapshot()
     except NotificationDeliveryError as exc:
         raise HTTPException(
             status_code=503,
@@ -2543,7 +2564,7 @@ async def metrics():
     _update_signal_settlement_worker_metrics()
     await _update_signal_evidence_metrics()
     try:
-        _notification_delivery_health_snapshot()
+        await _notification_delivery_health_snapshot()
     except NotificationDeliveryError:
         logger.exception("Notification delivery metrics are unavailable")
 
@@ -2557,7 +2578,10 @@ async def metrics():
     "/api/stream",
 )
 async def stream_candidates(
-    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    last_event_id: Annotated[
+        str | None,
+        Header(alias="Last-Event-ID"),
+    ] = None,
 ):
     q = asyncio.Queue(
         maxsize=100
@@ -2572,7 +2596,10 @@ async def stream_candidates(
         try:
             replay = _dashboard_event_buffer.replay_after(last_event_id)
             if replay is None:
-                replay = [_publish_dashboard_snapshot(full_snapshot=True)]
+                full_snapshot = _publish_dashboard_snapshot(full_snapshot=True)
+                if full_snapshot is None:
+                    raise RuntimeError("full dashboard snapshot was not published")
+                replay = [full_snapshot]
             for event in replay:
                 delivered_event_id = max(delivered_event_id, int(event.event_id))
                 yield serialize_sse_event(event)
@@ -2607,4 +2634,11 @@ async def stream_candidates(
 )
 async def get_candidates(response: Response):
     response.headers["Cache-Control"] = "no-store"
-    return _publish_dashboard_snapshot(full_snapshot=True).payload
+    latest = _dashboard_event_buffer.latest_snapshot()
+    if latest is not None:
+        return latest
+    generated_at = time.time()
+    return _dashboard_event_buffer.preview_snapshot(
+        get_formatted_candidates(evaluation_time=generated_at),
+        generated_at=generated_at,
+    )

@@ -76,6 +76,7 @@ class DashboardEventBuffer:
         self._events: deque[DashboardStreamEvent] = deque(maxlen=replay_limit)
         self._event_sequence = 0
         self._snapshot_sequence = 0
+        self._last_snapshot_content_hash: str | None = None
         self._lock = threading.Lock()
 
     def publish_snapshot(
@@ -86,26 +87,59 @@ class DashboardEventBuffer:
         full_snapshot: bool,
     ) -> DashboardStreamEvent:
         with self._lock:
-            next_snapshot_version = self._snapshot_sequence + 1
-            snapshot = DashboardSnapshot.model_validate(
-                {
-                    "contract_version": DASHBOARD_SNAPSHOT_CONTRACT,
-                    "schema_version": DASHBOARD_SCHEMA_VERSION,
-                    "snapshot_version": next_snapshot_version,
-                    "generated_at": generated_at,
-                    "state": "READY",
-                    **payload,
-                }
-            )
-            self._snapshot_sequence = next_snapshot_version
-            return self._append(
-                event_type="snapshot",
-                snapshot_version=snapshot.snapshot_version,
+            return self._publish_snapshot_locked(
+                payload,
                 generated_at=generated_at,
-                payload=snapshot,
-                payload_hash=canonical_sha256(snapshot.model_dump(mode="json")),
                 full_snapshot=full_snapshot,
             )
+
+    def publish_snapshot_if_changed(
+        self,
+        payload: dict[str, Any],
+        *,
+        generated_at: float,
+    ) -> DashboardStreamEvent | None:
+        """Retain a periodic snapshot only when its business payload changed."""
+        content_hash = canonical_sha256(payload)
+        with self._lock:
+            if content_hash == self._last_snapshot_content_hash:
+                return None
+            return self._publish_snapshot_locked(
+                payload,
+                generated_at=generated_at,
+                full_snapshot=False,
+                content_hash=content_hash,
+            )
+
+    def _publish_snapshot_locked(
+        self,
+        payload: dict[str, Any],
+        *,
+        generated_at: float,
+        full_snapshot: bool,
+        content_hash: str | None = None,
+    ) -> DashboardStreamEvent:
+        next_snapshot_version = self._snapshot_sequence + 1
+        snapshot = DashboardSnapshot.model_validate(
+            {
+                "contract_version": DASHBOARD_SNAPSHOT_CONTRACT,
+                "schema_version": DASHBOARD_SCHEMA_VERSION,
+                "snapshot_version": next_snapshot_version,
+                "generated_at": generated_at,
+                "state": "READY",
+                **payload,
+            }
+        )
+        self._snapshot_sequence = next_snapshot_version
+        self._last_snapshot_content_hash = content_hash or canonical_sha256(payload)
+        return self._append(
+            event_type="snapshot",
+            snapshot_version=snapshot.snapshot_version,
+            generated_at=generated_at,
+            payload=snapshot,
+            payload_hash=canonical_sha256(snapshot.model_dump(mode="json")),
+            full_snapshot=full_snapshot,
+        )
 
     def publish_heartbeat(self, *, generated_at: float) -> DashboardStreamEvent:
         with self._lock:
@@ -170,6 +204,34 @@ class DashboardEventBuffer:
                 for event in self._events
                 if int(event.event_id) > requested
             ]
+
+    def latest_snapshot(self) -> DashboardSnapshot | None:
+        """Return the latest retained snapshot without advancing either sequence."""
+        with self._lock:
+            for event in reversed(self._events):
+                if event.payload is not None:
+                    return event.payload
+        return None
+
+    def preview_snapshot(
+        self,
+        payload: dict[str, Any],
+        *,
+        generated_at: float,
+    ) -> DashboardSnapshot:
+        """Build a read-only snapshot for initial polling without retaining it."""
+        with self._lock:
+            snapshot_version = max(1, self._snapshot_sequence)
+        return DashboardSnapshot.model_validate(
+            {
+                "contract_version": DASHBOARD_SNAPSHOT_CONTRACT,
+                "schema_version": DASHBOARD_SCHEMA_VERSION,
+                "snapshot_version": snapshot_version,
+                "generated_at": generated_at,
+                "state": "READY",
+                **payload,
+            }
+        )
 
     @property
     def snapshot_version(self) -> int:
