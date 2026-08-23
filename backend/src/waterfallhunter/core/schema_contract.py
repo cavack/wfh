@@ -1237,6 +1237,36 @@ def managed_runtime_global_object_owners() -> dict[str, tuple[str, str]]:
     return owners
 
 
+def _validate_managed_table_selection(
+    selected: frozenset[str],
+    allow_missing_tables: frozenset[str],
+) -> None:
+    managed_tables = managed_runtime_table_names()
+    unknown_requested = set(selected) - managed_tables
+    if unknown_requested:
+        raise ValueError(f"unknown managed table names: {sorted(unknown_requested)!r}")
+    unknown_allowed = set(allow_missing_tables) - managed_tables
+    if unknown_allowed:
+        raise ValueError(f"unknown optional table names: {sorted(unknown_allowed)!r}")
+
+
+def _user_version_issues(
+    conn: sqlite3.Connection,
+    check_user_version: int | None,
+) -> tuple[int | None, list[SchemaIssue]]:
+    user_version_row = conn.execute("PRAGMA user_version").fetchone()
+    user_version = int(user_version_row[0]) if user_version_row else None
+    if check_user_version is None or user_version == int(check_user_version):
+        return user_version, []
+    return user_version, [
+        SchemaIssue(
+            "USER_VERSION_MISMATCH",
+            "PRAGMA user_version",
+            f"expected {int(check_user_version)}; found {user_version}",
+        )
+    ]
+
+
 def verify_managed_schema_connection(
     conn: sqlite3.Connection,
     *,
@@ -1246,24 +1276,9 @@ def verify_managed_schema_connection(
 ) -> SchemaVerificationResult:
     """Inspect managed schema metadata without mutating the SQLite connection."""
     selected = managed_runtime_table_names() if required_tables is None else required_tables
-    unknown_requested = set(selected) - managed_runtime_table_names()
-    if unknown_requested:
-        raise ValueError(f"unknown managed table names: {sorted(unknown_requested)!r}")
-    unknown_allowed = set(allow_missing_tables) - managed_runtime_table_names()
-    if unknown_allowed:
-        raise ValueError(f"unknown optional table names: {sorted(unknown_allowed)!r}")
+    _validate_managed_table_selection(selected, allow_missing_tables)
 
-    issues: list[SchemaIssue] = []
-    user_version_row = conn.execute("PRAGMA user_version").fetchone()
-    user_version = int(user_version_row[0]) if user_version_row else None
-    if check_user_version is not None and user_version != int(check_user_version):
-        issues.append(
-            SchemaIssue(
-                "USER_VERSION_MISMATCH",
-                "PRAGMA user_version",
-                f"expected {int(check_user_version)}; found {user_version}",
-            )
-        )
+    user_version, issues = _user_version_issues(conn, check_user_version)
 
     existing = {
         str(row[0])

@@ -171,7 +171,8 @@ def _rewrite_sqlite_schema(
             "SELECT sql FROM sqlite_master WHERE type=? AND name=?",
             (object_type, object_name),
         ).fetchone()
-        assert row is not None and isinstance(row[0], str)
+        assert row is not None
+        assert isinstance(row[0], str)
         original = str(row[0])
         rewritten = transform(original)
         assert rewritten != original
@@ -237,7 +238,8 @@ def test_schema_verifier_rejects_missing_canonical_metadata_projection(
             "SELECT sql FROM sqlite_master "
             "WHERE type='view' AND name='canonical_signal_view'"
         ).fetchone()
-        assert row is not None and isinstance(row[0], str)
+        assert row is not None
+        assert isinstance(row[0], str)
         original = str(row[0])
         rewritten = _remove_projection(original, projection)
         assert rewritten != original
