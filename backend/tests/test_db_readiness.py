@@ -199,6 +199,34 @@ def test_missing_database_path_is_not_created_by_readiness_probe(tmp_path):
     assert db_path.exists() is False
 
 
+def test_readiness_reports_open_failure_when_managed_fk_setup_fails(
+    tmp_path,
+    monkeypatch,
+):
+    from waterfallhunter.core import db_readiness
+    from waterfallhunter.core.managed_sqlite import ManagedSQLiteError
+
+    db_path = _migrated_db(tmp_path)
+
+    def reject_managed_connection(*args, **kwargs):
+        raise ManagedSQLiteError("MANAGED_SQLITE_FOREIGN_KEYS_UNAVAILABLE")
+
+    monkeypatch.setattr(
+        db_readiness,
+        "connect_managed_sqlite",
+        reject_managed_connection,
+    )
+
+    result = db_readiness.probe_database(
+        db_path=db_path,
+        expected_schema_version=CURRENT_RUNTIME_SCHEMA_VERSION,
+        busy_timeout_ms=100,
+    )
+
+    assert result.ready is False
+    assert result.reason_codes == ("OPEN_FAILED",)
+
+
 @pytest.mark.parametrize("filename", ["hash#name.db", "question?name.db"])
 def test_readiness_targets_exact_database_path_with_uri_special_characters(
     tmp_path,

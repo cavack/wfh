@@ -2,6 +2,7 @@ import sqlite3
 import time
 from typing import Any
 
+from waterfallhunter.core.managed_sqlite import connect_managed_sqlite
 from waterfallhunter.core.schema_contract import require_managed_schema
 
 
@@ -94,7 +95,7 @@ class StageLifecycleStore:
         now = int(time.time() if observed_at is None else observed_at)
         snapshot = self._snapshot(snapshot_stages)
 
-        with sqlite3.connect(self.db_path, timeout=10.0) as conn:
+        with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
             conn.execute("BEGIN IMMEDIATE")
             catalog = conn.execute(
                 """

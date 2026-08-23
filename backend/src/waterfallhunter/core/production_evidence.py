@@ -8,6 +8,7 @@ import time
 import zlib
 from typing import Any
 
+from waterfallhunter.core.managed_sqlite import connect_managed_sqlite
 from waterfallhunter.core.schema_contract import require_managed_schema
 
 
@@ -40,7 +41,7 @@ class ProductionEvidenceRecorder:
             )
 
     def _connect(self):
-        return sqlite3.connect(self.db_path, timeout=20.0)
+        return connect_managed_sqlite(self.db_path, timeout=20.0)
 
     @classmethod
     def _safe(cls, value: Any) -> Any:

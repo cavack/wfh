@@ -4,6 +4,7 @@ import sqlite3
 import time
 from typing import Any, Dict, Iterable
 
+from waterfallhunter.core.managed_sqlite import connect_managed_sqlite
 from waterfallhunter.core.schema_contract import require_managed_schema
 
 logger = logging.getLogger("WaterfallHunter.Database")
@@ -38,7 +39,7 @@ class DBAdapter:
         event_type: str,
     ):
         try:
-            with sqlite3.connect(
+            with connect_managed_sqlite(
                 self.db_path,
                 timeout=10.0,
             ) as conn:
@@ -73,7 +74,7 @@ class DBAdapter:
         current_time = int(time.time())
 
         try:
-            with sqlite3.connect(
+            with connect_managed_sqlite(
                 self.db_path,
                 timeout=10.0,
             ) as conn:
@@ -140,7 +141,7 @@ class DBAdapter:
         membership and scanner eligibility are separate concepts.
         """
         try:
-            with sqlite3.connect(
+            with connect_managed_sqlite(
                 self.db_path,
                 timeout=10.0,
             ) as conn:
@@ -173,7 +174,7 @@ class DBAdapter:
         Only contracts that remain scan eligible are returned.
         """
         try:
-            with sqlite3.connect(
+            with connect_managed_sqlite(
                 self.db_path,
                 timeout=10.0,
             ) as conn:
@@ -221,7 +222,7 @@ class DBAdapter:
         current_time = int(time.time())
 
         try:
-            with sqlite3.connect(
+            with connect_managed_sqlite(
                 self.db_path,
                 timeout=20.0,
             ) as conn:
@@ -487,7 +488,7 @@ class DBAdapter:
         removed_now: set[str] = set()
 
         try:
-            with sqlite3.connect(
+            with connect_managed_sqlite(
                 self.db_path,
                 timeout=20.0,
             ) as conn:
@@ -592,7 +593,7 @@ class DBAdapter:
         candidates: Dict[str, Any] = {}
 
         try:
-            with sqlite3.connect(
+            with connect_managed_sqlite(
                 self.db_path,
                 timeout=10.0,
             ) as conn:
@@ -644,7 +645,7 @@ class DBAdapter:
         Missing catalogue rows remain genuine persistence failures.
         """
         try:
-            with sqlite3.connect(
+            with connect_managed_sqlite(
                 self.db_path,
                 timeout=10.0,
             ) as conn:
@@ -748,7 +749,7 @@ class DBAdapter:
         an in-flight stale evaluation cannot persist or announce a trigger.
         """
         try:
-            with sqlite3.connect(
+            with connect_managed_sqlite(
                 self.db_path,
                 timeout=10.0,
             ) as conn:
