@@ -14,7 +14,7 @@ from waterfallhunter.core.schema_unique_constraints import (
 )
 
 
-CURRENT_RUNTIME_SCHEMA_VERSION = 2
+CURRENT_RUNTIME_SCHEMA_VERSION = 3
 
 
 class SchemaContractError(RuntimeError):
@@ -78,6 +78,12 @@ class ManagedTableSpec:
     foreign_keys: tuple[ForeignKeySpec, ...] = ()
     check_fragments: tuple[str, ...] = ()
     triggers: tuple[TriggerSpec, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedViewSpec:
+    name: str
+    canonical_sql: str
 
 
 def _c(
@@ -543,6 +549,119 @@ _RUNTIME_SCHEMA: dict[str, ManagedTableSpec] = {
             _c("updated_at", "REAL", not_null=True),
         ),
     ),
+    "signal_metadata": ManagedTableSpec(
+        name="signal_metadata",
+        columns=(
+            _c("signal_id", "INTEGER", pk=1),
+            _c("signal_class", "TEXT", not_null=True),
+            _c("strategy_profile", "TEXT", not_null=True),
+            _c("score_version", "TEXT", not_null=True),
+            _c("model_generation", "TEXT", not_null=True),
+            _c("decision_contract_hash", "TEXT", not_null=True),
+            _c("analysis_observed_at", "INTEGER", not_null=True),
+            _c("reference_observed_at", "INTEGER"),
+            _c("metadata_contract_version", "TEXT", not_null=True),
+            _c("classification_method", "TEXT", not_null=True),
+            _c("classification_evidence_hash", "TEXT"),
+            _c("created_at", "INTEGER", not_null=True),
+        ),
+        foreign_keys=(
+            ForeignKeySpec("signal_id", "lbank_signal_ledger", "id"),
+        ),
+        check_fragments=(
+            "check(signal_class in ('STRICT', 'EXPERIMENTAL'))",
+            "check(length(strategy_profile) > 0)",
+            "check(length(score_version) > 0)",
+            "check(length(model_generation) > 0)",
+            "check(length(decision_contract_hash) = 64)",
+            "check(decision_contract_hash not glob '*[^0-9a-f]*')",
+            "check(typeof(analysis_observed_at) = 'integer' and analysis_observed_at >= 0)",
+            (
+                "check(reference_observed_at is null or "
+                "(typeof(reference_observed_at) = 'integer' "
+                "and reference_observed_at >= 0))"
+            ),
+            "check(metadata_contract_version = 'signal_metadata_v1')",
+            (
+                "check(classification_method in "
+                "('FUTURE_PIPELINE_EXPLICIT', 'LEGACY_PROFILE_EXACT_MATCH'))"
+            ),
+            (
+                "check((classification_method = 'FUTURE_PIPELINE_EXPLICIT' "
+                "and classification_evidence_hash is null) or "
+                "(classification_method = 'LEGACY_PROFILE_EXACT_MATCH' "
+                "and length(classification_evidence_hash) = 64 "
+                "and classification_evidence_hash not glob '*[^0-9a-f]*'))"
+            ),
+            (
+                "check((signal_class = 'STRICT' "
+                "and strategy_profile = 'strict_score_v2' "
+                "and score_version = 'score_v2') or "
+                "(signal_class = 'EXPERIMENTAL' "
+                "and strategy_profile = 'experimental_pretrigger_v1' "
+                "and score_version = 'score_v2_watch_v1'))"
+            ),
+            "check(typeof(created_at) = 'integer' and created_at >= 0)",
+        ),
+        triggers=_immutable(
+            "signal_metadata",
+            message="signal_metadata is immutable",
+        ),
+    ),
+}
+
+
+_CANONICAL_SIGNAL_VIEW_SQL = """
+CREATE VIEW canonical_signal_view AS
+SELECT
+    s.id AS signal_id,
+    s.symbol,
+    s.triggered_at,
+    s.state_before,
+    s.score,
+    s.entry_price,
+    s.stop_loss,
+    s.take_profit_1,
+    s.take_profit_2,
+    s.position_setup_json,
+    s.trigger_metrics_json,
+    s.execution_status,
+    s.execution_evidence_status,
+    s.execution_observed_samples,
+    s.execution_observation_span_hours,
+    s.execution_availability_rate,
+    s.execution_cost_100_p90_pct,
+    s.execution_spread_p90_pct,
+    s.execution_depth_25bps_p50_usdt,
+    s.execution_failed_checks_json,
+    s.execution_suitability_json,
+    s.quote_volume_at_trigger,
+    s.volume_gate_passed,
+    s.proxy_execution_disagreement,
+    s.observational_only,
+    s.trade_eligible,
+    s.created_at,
+    m.signal_class,
+    m.strategy_profile,
+    m.score_version,
+    m.model_generation,
+    m.decision_contract_hash,
+    m.analysis_observed_at,
+    m.reference_observed_at,
+    m.metadata_contract_version,
+    m.classification_method,
+    m.classification_evidence_hash
+FROM lbank_signal_ledger AS s
+INNER JOIN signal_metadata AS m
+    ON m.signal_id = s.id
+"""
+
+
+_RUNTIME_VIEWS: dict[str, ManagedViewSpec] = {
+    "canonical_signal_view": ManagedViewSpec(
+        name="canonical_signal_view",
+        canonical_sql=_CANONICAL_SIGNAL_VIEW_SQL,
+    ),
 }
 
 
@@ -558,6 +677,11 @@ def _sql_literal_marker(value: str) -> str:
 def managed_runtime_table_names() -> frozenset[str]:
     """Return the complete first-party runtime table ownership set."""
     return frozenset(_RUNTIME_SCHEMA)
+
+
+def managed_runtime_view_names() -> frozenset[str]:
+    """Return the complete first-party managed view ownership set."""
+    return frozenset(_RUNTIME_VIEWS)
 
 
 def _sql_compact(value: str | None) -> str:
@@ -1063,6 +1187,36 @@ def _trigger_issues(
     return issues
 
 
+def _view_issues(
+    conn: sqlite3.Connection,
+    spec: ManagedViewSpec,
+) -> list[SchemaIssue]:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='view' AND name=?",
+        (spec.name,),
+    ).fetchone()
+    if row is None or not isinstance(row[0], str):
+        return [
+            SchemaIssue(
+                "VIEW_MISMATCH",
+                spec.name,
+                "managed view is absent or has no SQL definition",
+            )
+        ]
+
+    actual = _sql_compact(row[0])
+    expected = _sql_compact(spec.canonical_sql)
+    if actual and actual == expected:
+        return []
+    return [
+        SchemaIssue(
+            "VIEW_MISMATCH",
+            spec.name,
+            "managed view executable definition differs from canonical contract",
+        )
+    ]
+
+
 def _unknown_user_tables(conn: sqlite3.Connection) -> tuple[str, ...]:
     rows = conn.execute(
         "SELECT name FROM sqlite_master "
@@ -1135,6 +1289,10 @@ def verify_managed_schema_connection(
         issues.extend(_foreign_key_issues(conn, spec))
         issues.extend(_check_issues(conn, spec))
         issues.extend(_trigger_issues(conn, spec))
+
+    if required_tables is None:
+        for view_name in sorted(managed_runtime_view_names()):
+            issues.extend(_view_issues(conn, _RUNTIME_VIEWS[view_name]))
 
     unique_result = verify_unique_constraints_connection(
         conn,
