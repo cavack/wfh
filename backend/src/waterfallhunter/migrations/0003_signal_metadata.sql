@@ -22,7 +22,7 @@ CREATE TABLE signal_metadata (
     ),
     CHECK(decision_contract_hash NOT GLOB '*[^0-9a-f]*'),
     CHECK(
-        typeof(analysis_observed_at) = 'integer'
+        typeof(analysis_observed_at) = 'integer' -- NOSONAR: SQLite type checks are not PL/SQL literals.
         AND analysis_observed_at >= 0
     ),
     CHECK(
@@ -66,13 +66,13 @@ CREATE TABLE signal_metadata (
     CHECK(typeof(created_at) = 'integer' AND created_at >= 0)
 );
 
-CREATE TRIGGER signal_metadata_no_update
+CREATE TRIGGER signal_metadata_no_update -- NOSONAR: SQLite has no CREATE OR REPLACE TRIGGER.
 BEFORE UPDATE ON signal_metadata
 BEGIN
     SELECT RAISE(ABORT, 'signal_metadata is immutable');
 END;
 
-CREATE TRIGGER signal_metadata_no_delete
+CREATE TRIGGER signal_metadata_no_delete -- NOSONAR: SQLite has no CREATE OR REPLACE TRIGGER.
 BEFORE DELETE ON signal_metadata
 BEGIN
     SELECT RAISE(ABORT, 'signal_metadata is immutable');
