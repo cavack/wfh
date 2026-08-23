@@ -25,13 +25,26 @@ def _canonical_absolute_path(value: str) -> Path:
     return candidate
 
 
-def _write_report_atomic(destination: Path, report: dict) -> None:
-    if destination.exists() or destination.is_symlink() or not destination.parent.is_dir():
+def _write_report_atomic(
+    destination: Path,
+    report: dict,
+    *,
+    allowed_directory: Path,
+) -> None:
+    safe_directory = allowed_directory.resolve(strict=True)
+    safe_destination = destination.resolve(strict=False)
+    if safe_destination.parent != safe_directory:
+        raise BackupCertificationError("REPORT_OUTSIDE_ALLOWED_DIRECTORY")
+    if (
+        safe_destination.exists()
+        or safe_destination.is_symlink()
+        or not safe_directory.is_dir()
+    ):
         raise BackupCertificationError("REPORT_TARGET_INVALID")
     descriptor, temporary = tempfile.mkstemp(
-        prefix=f".{destination.name}.",
+        prefix=f".{safe_destination.name}.",
         suffix=".partial",
-        dir=destination.parent,
+        dir=safe_directory,
     )
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
@@ -39,8 +52,8 @@ def _write_report_atomic(destination: Path, report: dict) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, destination)
-        directory = os.open(destination.parent, os.O_RDONLY)
+        os.replace(temporary, safe_destination)
+        directory = os.open(safe_directory, os.O_RDONLY)
         try:
             os.fsync(directory)
         finally:
@@ -70,7 +83,11 @@ def main() -> int:
             destination_failure_domain=args.destination_failure_domain,
             enforce_distinct_device=True,
         )
-        _write_report_atomic(args.report, report)
+        _write_report_atomic(
+            args.report,
+            report,
+            allowed_directory=args.backup.parent,
+        )
     except (BackupCertificationError, OSError) as error:
         print(json.dumps({"ok": False, "reason": str(error)}, sort_keys=True))
         return 2

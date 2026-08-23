@@ -81,47 +81,45 @@ def _hash_valid(document: dict[str, Any], hash_field: str) -> bool:
     return isinstance(expected, str) and expected == canonical_sha256(material)
 
 
-def evaluate_deployment_certification(
-    request: DeploymentCertificationRequest | dict[str, Any],
-) -> dict[str, Any]:
-    packet = (
-        request
-        if isinstance(request, DeploymentCertificationRequest)
-        else DeploymentCertificationRequest.model_validate(request)
+def _provenance_reasons(
+    packet: DeploymentCertificationRequest,
+    provenance: dict[str, Any],
+) -> list[str]:
+    checks = (
+        (packet.source_revision != packet.ci_revision, "CI_REVISION_MISMATCH"),
+        (provenance["status"] != DEPLOYMENT_PROVENANCE_VERIFIED, "ARTIFACT_PROVENANCE_INCOMPLETE"),
+        (provenance["links"]["git_sha"] != packet.source_revision, "ARTIFACT_REVISION_MISMATCH"),
     )
-    reasons: list[str] = []
-    provenance = evaluate_deployment_provenance(packet.artifact_provenance)
-    if packet.source_revision != packet.ci_revision:
-        reasons.append("CI_REVISION_MISMATCH")
-    if provenance["status"] != DEPLOYMENT_PROVENANCE_VERIFIED:
-        reasons.append("ARTIFACT_PROVENANCE_INCOMPLETE")
-    if provenance["links"]["git_sha"] != packet.source_revision:
-        reasons.append("ARTIFACT_REVISION_MISMATCH")
+    return [reason for failed, reason in checks if failed]
 
-    backup = packet.backup_certification
-    if not _hash_valid(backup, "certification_sha256"):
-        reasons.append("BACKUP_CERTIFICATION_HASH_INVALID")
-    if backup.get("status") != "BACKUP_RESTORE_CERTIFIED":
-        reasons.append("INDEPENDENT_BACKUP_RESTORE_NOT_CERTIFIED")
-    if backup.get("source_failure_domain") == backup.get("destination_failure_domain"):
-        reasons.append("BACKUP_FAILURE_DOMAIN_NOT_INDEPENDENT")
-    if backup.get("device_separation_enforced") is not True:
-        reasons.append("BACKUP_DEVICE_SEPARATION_NOT_ENFORCED")
 
-    rehearsal = packet.migration_rollback_rehearsal
-    if not _hash_valid(rehearsal, "rehearsal_sha256"):
-        reasons.append("MIGRATION_REHEARSAL_HASH_INVALID")
-    if rehearsal.get("status") != "MIGRATION_AND_ROLLBACK_REHEARSED":
-        reasons.append("MIGRATION_AND_ROLLBACK_NOT_REHEARSED")
-    if rehearsal.get("backup_certification_sha256") != backup.get(
-        "certification_sha256"
-    ):
-        reasons.append("REHEARSAL_BACKUP_IDENTITY_MISMATCH")
-    if rehearsal.get("source_revision") != packet.source_revision:
-        reasons.append("REHEARSAL_REVISION_MISMATCH")
+def _backup_reasons(backup: dict[str, Any]) -> list[str]:
+    checks = (
+        (not _hash_valid(backup, "certification_sha256"), "BACKUP_CERTIFICATION_HASH_INVALID"),
+        (backup.get("status") != "BACKUP_RESTORE_CERTIFIED", "INDEPENDENT_BACKUP_RESTORE_NOT_CERTIFIED"),
+        (backup.get("source_failure_domain") == backup.get("destination_failure_domain"), "BACKUP_FAILURE_DOMAIN_NOT_INDEPENDENT"),
+        (backup.get("device_separation_enforced") is not True, "BACKUP_DEVICE_SEPARATION_NOT_ENFORCED"),
+    )
+    return [reason for failed, reason in checks if failed]
 
-    verification = packet.verification
-    for field in (
+
+def _rehearsal_reasons(
+    rehearsal: dict[str, Any],
+    *,
+    backup: dict[str, Any],
+    source_revision: str,
+) -> list[str]:
+    checks = (
+        (not _hash_valid(rehearsal, "rehearsal_sha256"), "MIGRATION_REHEARSAL_HASH_INVALID"),
+        (rehearsal.get("status") != "MIGRATION_AND_ROLLBACK_REHEARSED", "MIGRATION_AND_ROLLBACK_NOT_REHEARSED"),
+        (rehearsal.get("backup_certification_sha256") != backup.get("certification_sha256"), "REHEARSAL_BACKUP_IDENTITY_MISMATCH"),
+        (rehearsal.get("source_revision") != source_revision, "REHEARSAL_REVISION_MISMATCH"),
+    )
+    return [reason for failed, reason in checks if failed]
+
+
+def _verification_reasons(evidence: VerificationEvidence) -> list[str]:
+    fields = (
         "backend_tests_passed",
         "frontend_tests_passed",
         "e2e_tests_passed",
@@ -130,37 +128,66 @@ def evaluate_deployment_certification(
         "fault_tests_passed",
         "security_tests_passed",
         "secret_scan_passed",
-    ):
-        if getattr(verification, field) is not True:
-            reasons.append(field.upper().replace("_PASSED", "_FAILED"))
-    if verification.blocker_review_findings != 0:
+    )
+    reasons = [
+        field.upper().replace("_PASSED", "_FAILED")
+        for field in fields
+        if getattr(evidence, field) is not True
+    ]
+    if evidence.blocker_review_findings != 0:
         reasons.append("BLOCKER_REVIEW_FINDINGS_REMAIN")
+    return reasons
 
-    readiness = packet.readiness
-    if not all(
+
+def _runtime_reasons(
+    readiness: ReadinessEvidence,
+    soak: ShadowSoakEvidence,
+) -> list[str]:
+    checks = (
         (
-            readiness.livez_ok,
-            readiness.healthz_ok,
-            readiness.readyz_ok,
-            readiness.schema_ready,
-            readiness.database_ready,
-        )
-    ):
-        reasons.append("RUNTIME_READINESS_INCOMPLETE")
-    if readiness.observed_schema_version != readiness.expected_schema_version:
-        reasons.append("RUNTIME_SCHEMA_VERSION_MISMATCH")
+            not all(
+                (
+                    readiness.livez_ok,
+                    readiness.healthz_ok,
+                    readiness.readyz_ok,
+                    readiness.schema_ready,
+                    readiness.database_ready,
+                )
+            ),
+            "RUNTIME_READINESS_INCOMPLETE",
+        ),
+        (readiness.observed_schema_version != readiness.expected_schema_version, "RUNTIME_SCHEMA_VERSION_MISMATCH"),
+        (soak.duration_seconds < soak.minimum_required_seconds, "SHADOW_SOAK_DURATION_INSUFFICIENT"),
+        (soak.request_error_rate > soak.maximum_request_error_rate, "SHADOW_SOAK_ERROR_RATE_EXCEEDED"),
+        (soak.oom_events != 0, "SHADOW_SOAK_OOM_EVENTS_PRESENT"),
+        (soak.schema_errors != 0, "SHADOW_SOAK_SCHEMA_ERRORS_PRESENT"),
+        (soak.live_order_path_count != 0, "LIVE_ORDER_PATH_PRESENT"),
+    )
+    return [reason for failed, reason in checks if failed]
 
-    soak = packet.shadow_soak
-    if soak.duration_seconds < soak.minimum_required_seconds:
-        reasons.append("SHADOW_SOAK_DURATION_INSUFFICIENT")
-    if soak.request_error_rate > soak.maximum_request_error_rate:
-        reasons.append("SHADOW_SOAK_ERROR_RATE_EXCEEDED")
-    if soak.oom_events != 0:
-        reasons.append("SHADOW_SOAK_OOM_EVENTS_PRESENT")
-    if soak.schema_errors != 0:
-        reasons.append("SHADOW_SOAK_SCHEMA_ERRORS_PRESENT")
-    if soak.live_order_path_count != 0:
-        reasons.append("LIVE_ORDER_PATH_PRESENT")
+
+def evaluate_deployment_certification(
+    request: DeploymentCertificationRequest | dict[str, Any],
+) -> dict[str, Any]:
+    packet = (
+        request
+        if isinstance(request, DeploymentCertificationRequest)
+        else DeploymentCertificationRequest.model_validate(request)
+    )
+    provenance = evaluate_deployment_provenance(packet.artifact_provenance)
+    backup = packet.backup_certification
+    rehearsal = packet.migration_rollback_rehearsal
+    reasons = [
+        *_provenance_reasons(packet, provenance),
+        *_backup_reasons(backup),
+        *_rehearsal_reasons(
+            rehearsal,
+            backup=backup,
+            source_revision=packet.source_revision,
+        ),
+        *_verification_reasons(packet.verification),
+        *_runtime_reasons(packet.readiness, packet.shadow_soak),
+    ]
 
     body = {
         "contract_version": "deployment_certification_report_v1",

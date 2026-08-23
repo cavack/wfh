@@ -35,7 +35,11 @@ def main() -> int:
             rollback_target=args.rollback_target,
             source_revision=args.source_revision,
         )
-        _write_report_atomic(args.report, report)
+        _write_report_atomic(
+            args.report,
+            report,
+            allowed_directory=args.backup_certification.parent,
+        )
     except (MigrationRehearsalError, OSError, json.JSONDecodeError) as error:
         print(json.dumps({"ok": False, "reason": str(error)}, sort_keys=True))
         return 2

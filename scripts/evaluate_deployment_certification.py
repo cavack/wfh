@@ -19,11 +19,17 @@ def main() -> int:
     args = parser.parse_args()
     if args.input == args.report:
         parser.error("input and report paths must be different")
+    if args.input.parent != args.report.parent:
+        parser.error("input and report must remain in the same evidence directory")
     payload = json.loads(args.input.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("deployment certification input must be an object")
     report = evaluate_deployment_certification(payload)
-    _write_report_atomic(args.report, report)
+    _write_report_atomic(
+        args.report,
+        report,
+        allowed_directory=args.input.parent,
+    )
     print(
         json.dumps(
             {

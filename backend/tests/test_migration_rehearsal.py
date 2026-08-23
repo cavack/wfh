@@ -58,11 +58,13 @@ def test_rehearsal_uses_canonical_migration_and_proves_backup_rollback(
 def test_rehearsal_rejects_tampered_backup_certification(tmp_path: Path) -> None:
     certification = _certification(tmp_path)
     certification["status"] = "TAMPERED"
+    migration_target = (tmp_path / "independent" / "migration.db").resolve()
+    rollback_target = (tmp_path / "independent" / "rollback.db").resolve()
 
     with pytest.raises(MigrationRehearsalError, match="HASH_MISMATCH"):
         rehearse_migration_and_rollback(
             backup_certification=certification,
-            migration_target=(tmp_path / "independent" / "migration.db").resolve(),
-            rollback_target=(tmp_path / "independent" / "rollback.db").resolve(),
+            migration_target=migration_target,
+            rollback_target=rollback_target,
             source_revision="a" * 40,
         )
