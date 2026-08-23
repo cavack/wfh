@@ -1885,7 +1885,7 @@ async def evaluate_candidate(
                 "explicit signal metadata validation failed",
                 error_type=type(exc).__name__,
             )
-            logger.error(
+            logger.exception(
                 "Signal metadata validation failed for %s: %s",
                 symbol,
                 exc,

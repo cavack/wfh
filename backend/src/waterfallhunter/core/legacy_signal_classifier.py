@@ -180,12 +180,11 @@ def classify_legacy_evidence(
     if score_version != expected_score_version:
         return _conflict(signal_id, evidence_hash, "SCORE_VERSION_CONFLICT")
 
-    if explicit_signal_class is not None:
-        if (
-            not isinstance(explicit_signal_class, str)
-            or explicit_signal_class != signal_class.value
-        ):
-            return _conflict(signal_id, evidence_hash, "SIGNAL_CLASS_CONFLICT")
+    if explicit_signal_class is not None and (
+        not isinstance(explicit_signal_class, str)
+        or explicit_signal_class != signal_class.value
+    ):
+        return _conflict(signal_id, evidence_hash, "SIGNAL_CLASS_CONFLICT")
 
     metadata = SignalMetadataInput(
         signal_class=signal_class,
@@ -356,6 +355,70 @@ def _metadata_tuple(
     )
 
 
+def _persist_resolved_decision(
+    conn: sqlite3.Connection,
+    decision: LegacyClassificationDecision,
+    *,
+    operation_created_at: int,
+    explicit_created_at: int | None,
+) -> None:
+    if decision.status is not LegacyClassificationStatus.RESOLVED:
+        return
+    metadata = decision.metadata
+    if metadata is None:
+        raise LegacyClassificationError("RESOLVED_METADATA_MISSING")
+
+    existing = conn.execute(
+        """
+        SELECT
+            signal_class,
+            strategy_profile,
+            score_version,
+            model_generation,
+            decision_contract_hash,
+            analysis_observed_at,
+            reference_observed_at,
+            metadata_contract_version,
+            classification_method,
+            classification_evidence_hash,
+            created_at
+        FROM signal_metadata
+        WHERE signal_id = ?
+        """,
+        (decision.signal_id,),
+    ).fetchone()
+    expected_created_at = (
+        int(existing[-1])
+        if existing is not None and explicit_created_at is None
+        else operation_created_at
+    )
+    expected = _metadata_tuple(metadata, expected_created_at)
+    if existing is not None:
+        if tuple(existing) != expected:
+            raise LegacyClassificationError("EXISTING_METADATA_CONFLICT")
+        return
+
+    conn.execute(
+        """
+        INSERT INTO signal_metadata (
+            signal_id,
+            signal_class,
+            strategy_profile,
+            score_version,
+            model_generation,
+            decision_contract_hash,
+            analysis_observed_at,
+            reference_observed_at,
+            metadata_contract_version,
+            classification_method,
+            classification_evidence_hash,
+            created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (decision.signal_id, *expected),
+    )
+
+
 def apply_legacy_classification(
     db_path: str | Path,
     *,
@@ -390,60 +453,11 @@ def apply_legacy_classification(
 
         operation_created_at = int(time.time()) if created_at is None else created_at
         for decision in report.decisions:
-            if decision.status is not LegacyClassificationStatus.RESOLVED:
-                continue
-            metadata = decision.metadata
-            if metadata is None:
-                raise LegacyClassificationError("RESOLVED_METADATA_MISSING")
-
-            existing = conn.execute(
-                """
-                SELECT
-                    signal_class,
-                    strategy_profile,
-                    score_version,
-                    model_generation,
-                    decision_contract_hash,
-                    analysis_observed_at,
-                    reference_observed_at,
-                    metadata_contract_version,
-                    classification_method,
-                    classification_evidence_hash,
-                    created_at
-                FROM signal_metadata
-                WHERE signal_id = ?
-                """,
-                (decision.signal_id,),
-            ).fetchone()
-            expected_created_at = (
-                int(existing[-1])
-                if existing is not None and created_at is None
-                else operation_created_at
-            )
-            expected = _metadata_tuple(metadata, expected_created_at)
-            if existing is not None:
-                if tuple(existing) != expected:
-                    raise LegacyClassificationError("EXISTING_METADATA_CONFLICT")
-                continue
-
-            conn.execute(
-                """
-                INSERT INTO signal_metadata (
-                    signal_id,
-                    signal_class,
-                    strategy_profile,
-                    score_version,
-                    model_generation,
-                    decision_contract_hash,
-                    analysis_observed_at,
-                    reference_observed_at,
-                    metadata_contract_version,
-                    classification_method,
-                    classification_evidence_hash,
-                    created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (decision.signal_id, *expected),
+            _persist_resolved_decision(
+                conn,
+                decision,
+                operation_created_at=operation_created_at,
+                explicit_created_at=created_at,
             )
 
         conn.commit()

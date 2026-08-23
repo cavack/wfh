@@ -73,12 +73,12 @@ class LBankExecutionOutcomeReport:
         )
 
     @property
-    def signal_class_scope(self) -> tuple[str, ...]:
+    def signal_class_scope(self) -> list[str]:
         if self.cohort is ReportCohort.STRICT:
-            return ("STRICT",)
+            return ["STRICT"]
         if self.cohort is ReportCohort.EXPERIMENTAL:
-            return ("EXPERIMENTAL",)
-        return ("STRICT", "EXPERIMENTAL")
+            return ["EXPERIMENTAL"]
+        return ["STRICT", "EXPERIMENTAL"]
 
     @property
     def research_only(self) -> bool:
@@ -376,7 +376,7 @@ class LBankExecutionOutcomeReport:
             "generated_at": current_time,
             "observational_only": True,
             "trade_eligible": None,
-            "signal_class_scope": list(self.signal_class_scope),
+            "signal_class_scope": self.signal_class_scope,
             "research_only": self.research_only,
             "threshold_calibration_allowed": False,
             "hard_gating_allowed": False,
