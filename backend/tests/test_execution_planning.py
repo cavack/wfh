@@ -366,19 +366,18 @@ def test_maintenance_tiers_must_partition_notional_and_liquidation_uses_exit_tie
 
     assert price == pytest.approx(120.0 / 1.02)
     assert rate == 0.02
+    overlapping_tiers = (
+        MaintenanceMarginTier(
+            notional_floor=0.0,
+            maintenance_margin_rate=0.005,
+        ),
+        MaintenanceMarginTier(
+            notional_floor=100.0,
+            maintenance_margin_rate=0.01,
+        ),
+    )
     with pytest.raises(ValidationError, match="only the final"):
-        _constraints(
-            maintenance_margin_tiers=(
-                MaintenanceMarginTier(
-                    notional_floor=0.0,
-                    maintenance_margin_rate=0.005,
-                ),
-                MaintenanceMarginTier(
-                    notional_floor=100.0,
-                    maintenance_margin_rate=0.01,
-                ),
-            )
-        )
+        _constraints(maintenance_margin_tiers=overlapping_tiers)
 
 
 def test_fractional_future_observation_fails_closed_and_mark_price_anchors_band() -> None:

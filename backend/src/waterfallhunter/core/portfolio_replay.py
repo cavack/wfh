@@ -52,20 +52,30 @@ class PortfolioEvent(BaseModel):
     @model_validator(mode="after")
     def _event_shape(self) -> "PortfolioEvent":
         if self.event_type is PortfolioEventType.OPEN:
-            if not self.signal_id or not self.cluster_id or self.execution_plan is None:
-                raise ValueError("OPEN requires signal, cluster, and execution plan")
-            if self.fill_fraction == 0 and not self.rejection_reason:
-                raise ValueError("zero-fill OPEN must name a rejection reason")
-            if self.rejection_reason and self.fill_fraction != 0:
-                raise ValueError("rejected OPEN cannot contain a positive fill")
+            self._validate_open_shape()
         elif self.event_type in {PortfolioEventType.MARK, PortfolioEventType.CLOSE}:
-            if self.price is None:
-                raise ValueError("MARK and CLOSE require price")
-            if self.exit_cost is None:
-                raise ValueError("MARK and CLOSE require an explicit modeled exit cost")
-        elif self.event_type is PortfolioEventType.FUNDING and self.amount is None:
-            raise ValueError("FUNDING requires a signed amount")
+            self._validate_exit_shape()
+        elif self.event_type is PortfolioEventType.FUNDING:
+            self._validate_funding_shape()
         return self
+
+    def _validate_open_shape(self) -> None:
+        if not self.signal_id or not self.cluster_id or self.execution_plan is None:
+            raise ValueError("OPEN requires signal, cluster, and execution plan")
+        if self.fill_fraction == 0 and not self.rejection_reason:
+            raise ValueError("zero-fill OPEN must name a rejection reason")
+        if self.rejection_reason and self.fill_fraction != 0:
+            raise ValueError("rejected OPEN cannot contain a positive fill")
+
+    def _validate_exit_shape(self) -> None:
+        if self.price is None:
+            raise ValueError("MARK and CLOSE require price")
+        if self.exit_cost is None:
+            raise ValueError("MARK and CLOSE require an explicit modeled exit cost")
+
+    def _validate_funding_shape(self) -> None:
+        if self.amount is None:
+            raise ValueError("FUNDING requires a signed amount")
 
 
 @dataclass(slots=True)
