@@ -44,13 +44,37 @@ def _verified_backup_path(certification: dict[str, Any]) -> Path:
     if certification.get("status") != "BACKUP_RESTORE_CERTIFIED":
         raise MigrationRehearsalError("BACKUP_NOT_CERTIFIED")
     backup = Path(str(certification.get("backup_path", "")))
+    sidecars = [Path(f"{backup}{suffix}") for suffix in ("-wal", "-shm")]
+    if any(path.exists() for path in sidecars):
+        raise MigrationRehearsalError("CERTIFIED_BACKUP_HAS_SQLITE_SIDECARS")
     try:
         audit = audit_sqlite_snapshot(backup)
     except (BackupCertificationError, OSError) as error:
         raise MigrationRehearsalError("CERTIFIED_BACKUP_UNREADABLE") from error
-    if audit["file_sha256"] != certification["backup_audit"]["file_sha256"]:
-        raise MigrationRehearsalError("CERTIFIED_BACKUP_CHECKSUM_MISMATCH")
+    certified_audit = certification.get("backup_audit")
+    if not isinstance(certified_audit, dict) or (
+        audit.get("audit_sha256") != certified_audit.get("audit_sha256")
+    ):
+        raise MigrationRehearsalError("CERTIFIED_BACKUP_AUDIT_MISMATCH")
+    if any(path.exists() for path in sidecars):
+        raise MigrationRehearsalError("CERTIFIED_BACKUP_CREATED_SQLITE_SIDECARS")
     return backup
+
+
+def _require_isolated_targets(
+    backup: Path,
+    migration_target: Path,
+    rollback_target: Path,
+) -> None:
+    destination = backup.parent.resolve()
+    targets = (migration_target.resolve(strict=False), rollback_target.resolve(strict=False))
+    if targets[0] == targets[1]:
+        raise MigrationRehearsalError("MIGRATION_AND_ROLLBACK_TARGETS_MUST_DIFFER")
+    if any(target.parent != destination for target in targets):
+        raise MigrationRehearsalError("REHEARSAL_TARGET_OUTSIDE_CERTIFIED_DESTINATION")
+    device = backup.stat().st_dev
+    if any(target.parent.stat().st_dev != device for target in targets):
+        raise MigrationRehearsalError("REHEARSAL_TARGET_DEVICE_MISMATCH")
 
 
 def _run_canonical_migration(target: Path, source_revision: str) -> dict[str, Any]:
@@ -88,9 +112,8 @@ def rehearse_migration_and_rollback(
         character not in "0123456789abcdef" for character in source_revision
     ):
         raise MigrationRehearsalError("SOURCE_REVISION_INVALID")
-    if migration_target.resolve(strict=False) == rollback_target.resolve(strict=False):
-        raise MigrationRehearsalError("MIGRATION_AND_ROLLBACK_TARGETS_MUST_DIFFER")
     backup = _verified_backup_path(backup_certification)
+    _require_isolated_targets(backup, migration_target, rollback_target)
     baseline_audit = audit_sqlite_snapshot(backup)
     pre_migration_audit = restore_sqlite_snapshot(
         source=backup,

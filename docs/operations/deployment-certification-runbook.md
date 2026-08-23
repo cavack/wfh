@@ -62,7 +62,9 @@ Build one `deployment_certification_request_v1` JSON packet containing:
 - zero blocker review findings;
 - liveness, health, readiness, schema readiness and database readiness;
 - at least 24 hours paper-only shadow soak, request error rate at or below
-  0.1%, zero OOM/schema errors, and zero live-order paths.
+  0.1%, zero OOM/schema errors, and zero live-order paths. The soak packet must
+  bind its start/end, staging environment, source revision, built-image digest,
+  and runtime fingerprint to the artifact being certified.
 
 Evaluate it offline:
 

@@ -117,13 +117,16 @@ def _online_backup(source: Path, destination: Path) -> None:
         with _open_read_only(source) as source_connection:
             with sqlite3.connect(partial, timeout=30.0) as target_connection:
                 source_connection.backup(target_connection, pages=4_096, sleep=0.05)
-                target_connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                journal = target_connection.execute("PRAGMA journal_mode=DELETE").fetchone()
+                if str(journal[0] if journal else "").lower() != "delete":
+                    raise BackupCertificationError("BACKUP_JOURNAL_FINALIZATION_FAILED")
         descriptor = os.open(partial, os.O_RDONLY)
         try:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
-        os.replace(partial, destination)
+        os.link(partial, destination)
+        partial.unlink()
         directory = os.open(destination.parent, os.O_RDONLY)
         try:
             os.fsync(directory)
@@ -153,6 +156,7 @@ def create_certified_backup(
 ) -> dict[str, Any]:
     """Create, validate, and independently restore one immutable backup."""
     source_path = _require_source(source)
+    source_stat = source_path.stat()
     backup_path = _require_new_target(backup, label="BACKUP")
     restore_path = _require_new_target(restore_target, label="RESTORE")
     if backup_path == restore_path:
@@ -191,6 +195,11 @@ def create_certified_backup(
     body = {
         "contract_version": "sqlite_backup_certification_v1",
         "status": "BACKUP_RESTORE_CERTIFIED",
+        "source_path": str(source_path),
+        "source_identity": {
+            "device_id": source_stat.st_dev,
+            "inode": source_stat.st_ino,
+        },
         "source_failure_domain": source_failure_domain,
         "destination_failure_domain": destination_failure_domain,
         "device_separation_enforced": enforce_distinct_device,

@@ -68,3 +68,34 @@ def test_rehearsal_rejects_tampered_backup_certification(tmp_path: Path) -> None
             rollback_target=rollback_target,
             source_revision="a" * 40,
         )
+
+
+def test_rehearsal_rejects_targets_outside_certified_destination(tmp_path: Path) -> None:
+    certification = _certification(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    migration_target = (outside / "migration.db").resolve()
+    rollback_target = (outside / "rollback.db").resolve()
+
+    with pytest.raises(MigrationRehearsalError, match="OUTSIDE_CERTIFIED_DESTINATION"):
+        rehearse_migration_and_rollback(
+            backup_certification=certification,
+            migration_target=migration_target,
+            rollback_target=rollback_target,
+            source_revision="a" * 40,
+        )
+
+
+def test_rehearsal_rejects_wal_sidecar_on_certified_backup(tmp_path: Path) -> None:
+    certification = _certification(tmp_path)
+    Path(f"{certification['backup_path']}-wal").write_bytes(b"unexpected")
+    migration_target = (tmp_path / "independent" / "migration.db").resolve()
+    rollback_target = (tmp_path / "independent" / "rollback.db").resolve()
+
+    with pytest.raises(MigrationRehearsalError, match="SQLITE_SIDECARS"):
+        rehearse_migration_and_rollback(
+            backup_certification=certification,
+            migration_target=migration_target,
+            rollback_target=rollback_target,
+            source_revision="a" * 40,
+        )

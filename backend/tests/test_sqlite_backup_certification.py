@@ -52,6 +52,8 @@ def test_online_backup_restore_is_integrity_and_count_certified(tmp_path: Path) 
     )
 
     assert report["status"] == "BACKUP_RESTORE_CERTIFIED"
+    assert report["source_path"] == str(source.resolve())
+    assert set(report["source_identity"]) == {"device_id", "inode"}
     assert report["restore_matches_backup"] is True
     assert report["backup_audit"]["integrity_check"] == "ok"
     assert report["backup_audit"]["foreign_key_violation_count"] == 0

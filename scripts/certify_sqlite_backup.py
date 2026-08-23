@@ -52,7 +52,8 @@ def _write_report_atomic(
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, safe_destination)
+        os.link(temporary, safe_destination)
+        Path(temporary).unlink()
         directory = os.open(safe_directory, os.O_RDONLY)
         try:
             os.fsync(directory)
