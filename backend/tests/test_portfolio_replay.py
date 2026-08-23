@@ -418,20 +418,19 @@ def test_rehashed_execution_plan_still_rejects_unsafe_numeric_fields(
     plan["execution_plan_hash"] = canonical_sha256(
         {key: item for key, item in plan.items() if key != "execution_plan_hash"}
     )
+    event = PortfolioEvent(
+        event_id="open",
+        occurred_at=100,
+        event_type="OPEN",
+        position_id="position",
+        signal_id="signal",
+        cluster_id="MEME_HIGH_BETA",
+        execution_plan=plan,
+    )
 
     with pytest.raises(ValueError, match=message):
         replay_paper_portfolio(
-            [
-                PortfolioEvent(
-                    event_id="open",
-                    occurred_at=100,
-                    event_type="OPEN",
-                    position_id="position",
-                    signal_id="signal",
-                    cluster_id="MEME_HIGH_BETA",
-                    execution_plan=plan,
-                )
-            ],
+            [event],
             initial_equity=200,
             risk_policy=RiskPolicy.v1(),
             dataset_manifest_hash=MANIFEST_HASH,

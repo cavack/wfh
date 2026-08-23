@@ -16,6 +16,14 @@ from waterfallhunter.routes_backtest_lab import (
 )
 
 
+def _resolve_workspace_path(candidate: Path, *, label: str) -> Path:
+    workspace = Path.cwd().resolve()
+    resolved = candidate.resolve()
+    if not resolved.is_relative_to(workspace):
+        raise ValueError(f"{label} path must remain inside {workspace}")
+    return resolved
+
+
 def sign_bundle(payload: dict[str, Any], *, artifact_hmac_key: str) -> dict[str, Any]:
     if len(artifact_hmac_key.encode("utf-8")) < 32:
         raise ValueError("BACKTEST_ARTIFACT_HMAC_KEY must contain at least 32 bytes")
@@ -61,15 +69,17 @@ def main() -> int:
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
-    if args.input.resolve() == args.output.resolve():
+    input_path = _resolve_workspace_path(args.input, label="input")
+    output_path = _resolve_workspace_path(args.output, label="output")
+    if input_path == output_path:
         parser.error("input and output paths must be different")
     secret = os.environ.get("BACKTEST_ARTIFACT_HMAC_KEY", "")
-    payload = json.loads(args.input.read_text(encoding="utf-8"))
+    payload = json.loads(input_path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("backtest bundle must be a JSON object")
     signed = sign_bundle(payload, artifact_hmac_key=secret)
-    _write_atomic(args.output, signed)
-    print(json.dumps({"output": str(args.output), "artifact_key_id": signed["artifact_key_id"]}))
+    _write_atomic(output_path, signed)
+    print(json.dumps({"output": str(output_path), "artifact_key_id": signed["artifact_key_id"]}))
     return 0
 
 

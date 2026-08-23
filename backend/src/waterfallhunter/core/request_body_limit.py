@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -49,6 +50,7 @@ class RequestBodyLimitMiddleware:
 
         async def bounded_receive() -> dict:
             nonlocal replayed
+            await asyncio.sleep(0)
             if replayed:
                 return {"type": "http.request", "body": b"", "more_body": False}
             replayed = True

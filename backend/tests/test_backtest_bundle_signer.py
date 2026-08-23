@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from scripts.sign_backtest_bundle import sign_bundle
+from pathlib import Path
+
+import pytest
+
+from scripts.sign_backtest_bundle import _resolve_workspace_path, sign_bundle
 from waterfallhunter.routes_backtest_lab import (
     BacktestLabRequest,
     backtest_attestation_sha256,
@@ -25,3 +29,16 @@ def test_signer_normalizes_and_attests_complete_bundle() -> None:
         request,
         artifact_hmac_key=key,
     )
+
+
+def test_signer_rejects_paths_outside_operator_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+
+    assert _resolve_workspace_path(Path("bundle.json"), label="input").parent == workspace
+    with pytest.raises(ValueError, match="must remain inside"):
+        _resolve_workspace_path(tmp_path / "outside.json", label="input")
