@@ -13,6 +13,7 @@ def compact_metrics(
         "source_exchange",
         "mapped_symbol",
         "exchange",
+        "strategy_profile",
         "score_version",
         "score",
         "total_score",

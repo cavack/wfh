@@ -4,10 +4,12 @@ import traceback
 import json
 import math
 import time
-from fastapi import FastAPI, HTTPException, Response
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from prometheus_client import Counter, Gauge, generate_latest, CONTENT_TYPE_LATEST
 import os
+from typing import Annotated
 
 from waterfallhunter.config import settings
 from waterfallhunter.core.db import DBAdapter
@@ -20,9 +22,19 @@ from waterfallhunter.discovery.dexscreener import DexScreenerClient
 from waterfallhunter.discovery.onchain import OnChainIntelligence
 from waterfallhunter.core.multi_exchange_validator import MultiExchangeValidator
 from waterfallhunter.core.notifier import TelegramNotifier
+from waterfallhunter.core.notification_delivery import (
+    NotificationDeliveryError,
+    notification_delivery_health,
+)
 from waterfallhunter.core.ai_veto import AIVetoEngine
 from waterfallhunter.core.risk_manager import get_leverage
 from waterfallhunter.core.dashboard import compact_metrics
+from waterfallhunter.core.dashboard_stream import (
+    DashboardEventBuffer,
+    DashboardSnapshot,
+    DashboardStreamEvent,
+    serialize_sse_event,
+)
 from waterfallhunter.core.final_ranking import FinalRanking
 from waterfallhunter.core.signal_funnel import SignalFunnel
 from waterfallhunter.core.stage_lifecycle import StageLifecycleStore
@@ -74,6 +86,15 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("WaterfallHunter")
 
 
+@asynccontextmanager
+async def app_lifespan(_: FastAPI):
+    await startup_event()
+    try:
+        yield
+    finally:
+        await shutdown_event()
+
+
 def _signal_alert_allowed(metrics: dict) -> bool:
     return str(metrics.get("strategy_profile") or "") != (
         MultiExchangeValidator.experimental_profile
@@ -82,6 +103,7 @@ def _signal_alert_allowed(metrics: dict) -> bool:
 app = FastAPI(
     title="WaterfallHunter API - Production",
     version="7.5.1-Stable",
+    lifespan=app_lifespan,
 )
 
 db = DBAdapter(
@@ -216,6 +238,7 @@ _signal_settlement_worker: LBankSignalSettlementWorker | None = None
 _signal_evidence_metrics_last_refresh = 0.0
 _signal_evidence_metrics_lock = asyncio.Lock()
 _sse_clients = set()
+_dashboard_event_buffer = DashboardEventBuffer(replay_limit=100)
 _background_tasks = set()
 
 if "tracked_candidates" not in globals():
@@ -228,6 +251,19 @@ if "catalog_last_refresh" not in globals():
     catalog_last_refresh = Gauge(
         "waterfall_catalog_last_refresh_timestamp",
         "Unix timestamp of the last successful LBank catalog refresh",
+    )
+
+if "notification_delivery_state" not in globals():
+    notification_delivery_state = Gauge(
+        "waterfall_notification_delivery_state_total",
+        "Durable outbox events by delivery state",
+        ["state"],
+    )
+
+if "notification_oldest_pending_age" not in globals():
+    notification_oldest_pending_age = Gauge(
+        "waterfall_notification_oldest_pending_age_seconds",
+        "Age of the oldest active durable notification event",
     )
 
 if "hunter_last_cycle" not in globals():
@@ -938,7 +974,7 @@ def _store_live_metrics(
     )
 
 
-def get_formatted_candidates(*, evaluation_time: float | None = None):
+def get_formatted_candidates(*, evaluation_time: float | None = None):  # NOSONAR
     now = time.time() if evaluation_time is None else float(evaluation_time)
     if not math.isfinite(now) or now < 0:
         raise ValueError("evaluation_time must be a non-negative finite timestamp")
@@ -1042,6 +1078,16 @@ def get_formatted_candidates(*, evaluation_time: float | None = None):
                 if is_live
                 else None
             )
+            strategy_profile = (
+                live_metrics.get("strategy_profile")
+                if isinstance(live_metrics, dict)
+                else None
+            )
+            data["strategy_profile"] = strategy_profile
+            data["signal_class"] = {
+                "strict_score_v2": "STRICT",
+                "experimental_pretrigger_v1": "EXPERIMENTAL",
+            }.get(strategy_profile, "UNAVAILABLE")
 
             data[
                 "last_price"
@@ -1128,6 +1174,8 @@ def get_formatted_candidates(*, evaluation_time: float | None = None):
             data[
                 "metrics"
             ] = None
+            data["strategy_profile"] = None
+            data["signal_class"] = "UNAVAILABLE"
 
             data[
                 "data_status"
@@ -1222,28 +1270,57 @@ def get_formatted_candidates(*, evaluation_time: float | None = None):
     }
 
 
+def _publish_dashboard_snapshot(
+    *,
+    full_snapshot: bool,
+    only_if_changed: bool = False,
+) -> DashboardStreamEvent | None:
+    generated_at = time.time()
+    payload = get_formatted_candidates(evaluation_time=generated_at)
+    if only_if_changed:
+        return _dashboard_event_buffer.publish_snapshot_if_changed(
+            payload,
+            generated_at=generated_at,
+        )
+    return _dashboard_event_buffer.publish_snapshot(
+        payload,
+        generated_at=generated_at,
+        full_snapshot=full_snapshot,
+    )
+
+
+def _broadcast_dashboard_event(event: DashboardStreamEvent) -> None:
+    for queue in _sse_clients:
+        try:
+            queue.put_nowait(event)
+        except asyncio.QueueFull:
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                pass
+
+
 async def sse_broadcaster():
+    last_heartbeat_at = 0.0
     while _hunter_running:
         if _sse_clients:
-            data = (
-                get_formatted_candidates()
+            event = _publish_dashboard_snapshot(
+                full_snapshot=False,
+                only_if_changed=True,
             )
-
-            msg = (
-                f"data: "
-                f"{json.dumps(data)}"
-                f"\n\n"
-            )
-
-            for q in list(
-                _sse_clients
-            ):
-                try:
-                    q.put_nowait(
-                        msg
-                    )
-                except asyncio.QueueFull:
-                    pass
+            if event is not None:
+                _broadcast_dashboard_event(event)
+            now = time.time()
+            if now - last_heartbeat_at >= 15.0:
+                heartbeat = _dashboard_event_buffer.publish_heartbeat(
+                    generated_at=now,
+                )
+                _broadcast_dashboard_event(heartbeat)
+                last_heartbeat_at = now
 
         await asyncio.sleep(
             1.0
@@ -2134,9 +2211,6 @@ async def live_reference_loop(
         )
 
 
-@app.on_event(
-    "startup"
-)
 async def startup_event():
     global _lbank_execution_shadow_worker
     global _signal_settlement_worker
@@ -2234,9 +2308,6 @@ async def startup_event():
     )
 
 
-@app.on_event(
-    "shutdown"
-)
 async def shutdown_event():
     global _hunter_running
     global _lbank_execution_shadow_worker
@@ -2413,6 +2484,46 @@ async def healthz_check():
     return await health_check()
 
 
+async def _notification_delivery_health_snapshot() -> dict:
+    report = await asyncio.to_thread(
+        notification_delivery_health,
+        settings.registry_db_path,
+        now=int(time.time()),
+    )
+    counts = report["counts"]
+    for state in (
+        "PENDING",
+        "SENDING",
+        "DELIVERED",
+        "RETRY_WAIT",
+        "DEAD_LETTER",
+        "DELIVERY_UNCERTAIN",
+    ):
+        notification_delivery_state.labels(state=state).set(
+            int(counts.get(state, 0))
+        )
+    age = report.get("oldest_pending_age_seconds")
+    notification_oldest_pending_age.set(
+        float(age) if age is not None else float("nan")
+    )
+    return report
+
+
+@app.get(
+    "/api/notification-delivery",
+    responses={503: {"description": "Notification delivery state is unavailable"}},
+)
+async def notification_delivery_status(response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return await _notification_delivery_health_snapshot()
+    except NotificationDeliveryError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": str(exc)},
+        ) from exc
+
+
 @app.get(
     "/metrics"
 )
@@ -2452,6 +2563,10 @@ async def metrics():
     _update_lbank_shadow_metrics()
     _update_signal_settlement_worker_metrics()
     await _update_signal_evidence_metrics()
+    try:
+        await _notification_delivery_health_snapshot()
+    except NotificationDeliveryError:
+        logger.exception("Notification delivery metrics are unavailable")
 
     return Response(
         content=generate_latest(),
@@ -2460,9 +2575,14 @@ async def metrics():
 
 
 @app.get(
-    "/api/stream"
+    "/api/stream",
 )
-async def stream_candidates():
+async def stream_candidates(
+    last_event_id: Annotated[
+        str | None,
+        Header(alias="Last-Event-ID"),
+    ] = None,
+):
     q = asyncio.Queue(
         maxsize=100
     )
@@ -2472,15 +2592,24 @@ async def stream_candidates():
     )
 
     async def event_generator():
+        delivered_event_id = 0
         try:
-            yield (
-                f"data: "
-                f"{json.dumps(get_formatted_candidates())}"
-                f"\n\n"
-            )
+            replay = _dashboard_event_buffer.replay_after(last_event_id)
+            if replay is None:
+                full_snapshot = _publish_dashboard_snapshot(full_snapshot=True)
+                if full_snapshot is None:
+                    raise RuntimeError("full dashboard snapshot was not published")
+                replay = [full_snapshot]
+            for event in replay:
+                delivered_event_id = max(delivered_event_id, int(event.event_id))
+                yield serialize_sse_event(event)
 
             while True:
-                yield await q.get()
+                event = await q.get()
+                if int(event.event_id) <= delivered_event_id:
+                    continue
+                delivered_event_id = int(event.event_id)
+                yield serialize_sse_event(event)
 
         finally:
             _sse_clients.discard(
@@ -2490,11 +2619,26 @@ async def stream_candidates():
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
 @app.get(
-    "/api/candidates"
+    "/api/candidates",
+    response_model=DashboardSnapshot,
+    response_model_exclude_none=False,
 )
-async def get_candidates():
-    return get_formatted_candidates()
+async def get_candidates(response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    latest = _dashboard_event_buffer.latest_snapshot()
+    if latest is not None:
+        return latest
+    generated_at = time.time()
+    return _dashboard_event_buffer.preview_snapshot(
+        get_formatted_candidates(evaluation_time=generated_at),
+        generated_at=generated_at,
+    )
