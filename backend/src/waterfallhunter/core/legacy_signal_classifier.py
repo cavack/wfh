@@ -11,6 +11,7 @@ from typing import Any, Mapping
 
 from waterfallhunter.core.contracts import SignalClass
 from waterfallhunter.core.managed_sqlite import ManagedSQLiteError, connect_managed_sqlite
+from waterfallhunter.core.schema_contract import CURRENT_RUNTIME_SCHEMA_VERSION
 from waterfallhunter.core.signal_metadata import (
     ClassificationMethod,
     EXPERIMENTAL_STRATEGY_PROFILE,
@@ -21,7 +22,7 @@ from waterfallhunter.core.signal_metadata import (
 )
 
 
-_REQUIRED_SCHEMA_VERSION = 4
+_MINIMUM_SCHEMA_VERSION = 4
 _EVIDENCE_CONTRACT_VERSION = "legacy_signal_classification_evidence_v1"
 _REPORT_CONTRACT_VERSION = "legacy_signal_classification_report_v1"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -209,8 +210,11 @@ def classify_legacy_evidence(
 
 def _require_schema(conn: sqlite3.Connection) -> None:
     version_row = conn.execute("PRAGMA user_version").fetchone()
-    if version_row is None or int(version_row[0]) != _REQUIRED_SCHEMA_VERSION:
-        raise LegacyClassificationError("LEGACY_CLASSIFICATION_REQUIRES_SCHEMA_V3")
+    version = int(version_row[0]) if version_row is not None else -1
+    if version < _MINIMUM_SCHEMA_VERSION:
+        raise LegacyClassificationError("LEGACY_CLASSIFICATION_REQUIRES_SCHEMA_V4_OR_LATER")
+    if version > CURRENT_RUNTIME_SCHEMA_VERSION:
+        raise LegacyClassificationError("LEGACY_CLASSIFICATION_FUTURE_SCHEMA_UNSUPPORTED")
 
     rows = conn.execute(
         "SELECT type, name FROM sqlite_master "

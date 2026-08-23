@@ -38,6 +38,15 @@ from waterfallhunter.core.dashboard_stream import (
 from waterfallhunter.core.final_ranking import FinalRanking
 from waterfallhunter.core.signal_funnel import SignalFunnel
 from waterfallhunter.core.stage_lifecycle import StageLifecycleStore
+from waterfallhunter.core.lifecycle_v2_shadow import (
+    build_lifecycle_v2_evidence_from_metrics,
+    compare_v1_v2_shadow,
+    evaluate_lifecycle_v2_shadow,
+)
+from waterfallhunter.core.lifecycle_v2_shadow_store import (
+    LifecycleV2ShadowStore,
+    LifecycleV2ShadowStoreError,
+)
 from waterfallhunter.core.historical_outcome_store import HistoricalOutcomeStore
 from waterfallhunter.core.production_evidence import ProductionEvidenceRecorder
 from waterfallhunter.core.decision_provenance import (
@@ -77,6 +86,9 @@ from waterfallhunter.routes_production_evidence import (
     build_production_evidence_router,
 )
 from waterfallhunter.routes_feature_replay import build_feature_replay_router
+from waterfallhunter.routes_lifecycle_v2_shadow import (
+    build_lifecycle_v2_shadow_router,
+)
 from waterfallhunter.core.lbank_execution_outcome_report import (
     LBankExecutionOutcomeReport,
 )
@@ -112,6 +124,11 @@ db = DBAdapter(
 )
 
 stage_lifecycle_store = StageLifecycleStore(
+    db_path=db.db_path,
+    verify_schema=False,
+)
+
+lifecycle_v2_shadow_store = LifecycleV2ShadowStore(
     db_path=db.db_path,
     verify_schema=False,
 )
@@ -158,6 +175,12 @@ app.include_router(
 app.include_router(
     build_feature_replay_router(
         feature_replay_store
+    )
+)
+
+app.include_router(
+    build_lifecycle_v2_shadow_router(
+        lifecycle_v2_shadow_store
     )
 )
 
@@ -1534,6 +1557,61 @@ async def evaluate_candidate(
             )
         )
 
+    episode_id = f"{symbol}:{int(data.get('lifecycle_id') or 1)}"
+
+    def persist_lifecycle_v2_shadow(final_v1_state: str) -> None:
+        try:
+            v2_from_state = lifecycle_v2_shadow_store.latest_state(
+                symbol=symbol,
+                episode_id=episode_id,
+            )
+            v2_evidence = build_lifecycle_v2_evidence_from_metrics(
+                metrics=result_metrics,
+                decision_at=analysis_observed_at,
+                analysis_observed_at=analysis_observed_at,
+                reference_observed_at=(
+                    float(reference_observed_at)
+                    if isinstance(reference_observed_at, (int, float))
+                    and not isinstance(reference_observed_at, bool)
+                    else None
+                ),
+            )
+            v2_transition = evaluate_lifecycle_v2_shadow(
+                episode_id=episode_id,
+                current_state=v2_from_state,
+                evidence=v2_evidence,
+            )
+            v2_comparison = compare_v1_v2_shadow(
+                episode_id=episode_id,
+                v1_state=final_v1_state,
+                v2_state=v2_from_state,
+                evidence=v2_evidence,
+            )
+            persisted = lifecycle_v2_shadow_store.append_comparison(
+                symbol=symbol,
+                v1_state=final_v1_state,
+                transition=v2_transition,
+                comparison=v2_comparison,
+                created_at=analysis_observed_at,
+            )
+            result_metrics["lifecycle_v2_shadow"] = {
+                "transition": v2_transition.model_dump(mode="json"),
+                "comparison": v2_comparison,
+                "evidence_available": v2_evidence.eligible_data,
+                "unavailable_fields": list(v2_evidence.unavailable_fields),
+                "event_persisted": persisted,
+                "v1_state_mutated": False,
+            }
+        except (LifecycleV2ShadowStoreError, ValueError) as exc:
+            logger.exception("Lifecycle V2 shadow unavailable for %s: %s", symbol, exc)
+            result_metrics["lifecycle_v2_shadow"] = {
+                "shadow_only": True,
+                "promotion_allowed": False,
+                "available": False,
+                "reason": type(exc).__name__,
+                "v1_state_mutated": False,
+            }
+
     def record_final_production_decision(
         path: str,
         reason: str,
@@ -1581,6 +1659,7 @@ async def evaluate_candidate(
     if not result[
         "is_valid"
     ]:
+        final_v1_shadow_state = str(current_state)
         stored_metrics = (
             result.get(
                 "metrics"
@@ -1654,16 +1733,19 @@ async def evaluate_candidate(
                 current_state
                 != observation_status
             ):
-                if not db.update_candidate_state(
+                observation_state_persisted = db.update_candidate_state(
                     symbol,
                     observation_status,
-                ):
+                )
+                if not observation_state_persisted:
                     logger.error(
                         "Candidate observation state "
                         "persistence failed for %s -> %s",
                         symbol,
                         observation_status,
                     )
+                else:
+                    final_v1_shadow_state = str(observation_status)
 
             observation_exchange = (
                 stored_metrics.get(
@@ -1706,10 +1788,12 @@ async def evaluate_candidate(
                 "ARMED",
                 "TRIGGERED",
             }:
-                db.update_candidate_state(
+                watch_state_persisted = db.update_candidate_state(
                     symbol,
                     "WATCH",
                 )
+                if watch_state_persisted:
+                    final_v1_shadow_state = "WATCH"
 
         if data.get(
             "dex_context"
@@ -1733,6 +1817,8 @@ async def evaluate_candidate(
             symbol,
             stored_metrics,
         )
+
+        persist_lifecycle_v2_shadow(final_v1_shadow_state)
 
         return
 
@@ -1824,6 +1910,7 @@ async def evaluate_candidate(
                     symbol,
                     new_state,
                 )
+                persist_lifecycle_v2_shadow(str(current_state))
                 return
 
         if new_state == "ARMED":
@@ -1837,12 +1924,15 @@ async def evaluate_candidate(
                 mapped_sym,
             )
 
+        persist_lifecycle_v2_shadow(str(new_state))
+
         return
 
     if (
         new_state == "TRIGGERED"
         and current_state == "TRIGGERED"
     ):
+        persist_lifecycle_v2_shadow("TRIGGERED")
         record_final_production_decision(
             "STALE_TRIGGER_SUPPRESSED",
             "candidate was already persisted as TRIGGERED",
@@ -1891,6 +1981,9 @@ async def evaluate_candidate(
                 "AI advisory vetoed the validated trigger candidate",
                 state_persisted=bool(state_persisted),
             )
+            persist_lifecycle_v2_shadow(
+                "WATCH" if state_persisted else str(current_state)
+            )
 
             validator.ws_manager.unsubscribe(
                 ex_name,
@@ -1912,6 +2005,7 @@ async def evaluate_candidate(
             )
 
         except Exception as exc:
+            persist_lifecycle_v2_shadow(str(current_state))
             record_final_production_decision(
                 "LEVERAGE_REJECTED",
                 "leverage calculation failed",
@@ -1971,6 +2065,7 @@ async def evaluate_candidate(
                 decision_contract_hash,
             )
         except ValueError as exc:
+            persist_lifecycle_v2_shadow(str(current_state))
             record_final_production_decision(
                 "METADATA_REJECTED",
                 "explicit signal metadata validation failed",
@@ -2000,6 +2095,7 @@ async def evaluate_candidate(
         )
 
         if signal_id is None:
+            persist_lifecycle_v2_shadow(str(current_state))
             record_final_production_decision(
                 "PERSISTENCE_REJECTED",
                 "signal persistence rejected or failed",
@@ -2014,6 +2110,7 @@ async def evaluate_candidate(
 
         experimental_profile = not _signal_alert_allowed(metrics)
 
+        persist_lifecycle_v2_shadow("TRIGGERED")
         record_final_production_decision(
             "TRIGGERED",
             (

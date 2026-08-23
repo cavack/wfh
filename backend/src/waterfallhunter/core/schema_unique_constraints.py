@@ -22,6 +22,7 @@ CANONICAL_UNIQUE_KEYS: dict[str, frozenset[tuple[str, ...]]] = {
             ("aggregate_type", "aggregate_id", "aggregate_version", "event_sequence"),
         }
     ),
+    "lifecycle_v2_shadow_events": frozenset({("transition_hash",)}),
 }
 
 

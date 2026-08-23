@@ -57,6 +57,7 @@ _LEGACY_OPTIONAL_TABLES = frozenset(
         "signal_metadata",
         "signal_decisions",
         "domain_outbox_events",
+        "lifecycle_v2_shadow_events",
     }
 )
 
@@ -230,9 +231,19 @@ def _applied_runtime_schema_valid(
         return _verified_schema_result(
             conn,
             allow_missing_tables=frozenset(
-                {"signal_decisions", "domain_outbox_events"}
+                {
+                    "signal_decisions",
+                    "domain_outbox_events",
+                    "lifecycle_v2_shadow_events",
+                }
             ),
             check_user_version=3,
+        )
+    if applied == (1, 2, 3, 4):
+        return _verified_schema_result(
+            conn,
+            allow_missing_tables=frozenset({"lifecycle_v2_shadow_events"}),
+            check_user_version=4,
         )
     if applied == (1, 2):
         return _verified_schema_result(
@@ -243,6 +254,7 @@ def _applied_runtime_schema_valid(
                     "signal_metadata",
                     "signal_decisions",
                     "domain_outbox_events",
+                    "lifecycle_v2_shadow_events",
                 }
             ),
             check_user_version=2,
