@@ -1,0 +1,206 @@
+"""Fail-closed SQLite online-backup and isolated-restore certification."""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import sqlite3
+from pathlib import Path
+from typing import Any
+
+from waterfallhunter.core.signal_metadata import canonical_sha256
+
+
+class BackupCertificationError(RuntimeError):
+    """Raised before a backup can be represented as certified."""
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _quote_identifier(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _open_read_only(path: Path) -> sqlite3.Connection:
+    return sqlite3.connect(
+        f"{path.resolve().as_uri()}?mode=ro",
+        uri=True,
+        isolation_level=None,
+        timeout=30.0,
+    )
+
+
+def audit_sqlite_snapshot(path: Path) -> dict[str, Any]:
+    """Audit a closed/restored snapshot without exposing row contents."""
+    with _open_read_only(path) as connection:
+        integrity = [str(row[0]) for row in connection.execute("PRAGMA integrity_check")]
+        foreign_key_violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+        objects = connection.execute(
+            "SELECT type, name, tbl_name, COALESCE(sql, '') FROM sqlite_master "
+            "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+        ).fetchall()
+        tables = [
+            str(row[1])
+            for row in objects
+            if str(row[0]) == "table"
+        ]
+        table_counts = {
+            name: int(
+                connection.execute(
+                    f"SELECT COUNT(*) FROM {_quote_identifier(name)}"
+                ).fetchone()[0]
+            )
+            for name in tables
+        }
+        user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        schema_version = int(connection.execute("PRAGMA schema_version").fetchone()[0])
+    if integrity != ["ok"]:
+        raise BackupCertificationError("SQLITE_INTEGRITY_CHECK_FAILED")
+    if foreign_key_violations:
+        raise BackupCertificationError("SQLITE_FOREIGN_KEY_CHECK_FAILED")
+    schema_material = [
+        {
+            "type": str(object_type),
+            "name": str(name),
+            "table": str(table_name),
+            "sql": str(sql),
+        }
+        for object_type, name, table_name, sql in objects
+    ]
+    body = {
+        "contract_version": "sqlite_snapshot_audit_v1",
+        "file_sha256": _sha256_file(path),
+        "file_size_bytes": path.stat().st_size,
+        "integrity_check": "ok",
+        "foreign_key_violation_count": 0,
+        "user_version": user_version,
+        "schema_version": schema_version,
+        "object_counts": {
+            kind: sum(1 for row in objects if str(row[0]) == kind)
+            for kind in ("table", "index", "trigger", "view")
+        },
+        "table_counts": dict(sorted(table_counts.items())),
+        "schema_sha256": canonical_sha256(schema_material),
+    }
+    return {**body, "audit_sha256": canonical_sha256(body)}
+
+
+def _require_source(path: Path) -> Path:
+    if path.is_symlink() or not path.is_absolute() or not path.is_file():
+        raise BackupCertificationError("BACKUP_SOURCE_INVALID")
+    return path.resolve()
+
+
+def _require_new_target(path: Path, *, label: str) -> Path:
+    if not path.is_absolute() or path.is_symlink() or path.exists():
+        raise BackupCertificationError(f"{label}_TARGET_INVALID")
+    parent = path.parent
+    if parent.is_symlink() or not parent.is_dir():
+        raise BackupCertificationError(f"{label}_PARENT_INVALID")
+    resolved = path.resolve(strict=False)
+    if resolved.parent != parent.resolve():
+        raise BackupCertificationError(f"{label}_TARGET_AMBIGUOUS")
+    return resolved
+
+
+def _online_backup(source: Path, destination: Path) -> None:
+    partial = destination.with_name(f".{destination.name}.partial")
+    if partial.exists():
+        raise BackupCertificationError("BACKUP_PARTIAL_ALREADY_EXISTS")
+    try:
+        with _open_read_only(source) as source_connection:
+            with sqlite3.connect(partial, timeout=30.0) as target_connection:
+                source_connection.backup(target_connection, pages=4_096, sleep=0.05)
+                target_connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        descriptor = os.open(partial, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        os.replace(partial, destination)
+        directory = os.open(destination.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+
+
+def restore_sqlite_snapshot(*, source: Path, target: Path) -> dict[str, Any]:
+    """Restore one immutable SQLite snapshot to a new isolated target."""
+    source_path = _require_source(source)
+    target_path = _require_new_target(target, label="RESTORE")
+    _online_backup(source_path, target_path)
+    return audit_sqlite_snapshot(target_path)
+
+
+def create_certified_backup(
+    *,
+    source: Path,
+    backup: Path,
+    restore_target: Path,
+    source_failure_domain: str,
+    destination_failure_domain: str,
+    enforce_distinct_device: bool = True,
+) -> dict[str, Any]:
+    """Create, validate, and independently restore one immutable backup."""
+    source_path = _require_source(source)
+    backup_path = _require_new_target(backup, label="BACKUP")
+    restore_path = _require_new_target(restore_target, label="RESTORE")
+    if backup_path == restore_path:
+        raise BackupCertificationError("BACKUP_AND_RESTORE_TARGETS_MUST_DIFFER")
+    if not source_failure_domain.strip() or not destination_failure_domain.strip():
+        raise BackupCertificationError("FAILURE_DOMAIN_ID_REQUIRED")
+    if source_failure_domain == destination_failure_domain:
+        raise BackupCertificationError("FAILURE_DOMAIN_NOT_INDEPENDENT")
+    if enforce_distinct_device and (
+        source_path.stat().st_dev == backup_path.parent.stat().st_dev
+    ):
+        raise BackupCertificationError("BACKUP_DEVICE_NOT_INDEPENDENT")
+    if backup_path.parent.stat().st_dev != restore_path.parent.stat().st_dev:
+        raise BackupCertificationError("RESTORE_TARGET_OUTSIDE_DESTINATION_DOMAIN")
+
+    _online_backup(source_path, backup_path)
+    backup_audit = audit_sqlite_snapshot(backup_path)
+    _online_backup(backup_path, restore_path)
+    restore_audit = audit_sqlite_snapshot(restore_path)
+    comparable_fields = (
+        "user_version",
+        "schema_version",
+        "object_counts",
+        "table_counts",
+        "schema_sha256",
+    )
+    mismatches = [
+        field
+        for field in comparable_fields
+        if backup_audit[field] != restore_audit[field]
+    ]
+    if mismatches:
+        raise BackupCertificationError(
+            "RESTORE_AUDIT_MISMATCH:" + ",".join(mismatches)
+        )
+    body = {
+        "contract_version": "sqlite_backup_certification_v1",
+        "status": "BACKUP_RESTORE_CERTIFIED",
+        "source_failure_domain": source_failure_domain,
+        "destination_failure_domain": destination_failure_domain,
+        "device_separation_enforced": enforce_distinct_device,
+        "backup_path": str(backup_path),
+        "restore_target_path": str(restore_path),
+        "backup_audit": backup_audit,
+        "restore_audit": restore_audit,
+        "restore_matches_backup": True,
+        "rollback_source_sha256": backup_audit["file_sha256"],
+        "production_migration_authorized": False,
+        "production_deployment_authorized": False,
+    }
+    return {**body, "certification_sha256": canonical_sha256(body)}
