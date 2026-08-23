@@ -1,0 +1,73 @@
+from __future__ import annotations
+
+import json
+
+import pytest
+from pydantic import ValidationError
+
+from waterfallhunter.core.dashboard_stream import (
+    DashboardEventBuffer,
+    DashboardSnapshot,
+    serialize_sse_event,
+)
+
+
+def _payload(symbol: str = "TEST") -> dict:
+    return {
+        "total": 1,
+        "candidates": {symbol: {"status": "WATCH"}},
+        "final_ranking": {"version": "test"},
+        "signal_funnel": {"version": "test"},
+    }
+
+
+def test_snapshot_boundary_rejects_mismatched_counts_and_nonfinite_clock() -> None:
+    buffer = DashboardEventBuffer()
+    with pytest.raises(ValidationError, match="candidate count"):
+        buffer.publish_snapshot(
+            {**_payload(), "total": 0},
+            generated_at=10.0,
+            full_snapshot=True,
+        )
+    with pytest.raises(ValidationError):
+        buffer.publish_snapshot(
+            _payload(),
+            generated_at=float("nan"),
+            full_snapshot=True,
+        )
+
+
+def test_sse_contract_has_hash_monotonic_ids_and_parseable_wire_format() -> None:
+    buffer = DashboardEventBuffer()
+    first = buffer.publish_snapshot(_payload(), generated_at=10.0, full_snapshot=True)
+    heartbeat = buffer.publish_heartbeat(generated_at=11.0)
+
+    assert first.event_id == "1"
+    assert first.snapshot_version == 1
+    assert first.full_snapshot is True
+    assert len(first.payload_hash) == 64
+    assert heartbeat.event_id == "2"
+    assert heartbeat.last_event_id == "1"
+    assert heartbeat.payload is None
+    wire = serialize_sse_event(first)
+    assert wire.startswith("id: 1\nevent: snapshot\ndata: ")
+    parsed = json.loads(wire.split("data: ", 1)[1])
+    assert DashboardSnapshot.model_validate(parsed["payload"]).snapshot_version == 1
+
+
+def test_last_event_id_replays_in_order_or_requires_full_snapshot() -> None:
+    buffer = DashboardEventBuffer(replay_limit=3)
+    first = buffer.publish_snapshot(_payload("ONE"), generated_at=10.0, full_snapshot=True)
+    second = buffer.publish_snapshot(_payload("TWO"), generated_at=11.0, full_snapshot=False)
+    third = buffer.publish_heartbeat(generated_at=12.0)
+
+    replay = buffer.replay_after(first.event_id)
+    assert replay is not None
+    assert [event.event_id for event in replay] == [second.event_id, third.event_id]
+    assert all(event.replayed is True for event in replay)
+    assert buffer.replay_after(third.event_id) == []
+    assert buffer.replay_after(None) is None
+    assert buffer.replay_after("invalid") is None
+
+    buffer.publish_heartbeat(generated_at=13.0)
+    assert buffer.replay_after(first.event_id) is None

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Activity, Wifi, WifiOff } from "lucide-react";
 import { MarketContext } from "@/components/market-context";
 import { OutcomeEvidence } from "@/components/outcome-evidence";
@@ -10,25 +10,17 @@ import { SignalFunnel, SignalFunnelData } from "@/components/signal-funnel";
 import { HistoricalOutcomes } from "@/components/historical-outcomes";
 import { ProductionEvidence } from "@/components/production-evidence";
 import { FeatureReplay } from "@/components/feature-replay";
+import type { DashboardSnapshot } from "@/generated/dashboard-contract";
+import { dashboardSnapshot, dashboardStreamEvent } from "@/lib/dashboard-contract";
 
-type DashboardData = {
-  total: number;
-  candidates: Record<string, Candidate>;
-  final_ranking?: {
-    version?: string;
-    observational_only?: boolean;
-    top?: unknown[];
-  };
-  signal_funnel?: SignalFunnelData;
-};
+type ConnectionMode = "stream" | "polling" | "reconnecting";
 
-const initialData: DashboardData = { total: 0, candidates: {} };
-
-function StreamStatus({ connected }: { connected: boolean }) {
+function StreamStatus({ mode }: { mode: ConnectionMode }) {
+  const connected = mode === "stream";
   return (
     <div className="ml-auto flex items-center gap-2 text-sm text-slate-300">
       {connected ? <Wifi size={16} className="text-emerald-400" /> : <WifiOff size={16} className="text-amber-400" />}
-      {connected ? "Live stream" : "Reconnecting…"}
+      {mode === "stream" ? "Live stream" : mode === "polling" ? "Polling fallback" : "Reconnecting…"}
     </div>
   );
 }
@@ -61,37 +53,73 @@ function candidateRank(candidate: Candidate): number | undefined {
 }
 
 export default function Dashboard() {
-  const [data, setData] = useState<DashboardData>(initialData);
-  const [connected, setConnected] = useState(false);
-  const [hasFreshSnapshot, setHasFreshSnapshot] = useState(false);
+  const [data, setData] = useState<DashboardSnapshot | null>(null);
+  const [mode, setMode] = useState<ConnectionMode>("reconnecting");
+  const latestVersion = useRef(0);
 
   useEffect(() => {
+    let active = true;
+    let pollTimer: ReturnType<typeof setTimeout> | undefined;
+    let pollAttempt = 0;
     const stream = new EventSource("/dashboard/api/stream");
-    stream.onopen = () => setConnected(true);
+
+    const acceptSnapshot = (snapshot: DashboardSnapshot) => {
+      if (!active || snapshot.snapshot_version <= latestVersion.current) return;
+      latestVersion.current = snapshot.snapshot_version;
+      setData(snapshot);
+    };
+
+    const schedulePoll = (delay: number) => {
+      if (!active || pollTimer !== undefined) return;
+      const jitter = Math.floor(Math.random() * Math.max(250, delay * 0.2));
+      pollTimer = setTimeout(async () => {
+        pollTimer = undefined;
+        try {
+          const response = await fetch("/dashboard/api/candidates", { cache: "no-store" });
+          const snapshot = response.ok ? dashboardSnapshot(await response.json()) : undefined;
+          if (!snapshot) throw new Error("invalid dashboard snapshot");
+          acceptSnapshot(snapshot);
+          pollAttempt = 0;
+          setMode("polling");
+          schedulePoll(5_000);
+        } catch {
+          pollAttempt += 1;
+          setMode("reconnecting");
+          schedulePoll(Math.min(30_000, 1_000 * (2 ** Math.min(pollAttempt, 5))));
+        }
+      }, delay + jitter);
+    };
+
+    stream.onopen = () => {
+      if (pollTimer !== undefined) clearTimeout(pollTimer);
+      pollTimer = undefined;
+      pollAttempt = 0;
+      setMode("stream");
+    };
     stream.onerror = () => {
-      setConnected(false);
-      setHasFreshSnapshot(false);
-      setData(initialData);
+      setMode("reconnecting");
+      schedulePoll(1_000);
     };
     stream.onmessage = (event) => {
       try {
-        const payload = JSON.parse(event.data) as DashboardData;
-        if (typeof payload.total === "number" && payload.candidates && typeof payload.candidates === "object") {
-          setData(payload);
-          setConnected(true);
-          setHasFreshSnapshot(true);
-        }
+        const packet = dashboardStreamEvent(JSON.parse(event.data));
+        if (!packet) throw new Error("invalid dashboard stream event");
+        if (packet.payload) acceptSnapshot(packet.payload);
+        setMode("stream");
       } catch {
-        setConnected(false);
-        setHasFreshSnapshot(false);
-        setData(initialData);
+        setMode("reconnecting");
+        schedulePoll(1_000);
       }
     };
-    return () => stream.close();
+    return () => {
+      active = false;
+      stream.close();
+      if (pollTimer !== undefined) clearTimeout(pollTimer);
+    };
   }, []);
 
   const rows = useMemo(
-    () => Object.entries(data.candidates).sort(([leftSymbol, left], [rightSymbol, right]) => {
+    () => Object.entries(data?.candidates ?? {}).sort(([leftSymbol, left], [rightSymbol, right]) => {
       const leftRank = candidateRank(left);
       const rightRank = candidateRank(right);
       if (leftRank !== undefined && rightRank !== undefined && leftRank !== rightRank) return rightRank - leftRank;
@@ -99,7 +127,23 @@ export default function Dashboard() {
       if (rightRank !== undefined) return 1;
       return leftSymbol.localeCompare(rightSymbol);
     }),
-    [data.candidates],
+    [data],
+  );
+
+  const groups = useMemo(() => ({
+    strictConfirmed: rows.filter(([, candidate]) => candidate.signal_class === "STRICT" && candidate.status === "TRIGGERED"),
+    strictSetup: rows.filter(([, candidate]) => candidate.signal_class === "STRICT" && ["FUEL-RICH", "PRE-TRIGGER", "ARMED"].includes(String(candidate.status))),
+    experimental: rows.filter(([, candidate]) => candidate.signal_class === "EXPERIMENTAL"),
+    discovery: rows.filter(([, candidate]) => candidate.signal_class !== "EXPERIMENTAL" && !(candidate.signal_class === "STRICT" && ["TRIGGERED", "FUEL-RICH", "PRE-TRIGGER", "ARMED"].includes(String(candidate.status)))),
+  }), [rows]);
+
+  const renderGroup = (title: string, items: [string, Candidate][], tone = "slate") => items.length > 0 && (
+    <section className="mx-auto mb-8 max-w-7xl">
+      <h2 className={`mb-3 text-sm font-semibold uppercase tracking-wide ${tone === "experimental" ? "text-violet-300" : "text-slate-300"}`}>{title}</h2>
+      <div className={`grid gap-5 xl:grid-cols-2 ${tone === "experimental" ? "rounded-2xl border border-violet-500/25 bg-violet-950/10 p-4" : ""}`}>
+        {items.map(([symbol, candidate]) => <CandidatePanel key={symbol} symbol={symbol} candidate={candidate} hasFreshSnapshot={data !== null} />)}
+      </div>
+    </section>
   );
 
   return (
@@ -110,13 +154,13 @@ export default function Dashboard() {
           <h1 className="text-2xl font-bold tracking-tight">WaterfallHunter</h1>
           <p className="text-sm text-slate-400">USDT perpetual futures monitoring terminal</p>
         </div>
-        <StreamStatus connected={connected} />
+        <StreamStatus mode={mode} />
       </header>
 
       <section className="mx-auto mb-7 grid max-w-7xl gap-4 md:grid-cols-3">
         <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
           <p className="text-sm text-slate-400">Tracked candidates</p>
-          <p className="mt-1 text-3xl font-semibold tabular-nums">{data.total}</p>
+          <p className="mt-1 text-3xl font-semibold tabular-nums">{data?.total ?? "—"}</p>
         </div>
         <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5 md:col-span-2">
           <p className="text-sm text-slate-400">Live-data policy</p>
@@ -132,23 +176,29 @@ export default function Dashboard() {
 
       <FeatureReplay />
 
-      <SignalFunnel funnel={data.signal_funnel} />
+      <SignalFunnel funnel={data?.signal_funnel as SignalFunnelData | undefined} />
 
-      <FinalRanking ranking={data.final_ranking} />
+      <FinalRanking ranking={data?.final_ranking} />
 
-      <section className="mx-auto max-w-7xl">
+      <section className="mx-auto mb-5 max-w-7xl">
         {rows.length > 0 && <p className="mb-3 text-xs text-slate-500">All candidates remain ordered by the existing Score V2/watch score view. The Top 3 panel is a separate observational ranking and does not alter state or eligibility.</p>}
-        {rows.length === 0 ? (
+        {data === null ? (
           <div className="rounded-2xl border border-dashed border-slate-700 bg-slate-900/60 py-24 text-center">
-            <p className="text-lg font-medium">No active candidates yet</p>
-            <p className="mt-2 text-sm text-slate-400">The dashboard will populate after the live catalog and analysis pipeline return eligible data.</p>
+            <p className="text-lg font-medium">Initializing live state…</p>
+            <p className="mt-2 text-sm text-slate-400">Waiting for a schema-valid stream snapshot or polling fallback.</p>
           </div>
-        ) : (
-          <div className="grid gap-5 xl:grid-cols-2">
-            {rows.map(([symbol, candidate]) => <CandidatePanel key={symbol} symbol={symbol} candidate={candidate} hasFreshSnapshot={hasFreshSnapshot} />)}
+        ) : rows.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-slate-700 bg-slate-900/60 py-24 text-center">
+            <p className="text-lg font-medium">No active candidates in the latest valid snapshot</p>
+            <p className="mt-2 text-sm text-slate-400">This is a real READY snapshot, not an initializing placeholder.</p>
           </div>
-        )}
+        ) : null}
       </section>
+
+      {renderGroup("Confirmed STRICT signals", groups.strictConfirmed)}
+      {renderGroup("STRICT armed and pre-trigger setups", groups.strictSetup)}
+      {renderGroup("Experimental research — never mixed with STRICT", groups.experimental, "experimental")}
+      {renderGroup("Watch and discovery", groups.discovery)}
     </main>
   );
 }

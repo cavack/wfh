@@ -1,6 +1,20 @@
 from waterfallhunter.core.dashboard import compact_metrics
 
 
+def test_compact_metrics_preserves_explicit_strategy_profile_for_ui_separation():
+    compacted = compact_metrics(
+        {
+            "strategy_profile": "experimental_pretrigger_v1",
+            "score_version": "score_v2_watch_v1",
+        }
+    )
+
+    assert compacted == {
+        "strategy_profile": "experimental_pretrigger_v1",
+        "score_version": "score_v2_watch_v1",
+    }
+
+
 def test_compact_metrics_keeps_both_stage_chain_views():
     lifecycle = {
         "version": "stage_lifecycle_v1",
