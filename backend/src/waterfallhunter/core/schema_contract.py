@@ -14,7 +14,7 @@ from waterfallhunter.core.schema_unique_constraints import (
 )
 
 
-CURRENT_RUNTIME_SCHEMA_VERSION = 4
+CURRENT_RUNTIME_SCHEMA_VERSION = 5
 NON_NEGATIVE_INTEGER_CREATED_AT_CHECK = (
     "check(typeof(created_at) = 'integer' and created_at >= 0)"
 )
@@ -756,6 +756,54 @@ _RUNTIME_SCHEMA: dict[str, ManagedTableSpec] = {
                 "DELETE",
                 "domain outbox events cannot be deleted",
             ),
+        ),
+    ),
+    "lifecycle_v2_shadow_events": ManagedTableSpec(
+        name="lifecycle_v2_shadow_events",
+        columns=(
+            _c("event_id", "TEXT", pk=1),
+            _c("episode_id", "TEXT", not_null=True),
+            _c("symbol", "TEXT", not_null=True),
+            _c("v1_state", "TEXT", not_null=True),
+            _c("v2_from_state", "TEXT", not_null=True),
+            _c("v2_to_state", "TEXT", not_null=True),
+            _c("reason_codes_json", "TEXT", not_null=True),
+            _c("evidence_refs_json", "TEXT", not_null=True),
+            _c("observed_at", "INTEGER", not_null=True),
+            _c("policy_version", "TEXT", not_null=True),
+            _c("policy_hash", "TEXT", not_null=True),
+            _c("feature_registry_hash", "TEXT", not_null=True),
+            _c("strategy_profile", "TEXT", not_null=True),
+            _c("transition_hash", "TEXT", not_null=True),
+            _c("comparison_hash", "TEXT", not_null=True),
+            _c("shadow_only", "INTEGER", not_null=True),
+            _c("promotion_allowed", "INTEGER", not_null=True),
+            _c("created_at", "INTEGER", not_null=True),
+        ),
+        indexes=(
+            IndexSpec(
+                "idx_lifecycle_v2_shadow_symbol_observed",
+                ("symbol", "observed_at"),
+            ),
+        ),
+        check_fragments=(
+            "check(typeof(event_id) = 'text' and length(event_id) > 0)",
+            "check(typeof(episode_id) = 'text' and length(episode_id) > 0)",
+            "check(typeof(symbol) = 'text' and length(symbol) > 0)",
+            "check(json_valid(reason_codes_json))",
+            "check(json_valid(evidence_refs_json))",
+            "check(typeof(observed_at) = 'integer' and observed_at >= 0)",
+            "check(length(transition_hash) = 64 and transition_hash not glob '*[^0-9a-f]*')",
+            "check(length(comparison_hash) = 64 and comparison_hash not glob '*[^0-9a-f]*')",
+            "check(length(policy_hash) = 64 and policy_hash not glob '*[^0-9a-f]*')",
+            "check(length(feature_registry_hash) = 64 and feature_registry_hash not glob '*[^0-9a-f]*')",
+            "check(shadow_only = 1)",
+            "check(promotion_allowed = 0)",
+            NON_NEGATIVE_INTEGER_CREATED_AT_CHECK,
+        ),
+        triggers=_immutable(
+            "lifecycle_v2_shadow_events",
+            message="lifecycle v2 shadow events are immutable",
         ),
     ),
 }
