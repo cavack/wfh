@@ -25,6 +25,7 @@ def market_packet():
             },
         },
         "info": {
+            "markPrice": 100.5,
             "priceTick": 0.01,
             "volumeTick": 1.0,
             "maxLeverage": 20,
@@ -527,6 +528,45 @@ def test_execution_observer_exposes_market_constraints():
     assert filters["price_limit_upper_rate"] == 0.05
 
 
+def test_market_constraints_parse_numeric_strings_and_use_mark_price():
+    market = market_packet()
+    market["info"].update(
+        {
+            "markPrice": "110.0",
+            "priceTick": "0.01",
+            "volumeTick": "1.0",
+            "maxLeverage": "20",
+            "priceLimitLowerValue": "0.05",
+            "priceLimitUpperValue": "0.05",
+        }
+    )
+    result = LBankExecutionObserver.measure_orderbook(
+        "TEST/USDT:USDT",
+        market,
+        orderbook_packet(),
+        (25.0,),
+    )
+
+    assert result["available"] is True
+    assert result["mark_price"] == 110.0
+    assert result["market_filters"]["maximum_leverage"] == 20.0
+    assert result["market_filters"]["effective_min_notional"] == 110.0
+
+
+def test_execution_observer_fails_closed_without_mark_price():
+    market = market_packet()
+    market["info"].pop("markPrice")
+    result = LBankExecutionObserver.measure_orderbook(
+        "TEST/USDT:USDT",
+        market,
+        orderbook_packet(),
+        (25.0,),
+    )
+
+    assert result["available"] is False
+    assert result["reason"] == "LBank mark price unavailable"
+
+
 def test_execution_observer_rejects_non_linear_market():
     market = market_packet()
     market["linear"] = False
@@ -602,6 +642,9 @@ def test_observe_reuses_single_exchange_and_loads_markets_once():
             self.orderbook_count += 1
             return orderbook_packet()
 
+        async def fetch_ticker(self, symbol):
+            return {"mark": 100.5}
+
         async def close(self):
             self.close_count += 1
 
@@ -659,6 +702,9 @@ def test_observe_many_closes_shared_exchange_after_batch():
             limit=50,
         ):
             return orderbook_packet()
+
+        async def fetch_ticker(self, symbol):
+            return {"mark": 100.5}
 
         async def close(self):
             self.close_count += 1

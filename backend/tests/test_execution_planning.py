@@ -11,12 +11,14 @@ from waterfallhunter.core.execution_planning import (
     OpenExposure,
     PortfolioCapacity,
     PriceBand,
+    RawShortLevels,
     RiskPolicy,
     SafeLeverageBounds,
     ValidatedMarketConstraints,
     build_short_paper_execution_plan,
     conservative_short_levels,
     isolated_short_liquidation_price,
+    tiered_isolated_short_liquidation,
     validated_constraints_from_lbank_observation,
 )
 
@@ -48,15 +50,15 @@ def _constraints(**overrides) -> ValidatedMarketConstraints:
 
 
 def _costs(**overrides) -> ExecutionCostPolicy:
-    return ExecutionCostPolicy.create(
-        taker_fee_rate=0.0006,
-        maker_fee_rate=0.0002,
-        entry_slippage_p95_rate=0.0005,
-        exit_slippage_p95_rate=0.0007,
-        expected_funding_rate=0.0001,
-        liquidation_buffer_rate=0.02,
-        **overrides,
-    )
+    values = {
+        "taker_fee_rate": 0.0006,
+        "maker_fee_rate": 0.0002,
+        "entry_slippage_p95_rate": 0.0005,
+        "exit_slippage_p95_rate": 0.0007,
+        "expected_funding_rate": 0.0001,
+        "liquidation_buffer_rate": 0.02,
+    }
+    return ExecutionCostPolicy.create(**{**values, **overrides})
 
 
 def _leverage_bounds(**overrides) -> SafeLeverageBounds:
@@ -83,10 +85,12 @@ def _plan(**overrides):
         "risk_policy": RiskPolicy.v1(),
         "portfolio": PortfolioCapacity(cash_equity=200.0, unrealized_pnl=0.0),
         "leverage_bounds": _leverage_bounds(),
-        "raw_entry": 100.09,
-        "raw_tp1": 98.01,
-        "raw_tp2": 96.01,
-        "raw_stop": 101.51,
+        "raw_levels": RawShortLevels(
+            entry=100.09,
+            tp1=98.01,
+            tp2=96.01,
+            stop=101.51,
+        ),
     }
     return build_short_paper_execution_plan(**{**values, **overrides})
 
@@ -118,6 +122,7 @@ def test_public_lbank_filters_require_separate_fresh_hash_bound_risk_packet() ->
         "symbol": "TEST/USDT:USDT",
         "observed_at": 990,
         "midpoint": 100.0,
+        "mark_price": 100.0,
         "market_filters": {
             "price_tick": 0.1,
             "quantity_step": 0.001,
@@ -149,17 +154,20 @@ def test_public_lbank_filters_require_separate_fresh_hash_bound_risk_packet() ->
         canonical_symbol="TEST-USDT-PERP",
         observation=observation,
         risk_parameters=risk,
+        expected_risk_parameters_hash=risk.parameters_hash,
         evaluation_time=1_000,
     )
 
     assert constraints.price_band == PriceBand(minimum=95.0, maximum=105.0)
     assert constraints.maximum_leverage == 20.0
     assert len(constraints.constraints_hash) == 64
-    with pytest.raises(ConstraintError, match="RISK_PARAMETERS_STALE"):
+    tampered_risk = risk.model_copy(update={"expires_at": 999})
+    with pytest.raises(ConstraintError, match="RISK_PARAMETERS_TAMPERED"):
         validated_constraints_from_lbank_observation(
             canonical_symbol="TEST-USDT-PERP",
             observation=observation,
-            risk_parameters=risk.model_copy(update={"expires_at": 999}),
+            risk_parameters=tampered_risk,
+            expected_risk_parameters_hash=risk.parameters_hash,
             evaluation_time=1_000,
         )
 
@@ -289,3 +297,142 @@ def test_isolated_short_liquidation_model_is_monotonic_in_margin() -> None:
     )
 
     assert higher > lower > 100.0
+
+
+def test_hashes_are_recomputed_at_consumption_and_integer_factories_normalize() -> None:
+    constraints = _constraints().model_copy(update={"min_notional": 1.0})
+    plan = _plan(
+        constraints=constraints,
+        expected_constraints_hash=constraints.constraints_hash,
+    )
+    integer_bounds = SafeLeverageBounds.create(
+        exchange_max=20,
+        maintenance_liquidation=10,
+        volatility=6,
+        liquidity_slippage=5,
+        evidence_uncertainty=4,
+        portfolio_open_risk=3,
+    )
+    integer_risk = LBankRiskParameters.create(
+        canonical_symbol="TEST-USDT-PERP",
+        maintenance_margin_tiers=(
+            MaintenanceMarginTier(
+                notional_floor=0,
+                maintenance_margin_rate=0,
+            ),
+        ),
+        liquidation_fee_rate=0,
+        funding_semantics="timestamped_8h",
+        source_reference="test",
+        source_payload_hash="a" * 64,
+        observed_at=100,
+        expires_at=200,
+    )
+
+    assert plan["status"] == "BLOCKED"
+    assert plan["reason_codes"] == ["EXECUTION_CONSTRAINTS_TAMPERED"]
+    integer_bounds.require_integrity()
+    integer_risk.require_usable(
+        evaluation_time=150,
+        expected_hash=integer_risk.parameters_hash,
+    )
+    with pytest.raises(ConstraintError, match="RISK_PARAMETER_HASH_MISMATCH"):
+        integer_risk.require_usable(
+            evaluation_time=150,
+            expected_hash="0" * 64,
+        )
+
+
+def test_maintenance_tiers_must_partition_notional_and_liquidation_uses_exit_tier() -> None:
+    tiers = (
+        MaintenanceMarginTier(
+            notional_floor=0.0,
+            notional_cap=110.0,
+            maintenance_margin_rate=0.005,
+        ),
+        MaintenanceMarginTier(
+            notional_floor=110.0,
+            maintenance_margin_rate=0.02,
+        ),
+    )
+    price, rate = tiered_isolated_short_liquidation(
+        entry_price=100.0,
+        quantity=1.0,
+        contract_size=1.0,
+        isolated_margin=20.0,
+        maintenance_margin_tiers=tiers,
+        liquidation_fee_rate=0.0,
+    )
+
+    assert price == pytest.approx(120.0 / 1.02)
+    assert rate == 0.02
+    with pytest.raises(ValidationError, match="only the final"):
+        _constraints(
+            maintenance_margin_tiers=(
+                MaintenanceMarginTier(
+                    notional_floor=0.0,
+                    maintenance_margin_rate=0.005,
+                ),
+                MaintenanceMarginTier(
+                    notional_floor=100.0,
+                    maintenance_margin_rate=0.01,
+                ),
+            )
+        )
+
+
+def test_fractional_future_observation_fails_closed_and_mark_price_anchors_band() -> None:
+    observation = {
+        "available": True,
+        "source_exchange": "lbank",
+        "symbol": "TEST/USDT:USDT",
+        "observed_at": 1_000.5,
+        "midpoint": 100.0,
+        "mark_price": 110.0,
+        "market_filters": {
+            "price_tick": 0.1,
+            "quantity_step": 0.001,
+            "contract_size": 1.0,
+            "minimum_amount": 0.001,
+            "effective_min_notional": 5.0,
+            "maximum_leverage": 20.0,
+            "price_limit_lower_rate": 0.05,
+            "price_limit_upper_rate": 0.05,
+            "price_limit_semantics": "relative_to_reference_fraction",
+        },
+    }
+    risk = LBankRiskParameters.create(
+        canonical_symbol="TEST-USDT-PERP",
+        maintenance_margin_tiers=_constraints().maintenance_margin_tiers,
+        liquidation_fee_rate=0.002,
+        funding_semantics="timestamped_8h",
+        source_reference="test",
+        source_payload_hash="a" * 64,
+        observed_at=900,
+        expires_at=1_100,
+    )
+    with pytest.raises(ConstraintError, match="CONSTRAINTS_STALE"):
+        validated_constraints_from_lbank_observation(
+            canonical_symbol="TEST-USDT-PERP",
+            observation=observation,
+            risk_parameters=risk,
+            expected_risk_parameters_hash=risk.parameters_hash,
+            evaluation_time=1_000,
+        )
+
+    observation["observed_at"] = 1_000.0
+    constraints = validated_constraints_from_lbank_observation(
+        canonical_symbol="TEST-USDT-PERP",
+        observation=observation,
+        risk_parameters=risk,
+        expected_risk_parameters_hash=risk.parameters_hash,
+        evaluation_time=1_000,
+    )
+    assert constraints.price_band == PriceBand(minimum=104.5, maximum=115.5)
+
+
+def test_negative_funding_rate_is_a_short_cost() -> None:
+    plan = _plan(cost_policy=_costs(expected_funding_rate=-0.001))
+
+    assert plan["status"] == "READY"
+    assert plan["expected_funding_cost"] > 0

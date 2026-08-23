@@ -10,6 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, model_validat
 
 from waterfallhunter.core.signal_metadata import canonical_sha256
 
+SHA256_HEX_PATTERN = r"^[0-9a-f]{64}$"
+
 
 class ConstraintError(ValueError):
     """Raised when venue constraints are unavailable, stale, or inconsistent."""
@@ -42,6 +44,21 @@ class MaintenanceMarginTier(BaseModel):
         return self
 
 
+def _validate_maintenance_tier_partition(
+    tiers: tuple[MaintenanceMarginTier, ...],
+) -> None:
+    if not tiers or tiers[0].notional_floor != 0:
+        raise ValueError("maintenance tiers must begin at zero notional")
+    for index, tier in enumerate(tiers):
+        is_final = index == len(tiers) - 1
+        if tier.notional_cap is None and not is_final:
+            raise ValueError("only the final maintenance tier may be uncapped")
+        if not is_final and tier.notional_cap != tiers[index + 1].notional_floor:
+            raise ValueError("maintenance tiers must be contiguous and non-overlapping")
+    if tiers[-1].notional_cap is not None:
+        raise ValueError("final maintenance tier must be uncapped")
+
+
 class ValidatedMarketConstraints(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -65,7 +82,7 @@ class ValidatedMarketConstraints(BaseModel):
     funding_semantics: str = Field(min_length=1)
     constraints_observed_at: int = Field(ge=0)
     expires_at: int = Field(ge=0)
-    constraints_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    constraints_hash: str = Field(pattern=SHA256_HEX_PATTERN)
 
     @model_validator(mode="after")
     def _validate_contract(self, info: ValidationInfo) -> "ValidatedMarketConstraints":
@@ -79,6 +96,7 @@ class ValidatedMarketConstraints(BaseModel):
         )
         if tuple(ordered) != self.maintenance_margin_tiers:
             raise ValueError("maintenance margin tiers must be ordered")
+        _validate_maintenance_tier_partition(self.maintenance_margin_tiers)
         if (
             not (info.context or {}).get("skip_hash")
             and self.constraints_hash != canonical_sha256(self.hash_material())
@@ -92,7 +110,10 @@ class ValidatedMarketConstraints(BaseModel):
     def require_usable(self, *, evaluation_time: int, expected_hash: str) -> None:
         if isinstance(evaluation_time, bool) or not isinstance(evaluation_time, int):
             raise ConstraintError("EXECUTION_EVALUATION_CLOCK_INVALID")
-        if expected_hash != self.constraints_hash:
+        actual_hash = canonical_sha256(self.hash_material())
+        if actual_hash != self.constraints_hash:
+            raise ConstraintError("EXECUTION_CONSTRAINTS_TAMPERED")
+        if expected_hash != actual_hash:
             raise ConstraintError("EXECUTION_CONSTRAINT_HASH_MISMATCH")
         if evaluation_time < self.constraints_observed_at:
             raise ConstraintError("EXECUTION_CONSTRAINTS_FROM_FUTURE")
@@ -136,18 +157,34 @@ class ExecutionCostPolicy(BaseModel):
     exit_slippage_p95_rate: float = Field(ge=0, lt=0.1, allow_inf_nan=False)
     expected_funding_rate: float = Field(ge=-0.1, lt=0.1, allow_inf_nan=False)
     liquidation_buffer_rate: float = Field(ge=0, lt=1, allow_inf_nan=False)
-    policy_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    policy_hash: str = Field(pattern=SHA256_HEX_PATTERN)
 
     @model_validator(mode="after")
-    def _hash_matches(self) -> "ExecutionCostPolicy":
+    def _hash_matches(self, info: ValidationInfo) -> "ExecutionCostPolicy":
         material = self.model_dump(mode="json", exclude={"policy_hash"})
-        if self.policy_hash != canonical_sha256(material):
+        if (
+            not (info.context or {}).get("skip_hash")
+            and self.policy_hash != canonical_sha256(material)
+        ):
             raise ValueError("execution cost policy hash mismatch")
         return self
 
+    def require_integrity(self) -> None:
+        material = self.model_dump(mode="json", exclude={"policy_hash"})
+        if self.policy_hash != canonical_sha256(material):
+            raise ConstraintError("EXECUTION_COST_POLICY_TAMPERED")
+
     @classmethod
     def create(cls, **values: Any) -> "ExecutionCostPolicy":
-        material = {"contract_version": "execution_cost_policy_v1", **values}
+        normalized = cls.model_validate(
+            {
+                "contract_version": "execution_cost_policy_v1",
+                "policy_hash": "0" * 64,
+                **values,
+            },
+            context={"skip_hash": True},
+        )
+        material = normalized.model_dump(mode="json", exclude={"policy_hash"})
         return cls.model_validate(
             {**material, "policy_hash": canonical_sha256(material)}
         )
@@ -164,33 +201,47 @@ class LBankRiskParameters(BaseModel):
     liquidation_fee_rate: float = Field(ge=0, lt=1, allow_inf_nan=False)
     funding_semantics: str = Field(min_length=1)
     source_reference: str = Field(min_length=1)
-    source_payload_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_payload_hash: str = Field(pattern=SHA256_HEX_PATTERN)
     observed_at: int = Field(ge=0)
     expires_at: int = Field(ge=0)
-    parameters_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    parameters_hash: str = Field(pattern=SHA256_HEX_PATTERN)
 
     @model_validator(mode="after")
-    def _validate_parameters(self) -> "LBankRiskParameters":
+    def _validate_parameters(self, info: ValidationInfo) -> "LBankRiskParameters":
         if not self.maintenance_margin_tiers:
             raise ValueError("LBank risk parameters require maintenance tiers")
+        _validate_maintenance_tier_partition(self.maintenance_margin_tiers)
         if self.expires_at <= self.observed_at:
             raise ValueError("LBank risk parameter expiry must follow observation")
         material = self.model_dump(mode="json", exclude={"parameters_hash"})
-        if self.parameters_hash != canonical_sha256(material):
+        if (
+            not (info.context or {}).get("skip_hash")
+            and self.parameters_hash != canonical_sha256(material)
+        ):
             raise ValueError("LBank risk parameters hash mismatch")
         return self
 
-    def require_usable(self, *, evaluation_time: int) -> None:
+    def require_usable(self, *, evaluation_time: int, expected_hash: str) -> None:
+        material = self.model_dump(mode="json", exclude={"parameters_hash"})
+        actual_hash = canonical_sha256(material)
+        if actual_hash != self.parameters_hash:
+            raise ConstraintError("EXECUTION_RISK_PARAMETERS_TAMPERED")
+        if expected_hash != actual_hash:
+            raise ConstraintError("EXECUTION_RISK_PARAMETER_HASH_MISMATCH")
         if evaluation_time < self.observed_at or evaluation_time >= self.expires_at:
             raise ConstraintError("EXECUTION_RISK_PARAMETERS_STALE")
 
     @classmethod
     def create(cls, **values: Any) -> "LBankRiskParameters":
-        material = cls.model_construct(
-            contract_version="lbank_risk_parameters_v1",
-            parameters_hash="0" * 64,
-            **values,
-        ).model_dump(mode="json", exclude={"parameters_hash"})
+        normalized = cls.model_validate(
+            {
+                "contract_version": "lbank_risk_parameters_v1",
+                "parameters_hash": "0" * 64,
+                **values,
+            },
+            context={"skip_hash": True},
+        )
+        material = normalized.model_dump(mode="json", exclude={"parameters_hash"})
         return cls.model_validate(
             {**material, "parameters_hash": canonical_sha256(material)}
         )
@@ -201,10 +252,64 @@ def validated_constraints_from_lbank_observation(
     canonical_symbol: str,
     observation: dict[str, Any],
     risk_parameters: LBankRiskParameters,
+    expected_risk_parameters_hash: str,
     evaluation_time: int,
     max_observation_age_seconds: int = 60,
 ) -> ValidatedMarketConstraints:
     """Combine public LBank filters with separately proven risk parameters."""
+    observed_at, filters = _validated_public_lbank_observation(
+        observation,
+        evaluation_time=evaluation_time,
+        max_observation_age_seconds=max_observation_age_seconds,
+    )
+    risk_parameters.require_usable(
+        evaluation_time=evaluation_time,
+        expected_hash=expected_risk_parameters_hash,
+    )
+    if risk_parameters.canonical_symbol != canonical_symbol:
+        raise ConstraintError("EXECUTION_RISK_PARAMETER_SYMBOL_MISMATCH")
+
+    mark_price = _positive_number(
+        observation.get("mark_price"),
+        unavailable_code="EXECUTION_MARK_PRICE_UNAVAILABLE",
+    )
+    lower_rate = _positive_filter(filters, "price_limit_lower_rate")
+    upper_rate = _positive_filter(filters, "price_limit_upper_rate")
+    if lower_rate >= 1 or upper_rate >= 1:
+        raise ConstraintError("EXECUTION_PRICE_BAND_INVALID")
+    venue_symbol = str(observation.get("symbol") or "").strip()
+    if not venue_symbol:
+        raise ConstraintError("EXECUTION_VENUE_SYMBOL_UNAVAILABLE")
+    return ValidatedMarketConstraints.create(
+        canonical_symbol=canonical_symbol,
+        venue_symbol=venue_symbol,
+        tick_size=_positive_filter(filters, "price_tick"),
+        quantity_step=_positive_filter(filters, "quantity_step"),
+        contract_size=_positive_filter(filters, "contract_size"),
+        min_quantity=_positive_filter(filters, "minimum_amount"),
+        min_notional=_positive_filter(filters, "effective_min_notional"),
+        maximum_leverage=_positive_filter(filters, "maximum_leverage"),
+        price_band=PriceBand(
+            minimum=mark_price * (1.0 - lower_rate),
+            maximum=mark_price * (1.0 + upper_rate),
+        ),
+        maintenance_margin_tiers=risk_parameters.maintenance_margin_tiers,
+        liquidation_fee_rate=risk_parameters.liquidation_fee_rate,
+        funding_semantics=risk_parameters.funding_semantics,
+        constraints_observed_at=min(observed_at, risk_parameters.observed_at),
+        expires_at=min(
+            observed_at + max_observation_age_seconds + 1,
+            risk_parameters.expires_at,
+        ),
+    )
+
+
+def _validated_public_lbank_observation(
+    observation: dict[str, Any],
+    *,
+    evaluation_time: int,
+    max_observation_age_seconds: int,
+) -> tuple[int, dict[str, Any]]:
     if observation.get("available") is not True:
         raise ConstraintError("EXECUTION_LEVELS_UNAVAILABLE")
     if str(observation.get("source_exchange") or "").lower() != "lbank":
@@ -215,59 +320,36 @@ def validated_constraints_from_lbank_observation(
         or not isinstance(observed_at_raw, (int, float))
     ):
         raise ConstraintError("EXECUTION_CONSTRAINT_TIMESTAMP_UNAVAILABLE")
-    observed_at = int(observed_at_raw)
-    if evaluation_time < observed_at or evaluation_time - observed_at > max_observation_age_seconds:
+    observed_at_number = float(observed_at_raw)
+    if not math.isfinite(observed_at_number):
+        raise ConstraintError("EXECUTION_CONSTRAINT_TIMESTAMP_UNAVAILABLE")
+    if (
+        evaluation_time < observed_at_number
+        or evaluation_time - observed_at_number > max_observation_age_seconds
+    ):
         raise ConstraintError("EXECUTION_CONSTRAINTS_STALE")
-    risk_parameters.require_usable(evaluation_time=evaluation_time)
-    if risk_parameters.canonical_symbol != canonical_symbol:
-        raise ConstraintError("EXECUTION_RISK_PARAMETER_SYMBOL_MISMATCH")
+    observed_at = math.ceil(observed_at_number)
     filters = observation.get("market_filters")
     if not isinstance(filters, dict):
         raise ConstraintError("EXECUTION_MARKET_FILTERS_UNAVAILABLE")
     if filters.get("price_limit_semantics") != "relative_to_reference_fraction":
         raise ConstraintError("EXECUTION_PRICE_BAND_SEMANTICS_UNAVAILABLE")
+    return observed_at, filters
 
-    def positive(name: str) -> float:
-        value = filters.get(name)
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ConstraintError(f"EXECUTION_{name.upper()}_UNAVAILABLE")
-        number = float(value)
-        if not math.isfinite(number) or number <= 0:
-            raise ConstraintError(f"EXECUTION_{name.upper()}_UNAVAILABLE")
-        return number
 
-    midpoint = observation.get("midpoint")
-    if isinstance(midpoint, bool) or not isinstance(midpoint, (int, float)):
-        raise ConstraintError("EXECUTION_REFERENCE_PRICE_UNAVAILABLE")
-    midpoint_number = float(midpoint)
-    lower_rate = positive("price_limit_lower_rate")
-    upper_rate = positive("price_limit_upper_rate")
-    if midpoint_number <= 0 or lower_rate >= 1 or upper_rate >= 1:
-        raise ConstraintError("EXECUTION_PRICE_BAND_INVALID")
-    venue_symbol = str(observation.get("symbol") or "").strip()
-    if not venue_symbol:
-        raise ConstraintError("EXECUTION_VENUE_SYMBOL_UNAVAILABLE")
-    return ValidatedMarketConstraints.create(
-        canonical_symbol=canonical_symbol,
-        venue_symbol=venue_symbol,
-        tick_size=positive("price_tick"),
-        quantity_step=positive("quantity_step"),
-        contract_size=positive("contract_size"),
-        min_quantity=positive("minimum_amount"),
-        min_notional=positive("effective_min_notional"),
-        maximum_leverage=positive("maximum_leverage"),
-        price_band=PriceBand(
-            minimum=midpoint_number * (1.0 - lower_rate),
-            maximum=midpoint_number * (1.0 + upper_rate),
-        ),
-        maintenance_margin_tiers=risk_parameters.maintenance_margin_tiers,
-        liquidation_fee_rate=risk_parameters.liquidation_fee_rate,
-        funding_semantics=risk_parameters.funding_semantics,
-        constraints_observed_at=min(observed_at, risk_parameters.observed_at),
-        expires_at=min(
-            observed_at + max_observation_age_seconds + 1,
-            risk_parameters.expires_at,
-        ),
+def _positive_number(value: Any, *, unavailable_code: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConstraintError(unavailable_code)
+    number = float(value)
+    if not math.isfinite(number) or number <= 0:
+        raise ConstraintError(unavailable_code)
+    return number
+
+
+def _positive_filter(filters: dict[str, Any], name: str) -> float:
+    return _positive_number(
+        filters.get(name),
+        unavailable_code=f"EXECUTION_{name.upper()}_UNAVAILABLE",
     )
 
 
@@ -284,12 +366,15 @@ class SafeLeverageBounds(BaseModel):
     evidence_uncertainty: float = Field(gt=0, allow_inf_nan=False)
     portfolio_open_risk: float = Field(gt=0, allow_inf_nan=False)
     product_max: float = Field(default=20.0, gt=0, le=20, allow_inf_nan=False)
-    bounds_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    bounds_hash: str = Field(pattern=SHA256_HEX_PATTERN)
 
     @model_validator(mode="after")
-    def _hash_matches(self) -> "SafeLeverageBounds":
+    def _hash_matches(self, info: ValidationInfo) -> "SafeLeverageBounds":
         material = self.model_dump(mode="json", exclude={"bounds_hash"})
-        if self.bounds_hash != canonical_sha256(material):
+        if (
+            not (info.context or {}).get("skip_hash")
+            and self.bounds_hash != canonical_sha256(material)
+        ):
             raise ValueError("safe leverage bounds hash mismatch")
         return self
 
@@ -305,13 +390,22 @@ class SafeLeverageBounds(BaseModel):
             self.product_max,
         )
 
+    def require_integrity(self) -> None:
+        material = self.model_dump(mode="json", exclude={"bounds_hash"})
+        if self.bounds_hash != canonical_sha256(material):
+            raise ConstraintError("EXECUTION_LEVERAGE_BOUNDS_TAMPERED")
+
     @classmethod
     def create(cls, **values: Any) -> "SafeLeverageBounds":
-        normalized = cls.model_construct(
-            contract_version="safe_leverage_bounds_v1",
-            bounds_hash="0" * 64,
-            **values,
-        ).model_dump(mode="json", exclude={"bounds_hash"})
+        validated = cls.model_validate(
+            {
+                "contract_version": "safe_leverage_bounds_v1",
+                "bounds_hash": "0" * 64,
+                **values,
+            },
+            context={"skip_hash": True},
+        )
+        normalized = validated.model_dump(mode="json", exclude={"bounds_hash"})
         return cls.model_validate(
             {**normalized, "bounds_hash": canonical_sha256(normalized)}
         )
@@ -353,22 +447,46 @@ class RiskPolicy(BaseModel):
     max_total_open_risk_rate: float = 0.02
     max_correlated_cluster_risk_rate: float = 0.0125
     minimum_net_reward_risk: float = 1.5
-    policy_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    policy_hash: str = Field(pattern=SHA256_HEX_PATTERN)
 
     @model_validator(mode="after")
-    def _hash_matches(self) -> "RiskPolicy":
+    def _hash_matches(self, info: ValidationInfo) -> "RiskPolicy":
         material = self.model_dump(mode="json", exclude={"policy_hash"})
-        if self.policy_hash != canonical_sha256(material):
+        if (
+            not (info.context or {}).get("skip_hash")
+            and self.policy_hash != canonical_sha256(material)
+        ):
             raise ValueError("risk policy hash mismatch")
         return self
 
+    def require_integrity(self) -> None:
+        material = self.model_dump(mode="json", exclude={"policy_hash"})
+        if self.policy_hash != canonical_sha256(material):
+            raise ConstraintError("EXECUTION_RISK_POLICY_TAMPERED")
+
+    @classmethod
+    def create(cls, **overrides: Any) -> "RiskPolicy":
+        normalized = cls.model_validate(
+            {"policy_hash": "0" * 64, **overrides},
+            context={"skip_hash": True},
+        )
+        material = normalized.model_dump(mode="json", exclude={"policy_hash"})
+        return cls.model_validate({**material, "policy_hash": canonical_sha256(material)})
+
     @classmethod
     def v1(cls) -> "RiskPolicy":
-        material = cls.model_construct(policy_hash="0" * 64).model_dump(
-            mode="json",
-            exclude={"policy_hash"},
-        )
-        return cls.model_validate({**material, "policy_hash": canonical_sha256(material)})
+        return cls.create()
+
+
+class RawShortLevels(BaseModel):
+    """Unrounded strategy levels supplied to the conservative execution matrix."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    entry: float = Field(gt=0, allow_inf_nan=False)
+    tp1: float = Field(gt=0, allow_inf_nan=False)
+    tp2: float = Field(gt=0, allow_inf_nan=False)
+    stop: float = Field(gt=0, allow_inf_nan=False)
 
 
 def _decimal(value: float) -> Decimal:
@@ -464,6 +582,36 @@ def isolated_short_liquidation_price(
     )
 
 
+def tiered_isolated_short_liquidation(
+    *,
+    entry_price: float,
+    quantity: float,
+    contract_size: float,
+    isolated_margin: float,
+    maintenance_margin_tiers: tuple[MaintenanceMarginTier, ...],
+    liquidation_fee_rate: float,
+) -> tuple[float, float]:
+    """Solve liquidation against the tier covering liquidation-time notional."""
+    candidates: list[tuple[float, float]] = []
+    for tier in maintenance_margin_tiers:
+        price = isolated_short_liquidation_price(
+            entry_price=entry_price,
+            quantity=quantity,
+            contract_size=contract_size,
+            isolated_margin=isolated_margin,
+            maintenance_margin_rate=tier.maintenance_margin_rate,
+            liquidation_fee_rate=liquidation_fee_rate,
+        )
+        liquidation_notional = quantity * contract_size * price
+        if liquidation_notional >= tier.notional_floor and (
+            tier.notional_cap is None or liquidation_notional < tier.notional_cap
+        ):
+            candidates.append((price, tier.maintenance_margin_rate))
+    if not candidates:
+        raise ConstraintError("EXECUTION_LIQUIDATION_TIER_UNRESOLVED")
+    return min(candidates, key=lambda candidate: candidate[0])
+
+
 def build_short_paper_execution_plan(
     *,
     signal_id: str,
@@ -475,11 +623,8 @@ def build_short_paper_execution_plan(
     risk_policy: RiskPolicy,
     portfolio: PortfolioCapacity,
     leverage_bounds: SafeLeverageBounds,
+    raw_levels: RawShortLevels,
     requested_risk_rate: float | None = None,
-    raw_entry: float,
-    raw_tp1: float,
-    raw_tp2: float,
-    raw_stop: float,
 ) -> dict[str, Any]:
     reasons: list[str] = []
     try:
@@ -487,11 +632,14 @@ def build_short_paper_execution_plan(
             evaluation_time=evaluation_time,
             expected_hash=expected_constraints_hash,
         )
+        cost_policy.require_integrity()
+        risk_policy.require_integrity()
+        leverage_bounds.require_integrity()
         levels = conservative_short_levels(
-            entry=raw_entry,
-            tp1=raw_tp1,
-            tp2=raw_tp2,
-            stop=raw_stop,
+            entry=raw_levels.entry,
+            tp1=raw_levels.tp1,
+            tp2=raw_levels.tp2,
+            stop=raw_levels.stop,
             tick_size=constraints.tick_size,
         )
     except ConstraintError as exc:
@@ -503,18 +651,15 @@ def build_short_paper_execution_plan(
         )
 
     raw_safe_leverage = leverage_bounds.safe_leverage
-    if leverage_bounds.exchange_max > constraints.maximum_leverage:
+    leverage_block = _leverage_block_reason(
+        leverage_bounds=leverage_bounds,
+        constraints=constraints,
+        risk_policy=risk_policy,
+    )
+    if leverage_block is not None:
         return _blocked_plan(
             signal_id,
-            "LEVERAGE_EXCHANGE_BOUND_CONFLICT",
-            constraints=constraints,
-            evaluation_time=evaluation_time,
-            raw_safe_leverage=raw_safe_leverage,
-        )
-    if raw_safe_leverage < risk_policy.minimum_product_leverage:
-        return _blocked_plan(
-            signal_id,
-            "ENTRY_BLOCKED_RISK_BUDGET",
+            leverage_block,
             constraints=constraints,
             evaluation_time=evaluation_time,
             raw_safe_leverage=raw_safe_leverage,
@@ -533,10 +678,11 @@ def build_short_paper_execution_plan(
         )
     contract = constraints.contract_size
     entry_cost_rate = cost_policy.taker_fee_rate + cost_policy.entry_slippage_p95_rate
+    short_funding_cost_rate = max(-cost_policy.expected_funding_rate, 0.0)
     stop_cost_rate = (
         cost_policy.taker_fee_rate
         + cost_policy.exit_slippage_p95_rate
-        + max(cost_policy.expected_funding_rate, 0.0)
+        + short_funding_cost_rate
     )
     risk_per_contract = contract * (
         levels["stop"] - levels["entry"]
@@ -570,28 +716,17 @@ def build_short_paper_execution_plan(
         constraints.quantity_step,
         ROUND_FLOOR,
     )
-    if quantity < constraints.min_quantity:
-        return _blocked_plan(
-            signal_id,
-            "EXECUTION_MIN_QUANTITY_UNSAFE",
-            constraints=constraints,
-            evaluation_time=evaluation_time,
-        )
     notional = quantity * contract * levels["entry"]
-    if notional < constraints.min_notional:
+    quantity_block = _quantity_block_reason(
+        quantity=quantity,
+        notional=notional,
+        levels=levels,
+        constraints=constraints,
+    )
+    if quantity_block is not None:
         return _blocked_plan(
             signal_id,
-            "EXECUTION_MIN_NOTIONAL_UNSAFE",
-            constraints=constraints,
-            evaluation_time=evaluation_time,
-        )
-    if any(
-        price < constraints.price_band.minimum or price > constraints.price_band.maximum
-        for price in levels.values()
-    ):
-        return _blocked_plan(
-            signal_id,
-            "EXECUTION_PRICE_BAND_VIOLATION",
+            quantity_block,
             constraints=constraints,
             evaluation_time=evaluation_time,
         )
@@ -602,36 +737,27 @@ def build_short_paper_execution_plan(
     stop_exit_cost = quantity * contract * levels["stop"] * (
         cost_policy.taker_fee_rate + cost_policy.exit_slippage_p95_rate
     )
-    expected_funding_cost = quantity * contract * levels["stop"] * max(
-        cost_policy.expected_funding_rate,
-        0.0,
+    expected_funding_cost = (
+        quantity * contract * levels["stop"] * short_funding_cost_rate
     )
     isolated_margin = notional / leverage
-    existing_margin = sum(item.locked_isolated_margin for item in portfolio.open_exposures)
-    existing_risk = sum(item.risk_at_stop for item in portfolio.open_exposures)
-    cluster_risk = sum(
-        item.risk_at_stop
-        for item in portfolio.open_exposures
-        if item.cluster_id == cluster_id
+    reasons.extend(
+        _portfolio_capacity_reasons(
+            portfolio=portfolio,
+            risk_policy=risk_policy,
+            cluster_id=cluster_id,
+            equity=equity,
+            isolated_margin=isolated_margin,
+            risk_at_stop=risk_at_stop,
+        )
     )
-    if len(portfolio.open_exposures) >= risk_policy.max_open_positions:
-        reasons.append("PORTFOLIO_SLOT_CAP_REACHED")
-    if existing_margin + isolated_margin > equity * risk_policy.max_total_locked_margin_rate:
-        reasons.append("PORTFOLIO_LOCKED_MARGIN_CAP_EXCEEDED")
-    if equity - existing_margin - isolated_margin < equity * risk_policy.minimum_free_reserve_rate:
-        reasons.append("PORTFOLIO_FREE_RESERVE_BREACHED")
-    if existing_risk + risk_at_stop > equity * risk_policy.max_total_open_risk_rate:
-        reasons.append("PORTFOLIO_OPEN_RISK_CAP_EXCEEDED")
-    if cluster_risk + risk_at_stop > equity * risk_policy.max_correlated_cluster_risk_rate:
-        reasons.append("PORTFOLIO_CLUSTER_RISK_CAP_EXCEEDED")
 
-    maintenance_rate = constraints.maintenance_rate(notional)
-    liquidation_price = isolated_short_liquidation_price(
+    liquidation_price, maintenance_rate = tiered_isolated_short_liquidation(
         entry_price=levels["entry"],
         quantity=quantity,
         contract_size=contract,
         isolated_margin=isolated_margin,
-        maintenance_margin_rate=maintenance_rate,
+        maintenance_margin_tiers=constraints.maintenance_margin_tiers,
         liquidation_fee_rate=constraints.liquidation_fee_rate,
     )
     liquidation_buffer = liquidation_price - levels["stop"]
@@ -643,7 +769,7 @@ def build_short_paper_execution_plan(
         + levels["tp2"] * (
             cost_policy.maker_fee_rate
             + cost_policy.exit_slippage_p95_rate
-            + max(cost_policy.expected_funding_rate, 0.0)
+            + short_funding_cost_rate
         )
     )
     gross_tp2 = quantity * contract * (levels["entry"] - levels["tp2"])
@@ -659,7 +785,7 @@ def build_short_paper_execution_plan(
             evaluation_time=evaluation_time,
             raw_safe_leverage=raw_safe_leverage,
         )
-    return {
+    return _with_execution_plan_hash({
         "contract_version": "short_paper_execution_plan_v1",
         "execution_mode": "PAPER_ONLY",
         "status": "READY",
@@ -694,11 +820,95 @@ def build_short_paper_execution_plan(
         "net_tp2_pnl": round(net_tp2, 8),
         "net_reward_risk": round(net_reward_risk, 8),
         "maintenance_margin_rate": maintenance_rate,
+        "maintenance_margin_tiers": [
+            tier.model_dump(mode="json")
+            for tier in constraints.maintenance_margin_tiers
+        ],
+        "liquidation_fee_rate": constraints.liquidation_fee_rate,
         "liquidation_price": round(liquidation_price, 8),
         "liquidation_buffer": round(liquidation_buffer, 8),
         "conservative_sizing_equity": round(equity, 8),
         "strategy_equivalent": False,
-    }
+    })
+
+
+def _leverage_block_reason(
+    *,
+    leverage_bounds: SafeLeverageBounds,
+    constraints: ValidatedMarketConstraints,
+    risk_policy: RiskPolicy,
+) -> str | None:
+    if leverage_bounds.exchange_max > constraints.maximum_leverage:
+        return "LEVERAGE_EXCHANGE_BOUND_CONFLICT"
+    if leverage_bounds.safe_leverage < risk_policy.minimum_product_leverage:
+        return "ENTRY_BLOCKED_RISK_BUDGET"
+    return None
+
+
+def _quantity_block_reason(
+    *,
+    quantity: float,
+    notional: float,
+    levels: dict[str, float],
+    constraints: ValidatedMarketConstraints,
+) -> str | None:
+    if quantity < constraints.min_quantity:
+        return "EXECUTION_MIN_QUANTITY_UNSAFE"
+    if notional < constraints.min_notional:
+        return "EXECUTION_MIN_NOTIONAL_UNSAFE"
+    if any(
+        price < constraints.price_band.minimum or price > constraints.price_band.maximum
+        for price in levels.values()
+    ):
+        return "EXECUTION_PRICE_BAND_VIOLATION"
+    return None
+
+
+def _portfolio_capacity_reasons(
+    *,
+    portfolio: PortfolioCapacity,
+    risk_policy: RiskPolicy,
+    cluster_id: str,
+    equity: float,
+    isolated_margin: float,
+    risk_at_stop: float,
+) -> list[str]:
+    existing_margin = sum(
+        item.locked_isolated_margin for item in portfolio.open_exposures
+    )
+    existing_risk = sum(item.risk_at_stop for item in portfolio.open_exposures)
+    cluster_risk = sum(
+        item.risk_at_stop
+        for item in portfolio.open_exposures
+        if item.cluster_id == cluster_id
+    )
+    checks = (
+        (
+            len(portfolio.open_exposures) >= risk_policy.max_open_positions,
+            "PORTFOLIO_SLOT_CAP_REACHED",
+        ),
+        (
+            existing_margin + isolated_margin
+            > equity * risk_policy.max_total_locked_margin_rate,
+            "PORTFOLIO_LOCKED_MARGIN_CAP_EXCEEDED",
+        ),
+        (
+            equity - existing_margin - isolated_margin
+            < equity * risk_policy.minimum_free_reserve_rate,
+            "PORTFOLIO_FREE_RESERVE_BREACHED",
+        ),
+        (
+            existing_risk + risk_at_stop
+            > equity * risk_policy.max_total_open_risk_rate,
+            "PORTFOLIO_OPEN_RISK_CAP_EXCEEDED",
+        ),
+        (
+            cluster_risk + risk_at_stop
+            > equity * risk_policy.max_correlated_cluster_risk_rate,
+            "PORTFOLIO_CLUSTER_RISK_CAP_EXCEEDED",
+        ),
+    )
+    return [reason for violated, reason in checks if violated]
 
 
 def _blocked_plan(
@@ -708,7 +918,7 @@ def _blocked_plan(
     evaluation_time: int,
     raw_safe_leverage: float | None = None,
 ) -> dict[str, Any]:
-    return {
+    return _with_execution_plan_hash({
         "contract_version": "short_paper_execution_plan_v1",
         "execution_mode": "PAPER_ONLY",
         "status": "BLOCKED",
@@ -720,4 +930,8 @@ def _blocked_plan(
         "system_leverage": None,
         "levels": None,
         "strategy_equivalent": False,
-    }
+    })
+
+
+def _with_execution_plan_hash(plan: dict[str, Any]) -> dict[str, Any]:
+    return {**plan, "execution_plan_hash": canonical_sha256(plan)}

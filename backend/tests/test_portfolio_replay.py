@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from waterfallhunter.core.execution_planning import (
     ExecutionCostPolicy,
     MaintenanceMarginTier,
     PortfolioCapacity,
     PriceBand,
+    RawShortLevels,
     RiskPolicy,
     SafeLeverageBounds,
     ValidatedMarketConstraints,
@@ -41,7 +43,7 @@ def _plan(signal_id: str) -> dict:
         ),
         liquidation_fee_rate=0.002,
         funding_semantics="timestamped_8h",
-        constraints_observed_at=100,
+        constraints_observed_at=50,
         expires_at=200,
     )
     costs = ExecutionCostPolicy.create(
@@ -55,7 +57,7 @@ def _plan(signal_id: str) -> dict:
     return build_short_paper_execution_plan(
         signal_id=signal_id,
         cluster_id="MEME_HIGH_BETA",
-        evaluation_time=150,
+        evaluation_time=90,
         constraints=constraints,
         expected_constraints_hash=constraints.constraints_hash,
         cost_policy=costs,
@@ -70,14 +72,21 @@ def _plan(signal_id: str) -> dict:
             portfolio_open_risk=3.8,
         ),
         requested_risk_rate=0.0075,
-        raw_entry=100.09,
-        raw_tp1=98.01,
-        raw_tp2=96.01,
-        raw_stop=101.51,
+        raw_levels=RawShortLevels(
+            entry=100.09,
+            tp1=98.01,
+            tp2=96.01,
+            stop=101.51,
+        ),
     )
 
 
-def _open(event_id: str, position_id: str, signal_id: str, occurred_at: int = 100) -> PortfolioEvent:
+def _open(
+    event_id: str,
+    position_id: str,
+    signal_id: str,
+    occurred_at: int = 100,
+) -> PortfolioEvent:
     return PortfolioEvent(
         event_id=event_id,
         occurred_at=occurred_at,
@@ -106,6 +115,7 @@ def test_replay_has_total_deterministic_order_and_does_not_reuse_unrealized_gain
             event_type="MARK",
             position_id="position-1",
             price=96.0,
+            exit_cost=0.0,
         ),
         PortfolioEvent(
             event_id="funding",
@@ -245,3 +255,153 @@ def test_partial_fill_scales_isolated_exposure_and_rejection_is_attributed() -> 
             "reason": "VENUE_MIN_NOTIONAL",
         }
     ]
+
+
+@pytest.mark.parametrize(
+    ("event_changes", "replay_policy", "expected_reason"),
+    [
+        ({"cluster_id": "OTHER"}, RiskPolicy.v1(), "PLAN_CLUSTER_ID_MISMATCH"),
+        ({"signal_id": "other"}, RiskPolicy.v1(), "PLAN_SIGNAL_ID_MISMATCH"),
+        (
+            {},
+            RiskPolicy.create(max_open_positions=4),
+            "PLAN_RISK_POLICY_HASH_MISMATCH",
+        ),
+        ({"occurred_at": 80}, RiskPolicy.v1(), "PLAN_FROM_FUTURE"),
+    ],
+)
+def test_open_events_are_bound_to_plan_identity_policy_and_time(
+    event_changes: dict,
+    replay_policy: RiskPolicy,
+    expected_reason: str,
+) -> None:
+    values = {
+        "event_id": "open",
+        "occurred_at": 100,
+        "event_type": "OPEN",
+        "position_id": "position",
+        "signal_id": "signal",
+        "cluster_id": "MEME_HIGH_BETA",
+        "execution_plan": _plan("signal"),
+    }
+    event = PortfolioEvent(**{**values, **event_changes})
+    replay = replay_paper_portfolio(
+        [event],
+        initial_equity=200.0,
+        risk_policy=replay_policy,
+        dataset_manifest_hash=MANIFEST_HASH,
+    )
+
+    assert replay["skipped_signals"][0]["reason"] == expected_reason
+
+
+def test_replay_rechecks_position_margin_against_current_equity() -> None:
+    replay = replay_paper_portfolio(
+        [_open("open", "position", "signal")],
+        initial_equity=20.0,
+        risk_policy=RiskPolicy.v1(),
+        dataset_manifest_hash=MANIFEST_HASH,
+    )
+
+    assert replay["skipped_signals"][0]["reason"] == (
+        "PORTFOLIO_POSITION_MARGIN_CAP_EXCEEDED"
+    )
+
+
+def test_replay_rejects_mutated_execution_plan_material() -> None:
+    plan = _plan("signal")
+    plan["quantity_contracts"] *= 10
+    event = PortfolioEvent(
+        event_id="open",
+        occurred_at=100,
+        event_type="OPEN",
+        position_id="position",
+        signal_id="signal",
+        cluster_id="MEME_HIGH_BETA",
+        execution_plan=plan,
+    )
+    replay = replay_paper_portfolio(
+        [event],
+        initial_equity=200.0,
+        risk_policy=RiskPolicy.v1(),
+        dataset_manifest_hash=MANIFEST_HASH,
+    )
+
+    assert replay["skipped_signals"][0]["reason"] == (
+        "EXECUTION_PLAN_HASH_MISMATCH"
+    )
+
+
+def test_explicit_close_at_liquidation_price_uses_liquidation_semantics() -> None:
+    plan = _plan("signal")
+    replay = replay_paper_portfolio(
+        [
+            _open("open", "position", "signal"),
+            PortfolioEvent(
+                event_id="close",
+                occurred_at=110,
+                event_type="CLOSE",
+                position_id="position",
+                price=plan["liquidation_price"] + 1.0,
+                exit_cost=0.2,
+            ),
+        ],
+        initial_equity=200.0,
+        risk_policy=RiskPolicy.v1(),
+        dataset_manifest_hash=MANIFEST_HASH,
+    )
+
+    assert replay["closed_positions"][0]["exit_reason"] == "ISOLATED_LIQUIDATION"
+
+
+def test_exit_bearing_events_require_an_explicit_modeled_cost() -> None:
+    with pytest.raises(ValidationError, match="modeled exit cost"):
+        PortfolioEvent(
+            event_id="close",
+            occurred_at=110,
+            event_type="CLOSE",
+            position_id="position",
+            price=100.0,
+        )
+
+
+def test_funding_moves_isolated_margin_and_liquidation_threshold() -> None:
+    plan = _plan("signal")
+    replay = replay_paper_portfolio(
+        [
+            _open("open", "position", "signal"),
+            PortfolioEvent(
+                event_id="funding",
+                occurred_at=110,
+                event_type="FUNDING",
+                position_id="position",
+                amount=-0.25,
+            ),
+        ],
+        initial_equity=200.0,
+        risk_policy=RiskPolicy.v1(),
+        dataset_manifest_hash=MANIFEST_HASH,
+    )
+
+    open_position = replay["open_positions"][0]
+    assert open_position["funding"] == -0.25
+    assert open_position["liquidation_price"] < plan["liquidation_price"]
+
+
+def test_signal_report_validates_lineage_timestamp_and_detaches_rows() -> None:
+    source = [{"signal_id": "signal", "signal_triggered_at": 100}]
+    report = build_signal_level_research_report(
+        source,
+        dataset_manifest_hash=MANIFEST_HASH,
+    )
+    source[0]["signal_id"] = "mutated"
+
+    assert report["rows"][0]["signal_id"] == "signal"
+    with pytest.raises(ValueError, match="lowercase SHA-256"):
+        build_signal_level_research_report(source, dataset_manifest_hash="invalid")
+    fractional = [{"signal_id": "signal", "signal_triggered_at": 100.5}]
+    with pytest.raises(ValueError, match="non-negative integer"):
+        build_signal_level_research_report(
+            fractional,
+            dataset_manifest_hash=MANIFEST_HASH,
+        )
