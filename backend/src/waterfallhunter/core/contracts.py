@@ -208,7 +208,11 @@ class DecisionStatus(BaseModel):
 
 
 class CommonContractEnvelope(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        protected_namespaces=(),
+    )
 
     contract_type: NonEmptyStr
     contract_version: NonEmptyStr

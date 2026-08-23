@@ -223,11 +223,9 @@ def test_replay_distinguishes_trigger_candidate_from_persisted_trigger():
         micro["best_bid"],
         recent_high=max(row[2] for row in history[-24:]),
         market_info=market,
-        historical_candles=history,
         mark_price=9.8,
         entry_slippage_pct=micro["entry_slippage_pct"],
         exit_slippage_pct=micro["exit_slippage_pct"],
-        evaluation_time_ms=evaluated_at_ms,
     )
     payload["metrics"]["position_setup"] = position
     if str(position.get("status", "")).startswith("REJECTED"):

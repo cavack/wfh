@@ -52,51 +52,10 @@ class PositionCalculator:
             return 0.0
         return value
 
-    def _tp_probability(
-        self,
-        candles,
-        target_ratio: float,
-        timeframe_ms: int = 300000,
-        evaluation_time_ms: int | None = None,
-    ):
-        if not candles or len(candles) < 2:
-            return None
-        if not isinstance(target_ratio, (int, float)) or not 0 < target_ratio < 1:
-            return None
-        now_ms = (
-            int(__import__('time').time() * 1000)
-            if evaluation_time_ms is None
-            else int(evaluation_time_ms)
-        )
-        try:
-            closed = [row for row in candles if len(row) >= 6 and row[0] + timeframe_ms <= now_ms]
-            if any(
-                row[0] <= 0 or min(row[1], row[2], row[3], row[4]) <= 0 or row[5] < 0
-                or row[2] < max(row[1], row[4]) or row[3] > min(row[1], row[4])
-                for row in closed
-            ):
-                return None
-            if any(later[0] - earlier[0] != timeframe_ms for earlier, later in zip(closed, closed[1:])):
-                return None
-        except (TypeError, ValueError):
-            return None
-        horizon = 86_400_000 // timeframe_ms
-        sample_count = len(closed) - horizon
-        if sample_count < 50:
-            return None
-        outcomes = 0
-        for index in range(sample_count):
-            entry = closed[index][4]
-            if entry <= 0:
-                return None
-            outcomes += any(row[3] <= entry * target_ratio for row in closed[index + 1:index + horizon + 1])
-        return outcomes / sample_count
-
     def calculate_short_position(self, vwap_entry: float, recent_high: float = None, market_info: dict = None,
-                                 historical_candles=None, mark_price: float = None,
+                                 mark_price: float = None,
                                  entry_slippage_pct: float | None = None,
-                                 exit_slippage_pct: float | None = None,
-                                 evaluation_time_ms: int | None = None) -> Dict[str, Any]:
+                                 exit_slippage_pct: float | None = None) -> Dict[str, Any]:
         """
         محاسبه پوزیشن شرت (Short) با اعمال Fee و Slippage دوطرفه (ورود و خروج).
         فرضِ Stop-first: محاسبه ریسک بر اساس ضربه به استاپلاس.
@@ -176,14 +135,6 @@ class PositionCalculator:
         sl_aligned = self.align_to_tick(sl_price, tick_size)
         tp1_aligned = self.align_to_tick(tp1_price, tick_size)
         tp2_aligned = self.align_to_tick(tp2_price, tick_size)
-        probability = self._tp_probability(
-            historical_candles,
-            tp2_aligned / entry_aligned,
-            evaluation_time_ms=evaluation_time_ms,
-        )
-        if probability is None:
-            return {"status": "REJECTED: Insufficient completed historical candles"}
-
         # محاسبه حجم پوزیشن (ارزش دلاری تقسیم بر قیمت ورود، سپس تقسیم بر سایز قرارداد)
         raw_amount_contracts = (self.default_capital / entry_aligned) / contract_size
         amount_aligned = self.align_to_step(raw_amount_contracts, step_size)
@@ -201,7 +152,6 @@ class PositionCalculator:
             "is_api_ready": is_executable,
             "risk_pct": round(risk_pct, 2),
             "reward_to_risk": self.target_rr,
-            "tp_24h_probability": round(probability, 4),
             "monitoring": {"take_profit_price_source": "best_ask", "stop_loss_price_source": "mark_price", "mark_price": mark_price},
             "slippage": {
                 "entry_pct": round(entry_slippage, 6),

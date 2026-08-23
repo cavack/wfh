@@ -374,11 +374,9 @@ class FeatureReplayEngine:
                 replayed_micro.get("best_bid"),
                 recent_high=recent_high,
                 market_info=market,
-                historical_candles=history,
                 mark_price=mark_price,
                 entry_slippage_pct=replayed_micro.get("entry_slippage_pct"),
                 exit_slippage_pct=replayed_micro.get("exit_slippage_pct"),
-                evaluation_time_ms=evaluated_at_ms,
             )
             replayed_core["position_setup"] = position_setup
             if str(position_setup.get("status", "")).startswith("REJECTED"):
