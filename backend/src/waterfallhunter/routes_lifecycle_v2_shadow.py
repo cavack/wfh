@@ -16,7 +16,10 @@ from waterfallhunter.core.lifecycle_v2_shadow_store import LifecycleV2ShadowStor
 def build_lifecycle_v2_shadow_router(store: LifecycleV2ShadowStore) -> APIRouter:
     router = APIRouter()
 
-    @router.get("/api/lifecycle-v2-shadow")
+    @router.get(
+        "/api/lifecycle-v2-shadow",
+        responses={422: {"description": "Unsupported query or invalid limit"}},
+    )
     async def lifecycle_v2_shadow(request: Request, limit: int = 500):
         unsupported = sorted(set(request.query_params.keys()) - {"limit"})
         if unsupported:
@@ -32,7 +35,10 @@ def build_lifecycle_v2_shadow_router(store: LifecycleV2ShadowStore) -> APIRouter
             raise HTTPException(status_code=422, detail="limit must be between 1 and 5000")
         return await asyncio.to_thread(store.report, limit=limit)
 
-    @router.get("/api/lifecycle-v2-contract")
+    @router.get(
+        "/api/lifecycle-v2-contract",
+        responses={422: {"description": "Unsupported query parameter"}},
+    )
     async def lifecycle_v2_contract(request: Request):
         unsupported = sorted(request.query_params.keys())
         if unsupported:

@@ -39,6 +39,7 @@ def _client(tmp_path) -> TestClient:
         confirmation_family_count=2,
         extension_atr=0.2,
         oldest_required_observed_at=990,
+        required_observed_at=(1_000, 999, 995, 990),
         decision_at=1_000,
         evidence_refs=("runtime:test",),
     )

@@ -12,6 +12,7 @@ from waterfallhunter.core.canonical_json import canonical_json_bytes
 from waterfallhunter.core.lifecycle_v2_shadow import (
     LifecycleV2State,
     LifecycleV2Transition,
+    canonical_lifecycle_state,
 )
 from waterfallhunter.core.managed_sqlite import connect_managed_sqlite
 from waterfallhunter.core.schema_contract import require_managed_schema
@@ -51,11 +52,14 @@ class LifecycleV2ShadowStore:
             list(transition.evidence_refs)
         ).decode("utf-8")
         event_id = f"lifecycle-v2:{transition.transition_hash}"
+        normalized_v1_state = canonical_lifecycle_state(v1_state)
+        if comparison.get("v1_state_unchanged") != normalized_v1_state:
+            raise LifecycleV2ShadowStoreError("SHADOW_COMPARISON_V1_STATE_MISMATCH")
         material = (
             event_id,
             transition.episode_id,
             str(symbol),
-            str(v1_state),
+            normalized_v1_state,
             transition.from_state.value,
             transition.to_state.value,
             reason_codes_json,
@@ -73,6 +77,22 @@ class LifecycleV2ShadowStore:
         )
         try:
             with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
+                if transition.from_state is transition.to_state:
+                    latest_reason_row = conn.execute(
+                        """
+                        SELECT reason_codes_json
+                        FROM lifecycle_v2_shadow_events
+                        WHERE symbol = ? AND episode_id = ?
+                        ORDER BY observed_at DESC, created_at DESC, event_id DESC
+                        LIMIT 1
+                        """,
+                        (str(symbol), transition.episode_id),
+                    ).fetchone()
+                    if (
+                        latest_reason_row is not None
+                        and str(latest_reason_row[0]) == reason_codes_json
+                    ):
+                        return False
                 result = conn.execute(
                     """
                     INSERT INTO lifecycle_v2_shadow_events (
@@ -166,13 +186,25 @@ class LifecycleV2ShadowStore:
                     """,
                     (bounded_limit,),
                 ).fetchall()
+                episode_bounds = conn.execute(
+                    """
+                    SELECT
+                        episode_id,
+                        MIN(observed_at) AS first_observed_at,
+                        MIN(
+                            CASE WHEN v2_to_state = 'TRIGGERED' THEN observed_at END
+                        ) AS first_triggered_at
+                    FROM lifecycle_v2_shadow_events
+                    GROUP BY episode_id
+                    """
+                ).fetchall()
         except sqlite3.Error as exc:
             raise LifecycleV2ShadowStoreError("SHADOW_REPORT_QUERY_FAILED") from exc
         events = []
         reason_code_counts: dict[str, int] = {}
         profile_counts: dict[str, int] = {}
         state_counts: dict[str, int] = {}
-        episode_windows: dict[str, list[tuple[int, str]]] = {}
+        returned_episode_ids: set[str] = set()
         for raw in rows:
             packet = dict(raw)
             packet["reason_codes"] = json.loads(packet.pop("reason_codes_json"))
@@ -183,16 +215,13 @@ class LifecycleV2ShadowStore:
             profile_counts[profile] = profile_counts.get(profile, 0) + 1
             state = str(packet["v2_to_state"])
             state_counts[state] = state_counts.get(state, 0) + 1
-            episode_windows.setdefault(str(packet["episode_id"]), []).append(
-                (int(packet["observed_at"]), state)
-            )
+            returned_episode_ids.add(str(packet["episode_id"]))
             events.append(packet)
-        lead_times = []
-        for episode in episode_windows.values():
-            first_observed = min(item[0] for item in episode)
-            triggered = [item[0] for item in episode if item[1] == "TRIGGERED"]
-            if triggered:
-                lead_times.append(min(triggered) - first_observed)
+        lead_times = [
+            int(row[2]) - int(row[1])
+            for row in episode_bounds
+            if str(row[0]) in returned_episode_ids and row[2] is not None
+        ]
         anti_chase_reasons = {
             reason: count
             for reason, count in reason_code_counts.items()
@@ -211,7 +240,7 @@ class LifecycleV2ShadowStore:
                 "profile_counts": dict(sorted(profile_counts.items())),
                 "state_counts": dict(sorted(state_counts.items())),
                 "anti_chase_reason_counts": dict(sorted(anti_chase_reasons.items())),
-                "episode_count_in_returned_window": len(episode_windows),
+                "episode_count_in_returned_window": len(returned_episode_ids),
                 "triggered_episode_count_in_returned_window": len(lead_times),
                 "lead_time_seconds": {
                     "available": bool(lead_times),

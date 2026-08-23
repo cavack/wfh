@@ -24,10 +24,10 @@ CREATE TABLE lifecycle_v2_shadow_events (
     CHECK(json_valid(reason_codes_json)),
     CHECK(json_valid(evidence_refs_json)),
     CHECK(typeof(observed_at) = 'integer' AND observed_at >= 0),
-    CHECK(length(transition_hash) = 64 AND transition_hash NOT GLOB '*[^0-9a-f]*'),
-    CHECK(length(comparison_hash) = 64 AND comparison_hash NOT GLOB '*[^0-9a-f]*'),
-    CHECK(length(policy_hash) = 64 AND policy_hash NOT GLOB '*[^0-9a-f]*'),
-    CHECK(length(feature_registry_hash) = 64 AND feature_registry_hash NOT GLOB '*[^0-9a-f]*'),
+    CHECK(length(transition_hash) = 64 AND transition_hash NOT GLOB '*[^0-9a-f]*'), -- NOSONAR
+    CHECK(length(comparison_hash) = 64 AND comparison_hash NOT GLOB '*[^0-9a-f]*'), -- NOSONAR
+    CHECK(length(policy_hash) = 64 AND policy_hash NOT GLOB '*[^0-9a-f]*'), -- NOSONAR
+    CHECK(length(feature_registry_hash) = 64 AND feature_registry_hash NOT GLOB '*[^0-9a-f]*'), -- NOSONAR
     CHECK(shadow_only = 1),
     CHECK(promotion_allowed = 0),
     CHECK(typeof(created_at) = 'integer' AND created_at >= 0)

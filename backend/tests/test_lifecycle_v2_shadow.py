@@ -38,6 +38,7 @@ def _evidence(**overrides) -> LifecycleV2Evidence:
         "confirmation_family_count": 2,
         "extension_atr": 0.2,
         "oldest_required_observed_at": 990,
+        "required_observed_at": (1_000, 999, 995, 990),
         "decision_at": 1_000,
         "evidence_refs": ("candle:3m:1000", "orderbook:lbank:995"),
     }
@@ -126,7 +127,10 @@ def test_stale_or_expensive_setup_cannot_arm() -> None:
     stale = evaluate_lifecycle_v2_shadow(
         episode_id="episode-1",
         current_state=LifecycleV2State.PRE_TRIGGER,
-        evidence=_evidence(oldest_required_observed_at=900),
+        evidence=_evidence(
+            oldest_required_observed_at=900,
+            required_observed_at=(1_000, 999, 995, 900),
+        ),
     )
     expensive = evaluate_lifecycle_v2_shadow(
         episode_id="episode-1",
@@ -226,8 +230,9 @@ def test_registry_and_threshold_policy_are_content_addressed_and_not_silent() ->
     assert policy.experimental_trigger_allowed is False
     tampered = policy.model_dump(mode="json")
     tampered["thresholds"]["late_atr"] = 9.0
+    policy_type = type(policy)
     with pytest.raises(ValidationError, match="policy hash mismatch"):
-        type(policy).model_validate(tampered)
+        policy_type.model_validate(tampered)
 
 
 def test_experimental_profile_cannot_arm_and_hard_antichase_block_is_terminal() -> None:
@@ -247,3 +252,77 @@ def test_experimental_profile_cannot_arm_and_hard_antichase_block_is_terminal() 
     assert experimental.strategy_profile is LifecycleProfile.EXPERIMENTAL
     assert blocked.to_state is LifecycleV2State.EXECUTION_BLOCKED
     assert blocked.reason_codes == ("ANTI_CHASE_HARD_BLOCK",)
+
+
+def test_stale_evidence_cannot_create_an_antichase_terminal_state() -> None:
+    transition = evaluate_lifecycle_v2_shadow(
+        episode_id="stale-hard-block",
+        current_state=LifecycleV2State.PRE_TRIGGER,
+        evidence=_evidence(
+            extension_atr=1.0,
+            oldest_required_observed_at=900,
+            required_observed_at=(1_000, 999, 995, 900),
+        ),
+    )
+
+    assert transition.to_state is LifecycleV2State.PRE_TRIGGER
+    assert transition.reason_codes == ("DATA_STALE",)
+
+
+def test_v1_state_comparison_normalizes_equivalent_separator_vocabularies() -> None:
+    comparison = compare_v1_v2_shadow(
+        episode_id="normalized",
+        v1_state="FUEL-RICH",
+        v2_state=LifecycleV2State.WATCH,
+        evidence=_evidence(),
+    )
+
+    assert comparison["v1_state_unchanged"] == "FUEL_RICH"
+    assert comparison["v2_to_state"] == "FUEL_RICH"
+    assert comparison["diverged"] is False
+
+
+def test_every_required_source_timestamp_must_precede_the_decision_clock() -> None:
+    with pytest.raises(ValidationError, match="source timestamp"):
+        _evidence(required_observed_at=(1_001, 999, 995, 990))
+
+
+def test_unavailable_footprint_is_missing_and_breakdowns_are_one_family() -> None:
+    evidence = build_lifecycle_v2_evidence_from_metrics(
+        metrics={
+            "stage_lifecycle": {"confirmed": {"hype": True, "setup": True}},
+            "candle_features": {
+                "5m": {
+                    "lower_high": True,
+                    "distance_to_support_atr": 0.4,
+                    "extension_from_support_atr": 0.2,
+                }
+            },
+            "microstructure": {
+                "observed_at": 998.0,
+                "footprint": {"available": False, "aggressive_selling": False},
+            },
+            "relative_weakness_features": {
+                "timeframes": {
+                    "5m": {
+                        "relative_return_3bars_pct": -1.0,
+                        "relative_return_6bars_pct": -2.0,
+                    }
+                }
+            },
+            "breakdown_confirmation": {
+                "primary_breakdown_confirmed": True,
+                "confirmation_exchange_15m": True,
+                "composite_breakdown_confirmed": True,
+            },
+            "trade_eligible": True,
+        },
+        decision_at=1_000,
+        analysis_observed_at=1_000,
+        reference_observed_at=999,
+    )
+
+    assert evidence.flow_family_pass is None
+    assert "flow_family_pass" in evidence.unavailable_fields
+    assert evidence.confirmation_count == 2
+    assert evidence.confirmation_family_count == 1
