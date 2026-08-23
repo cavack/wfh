@@ -94,6 +94,10 @@ def test_complete_validation_is_deterministic_purged_and_owner_gated() -> None:
     )
     assert first["champion_challenger"]["holdout_used_for_selection"] is False
     assert first["independent_calibration"]["fit_source"] == "CALIBRATION_SPLIT_ONLY"
+    assert first["independent_calibration"]["maximum_label_observed_at"] <= (
+        first["split_summary"]["boundaries"]["holdout_start"]
+        - first["validation_policy"]["embargo_seconds"]
+    )
     assert first["untouched_holdout"]["used_for_selection"] is False
     assert first["untouched_holdout"]["multi_regime_audit"]["regime_count"] == 2
     assert first["untouched_holdout"]["symbol_concentration_audit"][
@@ -221,6 +225,16 @@ def test_validation_rejects_coerced_time_and_ambiguous_revision() -> None:
         ScientificValidationRequest.model_validate({**base, "rows": [coerced]})
     with pytest.raises(ValidationError, match="40- or 64-character"):
         ScientificValidationRequest.model_validate({**base, "source_revision": "b" * 41})
+
+
+def test_validation_rejects_utility_magnitudes_that_cannot_be_safely_aggregated() -> None:
+    payload = _request(days=9, row_count=24).model_dump(mode="json")
+    payload["rows"][0]["net_utility_r"] = 1e308
+
+    with pytest.raises(ValidationError):
+        ScientificValidationRequest.model_validate(
+            _refresh_source_identity(payload)
+        )
 
 
 def test_policy_is_hash_bound() -> None:

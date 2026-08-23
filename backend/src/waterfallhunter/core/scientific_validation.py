@@ -33,7 +33,7 @@ class ScientificValidationRow(BaseModel):
     target_tp2_hit_within_horizon: bool
     canonical_symbol: str = Field(min_length=1)
     regime: str = Field(min_length=1)
-    net_utility_r: float = Field(allow_inf_nan=False)
+    net_utility_r: float = Field(ge=-1_000, le=1_000, allow_inf_nan=False)
     execution_costs_complete: Literal[True]
     execution_cost_basis: Literal["REALIZED"]
     source_row_sha256: str = Field(pattern=SHA256_PATTERN)
@@ -258,7 +258,7 @@ def validate_strict_scientific_evidence(
         candidate for candidate in _CANDIDATES if candidate["model_id"] == champion_id
     )
     fitted = _fit_model(champion_spec, train)
-    calibration_rows = split["calibration"]
+    calibration_rows = _eligible_calibration_rows(split)
     raw_calibration = [_predict(fitted, row) for row in calibration_rows]
     calibrator = _fit_isotonic(raw_calibration, _labels(calibration_rows))
     calibrated_calibration = [_apply_isotonic(calibrator, value) for value in raw_calibration]
@@ -316,6 +316,9 @@ def validate_strict_scientific_evidence(
                 "available": True,
                 "fit_source": "CALIBRATION_SPLIT_ONLY",
                 "row_count": len(calibration_rows),
+                "maximum_label_observed_at": max(
+                    row.label_observed_at for row in calibration_rows
+                ),
                 "calibrator": calibrator,
                 "metrics": calibration_metrics,
             },
@@ -430,7 +433,7 @@ def _sufficiency_reasons(
     span = rows[-1].signal_triggered_at - rows[0].signal_triggered_at if rows else 0
     if span < policy.minimum_observation_weeks * 7 * DAY_SECONDS:
         reasons.append("STRICT_OBSERVATION_SPAN_BELOW_SIX_WEEKS")
-    calibration = split["calibration"]
+    calibration = _eligible_calibration_rows(split)
     holdout = split["holdout"]
     if len(calibration) < policy.minimum_calibration_rows:
         reasons.append("INDEPENDENT_CALIBRATION_SPLIT_TOO_SMALL")
@@ -446,6 +449,19 @@ def _sufficiency_reasons(
     if holdout and len(set(_labels(holdout))) < 2:
         reasons.append("HOLDOUT_SPLIT_LACKS_BOTH_TARGET_CLASSES")
     return reasons
+
+
+def _eligible_calibration_rows(
+    split: dict[str, Any],
+) -> list[ScientificValidationRow]:
+    calibration_end = split["boundaries"].get("calibration_end")
+    if calibration_end is None:
+        return []
+    return [
+        row
+        for row in split["calibration"]
+        if row.label_observed_at <= int(calibration_end)
+    ]
 
 
 def _walk_forward(
@@ -998,6 +1014,9 @@ def _split_summary(
         "boundaries": split["boundaries"],
         "development_rows": len(split["development"]),
         "calibration_rows": len(split["calibration"]),
+        "calibration_rows_eligible_after_label_embargo": len(
+            _eligible_calibration_rows(split)
+        ),
         "holdout_rows": len(split["holdout"]),
         "discarded_boundary_rows": (
             max(

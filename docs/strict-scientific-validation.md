@@ -32,6 +32,7 @@ are rejected rather than imputed.
 - chronological 60% development, 15% independent calibration, and 25%
   untouched holdout partitions;
 - a one-day purge/embargo at boundaries;
+- calibration labels must be observable before the holdout embargo boundary;
 - three expanding walk-forward development folds;
 - at least 20 calibration rows and 30 holdout rows;
 - both target classes, at least two holdout regimes, and at least 10 holdout
