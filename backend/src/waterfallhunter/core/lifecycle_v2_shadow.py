@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from enum import Enum
 from typing import Any, Literal
 
@@ -400,7 +401,7 @@ def _number_fact(packet: dict[str, Any] | None, key: str) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     number = float(value)
-    return number if number == number and number not in {float("inf"), float("-inf")} else None
+    return number if math.isfinite(number) else None
 
 
 def _timestamp(packet: dict[str, Any] | None, key: str) -> float | None:
