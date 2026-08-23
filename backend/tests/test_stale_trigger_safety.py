@@ -3,6 +3,8 @@ import time
 from unittest.mock import AsyncMock
 
 from waterfallhunter import main
+from waterfallhunter.core.contracts import SignalClass
+from waterfallhunter.core.signal_metadata import STRICT_STRATEGY_PROFILE, SignalMetadataInput
 
 
 def test_experimental_signal_profile_suppresses_telegram_delivery():
@@ -16,6 +18,7 @@ def test_stale_trigger_persistence_failure_suppresses_telegram(
     monkeypatch,
 ):
     symbol = "STALE/USDT:USDT"
+    reference_observed_at = 1_699_999_990.75
 
     monkeypatch.setattr(
         main.scanner,
@@ -38,7 +41,7 @@ def test_stale_trigger_persistence_failure_suppresses_telegram(
         "get_live_reference",
         lambda requested_symbol: (
             0.01,
-            time.time(),
+            reference_observed_at,
         ),
     )
 
@@ -52,6 +55,8 @@ def test_stale_trigger_persistence_failure_suppresses_telegram(
                 "mapped_symbol": symbol,
                 "orderbook": {},
                 "ticker": {},
+                "strategy_profile": STRICT_STRATEGY_PROFILE,
+                "score_version": "score_v2",
             },
         }
 
@@ -85,10 +90,15 @@ def test_stale_trigger_persistence_failure_suppresses_telegram(
             "trade_eligible": None,
         },
     )
+    persisted = []
+
+    def reject_persistence(*args, **kwargs):
+        persisted.append((args, kwargs))
+
     monkeypatch.setattr(
         main.signal_ledger,
         "persist_trigger",
-        lambda *args, **kwargs: None,
+        reject_persistence,
     )
 
     evidence_packets = []
@@ -105,13 +115,23 @@ def test_stale_trigger_persistence_failure_suppresses_telegram(
         send_alert,
     )
 
+    before = int(time.time())
     asyncio.run(
         main.evaluate_candidate(
             symbol,
             {"status": "ARMED"},
         )
     )
+    after = int(time.time())
 
     send_alert.assert_not_awaited()
     assert len(observe_decision) == 1
+    assert len(persisted) == 1
+    metadata = persisted[0][1].get("metadata")
+    assert isinstance(metadata, SignalMetadataInput)
+    assert metadata.signal_class is SignalClass.STRICT
+    assert metadata.strategy_profile == STRICT_STRATEGY_PROFILE
+    assert metadata.score_version == "score_v2"
+    assert before <= metadata.analysis_observed_at <= after
+    assert metadata.reference_observed_at == int(reference_observed_at)
     assert evidence_packets[-1]["metrics"]["production_decision"]["path"] == "PERSISTENCE_REJECTED"

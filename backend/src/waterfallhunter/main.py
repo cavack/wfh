@@ -27,7 +27,10 @@ from waterfallhunter.core.signal_funnel import SignalFunnel
 from waterfallhunter.core.stage_lifecycle import StageLifecycleStore
 from waterfallhunter.core.historical_outcome_store import HistoricalOutcomeStore
 from waterfallhunter.core.production_evidence import ProductionEvidenceRecorder
-from waterfallhunter.core.decision_provenance import build_decision_contract
+from waterfallhunter.core.decision_provenance import (
+    build_decision_contract,
+    decision_contract_sha256,
+)
 from waterfallhunter.core.feature_replay import FeatureReplayStore, FeatureReplayWorker
 from waterfallhunter.core.lbank_execution_shadow import LBankExecutionShadowWorker
 from waterfallhunter.core.lbank_execution_store import LBankExecutionStore
@@ -39,6 +42,10 @@ from waterfallhunter.core.lbank_execution_decision import (
 )
 from waterfallhunter.core.lbank_signal_ledger import (
     LBankSignalLedger,
+)
+from waterfallhunter.core.signal_metadata import build_signal_metadata_input
+from waterfallhunter.core.signal_metadata_store import (
+    require_signal_metadata_completeness,
 )
 from waterfallhunter.core.lbank_signal_outcome import (
     LBankSignalOutcomeStore,
@@ -1234,6 +1241,8 @@ async def evaluate_candidate(
     symbol: str,
     data: dict,
 ):
+    analysis_observed_at = int(time.time())
+
     scanner.active_candidates.setdefault(
         symbol,
         {},
@@ -1291,6 +1300,7 @@ async def evaluate_candidate(
             production_evidence_recorder.bucket_seconds
         ),
     )
+    decision_contract_hash = decision_contract_sha256(decision_contract)
 
     if lbank_price is None:
         fallback_reference = (
@@ -1378,6 +1388,9 @@ async def evaluate_candidate(
         live_data[
             "reference_observed_at"
         ] = time.time()
+        reference_observed_at = live_data[
+            "reference_observed_at"
+        ]
 
         live_data[
             "reference_source"
@@ -1848,6 +1861,37 @@ async def evaluate_candidate(
             )
         )
 
+        metadata_reference_observed_at = (
+            int(reference_observed_at)
+            if (
+                isinstance(reference_observed_at, (int, float))
+                and not isinstance(reference_observed_at, bool)
+                and reference_observed_at >= 0
+            )
+            else None
+        )
+        try:
+            signal_metadata = build_signal_metadata_input(
+                {
+                    **metrics,
+                    "analysis_observed_at": analysis_observed_at,
+                    "reference_observed_at": metadata_reference_observed_at,
+                },
+                decision_contract_hash,
+            )
+        except ValueError as exc:
+            record_final_production_decision(
+                "METADATA_REJECTED",
+                "explicit signal metadata validation failed",
+                error_type=type(exc).__name__,
+            )
+            logger.exception(
+                "Signal metadata validation failed for %s: %s",
+                symbol,
+                exc,
+            )
+            return
+
         signal_id = signal_ledger.persist_trigger(
             symbol,
             current_state,
@@ -1856,6 +1900,7 @@ async def evaluate_candidate(
             execution_suitability=(
                 execution_suitability
             ),
+            metadata=signal_metadata,
             quote_volume=quote_volume,
             volume_gate_passed=volume_gate_passed,
             proxy_execution_disagreement=(
@@ -2092,6 +2137,7 @@ async def startup_event():
         db.db_path,
         check_user_version=CURRENT_RUNTIME_SCHEMA_VERSION,
     )
+    require_signal_metadata_completeness(db.db_path)
 
     _start_background_task(
         scanner.start_background_scanner(
