@@ -146,6 +146,40 @@ def test_preview_is_read_only_and_report_hash_is_deterministic(tmp_path) -> None
     assert first.conflict_ids == ()
 
 
+def test_preview_closes_connection_when_read_only_setup_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "setup-failure.db"
+    db_path.touch()
+
+    class FakeConnection:
+        closed = False
+
+        def execute(self, sql: str):
+            if sql == "PRAGMA query_only=ON":
+                return self
+            raise sqlite3.OperationalError("injected pragma failure")
+
+        def close(self) -> None:
+            self.closed = True
+
+    fake = FakeConnection()
+    monkeypatch.setattr(
+        legacy_signal_classifier.sqlite3,
+        "connect",
+        lambda *args, **kwargs: fake,
+    )
+
+    with pytest.raises(
+        LegacyClassificationError,
+        match="LEGACY_CLASSIFICATION_DATABASE_UNREADABLE",
+    ):
+        preview_legacy_classification(db_path)
+
+    assert fake.closed is True
+
+
 def test_apply_rejects_mismatched_report_hash_before_write(tmp_path) -> None:
     db_path = migrate_test_database(tmp_path / "hash-mismatch.db")
     _seed_cases(db_path, ("complete_experimental",))

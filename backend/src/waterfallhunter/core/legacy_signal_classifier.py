@@ -299,6 +299,7 @@ def _open_read_only(db_path: str | Path) -> sqlite3.Connection:
     path = Path(db_path)
     if not path.is_file():
         raise LegacyClassificationError("LEGACY_CLASSIFICATION_DATABASE_UNAVAILABLE")
+    conn: sqlite3.Connection | None = None
     try:
         uri = f"{path.resolve().as_uri()}?mode=ro"
         conn = sqlite3.connect(
@@ -311,6 +312,8 @@ def _open_read_only(db_path: str | Path) -> sqlite3.Connection:
         conn.execute("PRAGMA busy_timeout=5000")
         return conn
     except (OSError, sqlite3.Error) as exc:
+        if conn is not None:
+            conn.close()
         raise LegacyClassificationError(
             "LEGACY_CLASSIFICATION_DATABASE_UNREADABLE"
         ) from exc

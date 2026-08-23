@@ -118,3 +118,15 @@ def test_factory_closes_when_foreign_keys_cannot_be_enabled(
         connect_managed_sqlite("ignored.db")
 
     assert fake.closed is True
+
+
+def test_factory_wraps_connection_creation_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_connect(*args, **kwargs):
+        raise sqlite3.OperationalError("injected open failure")
+
+    monkeypatch.setattr(sqlite3, "connect", fail_connect)
+
+    with pytest.raises(ManagedSQLiteError, match="FOREIGN_KEYS_UNAVAILABLE"):
+        connect_managed_sqlite("unopenable.db")
