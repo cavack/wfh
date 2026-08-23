@@ -248,7 +248,7 @@ def _next_state(
 ) -> tuple[LifecycleV2State, tuple[str, ...]]:
     if current in TERMINAL_STATES:
         return current, ("TERMINAL_EPISODE_IMMUTABLE",)
-    if not evidence.eligible_data:
+    if evidence.extension_atr is None or evidence.oldest_required_observed_at is None:
         return current, ("INSUFFICIENT_EVIDENCE",)
     if not evidence.fresh:
         return current, ("DATA_STALE",)
@@ -291,6 +291,8 @@ def _next_from_watch(
     evidence: LifecycleV2Evidence,
     _: LifecycleV2Policy,
 ) -> tuple[LifecycleV2State, tuple[str, ...]]:
+    if evidence.fuel_rich is None:
+        return LifecycleV2State.WATCH, ("INSUFFICIENT_EVIDENCE",)
     if evidence.fuel_rich:
         return LifecycleV2State.FUEL_RICH, ("FUEL_EXPANSION_CONFIRMED",)
     return LifecycleV2State.WATCH, ("FUEL_RICH_NOT_CONFIRMED",)
@@ -300,6 +302,15 @@ def _next_from_fuel_rich(
     evidence: LifecycleV2Evidence,
     policy: LifecycleV2Policy,
 ) -> tuple[LifecycleV2State, tuple[str, ...]]:
+    if (
+        evidence.structure_count is None
+        or evidence.anti_chase_pass is None
+        or (
+            evidence.flow_family_pass is None
+            and evidence.relative_family_pass is None
+        )
+    ):
+        return LifecycleV2State.FUEL_RICH, ("INSUFFICIENT_EVIDENCE",)
     if (
         evidence.structure_count >= policy.thresholds.structure_count_minimum
         and (evidence.flow_family_pass or evidence.relative_family_pass)
@@ -313,6 +324,19 @@ def _next_from_pre_trigger(
     evidence: LifecycleV2Evidence,
     policy: LifecycleV2Policy,
 ) -> tuple[LifecycleV2State, tuple[str, ...]]:
+    required = (
+        evidence.strict_setup_ready,
+        evidence.lower_tf_trigger_closed,
+        evidence.distance_to_trigger_atr,
+        evidence.lbank_constraints_fresh,
+        evidence.orderbook_fresh,
+        evidence.levels_constructible,
+        evidence.estimated_round_trip_cost_r,
+        evidence.executable_depth_multiple,
+        evidence.preliminary_portfolio_capacity,
+    )
+    if any(value is None for value in required):
+        return LifecycleV2State.PRE_TRIGGER, ("INSUFFICIENT_EVIDENCE",)
     if evidence.evaluated_profile is LifecycleProfile.EXPERIMENTAL:
         return LifecycleV2State.PRE_TRIGGER, (
             "EXPERIMENTAL_PROFILE_OBSERVATIONAL_ONLY",
@@ -349,6 +373,12 @@ def _next_from_armed(
     evidence: LifecycleV2Evidence,
     policy: LifecycleV2Policy,
 ) -> tuple[LifecycleV2State, tuple[str, ...]]:
+    if (
+        evidence.lower_tf_trigger_closed is None
+        or evidence.confirmation_count is None
+        or evidence.confirmation_family_count is None
+    ):
+        return LifecycleV2State.ARMED, ("INSUFFICIENT_EVIDENCE",)
     thresholds = policy.thresholds
     if (
         evidence.lower_tf_trigger_closed
@@ -486,6 +516,11 @@ def _ready_preview(preview: dict[str, Any] | None) -> bool | None:
     return preview.get("status") == "READY" if preview is not None else None
 
 
+def _oldest_timestamp(*timestamps: int | float | None) -> float | None:
+    available = tuple(float(value) for value in timestamps if value is not None)
+    return min(available) if available else None
+
+
 def build_lifecycle_v2_evidence_from_metrics(
     *,
     metrics: dict[str, Any],
@@ -549,27 +584,11 @@ def build_lifecycle_v2_evidence_from_metrics(
         "confirmation_count": confirmation_count,
         "confirmation_family_count": confirmation_family_count,
         "extension_atr": max(extensions) if extensions else None,
-        "oldest_required_observed_at": (
-            min(
-                timestamp
-                for timestamp in (
-                    analysis_observed_at,
-                    reference_observed_at,
-                    orderbook_observed_at,
-                    constraints_observed_at,
-                )
-                if timestamp is not None
-            )
-            if all(
-                timestamp is not None
-                for timestamp in (
-                    analysis_observed_at,
-                    reference_observed_at,
-                    orderbook_observed_at,
-                    constraints_observed_at,
-                )
-            )
-            else None
+        "oldest_required_observed_at": _oldest_timestamp(
+            analysis_observed_at,
+            reference_observed_at,
+            orderbook_observed_at,
+            constraints_observed_at,
         ),
     }
     unavailable = tuple(sorted(name for name, value in values.items() if value is None))

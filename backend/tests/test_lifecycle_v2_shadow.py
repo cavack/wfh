@@ -181,7 +181,12 @@ def test_runtime_mapper_declares_missing_execution_facts_without_defaults() -> N
                     "lower_high": True,
                     "distance_to_support_atr": 0.4,
                     "extension_from_support_atr": 0.2,
-                }
+                },
+                "15m": {
+                    "lower_high": True,
+                    "distance_to_support_atr": 0.5,
+                    "extension_from_support_atr": 0.2,
+                },
             },
             "microstructure": {
                 "observed_at": 998,
@@ -218,6 +223,20 @@ def test_runtime_mapper_declares_missing_execution_facts_without_defaults() -> N
     assert evidence.estimated_round_trip_cost_r is None
     assert transition.to_state is LifecycleV2State.PRE_TRIGGER
     assert transition.reason_codes == ("INSUFFICIENT_EVIDENCE",)
+
+    early_transition = evaluate_lifecycle_v2_shadow(
+        episode_id="episode-runtime-early",
+        current_state=LifecycleV2State.WATCH,
+        evidence=evidence,
+    )
+    assert early_transition.to_state is LifecycleV2State.FUEL_RICH
+    assert early_transition.reason_codes == ("FUEL_EXPANSION_CONFIRMED",)
+    structure_transition = evaluate_lifecycle_v2_shadow(
+        episode_id="episode-runtime-early",
+        current_state=early_transition.to_state,
+        evidence=evidence,
+    )
+    assert structure_transition.to_state is LifecycleV2State.PRE_TRIGGER
 
 
 def test_registry_and_threshold_policy_are_content_addressed_and_not_silent() -> None:
