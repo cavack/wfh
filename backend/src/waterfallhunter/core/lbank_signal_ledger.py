@@ -5,9 +5,10 @@ import sqlite3
 import time
 from typing import Any
 
+from waterfallhunter.core.canonical_json import canonical_json_bytes
 from waterfallhunter.core.managed_sqlite import connect_managed_sqlite
 from waterfallhunter.core.schema_contract import require_managed_schema
-from waterfallhunter.core.signal_metadata import SignalMetadataInput
+from waterfallhunter.core.signal_metadata import SignalMetadataInput, canonical_sha256
 
 
 logger = logging.getLogger(
@@ -62,9 +63,146 @@ class LBankSignalLedger:
     @staticmethod
     def _metadata_created_at(value: int | None) -> int:
         timestamp = int(time.time()) if value is None else value
-        if isinstance(timestamp, bool) or not isinstance(timestamp, int) or timestamp < 0:
+        if (
+            isinstance(timestamp, bool)
+            or not isinstance(timestamp, int)
+            or timestamp < 0
+        ):
             raise ValueError("invalid signal identity, score, or metadata time")
         return timestamp
+
+    @staticmethod
+    def _decision_payload(
+        *,
+        signal_id: int,
+        symbol: str,
+        score: float,
+        metadata: SignalMetadataInput,
+        execution: dict[str, Any],
+        created_at: int,
+    ) -> dict[str, Any]:
+        failed_checks = [
+            str(item) for item in list(execution.get("failed_checks") or [])
+        ]
+        return {
+            "contract_version": "signal_decision_persistence_v1",
+            "decision_id": f"signal:{signal_id}:decision:1",
+            "decision_version": 1,
+            "signal_id": signal_id,
+            "symbol": symbol,
+            "signal_class": metadata.signal_class.value,
+            "strategy_profile": metadata.strategy_profile,
+            "lifecycle_state": "TRIGGERED",
+            "decision_status": "CONFIRMED",
+            "predictive_evidence_score": score,
+            "calibrated_probability": None,
+            "analysis_observed_at": metadata.analysis_observed_at,
+            "reference_observed_at": metadata.reference_observed_at,
+            "decision_contract_hash": metadata.decision_contract_hash,
+            "eligibility_gates": {
+                "catalog_compare_and_set": "PASSED",
+                "canonical_metadata": "PASSED",
+                "paper_only": True,
+            },
+            "anti_chase_risk": "NOT_EVALUATED",
+            "execution_risk": str(execution.get("status") or "UNKNOWN"),
+            "reason_codes": failed_checks,
+            "execution_mode": "PAPER_ONLY",
+            "created_at": created_at,
+        }
+
+    @staticmethod
+    def _canonical_payload(value: dict[str, Any]) -> tuple[str, str]:
+        payload_json = canonical_json_bytes(value).decode("utf-8")
+        return payload_json, canonical_sha256(value)
+
+    @classmethod
+    def _persist_decision_and_outbox(
+        cls,
+        conn: sqlite3.Connection,
+        *,
+        signal_id: int,
+        symbol: str,
+        score: float,
+        metadata: SignalMetadataInput,
+        execution: dict[str, Any],
+        created_at: int,
+    ) -> None:
+        decision = cls._decision_payload(
+            signal_id=signal_id,
+            symbol=symbol,
+            score=score,
+            metadata=metadata,
+            execution=execution,
+            created_at=created_at,
+        )
+        decision_json, decision_hash = cls._canonical_payload(decision)
+        decision_id = str(decision["decision_id"])
+        conn.execute(
+            """
+            INSERT INTO signal_decisions (
+                signal_id, decision_id, decision_version, decision_status,
+                lifecycle_state, predictive_evidence_score,
+                calibrated_probability, analysis_observed_at,
+                reference_observed_at, decision_contract_hash, payload_json,
+                payload_hash, created_at
+            ) VALUES (?, ?, 1, 'CONFIRMED', 'TRIGGERED', ?, NULL, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                signal_id,
+                decision_id,
+                score,
+                metadata.analysis_observed_at,
+                metadata.reference_observed_at,
+                metadata.decision_contract_hash,
+                decision_json,
+                decision_hash,
+                created_at,
+            ),
+        )
+
+        event_id = f"signal:{signal_id}:confirmed:1"
+        event_payload = {
+            "contract_version": "signal_confirmed_event_v1",
+            "event_id": event_id,
+            "event_type": "SIGNAL_CONFIRMED",
+            "aggregate_type": "signal",
+            "aggregate_id": str(signal_id),
+            "aggregate_version": 1,
+            "event_sequence": 1,
+            "signal_id": signal_id,
+            "symbol": symbol,
+            "signal_class": metadata.signal_class.value,
+            "strategy_profile": metadata.strategy_profile,
+            "decision_id": decision_id,
+            "decision_payload_hash": decision_hash,
+            "created_at": created_at,
+        }
+        event_json, event_hash = cls._canonical_payload(event_payload)
+        conn.execute(
+            """
+            INSERT INTO domain_outbox_events (
+                event_id, signal_id, aggregate_type, aggregate_id,
+                aggregate_version, event_sequence, event_type, event_key,
+                payload_contract_version, payload_json, payload_hash, status,
+                attempt_count, available_at, lease_owner, lease_expires_at,
+                last_error_code, created_at, updated_at
+            ) VALUES (?, ?, 'signal', ?, 1, 1, 'SIGNAL_CONFIRMED', ?,
+                      'signal_confirmed_event_v1', ?, ?, 'PENDING', 0, ?,
+                      NULL, NULL, NULL, ?, ?)
+            """,
+            (
+                event_id,
+                signal_id,
+                str(signal_id),
+                event_id,
+                event_json,
+                event_hash,
+                created_at,
+                created_at,
+                created_at,
+            ),
+        )
 
     def persist_trigger(
         self,
@@ -266,6 +404,16 @@ class LBankSignalLedger:
                         metadata_value.classification_evidence_hash,
                         metadata_time,
                     ),
+                )
+
+                self._persist_decision_and_outbox(
+                    conn,
+                    signal_id=signal_id,
+                    symbol=symbol,
+                    score=score_value,
+                    metadata=metadata_value,
+                    execution=execution,
+                    created_at=metadata_time,
                 )
 
                 return signal_id

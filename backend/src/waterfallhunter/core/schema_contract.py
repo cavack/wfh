@@ -14,7 +14,7 @@ from waterfallhunter.core.schema_unique_constraints import (
 )
 
 
-CURRENT_RUNTIME_SCHEMA_VERSION = 3
+CURRENT_RUNTIME_SCHEMA_VERSION = 4
 
 
 class SchemaContractError(RuntimeError):
@@ -68,6 +68,7 @@ class TriggerSpec:
     name: str
     event: str
     abort_message: str
+    protected_columns: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -612,6 +613,148 @@ _RUNTIME_SCHEMA: dict[str, ManagedTableSpec] = {
             message="signal_metadata is immutable",
         ),
     ),
+    "signal_decisions": ManagedTableSpec(
+        name="signal_decisions",
+        columns=(
+            _c("signal_id", "INTEGER", pk=1),
+            _c("decision_id", "TEXT", not_null=True),
+            _c("decision_version", "INTEGER", not_null=True),
+            _c("decision_status", "TEXT", not_null=True),
+            _c("lifecycle_state", "TEXT", not_null=True),
+            _c("predictive_evidence_score", "REAL", not_null=True),
+            _c("calibrated_probability", "REAL"),
+            _c("analysis_observed_at", "INTEGER", not_null=True),
+            _c("reference_observed_at", "INTEGER"),
+            _c("decision_contract_hash", "TEXT", not_null=True),
+            _c("payload_json", "TEXT", not_null=True),
+            _c("payload_hash", "TEXT", not_null=True),
+            _c("created_at", "INTEGER", not_null=True),
+        ),
+        indexes=(
+            IndexSpec(
+                "idx_signal_decisions_status_created",
+                ("decision_status", "created_at"),
+            ),
+        ),
+        foreign_keys=(ForeignKeySpec("signal_id", "lbank_signal_ledger", "id"),),
+        check_fragments=(
+            "check(typeof(decision_id) = 'text' and length(decision_id) > 0)",
+            "check(typeof(decision_version) = 'integer' and decision_version = 1)",
+            "check(decision_status = 'CONFIRMED')",
+            "check(lifecycle_state = 'TRIGGERED')",
+            (
+                "check(typeof(predictive_evidence_score) in ('integer', 'real') "
+                "and predictive_evidence_score >= 0 "
+                "and predictive_evidence_score <= 100)"
+            ),
+            "check(calibrated_probability is null)",
+            "check(typeof(analysis_observed_at) = 'integer' and analysis_observed_at >= 0)",
+            (
+                "check(reference_observed_at is null or "
+                "(typeof(reference_observed_at) = 'integer' "
+                "and reference_observed_at >= 0))"
+            ),
+            (
+                "check(typeof(decision_contract_hash) = 'text' "
+                "and length(decision_contract_hash) = 64 "
+                "and decision_contract_hash not glob '*[^0-9a-f]*')"
+            ),
+            "check(typeof(payload_json) = 'text' and json_valid(payload_json))",
+            (
+                "check(typeof(payload_hash) = 'text' and length(payload_hash) = 64 "
+                "and payload_hash not glob '*[^0-9a-f]*')"
+            ),
+            "check(typeof(created_at) = 'integer' and created_at >= 0)",
+        ),
+        triggers=_immutable(
+            "signal_decisions",
+            message="signal_decisions are immutable",
+        ),
+    ),
+    "domain_outbox_events": ManagedTableSpec(
+        name="domain_outbox_events",
+        columns=(
+            _c("event_id", "TEXT", pk=1),
+            _c("signal_id", "INTEGER", not_null=True),
+            _c("aggregate_type", "TEXT", not_null=True),
+            _c("aggregate_id", "TEXT", not_null=True),
+            _c("aggregate_version", "INTEGER", not_null=True),
+            _c("event_sequence", "INTEGER", not_null=True),
+            _c("event_type", "TEXT", not_null=True),
+            _c("event_key", "TEXT", not_null=True),
+            _c("payload_contract_version", "TEXT", not_null=True),
+            _c("payload_json", "TEXT", not_null=True),
+            _c("payload_hash", "TEXT", not_null=True),
+            _c("status", "TEXT", not_null=True),
+            _c("attempt_count", "INTEGER", not_null=True, default="0"),
+            _c("available_at", "INTEGER", not_null=True),
+            _c("lease_owner", "TEXT"),
+            _c("lease_expires_at", "INTEGER"),
+            _c("last_error_code", "TEXT"),
+            _c("created_at", "INTEGER", not_null=True),
+            _c("updated_at", "INTEGER", not_null=True),
+        ),
+        indexes=(
+            IndexSpec(
+                "idx_domain_outbox_delivery_queue",
+                ("status", "available_at", "created_at"),
+            ),
+        ),
+        foreign_keys=(ForeignKeySpec("signal_id", "lbank_signal_ledger", "id"),),
+        check_fragments=(
+            "check(typeof(event_id) = 'text' and length(event_id) > 0)",
+            "check(aggregate_type = 'signal')",
+            "check(typeof(aggregate_id) = 'text' and length(aggregate_id) > 0)",
+            "check(typeof(aggregate_version) = 'integer' and aggregate_version >= 1)",
+            "check(typeof(event_sequence) = 'integer' and event_sequence >= 1)",
+            "check(event_type = 'SIGNAL_CONFIRMED')",
+            "check(typeof(event_key) = 'text' and length(event_key) > 0)",
+            "check(payload_contract_version = 'signal_confirmed_event_v1')",
+            "check(typeof(payload_json) = 'text' and json_valid(payload_json))",
+            (
+                "check(typeof(payload_hash) = 'text' and length(payload_hash) = 64 "
+                "and payload_hash not glob '*[^0-9a-f]*')"
+            ),
+            (
+                "check(status in ('PENDING', 'SENDING', 'DELIVERED', "
+                "'RETRY_WAIT', 'DEAD_LETTER', 'DELIVERY_UNCERTAIN'))"
+            ),
+            "check(typeof(attempt_count) = 'integer' and attempt_count >= 0)",
+            "check(typeof(available_at) = 'integer' and available_at >= 0)",
+            (
+                "check(lease_expires_at is null or "
+                "(typeof(lease_expires_at) = 'integer' and lease_expires_at >= 0))"
+            ),
+            "check(typeof(created_at) = 'integer' and created_at >= 0)",
+            "check(typeof(updated_at) = 'integer' and updated_at >= created_at)",
+        ),
+        triggers=(
+            TriggerSpec(
+                "domain_outbox_events_material_immutable",
+                "UPDATE",
+                "domain outbox event material is immutable",
+                (
+                    "event_id",
+                    "signal_id",
+                    "aggregate_type",
+                    "aggregate_id",
+                    "aggregate_version",
+                    "event_sequence",
+                    "event_type",
+                    "event_key",
+                    "payload_contract_version",
+                    "payload_json",
+                    "payload_hash",
+                    "created_at",
+                ),
+            ),
+            TriggerSpec(
+                "domain_outbox_events_no_delete",
+                "DELETE",
+                "domain outbox events cannot be deleted",
+            ),
+        ),
+    ),
 }
 
 
@@ -1139,11 +1282,17 @@ def _trigger_is_canonical(
     table_identifier = (
         "(?:" + re.escape(table_name.casefold()) + "|" + quoted_identifier + ")"
     )
+    protected_columns = ""
+    if trigger.protected_columns:
+        protected_columns = "of" + ",".join(
+            re.escape(column.casefold()) for column in trigger.protected_columns
+        )
     canonical = (
         r"createtrigger(?:ifnotexists)?"
         + trigger_identifier
         + "before"
         + re.escape(trigger.event.casefold())
+        + protected_columns
         + "on"
         + table_identifier
         + r"beginselectraise\(abort,"
