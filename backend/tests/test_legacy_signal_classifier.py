@@ -271,9 +271,17 @@ def test_apply_is_append_only_and_accepts_only_equivalent_existing_metadata(tmp_
         expected_report_hash=preview.report_hash,
         created_at=1_700_000_100,
     )
+    apply_legacy_classification(
+        db_path,
+        expected_report_hash=preview.report_hash,
+        created_at=1_700_000_999,
+    )
 
     with sqlite3.connect(db_path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM signal_metadata").fetchone() == (1,)
+        assert conn.execute("SELECT created_at FROM signal_metadata").fetchone() == (
+            1_700_000_100,
+        )
 
 
 def test_apply_rolls_back_all_new_rows_when_existing_metadata_conflicts(tmp_path) -> None:

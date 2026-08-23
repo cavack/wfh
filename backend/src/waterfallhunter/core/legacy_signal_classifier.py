@@ -397,7 +397,10 @@ def _persist_resolved_decision(
     )
     expected = _metadata_tuple(metadata, expected_created_at)
     if existing is not None:
-        if tuple(existing) != expected:
+        # created_at records when the immutable row was first materialized. A
+        # later idempotent replay may supply a different operation timestamp;
+        # that must neither rewrite the original value nor create a conflict.
+        if tuple(existing[:-1]) != expected[:-1]:
             raise LegacyClassificationError("EXISTING_METADATA_CONFLICT")
         return
 
