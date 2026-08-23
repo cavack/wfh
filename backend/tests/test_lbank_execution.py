@@ -24,6 +24,13 @@ def market_packet():
                 "min": 5.0,
             },
         },
+        "info": {
+            "priceTick": 0.01,
+            "volumeTick": 1.0,
+            "maxLeverage": 20,
+            "priceLimitLowerValue": 0.05,
+            "priceLimitUpperValue": 0.05,
+        },
     }
 
 
@@ -513,6 +520,11 @@ def test_execution_observer_exposes_market_constraints():
         ]
         == 100.5
     )
+    assert filters["price_tick"] == 0.01
+    assert filters["quantity_step"] == 1.0
+    assert filters["maximum_leverage"] == 20.0
+    assert filters["price_limit_lower_rate"] == 0.05
+    assert filters["price_limit_upper_rate"] == 0.05
 
 
 def test_execution_observer_rejects_non_linear_market():

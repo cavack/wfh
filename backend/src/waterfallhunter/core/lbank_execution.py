@@ -220,6 +220,7 @@ class LBankExecutionObserver:
             )
             else {}
         )
+        info = market.get("info") if isinstance(market.get("info"), dict) else {}
 
         contract_size = (
             cls._safe_positive(
@@ -303,6 +304,20 @@ class LBankExecutionObserver:
                     "price"
                 ),
             },
+            "price_tick": cls._safe_positive(
+                info.get("priceTick")
+            ) or cls._safe_positive(precision.get("price")),
+            "quantity_step": cls._safe_positive(
+                info.get("volumeTick")
+            ) or cls._safe_positive(precision.get("amount")),
+            "maximum_leverage": cls._safe_positive(info.get("maxLeverage")),
+            "price_limit_lower_rate": cls._safe_positive(
+                info.get("priceLimitLowerValue")
+            ),
+            "price_limit_upper_rate": cls._safe_positive(
+                info.get("priceLimitUpperValue")
+            ),
+            "price_limit_semantics": "relative_to_reference_fraction",
         }
 
     @classmethod
