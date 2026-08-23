@@ -974,7 +974,7 @@ def _store_live_metrics(
     )
 
 
-def get_formatted_candidates(*, evaluation_time: float | None = None):  # NOSONAR: bounded read-only dashboard aggregation; decomposed in a later non-model wave.
+def get_formatted_candidates(*, evaluation_time: float | None = None):  # NOSONAR
     now = time.time() if evaluation_time is None else float(evaluation_time)
     if not math.isfinite(now) or now < 0:
         raise ValueError("evaluation_time must be a non-negative finite timestamp")

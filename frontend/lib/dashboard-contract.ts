@@ -16,8 +16,8 @@ function positiveIntegerText(value: unknown): value is string {
 
 export function dashboardSnapshot(value: unknown): DashboardSnapshot | undefined {
   const packet = record(value);
-  if (!packet
-    || packet.contract_version !== "dashboard_snapshot_v1"
+  if (!packet) return undefined;
+  if (packet.contract_version !== "dashboard_snapshot_v1"
     || packet.schema_version !== "1.0"
     || packet.state !== "READY"
     || !Number.isInteger(packet.snapshot_version)
@@ -25,7 +25,7 @@ export function dashboardSnapshot(value: unknown): DashboardSnapshot | undefined
     || !finite(packet.generated_at)
     || !Number.isInteger(packet.total)
     || (packet.total as number) < 0
-    || !record(packet?.candidates)
+    || !record(packet.candidates)
     || !record(packet.final_ranking)
     || !record(packet.signal_funnel)) return undefined;
   if (Object.keys(packet.candidates as JsonObject).length !== packet.total) return undefined;
@@ -34,8 +34,8 @@ export function dashboardSnapshot(value: unknown): DashboardSnapshot | undefined
 
 export function dashboardStreamEvent(value: unknown): DashboardStreamEvent | undefined {
   const packet = record(value);
-  if (!packet
-    || packet.contract_version !== "dashboard_stream_event_v1"
+  if (!packet) return undefined;
+  if (packet.contract_version !== "dashboard_stream_event_v1"
     || !positiveIntegerText(packet.event_id)
     || !["snapshot", "heartbeat"].includes(String(packet.event_type))
     || !Number.isInteger(packet.snapshot_version)
@@ -44,7 +44,7 @@ export function dashboardStreamEvent(value: unknown): DashboardStreamEvent | und
     || !finite(packet.generated_at)
     || !(packet.last_event_id === null || positiveIntegerText(packet.last_event_id))
     || typeof packet.payload_hash !== "string"
-    || !/^[0-9a-f]{64}$/.test(packet?.payload_hash as string)
+    || !/^[0-9a-f]{64}$/.test(packet.payload_hash as string)
     || typeof packet.replayed !== "boolean"
     || typeof packet.full_snapshot !== "boolean") return undefined;
   if (packet.event_type === "heartbeat") {

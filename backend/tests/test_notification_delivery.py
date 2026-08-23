@@ -204,10 +204,11 @@ def test_completion_after_lease_recovery_fails_cas_and_preserves_uncertainty(
     assert claimed is not None
     assert second.recover_expired_leases(now=210) == 1
 
+    delivered = DeliveryResult(DeliveryDisposition.DELIVERED)
     with pytest.raises(NotificationDeliveryError, match="DELIVERY_COMPLETION_CAS_FAILED"):
         first._complete(
             claimed,
-            result=DeliveryResult(DeliveryDisposition.DELIVERED),
+            result=delivered,
             now=211,
         )
 
