@@ -199,6 +199,52 @@ def test_signal_metadata_rejects_noncanonical_score_version_and_timestamp_types(
             )
 
 
+@pytest.mark.parametrize(
+    ("column_index", "blob_value"),
+    [
+        (4, b"waterfall_signal_model_v1"),
+        (5, b"a" * 64),
+        (10, b"a" * 64),
+    ],
+)
+def test_signal_metadata_rejects_blobs_in_required_text_evidence(
+    tmp_path: Path,
+    column_index: int,
+    blob_value: bytes,
+) -> None:
+    db_path = migrate_test_database(tmp_path / f"metadata-blob-{column_index}.db")
+
+    with sqlite3.connect(db_path) as conn:
+        signal_id = _insert_ledger_row(
+            conn,
+            symbol=f"BLOB{column_index}/USDT:USDT",
+            triggered_at=1_700_000_000,
+        )
+        values = [
+            signal_id,
+            "STRICT",
+            "strict_score_v2",
+            "score_v2",
+            "waterfall_signal_model_v1",
+            "a" * 64,
+            1_700_000_000,
+            None,
+            "signal_metadata_v1",
+            "FUTURE_PIPELINE_EXPLICIT",
+            None,
+            1_700_000_001,
+        ]
+        values[column_index] = blob_value
+        if column_index == 10:
+            values[9] = "LEGACY_PROFILE_EXACT_MATCH"
+
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO signal_metadata VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                tuple(values),
+            )
+
+
 def test_canonical_view_hides_ledger_rows_without_metadata(
     tmp_path: Path,
 ) -> None:

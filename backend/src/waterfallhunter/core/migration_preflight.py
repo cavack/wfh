@@ -239,6 +239,26 @@ def _classify_migrated(path: Path, user_version: int) -> PreflightResult:
                         unknown_user_objects=schema.unknown_user_objects,
                     )
                 unknown = schema.unknown_user_objects
+            elif applied == (1, 2):
+                schema = verify_managed_schema_connection(
+                    conn,
+                    required_tables=(
+                        managed_runtime_table_names() - {"signal_metadata"}
+                    ),
+                    check_user_version=2,
+                )
+                if (
+                    not schema.valid
+                    or not _managed_constraints_valid(conn)
+                    or not _managed_global_names_valid(conn)
+                    or not _managed_table_names_valid(conn)
+                ):
+                    return _incompatible(
+                        "MIGRATION_SCHEMA_MISMATCH",
+                        user_version=user_version,
+                        unknown_user_objects=schema.unknown_user_objects,
+                    )
+                unknown = schema.unknown_user_objects
             elif applied == (1,):
                 pending_valid, unknown = _pending_runtime_schema_valid(conn)
                 if not pending_valid:

@@ -572,8 +572,11 @@ _RUNTIME_SCHEMA: dict[str, ManagedTableSpec] = {
             "check(signal_class in ('STRICT', 'EXPERIMENTAL'))",
             "check(length(strategy_profile) > 0)",
             "check(length(score_version) > 0)",
-            "check(length(model_generation) > 0)",
-            "check(length(decision_contract_hash) = 64)",
+            "check(typeof(model_generation) = 'text' and length(model_generation) > 0)",
+            (
+                "check(typeof(decision_contract_hash) = 'text' "
+                "and length(decision_contract_hash) = 64)"
+            ),
             "check(decision_contract_hash not glob '*[^0-9a-f]*')",
             "check(typeof(analysis_observed_at) = 'integer' and analysis_observed_at >= 0)",
             (
@@ -590,6 +593,7 @@ _RUNTIME_SCHEMA: dict[str, ManagedTableSpec] = {
                 "check((classification_method = 'FUTURE_PIPELINE_EXPLICIT' "
                 "and classification_evidence_hash is null) or "
                 "(classification_method = 'LEGACY_PROFILE_EXACT_MATCH' "
+                "and typeof(classification_evidence_hash) = 'text' "
                 "and length(classification_evidence_hash) = 64 "
                 "and classification_evidence_hash not glob '*[^0-9a-f]*'))"
             ),

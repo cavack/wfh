@@ -15,8 +15,11 @@ CREATE TABLE signal_metadata (
     CHECK(signal_class IN ('STRICT', 'EXPERIMENTAL')),
     CHECK(length(strategy_profile) > 0),
     CHECK(length(score_version) > 0),
-    CHECK(length(model_generation) > 0),
-    CHECK(length(decision_contract_hash) = 64),
+    CHECK(typeof(model_generation) = 'text' AND length(model_generation) > 0),
+    CHECK(
+        typeof(decision_contract_hash) = 'text'
+        AND length(decision_contract_hash) = 64
+    ),
     CHECK(decision_contract_hash NOT GLOB '*[^0-9a-f]*'),
     CHECK(
         typeof(analysis_observed_at) = 'integer'
@@ -42,6 +45,7 @@ CREATE TABLE signal_metadata (
         OR
         (
             classification_method = 'LEGACY_PROFILE_EXACT_MATCH'
+            AND typeof(classification_evidence_hash) = 'text'
             AND length(classification_evidence_hash) = 64
             AND classification_evidence_hash NOT GLOB '*[^0-9a-f]*'
         )
