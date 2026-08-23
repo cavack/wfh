@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import math
-import random
 from collections import Counter
 from typing import Any, Literal
 
@@ -442,101 +441,17 @@ def _walk_forward(
     for index in range(policy.walk_forward_folds):
         test_start = first_test + index * width
         test_end = end if index == policy.walk_forward_folds - 1 else test_start + width
-        train = [
-            row
-            for row in development
-            if row.signal_triggered_at < test_start
-            and row.label_observed_at <= test_start - policy.embargo_seconds
-        ]
-        test = [
-            row
-            for row in development
-            if test_start <= row.signal_triggered_at < test_end
-        ]
-        fold_blockers: list[str] = []
-        if len(test) < policy.minimum_walk_forward_test_rows:
-            fold_blockers.append("WALK_FORWARD_TEST_FOLD_TOO_SMALL")
-        if len(train) < policy.minimum_walk_forward_test_rows:
-            fold_blockers.append("WALK_FORWARD_TRAIN_FOLD_TOO_SMALL")
-        if train and len(set(_labels(train))) < 2:
-            fold_blockers.append("WALK_FORWARD_TRAIN_LACKS_BOTH_TARGET_CLASSES")
-        if test and len(set(_labels(test))) < 2:
-            fold_blockers.append("WALK_FORWARD_TEST_LACKS_BOTH_TARGET_CLASSES")
-        candidate_metrics: list[dict[str, Any]] = []
-        if not fold_blockers:
-            for candidate in _CANDIDATES:
-                fitted = _fit_model(candidate, train)
-                probability = [_predict(fitted, row) for row in test]
-                metrics = _probability_metrics(_labels(test), probability)
-                candidate_metrics.append(
-                    {
-                        "model_id": candidate["model_id"],
-                        "metrics": metrics,
-                    }
-                )
-                predictions[str(candidate["model_id"])].extend(
-                    (
-                        row.signal_triggered_at,
-                        row.target_tp2_hit_within_horizon,
-                        predicted,
-                        row.net_utility_r,
-                    )
-                    for row, predicted in zip(test, probability, strict=True)
-                )
+        fold, fold_blockers = _walk_forward_fold(
+            development,
+            policy=policy,
+            index=index,
+            test_start=test_start,
+            test_end=test_end,
+            predictions=predictions,
+        )
         blockers.extend(fold_blockers)
-        folds.append(
-            {
-                "fold": index + 1,
-                "train_count": len(train),
-                "test_count": len(test),
-                "test_start": test_start,
-                "test_end": test_end,
-                "purge_seconds": policy.embargo_seconds,
-                "embargo_seconds": policy.embargo_seconds,
-                "maximum_train_label_observed_at": max(
-                    (row.label_observed_at for row in train),
-                    default=None,
-                ),
-                "candidate_metrics": candidate_metrics,
-                "blocking_reasons": fold_blockers,
-            }
-        )
-    ranking: list[dict[str, Any]] = []
-    if not blockers:
-        for candidate in _CANDIDATES:
-            candidate_id = str(candidate["model_id"])
-            ordered = sorted(predictions[candidate_id])
-            labels = [item[1] for item in ordered]
-            probabilities = [item[2] for item in ordered]
-            utilities = [item[3] for item in ordered]
-            metrics = _probability_metrics(labels, probabilities)
-            selected_utilities = [
-                utility
-                for utility, probability in zip(utilities, probabilities, strict=True)
-                if probability >= 0.5
-            ]
-            ranking.append(
-                {
-                    "model_id": candidate_id,
-                    "family": candidate["family"],
-                    "complexity_rank": candidate["complexity_rank"],
-                    "oos_row_count": len(ordered),
-                    "metrics": metrics,
-                    "selected_net_utility_r": (
-                        round(sum(selected_utilities) / len(selected_utilities), 8)
-                        if selected_utilities
-                        else None
-                    ),
-                }
-            )
-        ranking.sort(
-            key=lambda item: (
-                item["metrics"]["brier_score"],
-                item["metrics"]["log_loss"],
-                item["complexity_rank"],
-                item["model_id"],
-            )
-        )
+        folds.append(fold)
+    ranking = [] if blockers else _rank_walk_forward(predictions)
     return {
         "available": not blockers,
         "selection_contract": "CHRONOLOGICAL_EXPANDING_PURGED_EMBARGOED",
@@ -545,6 +460,132 @@ def _walk_forward(
         "ranking": ranking,
         "blocking_reasons": sorted(set(blockers)),
     }
+
+
+def _walk_forward_fold(
+    development: list[ScientificValidationRow],
+    *,
+    policy: ScientificValidationPolicy,
+    index: int,
+    test_start: int,
+    test_end: int,
+    predictions: dict[str, list[tuple[int, bool, float, float]]],
+) -> tuple[dict[str, Any], list[str]]:
+    train = [
+        row
+        for row in development
+        if row.signal_triggered_at < test_start
+        and row.label_observed_at <= test_start - policy.embargo_seconds
+    ]
+    test = [
+        row
+        for row in development
+        if test_start <= row.signal_triggered_at < test_end
+    ]
+    blockers = _walk_forward_fold_blockers(train, test, policy)
+    metrics = (
+        []
+        if blockers
+        else _evaluate_walk_forward_candidates(train, test, predictions)
+    )
+    fold = {
+        "fold": index + 1,
+        "train_count": len(train),
+        "test_count": len(test),
+        "test_start": test_start,
+        "test_end": test_end,
+        "purge_seconds": policy.embargo_seconds,
+        "embargo_seconds": policy.embargo_seconds,
+        "maximum_train_label_observed_at": max(
+            (row.label_observed_at for row in train),
+            default=None,
+        ),
+        "candidate_metrics": metrics,
+        "blocking_reasons": blockers,
+    }
+    return fold, blockers
+
+
+def _walk_forward_fold_blockers(
+    train: list[ScientificValidationRow],
+    test: list[ScientificValidationRow],
+    policy: ScientificValidationPolicy,
+) -> list[str]:
+    checks = (
+        (len(test) < policy.minimum_walk_forward_test_rows, "WALK_FORWARD_TEST_FOLD_TOO_SMALL"),
+        (len(train) < policy.minimum_walk_forward_test_rows, "WALK_FORWARD_TRAIN_FOLD_TOO_SMALL"),
+        (bool(train) and len(set(_labels(train))) < 2, "WALK_FORWARD_TRAIN_LACKS_BOTH_TARGET_CLASSES"),
+        (bool(test) and len(set(_labels(test))) < 2, "WALK_FORWARD_TEST_LACKS_BOTH_TARGET_CLASSES"),
+    )
+    return [reason for failed, reason in checks if failed]
+
+
+def _evaluate_walk_forward_candidates(
+    train: list[ScientificValidationRow],
+    test: list[ScientificValidationRow],
+    predictions: dict[str, list[tuple[int, bool, float, float]]],
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for candidate in _CANDIDATES:
+        fitted = _fit_model(candidate, train)
+        probability = [_predict(fitted, row) for row in test]
+        results.append(
+            {
+                "model_id": candidate["model_id"],
+                "metrics": _probability_metrics(_labels(test), probability),
+            }
+        )
+        predictions[str(candidate["model_id"])].extend(
+            (
+                row.signal_triggered_at,
+                row.target_tp2_hit_within_horizon,
+                predicted,
+                row.net_utility_r,
+            )
+            for row, predicted in zip(test, probability, strict=True)
+        )
+    return results
+
+
+def _rank_walk_forward(
+    predictions: dict[str, list[tuple[int, bool, float, float]]],
+) -> list[dict[str, Any]]:
+    ranking: list[dict[str, Any]] = []
+    for candidate in _CANDIDATES:
+        candidate_id = str(candidate["model_id"])
+        ordered = sorted(predictions[candidate_id])
+        probabilities = [item[2] for item in ordered]
+        selected_utilities = [
+            item[3]
+            for item in ordered
+            if item[2] >= 0.5
+        ]
+        ranking.append(
+            {
+                "model_id": candidate_id,
+                "family": candidate["family"],
+                "complexity_rank": candidate["complexity_rank"],
+                "oos_row_count": len(ordered),
+                "metrics": _probability_metrics(
+                    [item[1] for item in ordered],
+                    probabilities,
+                ),
+                "selected_net_utility_r": (
+                    round(sum(selected_utilities) / len(selected_utilities), 8)
+                    if selected_utilities
+                    else None
+                ),
+            }
+        )
+    ranking.sort(
+        key=lambda item: (
+            item["metrics"]["brier_score"],
+            item["metrics"]["log_loss"],
+            item["complexity_rank"],
+            item["model_id"],
+        )
+    )
+    return ranking
 
 
 def _fit_model(spec: dict[str, Any], rows: list[ScientificValidationRow]) -> dict[str, Any]:
@@ -747,16 +788,20 @@ def _block_bootstrap(
     block_size: int,
     seed_material: str,
 ) -> dict[str, Any]:
-    seed = int(hashlib.sha256(seed_material.encode("utf-8")).hexdigest()[:16], 16)
-    generator = random.Random(seed)
     n = len(rows)
     brier_samples: list[float] = []
     utility_samples: list[float] = []
-    for _ in range(iterations):
+    for iteration in range(iterations):
         indices: list[int] = []
+        block = 0
         while len(indices) < n:
-            start = generator.randrange(max(1, n - block_size + 1))
+            upper = max(1, n - block_size + 1)
+            digest = hashlib.sha256(
+                f"{seed_material}:{iteration}:{block}".encode("utf-8")
+            ).digest()
+            start = int.from_bytes(digest[:8], "big") % upper
             indices.extend(range(start, min(start + block_size, n)))
+            block += 1
         indices = indices[:n]
         labels = [rows[index].target_tp2_hit_within_horizon for index in indices]
         sampled_probabilities = [probabilities[index] for index in indices]
