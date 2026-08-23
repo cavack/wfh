@@ -15,7 +15,7 @@ CREATE TABLE signal_decisions (
     FOREIGN KEY(signal_id) REFERENCES lbank_signal_ledger(id),
     UNIQUE(decision_id),
     CHECK(typeof(decision_id) = 'text' AND length(decision_id) > 0),
-    CHECK(typeof(decision_version) = 'integer' AND decision_version = 1),
+    CHECK(typeof(decision_version) = 'integer' AND decision_version = 1), -- NOSONAR: SQLite type checks are not PL/SQL literals.
     CHECK(decision_status = 'CONFIRMED'),
     CHECK(lifecycle_state = 'TRIGGERED'),
     CHECK(
@@ -35,7 +35,7 @@ CREATE TABLE signal_decisions (
     CHECK(
         typeof(decision_contract_hash) = 'text'
         AND length(decision_contract_hash) = 64
-        AND decision_contract_hash NOT GLOB '*[^0-9a-f]*'
+        AND decision_contract_hash NOT GLOB '*[^0-9a-f]*' -- NOSONAR: SQLite hash checks are not PL/SQL literals.
     ),
     CHECK(typeof(payload_json) = 'text' AND json_valid(payload_json)),
     CHECK(
@@ -49,13 +49,13 @@ CREATE TABLE signal_decisions (
 CREATE INDEX idx_signal_decisions_status_created
 ON signal_decisions(decision_status, created_at);
 
-CREATE TRIGGER signal_decisions_no_update
+CREATE TRIGGER signal_decisions_no_update -- NOSONAR: SQLite has no CREATE OR REPLACE TRIGGER.
 BEFORE UPDATE ON signal_decisions
 BEGIN
     SELECT RAISE(ABORT, 'signal_decisions are immutable');
 END;
 
-CREATE TRIGGER signal_decisions_no_delete
+CREATE TRIGGER signal_decisions_no_delete -- NOSONAR: SQLite has no CREATE OR REPLACE TRIGGER.
 BEFORE DELETE ON signal_decisions
 BEGIN
     SELECT RAISE(ABORT, 'signal_decisions are immutable');
@@ -109,7 +109,7 @@ CREATE TABLE domain_outbox_events (
 CREATE INDEX idx_domain_outbox_delivery_queue
 ON domain_outbox_events(status, available_at, created_at);
 
-CREATE TRIGGER domain_outbox_events_material_immutable
+CREATE TRIGGER domain_outbox_events_material_immutable -- NOSONAR: SQLite has no CREATE OR REPLACE TRIGGER.
 BEFORE UPDATE OF
     event_id,
     signal_id,
@@ -128,7 +128,7 @@ BEGIN
     SELECT RAISE(ABORT, 'domain outbox event material is immutable');
 END;
 
-CREATE TRIGGER domain_outbox_events_no_delete
+CREATE TRIGGER domain_outbox_events_no_delete -- NOSONAR: SQLite has no CREATE OR REPLACE TRIGGER.
 BEFORE DELETE ON domain_outbox_events
 BEGIN
     SELECT RAISE(ABORT, 'domain outbox events cannot be deleted');
