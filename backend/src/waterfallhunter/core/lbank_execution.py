@@ -115,6 +115,11 @@ class LBankExecutionObserver:
     def _finite(
         value: Any,
     ) -> float | None:
+        if isinstance(value, str):
+            try:
+                value = float(value.strip())
+            except ValueError:
+                return None
         if (
             isinstance(
                 value,
@@ -144,6 +149,24 @@ class LBankExecutionObserver:
             return None
 
         return number
+
+    @classmethod
+    def _mark_price(cls, market: dict, ticker: dict | None = None) -> float | None:
+        ticker = ticker if isinstance(ticker, dict) else {}
+        ticker_info = ticker.get("info") if isinstance(ticker.get("info"), dict) else {}
+        market_info = market.get("info") if isinstance(market.get("info"), dict) else {}
+        for value in (
+            ticker.get("mark"),
+            ticker.get("markPrice"),
+            ticker_info.get("markPrice"),
+            ticker_info.get("mark_price"),
+            market_info.get("markPrice"),
+            market_info.get("mark_price"),
+        ):
+            mark_price = cls._safe_positive(value)
+            if mark_price is not None:
+                return mark_price
+        return None
 
     def _create_exchange(self):
         return ccxt.lbank(
@@ -220,6 +243,7 @@ class LBankExecutionObserver:
             )
             else {}
         )
+        info = market.get("info") if isinstance(market.get("info"), dict) else {}
 
         contract_size = (
             cls._safe_positive(
@@ -303,6 +327,20 @@ class LBankExecutionObserver:
                     "price"
                 ),
             },
+            "price_tick": cls._safe_positive(
+                info.get("priceTick")
+            ) or cls._safe_positive(precision.get("price")),
+            "quantity_step": cls._safe_positive(
+                info.get("volumeTick")
+            ) or cls._safe_positive(precision.get("amount")),
+            "maximum_leverage": cls._safe_positive(info.get("maxLeverage")),
+            "price_limit_lower_rate": cls._safe_positive(
+                info.get("priceLimitLowerValue")
+            ),
+            "price_limit_upper_rate": cls._safe_positive(
+                info.get("priceLimitUpperValue")
+            ),
+            "price_limit_semantics": "relative_to_reference_fraction",
         }
 
     @classmethod
@@ -695,6 +733,7 @@ class LBankExecutionObserver:
             100,
         ),
         observed_at: float | None = None,
+        mark_price: float | None = None,
     ) -> dict:
         if not is_usdt_linear_perpetual(
             market
@@ -742,6 +781,15 @@ class LBankExecutionObserver:
                 "reason": (
                     "empty LBank orderbook"
                 ),
+            }
+
+        validated_mark_price = cls._safe_positive(mark_price) or cls._mark_price(market)
+        if validated_mark_price is None:
+            return {
+                "available": False,
+                "symbol": symbol,
+                "source_exchange": "lbank",
+                "reason": "LBank mark price unavailable",
             }
 
         best_bid = (
@@ -978,6 +1026,7 @@ class LBankExecutionObserver:
                 midpoint,
                 12,
             ),
+            "mark_price": round(validated_mark_price, 12),
             "spread_pct": round(
                 spread_pct,
                 6,
@@ -1009,7 +1058,7 @@ class LBankExecutionObserver:
             "market_filters": (
                 cls._market_filters(
                     market,
-                    midpoint,
+                    validated_mark_price,
                 )
             ),
             "execution": execution,
@@ -1053,6 +1102,8 @@ class LBankExecutionObserver:
                     ),
                 )
             )
+            ticker = await exchange.fetch_ticker(symbol)
+            mark_price = self._mark_price(market, ticker)
 
             return (
                 self.measure_orderbook(
@@ -1066,6 +1117,7 @@ class LBankExecutionObserver:
                     observed_at=(
                         time.time()
                     ),
+                    mark_price=mark_price,
                 )
             )
 
