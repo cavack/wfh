@@ -81,9 +81,7 @@ class LBankSignalLedger:
         execution: dict[str, Any],
         created_at: int,
     ) -> dict[str, Any]:
-        failed_checks = [
-            str(item) for item in list(execution.get("failed_checks") or [])
-        ]
+        failed_checks = [str(item) for item in (execution.get("failed_checks") or [])]
         return {
             "contract_version": "signal_decision_persistence_v1",
             "decision_id": f"signal:{signal_id}:decision:1",

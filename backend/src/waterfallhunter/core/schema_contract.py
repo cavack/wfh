@@ -15,6 +15,9 @@ from waterfallhunter.core.schema_unique_constraints import (
 
 
 CURRENT_RUNTIME_SCHEMA_VERSION = 4
+NON_NEGATIVE_INTEGER_CREATED_AT_CHECK = (
+    "check(typeof(created_at) = 'integer' and created_at >= 0)"
+)
 
 
 class SchemaContractError(RuntimeError):
@@ -606,7 +609,7 @@ _RUNTIME_SCHEMA: dict[str, ManagedTableSpec] = {
                 "and strategy_profile = 'experimental_pretrigger_v1' "
                 "and score_version = 'score_v2_watch_v1'))"
             ),
-            "check(typeof(created_at) = 'integer' and created_at >= 0)",
+            NON_NEGATIVE_INTEGER_CREATED_AT_CHECK,
         ),
         triggers=_immutable(
             "signal_metadata",
@@ -664,7 +667,7 @@ _RUNTIME_SCHEMA: dict[str, ManagedTableSpec] = {
                 "check(typeof(payload_hash) = 'text' and length(payload_hash) = 64 "
                 "and payload_hash not glob '*[^0-9a-f]*')"
             ),
-            "check(typeof(created_at) = 'integer' and created_at >= 0)",
+            NON_NEGATIVE_INTEGER_CREATED_AT_CHECK,
         ),
         triggers=_immutable(
             "signal_decisions",
@@ -725,7 +728,7 @@ _RUNTIME_SCHEMA: dict[str, ManagedTableSpec] = {
                 "check(lease_expires_at is null or "
                 "(typeof(lease_expires_at) = 'integer' and lease_expires_at >= 0))"
             ),
-            "check(typeof(created_at) = 'integer' and created_at >= 0)",
+            NON_NEGATIVE_INTEGER_CREATED_AT_CHECK,
             "check(typeof(updated_at) = 'integer' and updated_at >= created_at)",
         ),
         triggers=(
