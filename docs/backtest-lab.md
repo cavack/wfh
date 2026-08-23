@@ -13,7 +13,7 @@ promotion gate, or an order path.
   `false`.
 - Every bundle must carry an HMAC-SHA256 attestation created with the
   operator-held `BACKTEST_ARTIFACT_HMAC_KEY`. The API returns 503 when the key
-  is not configured and 422 for an invalid or stale attestation.
+  is not configured and 422 for an invalid or tampered attestation.
 - Replay performs no database write and does not update lifecycle, ranking,
   alerts, notifications, or execution state.
 - Missing execution evidence is not synthesized. An `OPEN` event must carry a

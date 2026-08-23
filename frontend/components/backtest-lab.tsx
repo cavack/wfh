@@ -173,12 +173,15 @@ export function BacktestLab() {
       if (file.size > 10_000_000) throw new Error("Dataset file exceeds the 10 MB limit.");
       const parsed = JSON.parse(await file.text()) as Record<string, unknown>;
       if (!Array.isArray(parsed.events)) throw new Error("Dataset file must contain an events array.");
+      const signalRows = Array.isArray(parsed.signal_rows) ? parsed.signal_rows : [];
+      if (parsed.events.length > 5_000) throw new Error("Events exceed the 5,000-row limit.");
+      if (signalRows.length > 5_000) throw new Error("Signal rows exceed the 5,000-row limit.");
       if (typeof parsed.dataset_manifest_hash !== "string") throw new Error("Dataset manifest hash is required.");
       if (typeof parsed.initial_equity !== "number" || !Number.isFinite(parsed.initial_equity) || parsed.initial_equity <= 0) throw new Error("Positive initial equity is required.");
       if (parsed.artifact_key_id !== "wfh-backtest-hmac-v1" || typeof parsed.artifact_hmac_sha256 !== "string") throw new Error("Server-verifiable artifact attestation is required.");
       invalidateResult();
       setEventsText(JSON.stringify(parsed.events, null, 2));
-      setSignalsText(JSON.stringify(Array.isArray(parsed.signal_rows) ? parsed.signal_rows : [], null, 2));
+      setSignalsText(JSON.stringify(signalRows, null, 2));
       setManifestHash(parsed.dataset_manifest_hash);
       setInitialEquity(String(parsed.initial_equity));
       setArtifactHmac(parsed.artifact_hmac_sha256);
