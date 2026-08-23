@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from waterfallhunter.core.deployment_provenance import (
     DEPLOYMENT_PROVENANCE_VERIFIED,
@@ -24,25 +24,25 @@ IMAGE_DIGEST_PATTERN = r"^sha256:[0-9a-f]{64}$"
 class VerificationEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    backend_tests_passed: bool
-    frontend_tests_passed: bool
-    e2e_tests_passed: bool
-    migration_tests_passed: bool
-    load_tests_passed: bool
-    fault_tests_passed: bool
-    security_tests_passed: bool
-    secret_scan_passed: bool
+    backend_tests_passed: StrictBool
+    frontend_tests_passed: StrictBool
+    e2e_tests_passed: StrictBool
+    migration_tests_passed: StrictBool
+    load_tests_passed: StrictBool
+    fault_tests_passed: StrictBool
+    security_tests_passed: StrictBool
+    secret_scan_passed: StrictBool
     blocker_review_findings: int = Field(ge=0, strict=True)
 
 
 class ReadinessEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    livez_ok: bool
-    healthz_ok: bool
-    readyz_ok: bool
-    schema_ready: bool
-    database_ready: bool
+    livez_ok: StrictBool
+    healthz_ok: StrictBool
+    readyz_ok: StrictBool
+    schema_ready: StrictBool
+    database_ready: StrictBool
     observed_schema_version: int = Field(ge=0, strict=True)
 
 
@@ -59,12 +59,14 @@ class ShadowSoakEvidence(BaseModel):
     oom_events: int = Field(ge=0, strict=True)
     schema_errors: int = Field(ge=0, strict=True)
     live_order_path_count: int = Field(ge=0, strict=True)
-    paper_only: Literal[True]
+    paper_only: StrictBool
 
     @model_validator(mode="after")
     def _valid_window(self) -> "ShadowSoakEvidence":
         if self.ended_at <= self.started_at:
             raise ValueError("shadow soak end must follow start")
+        if self.paper_only is not True:
+            raise ValueError("shadow soak must remain paper-only")
         if any(character not in "0123456789abcdef" for character in self.source_revision):
             raise ValueError("shadow soak revision must be lowercase hexadecimal")
         return self
@@ -129,6 +131,7 @@ def _snapshot_audit_valid(audit: Any) -> bool:
         "object_counts",
         "table_counts",
         "schema_sha256",
+        "logical_content_sha256",
         "audit_sha256",
     }
     return (
@@ -146,6 +149,7 @@ def _snapshot_audit_valid(audit: Any) -> bool:
 
 def _audits_match(left: dict[str, Any], right: dict[str, Any]) -> bool:
     fields = (
+        "logical_content_sha256",
         "user_version",
         "schema_version",
         "object_counts",

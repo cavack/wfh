@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from waterfallhunter.core.deployment_certification import (
     evaluate_deployment_certification,
 )
@@ -28,6 +31,7 @@ def _audit(*, file_sha256: str, schema_version: int = 5) -> dict:
             "object_counts": {"table": 1, "index": 0, "trigger": 0, "view": 0},
             "table_counts": {"signals": 10},
             "schema_sha256": "f" * 64,
+            "logical_content_sha256": "8" * 64,
         },
         "audit_sha256",
     )
@@ -167,3 +171,11 @@ def test_schema_source_and_soak_identity_are_bound_to_certified_artifact() -> No
     assert "BACKUP_SOURCE_IDENTITY_MISMATCH" in report["blocking_reasons"]
     assert "SHADOW_SOAK_REVISION_MISMATCH" in report["blocking_reasons"]
     assert "SHADOW_SOAK_IMAGE_MISMATCH" in report["blocking_reasons"]
+
+
+def test_pass_evidence_rejects_coerced_booleans() -> None:
+    request = _request()
+    request["verification"]["backend_tests_passed"] = 1
+
+    with pytest.raises(ValidationError):
+        evaluate_deployment_certification(request)

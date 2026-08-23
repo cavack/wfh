@@ -60,6 +60,10 @@ def audit_sqlite_snapshot(path: Path) -> dict[str, Any]:
         }
         user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
         schema_version = int(connection.execute("PRAGMA schema_version").fetchone()[0])
+        logical_digest = hashlib.sha256()
+        for statement in connection.iterdump():
+            logical_digest.update(statement.encode("utf-8"))
+            logical_digest.update(b"\n")
     if integrity != ["ok"]:
         raise BackupCertificationError("SQLITE_INTEGRITY_CHECK_FAILED")
     if foreign_key_violations:
@@ -87,6 +91,7 @@ def audit_sqlite_snapshot(path: Path) -> dict[str, Any]:
         },
         "table_counts": dict(sorted(table_counts.items())),
         "schema_sha256": canonical_sha256(schema_material),
+        "logical_content_sha256": logical_digest.hexdigest(),
     }
     return {**body, "audit_sha256": canonical_sha256(body)}
 
@@ -111,9 +116,14 @@ def _require_new_target(path: Path, *, label: str) -> Path:
 
 def _online_backup(source: Path, destination: Path) -> None:
     partial = destination.with_name(f".{destination.name}.partial")
-    if partial.exists():
+    if partial.exists() or partial.is_symlink():
         raise BackupCertificationError("BACKUP_PARTIAL_ALREADY_EXISTS")
     try:
+        flags = os.O_CREAT | os.O_EXCL | os.O_RDWR
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(partial, flags, 0o600)
+        os.close(descriptor)
         with _open_read_only(source) as source_connection:
             with sqlite3.connect(partial, timeout=30.0) as target_connection:
                 source_connection.backup(target_connection, pages=4_096, sleep=0.05)
@@ -179,6 +189,7 @@ def create_certified_backup(
     comparable_fields = (
         "user_version",
         "schema_version",
+        "logical_content_sha256",
         "object_counts",
         "table_counts",
         "schema_sha256",

@@ -24,6 +24,7 @@ class MigrationRehearsalError(RuntimeError):
 
 
 _ROLLBACK_COMPARABLE_FIELDS = (
+    "logical_content_sha256",
     "user_version",
     "schema_version",
     "object_counts",

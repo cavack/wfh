@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import stat
 from pathlib import Path
 
 import pytest
@@ -62,6 +63,8 @@ def test_online_backup_restore_is_integrity_and_count_certified(tmp_path: Path) 
         "schema_sha256"
     ]
     assert report["production_migration_authorized"] is False
+    assert stat.S_IMODE(backup.stat().st_mode) == 0o600
+    assert stat.S_IMODE(restore.stat().st_mode) == 0o600
     assert len(report["certification_sha256"]) == 64
     assert audit_sqlite_snapshot(backup)["audit_sha256"] == report["backup_audit"][
         "audit_sha256"
