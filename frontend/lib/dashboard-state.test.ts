@@ -27,6 +27,28 @@ test("a higher snapshot version wins even if its generated_at is lower", () => {
   assert.equal(shouldAcceptDashboardSnapshot(current, incoming), true);
 });
 
+test("a lower snapshot version is rejected during the same stream generation", () => {
+  const current = { snapshot_version: 500, generated_at: 200 };
+  const incoming = { snapshot_version: 1, generated_at: 201 };
+
+  assert.equal(shouldAcceptDashboardSnapshot(current, incoming), false);
+});
+
+test("a lower snapshot version may start a new generation only after reconnect and with a newer timestamp", () => {
+  const current = { snapshot_version: 500, generated_at: 200 };
+  const restarted = { snapshot_version: 1, generated_at: 201 };
+  const staleReplay = { snapshot_version: 1, generated_at: 199 };
+
+  assert.equal(
+    shouldAcceptDashboardSnapshot(current, restarted, { allowVersionReset: true }),
+    true,
+  );
+  assert.equal(
+    shouldAcceptDashboardSnapshot(current, staleReplay, { allowVersionReset: true }),
+    false,
+  );
+});
+
 test("watch-score ordering uses normalized score multiplied by evidence coverage", () => {
   const lowerEffectiveScore = {
     metrics: {
