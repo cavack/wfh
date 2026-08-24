@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -39,6 +40,7 @@ _METADATA_INPUT_COLUMNS = (
     "classification_method",
     "classification_evidence_hash",
 )
+_METADATA_MIGRATION_VERSION = 3
 
 
 def _open_read_only(db_path: str | Path) -> sqlite3.Connection:
@@ -64,20 +66,47 @@ def _open_read_only(db_path: str | Path) -> sqlite3.Connection:
 def _require_schema(conn: sqlite3.Connection) -> None:
     rows = conn.execute(
         "SELECT type, name FROM sqlite_master "
-        "WHERE name IN ('lbank_signal_ledger','signal_metadata','canonical_signal_view')"
+        "WHERE name IN ("
+        "'lbank_signal_ledger','signal_metadata','canonical_signal_view',"
+        "'schema_migrations'"
+        ")"
     ).fetchall()
     objects = {(str(row[0]), str(row[1])) for row in rows}
     required = {
         ("table", "lbank_signal_ledger"),
         ("table", "signal_metadata"),
+        ("table", "schema_migrations"),
         ("view", "canonical_signal_view"),
     }
     if not required.issubset(objects):
         raise SignalMetadataError("SIGNAL_METADATA_SCHEMA_UNAVAILABLE")
 
 
-def _scalar_count(conn: sqlite3.Connection, sql: str) -> int:
-    row = conn.execute(sql).fetchone()
+def _metadata_cutover_created_at(conn: sqlite3.Connection) -> int:
+    """Return the immutable time at which canonical metadata became mandatory.
+
+    Migration version 3 creates ``signal_metadata`` and its canonical view. The
+    migration-history row is append-only/immutable, while normal signal ledger
+    persistence stamps ``created_at`` from the process clock. Therefore rows
+    created before this boundary are historical legacy evidence and may remain
+    unclassified; rows created at or after it must have canonical metadata.
+    """
+
+    row = conn.execute(
+        "SELECT applied_at FROM schema_migrations WHERE version = ?",
+        (_METADATA_MIGRATION_VERSION,),
+    ).fetchone()
+    if row is None or type(row[0]) is not int or int(row[0]) < 0:
+        raise SignalMetadataError("SIGNAL_METADATA_CUTOVER_UNAVAILABLE")
+    return int(row[0])
+
+
+def _scalar_count(
+    conn: sqlite3.Connection,
+    sql: str,
+    params: tuple[Any, ...] = (),
+) -> int:
+    row = conn.execute(sql, params).fetchone()
     if row is None:
         raise SignalMetadataError("SIGNAL_METADATA_QUERY_FAILED")
     return int(row[0])
@@ -120,6 +149,9 @@ class SignalMetadataStore:
     """Read-only canonical metadata inspection helper.
 
     This class never creates, migrates, repairs, classifies, or backfills rows.
+    Historical ledger rows that pre-date migration v3 are intentionally not
+    auto-classified. Completeness remains fail-closed for every post-cutover
+    signal, where ledger and metadata are persisted atomically by the runtime.
     """
 
     def __init__(self, db_path: str | Path) -> None:
@@ -130,6 +162,7 @@ class SignalMetadataStore:
         try:
             conn.execute("BEGIN")
             _require_schema(conn)
+            cutover_created_at = _metadata_cutover_created_at(conn)
             ledger_count = _scalar_count(
                 conn,
                 "SELECT COUNT(*) FROM lbank_signal_ledger",
@@ -142,11 +175,22 @@ class SignalMetadataStore:
                 conn,
                 "SELECT COUNT(*) FROM canonical_signal_view",
             )
+            required_ledger_count = _scalar_count(
+                conn,
+                "SELECT COUNT(*) FROM lbank_signal_ledger WHERE created_at >= ?",
+                (cutover_created_at,),
+            )
+            required_canonical_count = _scalar_count(
+                conn,
+                "SELECT COUNT(*) FROM canonical_signal_view WHERE created_at >= ?",
+                (cutover_created_at,),
+            )
             missing_metadata_count = _scalar_count(
                 conn,
                 "SELECT COUNT(*) FROM lbank_signal_ledger AS s "
                 "LEFT JOIN signal_metadata AS m ON m.signal_id = s.id "
-                "WHERE m.signal_id IS NULL",
+                "WHERE m.signal_id IS NULL AND s.created_at >= ?",
+                (cutover_created_at,),
             )
             orphan_metadata_count = _scalar_count(
                 conn,
@@ -155,6 +199,8 @@ class SignalMetadataStore:
                 "WHERE s.id IS NULL",
             )
             invalid_metadata_count = _invalid_metadata_count(conn)
+        except SignalMetadataError:
+            raise
         except (sqlite3.Error, TypeError, ValueError) as exc:
             raise SignalMetadataError("SIGNAL_METADATA_QUERY_FAILED") from exc
         finally:
@@ -171,7 +217,7 @@ class SignalMetadataStore:
             reasons.append("ORPHAN_METADATA")
         if invalid_metadata_count:
             reasons.append("INVALID_METADATA")
-        if canonical_count != ledger_count:
+        if required_canonical_count != required_ledger_count:
             reasons.append("CANONICAL_VIEW_COUNT_MISMATCH")
 
         return MetadataCompletenessResult(
@@ -197,7 +243,7 @@ def verify_signal_metadata_completeness(
 def require_signal_metadata_completeness(
     db_path: str | Path,
 ) -> MetadataCompletenessResult:
-    """Fail closed unless every ledger row has valid canonical metadata."""
+    """Fail closed unless every post-cutover ledger row has canonical metadata."""
 
     result = verify_signal_metadata_completeness(db_path)
     if result.complete:
