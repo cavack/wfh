@@ -898,6 +898,7 @@ async def _update_signal_evidence_metrics(
         ):
             return
 
+        _signal_evidence_metrics_last_refresh = now
         report = await asyncio.to_thread(
             execution_outcome_report.build_report
         )
@@ -2674,7 +2675,10 @@ async def metrics():
 
     _update_lbank_shadow_metrics()
     _update_signal_settlement_worker_metrics()
-    await _update_signal_evidence_metrics()
+    try:
+        await _update_signal_evidence_metrics()
+    except Exception:
+        logger.exception("Signal evidence metrics are unavailable")
     try:
         await _notification_delivery_health_snapshot()
     except NotificationDeliveryError:
