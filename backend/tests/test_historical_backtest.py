@@ -101,16 +101,22 @@ def test_historical_funding_window_excludes_entry_and_post_exit_charges(monkeypa
     assert [item["timestamp"] for item in selected] == [start_ms + EIGHT_HOURS]
 
 
-def test_position_probability_requires_valid_contiguous_completed_candles():
+def test_position_setup_does_not_claim_a_calibrated_probability():
     from waterfallhunter.core.position_calculator import PositionCalculator
-    import time
 
-    now = int(time.time() * 1000)
-    start = now - 340 * 300_000
-    rows = [[start + index * 300_000, 100.0, 101.0, 97.0, 100.0, 1.0] for index in range(340)]
-    assert PositionCalculator()._tp_probability(rows, 0.98) is not None
-    rows[40][0] += 300_000
-    assert PositionCalculator()._tp_probability(rows, 0.98) is None
+    result = PositionCalculator(
+        slippage_pct=0.05,
+    ).calculate_short_position(
+        100.0,
+        mark_price=100.0,
+        market_info={
+            "precision": {"price": 0.01, "amount": 0.001},
+            "limits": {"cost": {"min": 1.0}},
+        },
+    )
+
+    assert result["status"] == "READY"
+    assert all("probability" not in key.lower() for key in result)
 
 
 def test_position_setup_rejects_unmeasured_slippage_instead_of_using_a_magic_default():

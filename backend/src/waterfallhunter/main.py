@@ -2,11 +2,14 @@ import logging
 import asyncio
 import traceback
 import json
+import math
 import time
-from fastapi import FastAPI, HTTPException, Response
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from prometheus_client import Counter, Gauge, generate_latest, CONTENT_TYPE_LATEST
 import os
+from typing import Annotated
 
 from waterfallhunter.config import settings
 from waterfallhunter.core.db import DBAdapter
@@ -19,15 +22,37 @@ from waterfallhunter.discovery.dexscreener import DexScreenerClient
 from waterfallhunter.discovery.onchain import OnChainIntelligence
 from waterfallhunter.core.multi_exchange_validator import MultiExchangeValidator
 from waterfallhunter.core.notifier import TelegramNotifier
+from waterfallhunter.core.notification_delivery import (
+    NotificationDeliveryError,
+    notification_delivery_health,
+)
 from waterfallhunter.core.ai_veto import AIVetoEngine
 from waterfallhunter.core.risk_manager import get_leverage
 from waterfallhunter.core.dashboard import compact_metrics
+from waterfallhunter.core.dashboard_stream import (
+    DashboardEventBuffer,
+    DashboardSnapshot,
+    DashboardStreamEvent,
+    serialize_sse_event,
+)
 from waterfallhunter.core.final_ranking import FinalRanking
 from waterfallhunter.core.signal_funnel import SignalFunnel
 from waterfallhunter.core.stage_lifecycle import StageLifecycleStore
+from waterfallhunter.core.lifecycle_v2_shadow import (
+    build_lifecycle_v2_evidence_from_metrics,
+    compare_v1_v2_shadow,
+    evaluate_lifecycle_v2_shadow,
+)
+from waterfallhunter.core.lifecycle_v2_shadow_store import (
+    LifecycleV2ShadowStore,
+    LifecycleV2ShadowStoreError,
+)
 from waterfallhunter.core.historical_outcome_store import HistoricalOutcomeStore
 from waterfallhunter.core.production_evidence import ProductionEvidenceRecorder
-from waterfallhunter.core.decision_provenance import build_decision_contract
+from waterfallhunter.core.decision_provenance import (
+    build_decision_contract,
+    decision_contract_sha256,
+)
 from waterfallhunter.core.feature_replay import FeatureReplayStore, FeatureReplayWorker
 from waterfallhunter.core.lbank_execution_shadow import LBankExecutionShadowWorker
 from waterfallhunter.core.lbank_execution_store import LBankExecutionStore
@@ -39,6 +64,10 @@ from waterfallhunter.core.lbank_execution_decision import (
 )
 from waterfallhunter.core.lbank_signal_ledger import (
     LBankSignalLedger,
+)
+from waterfallhunter.core.signal_metadata import build_signal_metadata_input
+from waterfallhunter.core.signal_metadata_store import (
+    require_signal_metadata_completeness,
 )
 from waterfallhunter.core.lbank_signal_outcome import (
     LBankSignalOutcomeStore,
@@ -57,6 +86,11 @@ from waterfallhunter.routes_production_evidence import (
     build_production_evidence_router,
 )
 from waterfallhunter.routes_feature_replay import build_feature_replay_router
+from waterfallhunter.routes_lifecycle_v2_shadow import (
+    build_lifecycle_v2_shadow_router,
+)
+from waterfallhunter.routes_backtest_lab import build_backtest_lab_router
+from waterfallhunter.core.request_body_limit import RequestBodyLimitMiddleware
 from waterfallhunter.core.lbank_execution_outcome_report import (
     LBankExecutionOutcomeReport,
 )
@@ -64,6 +98,15 @@ from waterfallhunter.core.lbank_execution_outcome_report import (
 logging.basicConfig(level=settings.log_level)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("WaterfallHunter")
+
+
+@asynccontextmanager
+async def app_lifespan(_: FastAPI):
+    await startup_event()
+    try:
+        yield
+    finally:
+        await shutdown_event()
 
 
 def _signal_alert_allowed(metrics: dict) -> bool:
@@ -74,6 +117,12 @@ def _signal_alert_allowed(metrics: dict) -> bool:
 app = FastAPI(
     title="WaterfallHunter API - Production",
     version="7.5.1-Stable",
+    lifespan=app_lifespan,
+)
+app.add_middleware(
+    RequestBodyLimitMiddleware,
+    path="/api/backtest-lab/replay",
+    maximum_bytes=10_000_000,
 )
 
 db = DBAdapter(
@@ -82,6 +131,11 @@ db = DBAdapter(
 )
 
 stage_lifecycle_store = StageLifecycleStore(
+    db_path=db.db_path,
+    verify_schema=False,
+)
+
+lifecycle_v2_shadow_store = LifecycleV2ShadowStore(
     db_path=db.db_path,
     verify_schema=False,
 )
@@ -132,8 +186,20 @@ app.include_router(
 )
 
 app.include_router(
+    build_lifecycle_v2_shadow_router(
+        lifecycle_v2_shadow_store
+    )
+)
+
+app.include_router(
     build_execution_outcome_router(
         db.db_path
+    )
+)
+
+app.include_router(
+    build_backtest_lab_router(
+        artifact_hmac_key=settings.backtest_artifact_hmac_key,
     )
 )
 
@@ -208,6 +274,7 @@ _signal_settlement_worker: LBankSignalSettlementWorker | None = None
 _signal_evidence_metrics_last_refresh = 0.0
 _signal_evidence_metrics_lock = asyncio.Lock()
 _sse_clients = set()
+_dashboard_event_buffer = DashboardEventBuffer(replay_limit=100)
 _background_tasks = set()
 
 if "tracked_candidates" not in globals():
@@ -220,6 +287,19 @@ if "catalog_last_refresh" not in globals():
     catalog_last_refresh = Gauge(
         "waterfall_catalog_last_refresh_timestamp",
         "Unix timestamp of the last successful LBank catalog refresh",
+    )
+
+if "notification_delivery_state" not in globals():
+    notification_delivery_state = Gauge(
+        "waterfall_notification_delivery_state_total",
+        "Durable outbox events by delivery state",
+        ["state"],
+    )
+
+if "notification_oldest_pending_age" not in globals():
+    notification_oldest_pending_age = Gauge(
+        "waterfall_notification_oldest_pending_age_seconds",
+        "Age of the oldest active durable notification event",
     )
 
 if "hunter_last_cycle" not in globals():
@@ -930,8 +1010,10 @@ def _store_live_metrics(
     )
 
 
-def get_formatted_candidates():
-    now = time.time()
+def get_formatted_candidates(*, evaluation_time: float | None = None):  # NOSONAR
+    now = time.time() if evaluation_time is None else float(evaluation_time)
+    if not math.isfinite(now) or now < 0:
+        raise ValueError("evaluation_time must be a non-negative finite timestamp")
 
     active_from_db = (
         db.get_all_active_candidates()
@@ -970,19 +1052,31 @@ def get_formatted_candidates():
                 and observed_at is not None
             )
 
+            analysis_observed_at = live_data.get(
+                "analysis_observed_at"
+            )
             data[
-                "observed_at"
-            ] = observed_at
-
+                "analysis_observed_at"
+            ] = analysis_observed_at
             data[
-                "age_seconds"
+                "analysis_age_seconds"
             ] = (
                 round(
                     now
-                    - observed_at,
+                    - analysis_observed_at,
                     1,
                 )
-                if observed_at is not None
+                if (
+                    isinstance(analysis_observed_at, (int, float))
+                    and not isinstance(analysis_observed_at, bool)
+                    and 0 <= analysis_observed_at <= now
+                )
+                else None
+            )
+            data["reference_observed_at"] = observed_at
+            data["reference_age_seconds"] = (
+                round(now - observed_at, 1)
+                if observed_at is not None and 0 <= observed_at <= now
                 else None
             )
 
@@ -1020,6 +1114,16 @@ def get_formatted_candidates():
                 if is_live
                 else None
             )
+            strategy_profile = (
+                live_metrics.get("strategy_profile")
+                if isinstance(live_metrics, dict)
+                else None
+            )
+            data["strategy_profile"] = strategy_profile
+            data["signal_class"] = {
+                "strict_score_v2": "STRICT",
+                "experimental_pretrigger_v1": "EXPERIMENTAL",
+            }.get(strategy_profile, "UNAVAILABLE")
 
             data[
                 "last_price"
@@ -1094,13 +1198,10 @@ def get_formatted_candidates():
                 "quote_volume"
             ] = None
 
-            data[
-                "observed_at"
-            ] = None
-
-            data[
-                "age_seconds"
-            ] = None
+            data["analysis_observed_at"] = None
+            data["analysis_age_seconds"] = None
+            data["reference_observed_at"] = None
+            data["reference_age_seconds"] = None
 
             data[
                 "score"
@@ -1109,6 +1210,8 @@ def get_formatted_candidates():
             data[
                 "metrics"
             ] = None
+            data["strategy_profile"] = None
+            data["signal_class"] = "UNAVAILABLE"
 
             data[
                 "data_status"
@@ -1152,6 +1255,7 @@ def get_formatted_candidates():
     final_ranking = FinalRanking.rank(
         active_from_db,
         limit=3,
+        evaluation_time=now,
     )
 
     signal_funnel = SignalFunnel.build(
@@ -1202,28 +1306,57 @@ def get_formatted_candidates():
     }
 
 
+def _publish_dashboard_snapshot(
+    *,
+    full_snapshot: bool,
+    only_if_changed: bool = False,
+) -> DashboardStreamEvent | None:
+    generated_at = time.time()
+    payload = get_formatted_candidates(evaluation_time=generated_at)
+    if only_if_changed:
+        return _dashboard_event_buffer.publish_snapshot_if_changed(
+            payload,
+            generated_at=generated_at,
+        )
+    return _dashboard_event_buffer.publish_snapshot(
+        payload,
+        generated_at=generated_at,
+        full_snapshot=full_snapshot,
+    )
+
+
+def _broadcast_dashboard_event(event: DashboardStreamEvent) -> None:
+    for queue in _sse_clients:
+        try:
+            queue.put_nowait(event)
+        except asyncio.QueueFull:
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                pass
+
+
 async def sse_broadcaster():
+    last_heartbeat_at = 0.0
     while _hunter_running:
         if _sse_clients:
-            data = (
-                get_formatted_candidates()
+            event = _publish_dashboard_snapshot(
+                full_snapshot=False,
+                only_if_changed=True,
             )
-
-            msg = (
-                f"data: "
-                f"{json.dumps(data)}"
-                f"\n\n"
-            )
-
-            for q in list(
-                _sse_clients
-            ):
-                try:
-                    q.put_nowait(
-                        msg
-                    )
-                except asyncio.QueueFull:
-                    pass
+            if event is not None:
+                _broadcast_dashboard_event(event)
+            now = time.time()
+            if now - last_heartbeat_at >= 15.0:
+                heartbeat = _dashboard_event_buffer.publish_heartbeat(
+                    generated_at=now,
+                )
+                _broadcast_dashboard_event(heartbeat)
+                last_heartbeat_at = now
 
         await asyncio.sleep(
             1.0
@@ -1234,12 +1367,14 @@ async def evaluate_candidate(
     symbol: str,
     data: dict,
 ):
-    scanner.active_candidates.setdefault(
+    analysis_observed_at = int(time.time())
+
+    active_candidate = scanner.active_candidates.setdefault(
         symbol,
         {},
-    )[
-        "analysis_status"
-    ] = "pending"
+    )
+    active_candidate["analysis_status"] = "pending"
+    active_candidate["analysis_observed_at"] = analysis_observed_at
 
     (
         lbank_price,
@@ -1247,6 +1382,7 @@ async def evaluate_candidate(
     ) = scanner.get_live_reference(
         symbol
     )
+    active_candidate["reference_observed_at"] = reference_observed_at
 
     current_state = data[
         "status"
@@ -1291,6 +1427,7 @@ async def evaluate_candidate(
             production_evidence_recorder.bucket_seconds
         ),
     )
+    decision_contract_hash = decision_contract_sha256(decision_contract)
 
     if lbank_price is None:
         fallback_reference = (
@@ -1378,6 +1515,9 @@ async def evaluate_candidate(
         live_data[
             "reference_observed_at"
         ] = time.time()
+        reference_observed_at = live_data[
+            "reference_observed_at"
+        ]
 
         live_data[
             "reference_source"
@@ -1430,6 +1570,61 @@ async def evaluate_candidate(
             )
         )
 
+    episode_id = f"{symbol}:{int(data.get('lifecycle_id') or 1)}"
+
+    def persist_lifecycle_v2_shadow(final_v1_state: str) -> None:
+        try:
+            v2_from_state = lifecycle_v2_shadow_store.latest_state(
+                symbol=symbol,
+                episode_id=episode_id,
+            )
+            v2_evidence = build_lifecycle_v2_evidence_from_metrics(
+                metrics=result_metrics,
+                decision_at=analysis_observed_at,
+                analysis_observed_at=analysis_observed_at,
+                reference_observed_at=(
+                    float(reference_observed_at)
+                    if isinstance(reference_observed_at, (int, float))
+                    and not isinstance(reference_observed_at, bool)
+                    else None
+                ),
+            )
+            v2_transition = evaluate_lifecycle_v2_shadow(
+                episode_id=episode_id,
+                current_state=v2_from_state,
+                evidence=v2_evidence,
+            )
+            v2_comparison = compare_v1_v2_shadow(
+                episode_id=episode_id,
+                v1_state=final_v1_state,
+                v2_state=v2_from_state,
+                evidence=v2_evidence,
+            )
+            persisted = lifecycle_v2_shadow_store.append_comparison(
+                symbol=symbol,
+                v1_state=final_v1_state,
+                transition=v2_transition,
+                comparison=v2_comparison,
+                created_at=analysis_observed_at,
+            )
+            result_metrics["lifecycle_v2_shadow"] = {
+                "transition": v2_transition.model_dump(mode="json"),
+                "comparison": v2_comparison,
+                "evidence_available": v2_evidence.eligible_data,
+                "unavailable_fields": list(v2_evidence.unavailable_fields),
+                "event_persisted": persisted,
+                "v1_state_mutated": False,
+            }
+        except (LifecycleV2ShadowStoreError, ValueError) as exc:
+            logger.exception("Lifecycle V2 shadow unavailable for %s: %s", symbol, exc)
+            result_metrics["lifecycle_v2_shadow"] = {
+                "shadow_only": True,
+                "promotion_allowed": False,
+                "available": False,
+                "reason": type(exc).__name__,
+                "v1_state_mutated": False,
+            }
+
     def record_final_production_decision(
         path: str,
         reason: str,
@@ -1477,6 +1672,7 @@ async def evaluate_candidate(
     if not result[
         "is_valid"
     ]:
+        final_v1_shadow_state = str(current_state)
         stored_metrics = (
             result.get(
                 "metrics"
@@ -1550,16 +1746,19 @@ async def evaluate_candidate(
                 current_state
                 != observation_status
             ):
-                if not db.update_candidate_state(
+                observation_state_persisted = db.update_candidate_state(
                     symbol,
                     observation_status,
-                ):
+                )
+                if not observation_state_persisted:
                     logger.error(
                         "Candidate observation state "
                         "persistence failed for %s -> %s",
                         symbol,
                         observation_status,
                     )
+                else:
+                    final_v1_shadow_state = str(observation_status)
 
             observation_exchange = (
                 stored_metrics.get(
@@ -1602,10 +1801,12 @@ async def evaluate_candidate(
                 "ARMED",
                 "TRIGGERED",
             }:
-                db.update_candidate_state(
+                watch_state_persisted = db.update_candidate_state(
                     symbol,
                     "WATCH",
                 )
+                if watch_state_persisted:
+                    final_v1_shadow_state = "WATCH"
 
         if data.get(
             "dex_context"
@@ -1629,6 +1830,8 @@ async def evaluate_candidate(
             symbol,
             stored_metrics,
         )
+
+        persist_lifecycle_v2_shadow(final_v1_shadow_state)
 
         return
 
@@ -1720,6 +1923,7 @@ async def evaluate_candidate(
                     symbol,
                     new_state,
                 )
+                persist_lifecycle_v2_shadow(str(current_state))
                 return
 
         if new_state == "ARMED":
@@ -1733,12 +1937,15 @@ async def evaluate_candidate(
                 mapped_sym,
             )
 
+        persist_lifecycle_v2_shadow(str(new_state))
+
         return
 
     if (
         new_state == "TRIGGERED"
         and current_state == "TRIGGERED"
     ):
+        persist_lifecycle_v2_shadow("TRIGGERED")
         record_final_production_decision(
             "STALE_TRIGGER_SUPPRESSED",
             "candidate was already persisted as TRIGGERED",
@@ -1787,6 +1994,9 @@ async def evaluate_candidate(
                 "AI advisory vetoed the validated trigger candidate",
                 state_persisted=bool(state_persisted),
             )
+            persist_lifecycle_v2_shadow(
+                "WATCH" if state_persisted else str(current_state)
+            )
 
             validator.ws_manager.unsubscribe(
                 ex_name,
@@ -1808,6 +2018,7 @@ async def evaluate_candidate(
             )
 
         except Exception as exc:
+            persist_lifecycle_v2_shadow(str(current_state))
             record_final_production_decision(
                 "LEVERAGE_REJECTED",
                 "leverage calculation failed",
@@ -1848,6 +2059,38 @@ async def evaluate_candidate(
             )
         )
 
+        metadata_reference_observed_at = (
+            int(reference_observed_at)
+            if (
+                isinstance(reference_observed_at, (int, float))
+                and not isinstance(reference_observed_at, bool)
+                and reference_observed_at >= 0
+            )
+            else None
+        )
+        try:
+            signal_metadata = build_signal_metadata_input(
+                {
+                    **metrics,
+                    "analysis_observed_at": analysis_observed_at,
+                    "reference_observed_at": metadata_reference_observed_at,
+                },
+                decision_contract_hash,
+            )
+        except ValueError as exc:
+            persist_lifecycle_v2_shadow(str(current_state))
+            record_final_production_decision(
+                "METADATA_REJECTED",
+                "explicit signal metadata validation failed",
+                error_type=type(exc).__name__,
+            )
+            logger.exception(
+                "Signal metadata validation failed for %s: %s",
+                symbol,
+                exc,
+            )
+            return
+
         signal_id = signal_ledger.persist_trigger(
             symbol,
             current_state,
@@ -1856,6 +2099,7 @@ async def evaluate_candidate(
             execution_suitability=(
                 execution_suitability
             ),
+            metadata=signal_metadata,
             quote_volume=quote_volume,
             volume_gate_passed=volume_gate_passed,
             proxy_execution_disagreement=(
@@ -1864,6 +2108,7 @@ async def evaluate_candidate(
         )
 
         if signal_id is None:
+            persist_lifecycle_v2_shadow(str(current_state))
             record_final_production_decision(
                 "PERSISTENCE_REJECTED",
                 "signal persistence rejected or failed",
@@ -1878,6 +2123,7 @@ async def evaluate_candidate(
 
         experimental_profile = not _signal_alert_allowed(metrics)
 
+        persist_lifecycle_v2_shadow("TRIGGERED")
         record_final_production_decision(
             "TRIGGERED",
             (
@@ -2075,9 +2321,6 @@ async def live_reference_loop(
         )
 
 
-@app.on_event(
-    "startup"
-)
 async def startup_event():
     global _lbank_execution_shadow_worker
     global _signal_settlement_worker
@@ -2092,6 +2335,7 @@ async def startup_event():
         db.db_path,
         check_user_version=CURRENT_RUNTIME_SCHEMA_VERSION,
     )
+    require_signal_metadata_completeness(db.db_path)
 
     _start_background_task(
         scanner.start_background_scanner(
@@ -2174,9 +2418,6 @@ async def startup_event():
     )
 
 
-@app.on_event(
-    "shutdown"
-)
 async def shutdown_event():
     global _hunter_running
     global _lbank_execution_shadow_worker
@@ -2353,6 +2594,46 @@ async def healthz_check():
     return await health_check()
 
 
+async def _notification_delivery_health_snapshot() -> dict:
+    report = await asyncio.to_thread(
+        notification_delivery_health,
+        settings.registry_db_path,
+        now=int(time.time()),
+    )
+    counts = report["counts"]
+    for state in (
+        "PENDING",
+        "SENDING",
+        "DELIVERED",
+        "RETRY_WAIT",
+        "DEAD_LETTER",
+        "DELIVERY_UNCERTAIN",
+    ):
+        notification_delivery_state.labels(state=state).set(
+            int(counts.get(state, 0))
+        )
+    age = report.get("oldest_pending_age_seconds")
+    notification_oldest_pending_age.set(
+        float(age) if age is not None else float("nan")
+    )
+    return report
+
+
+@app.get(
+    "/api/notification-delivery",
+    responses={503: {"description": "Notification delivery state is unavailable"}},
+)
+async def notification_delivery_status(response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return await _notification_delivery_health_snapshot()
+    except NotificationDeliveryError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": str(exc)},
+        ) from exc
+
+
 @app.get(
     "/metrics"
 )
@@ -2392,6 +2673,10 @@ async def metrics():
     _update_lbank_shadow_metrics()
     _update_signal_settlement_worker_metrics()
     await _update_signal_evidence_metrics()
+    try:
+        await _notification_delivery_health_snapshot()
+    except NotificationDeliveryError:
+        logger.exception("Notification delivery metrics are unavailable")
 
     return Response(
         content=generate_latest(),
@@ -2400,9 +2685,14 @@ async def metrics():
 
 
 @app.get(
-    "/api/stream"
+    "/api/stream",
 )
-async def stream_candidates():
+async def stream_candidates(
+    last_event_id: Annotated[
+        str | None,
+        Header(alias="Last-Event-ID"),
+    ] = None,
+):
     q = asyncio.Queue(
         maxsize=100
     )
@@ -2412,15 +2702,24 @@ async def stream_candidates():
     )
 
     async def event_generator():
+        delivered_event_id = 0
         try:
-            yield (
-                f"data: "
-                f"{json.dumps(get_formatted_candidates())}"
-                f"\n\n"
-            )
+            replay = _dashboard_event_buffer.replay_after(last_event_id)
+            if replay is None:
+                full_snapshot = _publish_dashboard_snapshot(full_snapshot=True)
+                if full_snapshot is None:
+                    raise RuntimeError("full dashboard snapshot was not published")
+                replay = [full_snapshot]
+            for event in replay:
+                delivered_event_id = max(delivered_event_id, int(event.event_id))
+                yield serialize_sse_event(event)
 
             while True:
-                yield await q.get()
+                event = await q.get()
+                if int(event.event_id) <= delivered_event_id:
+                    continue
+                delivered_event_id = int(event.event_id)
+                yield serialize_sse_event(event)
 
         finally:
             _sse_clients.discard(
@@ -2430,11 +2729,26 @@ async def stream_candidates():
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
 @app.get(
-    "/api/candidates"
+    "/api/candidates",
+    response_model=DashboardSnapshot,
+    response_model_exclude_none=False,
 )
-async def get_candidates():
-    return get_formatted_candidates()
+async def get_candidates(response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    latest = _dashboard_event_buffer.latest_snapshot()
+    if latest is not None:
+        return latest
+    generated_at = time.time()
+    return _dashboard_event_buffer.preview_snapshot(
+        get_formatted_candidates(evaluation_time=generated_at),
+        generated_at=generated_at,
+    )

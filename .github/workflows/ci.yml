@@ -95,6 +95,15 @@ jobs:
             -w /project \
             waterfallhunter-waterfall-backend \
             pytest -q backend/tests
+      - name: Record exact tested backend image digest
+        run: |
+          set -euo pipefail
+          TESTED_BACKEND_IMAGE_DIGEST="$(docker image inspect waterfallhunter-waterfall-backend --format '{{.Id}}')"
+          if ! [[ "$TESTED_BACKEND_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Invalid tested backend image digest" >&2
+            exit 1
+          fi
+          echo "WFH_TESTED_BACKEND_IMAGE_DIGEST=$TESTED_BACKEND_IMAGE_DIGEST"
       - name: Verify OCI revision labels
         run: |
           test "$(docker image inspect waterfallhunter-waterfall-backend --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$GITHUB_SHA"

@@ -11,6 +11,7 @@ from waterfallhunter.core.candle_analyzer import MultiTimeframeAnalyzer
 from waterfallhunter.core.coinglass import CoinGlassDerivativesClient
 from waterfallhunter.core.decision_provenance import source_tree_sha256
 from waterfallhunter.core.derivatives import DerivativesAnalyzer
+from waterfallhunter.core.managed_sqlite import connect_managed_sqlite
 from waterfallhunter.core.microstructure import MicrostructureAnalyzer
 from waterfallhunter.core.multi_exchange_validator import MultiExchangeValidator
 from waterfallhunter.core.position_calculator import PositionCalculator
@@ -373,11 +374,9 @@ class FeatureReplayEngine:
                 replayed_micro.get("best_bid"),
                 recent_high=recent_high,
                 market_info=market,
-                historical_candles=history,
                 mark_price=mark_price,
                 entry_slippage_pct=replayed_micro.get("entry_slippage_pct"),
                 exit_slippage_pct=replayed_micro.get("exit_slippage_pct"),
-                evaluation_time_ms=evaluated_at_ms,
             )
             replayed_core["position_setup"] = position_setup
             if str(position_setup.get("status", "")).startswith("REJECTED"):
@@ -436,7 +435,7 @@ class FeatureReplayStore:
             )
 
     def _connect(self):
-        return sqlite3.connect(self.db_path, timeout=20.0)
+        return connect_managed_sqlite(self.db_path, timeout=20.0)
 
     def pending(self, limit: int = 3) -> list[dict]:
         with self._connect() as conn:

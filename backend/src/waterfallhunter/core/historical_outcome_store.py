@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from waterfallhunter.core.managed_sqlite import connect_managed_sqlite
 from waterfallhunter.core.schema_contract import require_managed_schema
 
 
@@ -102,7 +103,7 @@ class HistoricalOutcomeStore:
             sort_keys=True,
             separators=(",", ":"),
         )
-        with sqlite3.connect(self.db_path, timeout=30.0) as conn:
+        with connect_managed_sqlite(self.db_path, timeout=30.0) as conn:
             conn.execute("PRAGMA foreign_keys=ON")
             conn.execute("BEGIN IMMEDIATE")
             existing = conn.execute(
@@ -171,7 +172,7 @@ class HistoricalOutcomeStore:
         with self._lock:
             if self._cache is not None and now - self._cache_at <= self.cache_ttl_seconds:
                 return json.loads(json.dumps(self._cache))
-        with sqlite3.connect(self.db_path, timeout=10.0) as conn:
+        with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
             conn.row_factory = sqlite3.Row
             dataset = conn.execute(
                 "SELECT * FROM operational_historical_outcome_datasets ORDER BY window_end_ms DESC, id DESC LIMIT 1"

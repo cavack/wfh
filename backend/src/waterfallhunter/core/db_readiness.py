@@ -6,6 +6,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from waterfallhunter.core.managed_sqlite import (
+    ManagedSQLiteError,
+    connect_managed_sqlite,
+)
 from waterfallhunter.core.schema_contract import verify_managed_schema_connection
 
 
@@ -279,13 +283,13 @@ def probe_database(
     uri = f"{path.resolve().as_uri()}?mode=rw"
 
     try:
-        conn = sqlite3.connect(
+        conn = connect_managed_sqlite(
             uri,
             uri=True,
             timeout=timeout_seconds,
             isolation_level=None,
         )
-    except sqlite3.Error:
+    except (sqlite3.Error, ManagedSQLiteError):
         return _failure_result(
             expected_schema_version=expected_schema_version,
             checked_at=checked_at,

@@ -7,6 +7,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from waterfallhunter.core.managed_sqlite import connect_managed_sqlite
 from waterfallhunter.core.schema_contract import require_managed_schema
 
 
@@ -44,7 +45,7 @@ class LBankSignalOutcomeStore:
         limit: int = 5,
     ) -> list[dict]:
         try:
-            with sqlite3.connect(
+            with connect_managed_sqlite(
                 self.db_path,
                 timeout=10.0,
             ) as conn:
@@ -52,21 +53,23 @@ class LBankSignalOutcomeStore:
                 rows = conn.execute(
                     """
                     SELECT
-                        s.id,
+                        s.signal_id AS id,
                         s.symbol,
                         s.triggered_at,
                         s.entry_price,
                         s.stop_loss,
                         s.take_profit_1,
                         s.take_profit_2,
-                        s.trigger_metrics_json
-                    FROM lbank_signal_ledger AS s
+                        s.trigger_metrics_json,
+                        s.signal_class,
+                        s.strategy_profile
+                    FROM canonical_signal_view AS s
                     LEFT JOIN lbank_signal_outcomes AS o
-                        ON o.signal_id = s.id
+                        ON o.signal_id = s.signal_id
                     WHERE
                         o.signal_id IS NULL
                         AND s.triggered_at <= ?
-                    ORDER BY s.triggered_at, s.id
+                    ORDER BY s.triggered_at, s.signal_id
                     LIMIT ?
                     """,
                     (
@@ -98,7 +101,7 @@ class LBankSignalOutcomeStore:
                 sort_keys=True,
                 separators=(",", ":"),
             )
-            with sqlite3.connect(
+            with connect_managed_sqlite(
                 self.db_path,
                 timeout=10.0,
             ) as conn:

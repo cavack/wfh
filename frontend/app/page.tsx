@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { Activity, Wifi, WifiOff } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import { Activity, FlaskConical, GitBranch, LayoutDashboard, Radio, ShieldCheck, Wifi, WifiOff } from "lucide-react";
 import { MarketContext } from "@/components/market-context";
 import { OutcomeEvidence } from "@/components/outcome-evidence";
 import { Candidate, ScoreCard } from "@/components/score-card";
@@ -10,30 +11,36 @@ import { SignalFunnel, SignalFunnelData } from "@/components/signal-funnel";
 import { HistoricalOutcomes } from "@/components/historical-outcomes";
 import { ProductionEvidence } from "@/components/production-evidence";
 import { FeatureReplay } from "@/components/feature-replay";
+import { BacktestLab } from "@/components/backtest-lab";
+import { LifecycleShadow } from "@/components/lifecycle-shadow";
+import type { DashboardSnapshot } from "@/generated/dashboard-contract";
+import { dashboardSnapshot, dashboardStreamEvent } from "@/lib/dashboard-contract";
 
-type DashboardData = {
-  total: number;
-  candidates: Record<string, Candidate>;
-  final_ranking?: {
-    version?: string;
-    observational_only?: boolean;
-    top?: unknown[];
-  };
-  signal_funnel?: SignalFunnelData;
-};
+type ConnectionMode = "stream" | "polling" | "reconnecting";
 
-const initialData: DashboardData = { total: 0, candidates: {} };
+function connectionLabel(mode: ConnectionMode): string {
+  if (mode === "stream") return "Live stream";
+  if (mode === "polling") return "Polling fallback";
+  return "Reconnecting…";
+}
 
-function StreamStatus({ connected }: { connected: boolean }) {
+function boundedJitter(maximum: number): number {
+  const sample = new Uint32Array(1);
+  globalThis.crypto.getRandomValues(sample);
+  return Math.floor((sample[0] / 0xffffffff) * maximum);
+}
+
+function StreamStatus({ mode }: Readonly<{ mode: ConnectionMode }>) {
+  const connected = mode === "stream";
   return (
     <div className="ml-auto flex items-center gap-2 text-sm text-slate-300">
       {connected ? <Wifi size={16} className="text-emerald-400" /> : <WifiOff size={16} className="text-amber-400" />}
-      {connected ? "Live stream" : "Reconnecting…"}
+      {connectionLabel(mode)}
     </div>
   );
 }
 
-function CandidatePanel({ symbol, candidate, hasFreshSnapshot }: { symbol: string; candidate: Candidate; hasFreshSnapshot: boolean }) {
+function CandidatePanel({ symbol, candidate, hasFreshSnapshot }: Readonly<{ symbol: string; candidate: Candidate; hasFreshSnapshot: boolean }>) {
   return (
     <article className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/80 shadow-lg shadow-slate-950/30">
       <ScoreCard symbol={symbol} candidate={candidate} hasFreshSnapshot={hasFreshSnapshot} />
@@ -61,37 +68,81 @@ function candidateRank(candidate: Candidate): number | undefined {
 }
 
 export default function Dashboard() {
-  const [data, setData] = useState<DashboardData>(initialData);
-  const [connected, setConnected] = useState(false);
-  const [hasFreshSnapshot, setHasFreshSnapshot] = useState(false);
+  const [data, setData] = useState<DashboardSnapshot | null>(null);
+  const [mode, setMode] = useState<ConnectionMode>("reconnecting");
+  const latestVersion = useRef(0);
 
   useEffect(() => {
+    let active = true;
+    let pollTimer: ReturnType<typeof setTimeout> | undefined;
+    let pollAttempt = 0;
+    let streaming = false;
     const stream = new EventSource("/dashboard/api/stream");
-    stream.onopen = () => setConnected(true);
+
+    const acceptSnapshot = (snapshot: DashboardSnapshot) => {
+      if (!active || snapshot.snapshot_version <= latestVersion.current) return;
+      latestVersion.current = snapshot.snapshot_version;
+      setData(snapshot);
+    };
+
+    const schedulePoll = (delay: number) => {
+      if (!active || pollTimer !== undefined) return;
+      const jitter = boundedJitter(Math.max(250, delay * 0.2));
+      pollTimer = setTimeout(async () => {
+        pollTimer = undefined;
+        if (!active || streaming) return;
+        try {
+          const response = await fetch("/dashboard/api/candidates", { cache: "no-store" });
+          const snapshot = response.ok ? dashboardSnapshot(await response.json()) : undefined;
+          if (!snapshot) throw new Error("invalid dashboard snapshot");
+          acceptSnapshot(snapshot);
+          pollAttempt = 0;
+          if (streaming) return;
+          setMode("polling");
+          schedulePoll(5_000);
+        } catch {
+          pollAttempt += 1;
+          if (streaming) return;
+          setMode("reconnecting");
+          schedulePoll(Math.min(30_000, 1_000 * (2 ** Math.min(pollAttempt, 5))));
+        }
+      }, delay + jitter);
+    };
+
+    stream.onopen = () => {
+      streaming = true;
+      if (pollTimer !== undefined) clearTimeout(pollTimer);
+      pollTimer = undefined;
+      pollAttempt = 0;
+      setMode("stream");
+    };
     stream.onerror = () => {
-      setConnected(false);
-      setHasFreshSnapshot(false);
-      setData(initialData);
+      streaming = false;
+      setMode("reconnecting");
+      schedulePoll(1_000);
     };
     stream.onmessage = (event) => {
       try {
-        const payload = JSON.parse(event.data) as DashboardData;
-        if (typeof payload.total === "number" && payload.candidates && typeof payload.candidates === "object") {
-          setData(payload);
-          setConnected(true);
-          setHasFreshSnapshot(true);
-        }
+        const packet = dashboardStreamEvent(JSON.parse(event.data));
+        if (!packet) throw new Error("invalid dashboard stream event");
+        if (packet.payload) acceptSnapshot(packet.payload);
+        streaming = true;
+        setMode("stream");
       } catch {
-        setConnected(false);
-        setHasFreshSnapshot(false);
-        setData(initialData);
+        streaming = false;
+        setMode("reconnecting");
+        schedulePoll(1_000);
       }
     };
-    return () => stream.close();
+    return () => {
+      active = false;
+      stream.close();
+      if (pollTimer !== undefined) clearTimeout(pollTimer);
+    };
   }, []);
 
   const rows = useMemo(
-    () => Object.entries(data.candidates).sort(([leftSymbol, left], [rightSymbol, right]) => {
+    () => Object.entries(data?.candidates ?? {}).sort(([leftSymbol, left], [rightSymbol, right]) => {
       const leftRank = candidateRank(left);
       const rightRank = candidateRank(right);
       if (leftRank !== undefined && rightRank !== undefined && leftRank !== rightRank) return rightRank - leftRank;
@@ -99,24 +150,70 @@ export default function Dashboard() {
       if (rightRank !== undefined) return 1;
       return leftSymbol.localeCompare(rightSymbol);
     }),
-    [data.candidates],
+    [data],
   );
+
+  const groups = useMemo(() => ({
+    strictConfirmed: rows.filter(([, candidate]) => candidate.signal_class === "STRICT" && candidate.status === "TRIGGERED"),
+    strictSetup: rows.filter(([, candidate]) => candidate.signal_class === "STRICT" && ["FUEL-RICH", "PRE-TRIGGER", "ARMED"].includes(String(candidate.status))),
+    experimental: rows.filter(([, candidate]) => candidate.signal_class === "EXPERIMENTAL"),
+    discovery: rows.filter(([, candidate]) => candidate.signal_class !== "EXPERIMENTAL" && !(candidate.signal_class === "STRICT" && ["TRIGGERED", "FUEL-RICH", "PRE-TRIGGER", "ARMED"].includes(String(candidate.status)))),
+  }), [rows]);
+
+  const renderGroup = (title: string, items: [string, Candidate][], tone = "slate") => items.length > 0 && (
+    <section className="mx-auto mb-8 max-w-7xl">
+      <h2 className={`mb-3 text-sm font-semibold uppercase tracking-wide ${tone === "experimental" ? "text-violet-300" : "text-slate-300"}`}>{title}</h2>
+      <div className={`grid gap-5 xl:grid-cols-2 ${tone === "experimental" ? "rounded-2xl border border-violet-500/25 bg-violet-950/10 p-4" : ""}`}>
+        {items.map(([symbol, candidate]) => <CandidatePanel key={symbol} symbol={symbol} candidate={candidate} hasFreshSnapshot={data !== null} />)}
+      </div>
+    </section>
+  );
+
+  let emptyState: ReactNode = null;
+  if (data === null) {
+    emptyState = (
+      <div className="rounded-2xl border border-dashed border-slate-700 bg-slate-900/60 py-24 text-center">
+        <p className="text-lg font-medium">Initializing live state…</p>
+        <p className="mt-2 text-sm text-slate-400">Waiting for a schema-valid stream snapshot or polling fallback.</p>
+      </div>
+    );
+  } else if (rows.length === 0) {
+    emptyState = (
+      <div className="rounded-2xl border border-dashed border-slate-700 bg-slate-900/60 py-24 text-center">
+        <p className="text-lg font-medium">No active candidates in the latest valid snapshot</p>
+        <p className="mt-2 text-sm text-slate-400">This is a real READY snapshot, not an initializing placeholder.</p>
+      </div>
+    );
+  }
 
   return (
     <main className="min-h-screen bg-slate-950 px-4 py-6 text-slate-100 sm:px-6 lg:px-10">
-      <header className="mx-auto mb-8 flex max-w-7xl items-center gap-3 border-b border-slate-800 pb-5">
+      <header className="mx-auto mb-5 flex max-w-7xl items-center gap-3 border-b border-slate-800 pb-5">
         <Activity className="text-emerald-400" size={30} />
         <div>
           <h1 className="text-2xl font-bold tracking-tight">WaterfallHunter</h1>
-          <p className="text-sm text-slate-400">USDT perpetual futures monitoring terminal</p>
+          <p className="text-sm text-slate-400">Evidence-first paper research terminal</p>
         </div>
-        <StreamStatus connected={connected} />
+        <StreamStatus mode={mode} />
       </header>
 
-      <section className="mx-auto mb-7 grid max-w-7xl gap-4 md:grid-cols-3">
+      <nav className="mx-auto mb-7 flex max-w-7xl gap-2 overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/85 p-2 text-xs text-slate-300 shadow-lg shadow-slate-950/20" aria-label="Dashboard sections">
+        <a href="#overview" className="inline-flex shrink-0 items-center gap-2 rounded-xl px-3 py-2 hover:bg-slate-800 hover:text-white"><LayoutDashboard size={14} />Overview</a>
+        <a href="#evidence" className="inline-flex shrink-0 items-center gap-2 rounded-xl px-3 py-2 hover:bg-slate-800 hover:text-white"><ShieldCheck size={14} />Evidence</a>
+        <a href="#lifecycle-shadow" className="inline-flex shrink-0 items-center gap-2 rounded-xl px-3 py-2 hover:bg-slate-800 hover:text-white"><GitBranch size={14} />Lifecycle shadow</a>
+        <a href="#backtest-lab" className="inline-flex shrink-0 items-center gap-2 rounded-xl px-3 py-2 hover:bg-slate-800 hover:text-white"><FlaskConical size={14} />Backtest Lab</a>
+        <a href="#live-candidates" className="inline-flex shrink-0 items-center gap-2 rounded-xl px-3 py-2 hover:bg-slate-800 hover:text-white"><Radio size={14} />Candidates</a>
+        <span className="ml-auto inline-flex shrink-0 items-center rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 font-semibold text-emerald-200">LIVE TRADING OFF</span>
+      </nav>
+
+      <section id="overview" className="mx-auto mb-7 grid max-w-7xl gap-4 md:grid-cols-4">
         <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
           <p className="text-sm text-slate-400">Tracked candidates</p>
-          <p className="mt-1 text-3xl font-semibold tabular-nums">{data.total}</p>
+          <p className="mt-1 text-3xl font-semibold tabular-nums">{data?.total ?? "—"}</p>
+        </div>
+        <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+          <p className="text-sm text-slate-400">STRICT confirmed</p>
+          <p className="mt-1 text-3xl font-semibold tabular-nums text-emerald-200">{groups.strictConfirmed.length}</p>
         </div>
         <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5 md:col-span-2">
           <p className="text-sm text-slate-400">Live-data policy</p>
@@ -124,7 +221,7 @@ export default function Dashboard() {
         </div>
       </section>
 
-      <OutcomeEvidence />
+      <div id="evidence"><OutcomeEvidence /></div>
 
       <HistoricalOutcomes />
 
@@ -132,23 +229,23 @@ export default function Dashboard() {
 
       <FeatureReplay />
 
-      <SignalFunnel funnel={data.signal_funnel} />
+      <LifecycleShadow />
 
-      <FinalRanking ranking={data.final_ranking} />
+      <BacktestLab />
 
-      <section className="mx-auto max-w-7xl">
+      <SignalFunnel funnel={data?.signal_funnel as SignalFunnelData | undefined} />
+
+      <FinalRanking ranking={data?.final_ranking} />
+
+      <section id="live-candidates" className="mx-auto mb-5 max-w-7xl scroll-mt-4">
         {rows.length > 0 && <p className="mb-3 text-xs text-slate-500">All candidates remain ordered by the existing Score V2/watch score view. The Top 3 panel is a separate observational ranking and does not alter state or eligibility.</p>}
-        {rows.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-slate-700 bg-slate-900/60 py-24 text-center">
-            <p className="text-lg font-medium">No active candidates yet</p>
-            <p className="mt-2 text-sm text-slate-400">The dashboard will populate after the live catalog and analysis pipeline return eligible data.</p>
-          </div>
-        ) : (
-          <div className="grid gap-5 xl:grid-cols-2">
-            {rows.map(([symbol, candidate]) => <CandidatePanel key={symbol} symbol={symbol} candidate={candidate} hasFreshSnapshot={hasFreshSnapshot} />)}
-          </div>
-        )}
+        {emptyState}
       </section>
+
+      {renderGroup("Confirmed STRICT signals", groups.strictConfirmed)}
+      {renderGroup("STRICT armed and pre-trigger setups", groups.strictSetup)}
+      {renderGroup("Experimental research — never mixed with STRICT", groups.experimental, "experimental")}
+      {renderGroup("Watch and discovery", groups.discovery)}
     </main>
   );
 }

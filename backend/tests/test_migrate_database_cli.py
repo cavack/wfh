@@ -118,7 +118,10 @@ def test_cli_preflight_is_read_only_for_legacy_database(tmp_path: Path, capsys):
     }
 
 
-def test_cli_apply_clean_install_sets_wal_and_verifies_schema_v2(tmp_path: Path, capsys):
+def test_cli_apply_clean_install_sets_wal_and_verifies_current_schema(
+    tmp_path: Path,
+    capsys,
+):
     db_path = tmp_path / "registry.db"
 
     exit_code = _main()(
@@ -136,12 +139,12 @@ def test_cli_apply_clean_install_sets_wal_and_verifies_schema_v2(tmp_path: Path,
     assert payload["ok"] is True
     assert payload["mode"] == "apply"
     assert payload["state"] == "MIGRATED_COMPATIBLE"
-    assert payload["applied_versions"] == [1, 2]
-    assert payload["user_version"] == 2
+    assert payload["applied_versions"] == [1, 2, 3, 4, 5]
+    assert payload["user_version"] == 5
     assert payload["journal_mode"] == "wal"
 
     with sqlite3.connect(db_path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
         assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
 
 
