@@ -53,6 +53,38 @@ test("watch-score ordering uses normalized score multiplied by evidence coverage
   );
 });
 
+test("partial candidate.score cannot bypass watch evidence coverage", () => {
+  const sparseObservation = {
+    score: 100,
+    metrics: {
+      score_version: "score_v2",
+      trade_eligible: false,
+      watch_score: {
+        score: 100,
+        coverage_pct: 30,
+      },
+    },
+  };
+  const betterObserved = {
+    score: 70,
+    metrics: {
+      score_version: "score_v2",
+      trade_eligible: false,
+      watch_score: {
+        score: 70,
+        coverage_pct: 95,
+      },
+    },
+  };
+
+  assert.ok(
+    compareCandidateEntries(
+      ["SPARSE", sparseObservation],
+      ["BETTER_OBSERVED", betterObserved],
+    ) > 0,
+  );
+});
+
 test("effective watch score may outrank fuller coverage when signal evidence is much stronger", () => {
   const strongAtNinetyPercent = {
     metrics: {
