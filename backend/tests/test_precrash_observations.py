@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 from waterfallhunter.core.candle_analyzer import MultiTimeframeAnalyzer
 from waterfallhunter.core.derivatives import DerivativesAnalyzer
@@ -115,9 +116,10 @@ def test_orderbook_depth_dynamics_are_recorded_observationally_only():
             return self.books.pop(0)
 
         async def fetch_trades(self, symbol, limit=100):
+            now_ms = int(time.time() * 1000)
             return [
                 {
-                    "timestamp": 1_700_000_000_000,
+                    "timestamp": now_ms,
                     "side": "sell" if index % 2 == 0 else "buy",
                     "price": 100.5,
                     "amount": 0.1,
