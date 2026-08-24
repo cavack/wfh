@@ -77,11 +77,13 @@ export default function Dashboard() {
     let pollTimer: ReturnType<typeof setTimeout> | undefined;
     let pollAttempt = 0;
     let streaming = false;
+    let hasSnapshot = false;
     const stream = new EventSource("/dashboard/api/stream");
 
     const acceptSnapshot = (snapshot: DashboardSnapshot) => {
       if (!active || snapshot.snapshot_version <= latestVersion.current) return;
       latestVersion.current = snapshot.snapshot_version;
+      hasSnapshot = true;
       setData(snapshot);
     };
 
@@ -90,7 +92,7 @@ export default function Dashboard() {
       const jitter = boundedJitter(Math.max(250, delay * 0.2));
       pollTimer = setTimeout(async () => {
         pollTimer = undefined;
-        if (!active || streaming) return;
+        if (!active || (streaming && hasSnapshot)) return;
         try {
           const response = await fetch("/dashboard/api/candidates", { cache: "no-store" });
           const snapshot = response.ok ? dashboardSnapshot(await response.json()) : undefined;
@@ -102,30 +104,25 @@ export default function Dashboard() {
           schedulePoll(5_000);
         } catch {
           pollAttempt += 1;
-          if (streaming) return;
-          setMode("reconnecting");
-          schedulePoll(Math.min(30_000, 1_000 * (2 ** Math.min(pollAttempt, 5))));
+          if (!streaming) setMode("reconnecting");
+          if (!streaming || !hasSnapshot) {
+            schedulePoll(Math.min(30_000, 1_000 * (2 ** Math.min(pollAttempt, 5))));
+          }
         }
       }, delay + jitter);
     };
 
-    stream.onopen = () => {
-      streaming = true;
-      if (pollTimer !== undefined) clearTimeout(pollTimer);
-      pollTimer = undefined;
-      pollAttempt = 0;
-      setMode("stream");
-    };
-    stream.onerror = () => {
-      streaming = false;
-      setMode("reconnecting");
-      schedulePoll(1_000);
-    };
-    stream.onmessage = (event) => {
+    const handleStreamMessage = (event: MessageEvent<string>) => {
       try {
         const packet = dashboardStreamEvent(JSON.parse(event.data));
         if (!packet) throw new Error("invalid dashboard stream event");
-        if (packet.payload) acceptSnapshot(packet.payload);
+        if (packet.payload) {
+          acceptSnapshot(packet.payload);
+          if (hasSnapshot && pollTimer !== undefined) {
+            clearTimeout(pollTimer);
+            pollTimer = undefined;
+          }
+        }
         streaming = true;
         setMode("stream");
       } catch {
@@ -134,8 +131,40 @@ export default function Dashboard() {
         schedulePoll(1_000);
       }
     };
+
+    const handleNamedStreamEvent = (event: Event) => {
+      if (event instanceof MessageEvent) {
+        handleStreamMessage(event as MessageEvent<string>);
+      }
+    };
+
+    stream.onopen = () => {
+      streaming = true;
+      if (hasSnapshot && pollTimer !== undefined) {
+        clearTimeout(pollTimer);
+        pollTimer = undefined;
+      }
+      pollAttempt = 0;
+      setMode("stream");
+    };
+    stream.onerror = () => {
+      streaming = false;
+      setMode("reconnecting");
+      schedulePoll(1_000);
+    };
+    stream.onmessage = handleStreamMessage;
+    stream.addEventListener("snapshot", handleNamedStreamEvent);
+    stream.addEventListener("heartbeat", handleNamedStreamEvent);
+
+    // Bootstrap from the schema-validated polling endpoint even when the SSE
+    // socket opens first. This prevents an open heartbeat-only stream from
+    // suppressing the initial READY snapshot forever.
+    schedulePoll(0);
+
     return () => {
       active = false;
+      stream.removeEventListener("snapshot", handleNamedStreamEvent);
+      stream.removeEventListener("heartbeat", handleNamedStreamEvent);
       stream.close();
       if (pollTimer !== undefined) clearTimeout(pollTimer);
     };
