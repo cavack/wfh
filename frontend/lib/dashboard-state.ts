@@ -32,21 +32,35 @@ function finiteNumber(value: unknown): number | undefined {
  * Polling can legitimately preview version 1 without advancing the SSE
  * buffer. The first retained SSE snapshot can therefore also be version 1.
  * generated_at is the deterministic tie-breaker for that equal-version
- * bootstrap race; a lower version can never replace a higher one.
+ * bootstrap race.
+ *
+ * The backend snapshot sequence is intentionally process-local. A backend
+ * restart can therefore reset the sequence from a large value to 1 while an
+ * already-open browser still remembers the old value. A lower version is only
+ * accepted when the caller has observed a transport reconnect and the new
+ * payload was generated strictly later than the currently accepted payload.
+ * This prevents an ordinary stale replay from masquerading as a new process
+ * generation without relying on an arbitrary timeout.
  */
 export function shouldAcceptDashboardSnapshot(
   current: SnapshotIdentity | null,
   incoming: SnapshotIdentity,
+  options: Readonly<{ allowVersionReset?: boolean }> = {},
 ): boolean {
   if (current === null) {
     return true;
   }
 
-  if (incoming.snapshot_version !== current.snapshot_version) {
-    return incoming.snapshot_version > current.snapshot_version;
+  if (incoming.snapshot_version > current.snapshot_version) {
+    return true;
   }
 
-  return incoming.generated_at > current.generated_at;
+  if (incoming.snapshot_version === current.snapshot_version) {
+    return incoming.generated_at > current.generated_at;
+  }
+
+  return options.allowVersionReset === true
+    && incoming.generated_at > current.generated_at;
 }
 
 function candidateRank(candidate: CandidateLike): CandidateRank | undefined {
