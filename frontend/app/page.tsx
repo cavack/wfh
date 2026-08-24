@@ -15,6 +15,11 @@ import { BacktestLab } from "@/components/backtest-lab";
 import { LifecycleShadow } from "@/components/lifecycle-shadow";
 import type { DashboardSnapshot } from "@/generated/dashboard-contract";
 import { dashboardSnapshot, dashboardStreamEvent } from "@/lib/dashboard-contract";
+import {
+  compareCandidateEntries,
+  shouldAcceptDashboardSnapshot,
+  type SnapshotIdentity,
+} from "@/lib/dashboard-state";
 
 type ConnectionMode = "stream" | "polling" | "reconnecting";
 
@@ -49,28 +54,10 @@ function CandidatePanel({ symbol, candidate, hasFreshSnapshot }: Readonly<{ symb
   );
 }
 
-function candidateRank(candidate: Candidate): number | undefined {
-  const metrics = candidate.metrics;
-  const primary = typeof candidate.score === "number" && Number.isFinite(candidate.score)
-    && metrics !== null && typeof metrics === "object" && !Array.isArray(metrics)
-    && (metrics as Record<string, unknown>).score_version === "score_v2"
-    ? candidate.score
-    : undefined;
-  if (primary !== undefined) return primary;
-  if (metrics !== null && typeof metrics === "object" && !Array.isArray(metrics)) {
-    const watch = (metrics as Record<string, unknown>).watch_score;
-    if (watch !== null && typeof watch === "object" && !Array.isArray(watch)) {
-      const score = (watch as Record<string, unknown>).score;
-      if (typeof score === "number" && Number.isFinite(score)) return score;
-    }
-  }
-  return undefined;
-}
-
 export default function Dashboard() {
   const [data, setData] = useState<DashboardSnapshot | null>(null);
   const [mode, setMode] = useState<ConnectionMode>("reconnecting");
-  const latestVersion = useRef(0);
+  const latestSnapshot = useRef<SnapshotIdentity | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -81,8 +68,19 @@ export default function Dashboard() {
     const stream = new EventSource("/dashboard/api/stream");
 
     const acceptSnapshot = (snapshot: DashboardSnapshot) => {
-      if (!active || snapshot.snapshot_version <= latestVersion.current) return;
-      latestVersion.current = snapshot.snapshot_version;
+      const identity: SnapshotIdentity = {
+        snapshot_version: snapshot.snapshot_version,
+        generated_at: snapshot.generated_at,
+      };
+
+      if (
+        !active
+        || !shouldAcceptDashboardSnapshot(latestSnapshot.current, identity)
+      ) {
+        return;
+      }
+
+      latestSnapshot.current = identity;
       hasSnapshot = true;
       setData(snapshot);
     };
@@ -171,14 +169,7 @@ export default function Dashboard() {
   }, []);
 
   const rows = useMemo(
-    () => Object.entries(data?.candidates ?? {}).sort(([leftSymbol, left], [rightSymbol, right]) => {
-      const leftRank = candidateRank(left);
-      const rightRank = candidateRank(right);
-      if (leftRank !== undefined && rightRank !== undefined && leftRank !== rightRank) return rightRank - leftRank;
-      if (leftRank !== undefined) return -1;
-      if (rightRank !== undefined) return 1;
-      return leftSymbol.localeCompare(rightSymbol);
-    }),
+    () => Object.entries(data?.candidates ?? {}).sort(compareCandidateEntries),
     [data],
   );
 
@@ -267,7 +258,7 @@ export default function Dashboard() {
       <FinalRanking ranking={data?.final_ranking} />
 
       <section id="live-candidates" className="mx-auto mb-5 max-w-7xl scroll-mt-4">
-        {rows.length > 0 && <p className="mb-3 text-xs text-slate-500">All candidates remain ordered by the existing Score V2/watch score view. The Top 3 panel is a separate observational ranking and does not alter state or eligibility.</p>}
+        {rows.length > 0 && <p className="mb-3 text-xs text-slate-500">All candidates remain ordered by the existing Score V2/watch score view. Watch-score ties are coverage-aware; missing evidence is never converted into points. The Top 3 panel is a separate observational ranking and does not alter state or eligibility.</p>}
         {emptyState}
       </section>
 
