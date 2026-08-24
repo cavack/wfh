@@ -99,3 +99,29 @@ def test_broadcast_tolerates_client_set_mutation_during_delivery(monkeypatch) ->
     main._broadcast_dashboard_event(event)
 
     assert clients == set()
+
+
+def test_dashboard_snapshot_normalizes_non_finite_numbers_to_unavailable(monkeypatch) -> None:
+    buffer = DashboardEventBuffer()
+    unsafe_payload = {
+        "total": 1,
+        "candidates": {
+            "TEST": {
+                "status": "WATCH",
+                "metrics": {"spread_pct": float("nan")},
+            }
+        },
+        "final_ranking": {"version": "test"},
+        "signal_funnel": {"version": "test"},
+    }
+    monkeypatch.setattr(main, "_dashboard_event_buffer", buffer)
+    monkeypatch.setattr(main, "get_formatted_candidates", lambda **_: unsafe_payload)
+
+    event = main._publish_dashboard_snapshot(
+        full_snapshot=False,
+        only_if_changed=True,
+    )
+
+    assert event is not None
+    assert event.payload is not None
+    assert event.payload.candidates["TEST"]["metrics"]["spread_pct"] is None
