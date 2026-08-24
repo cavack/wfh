@@ -3,7 +3,6 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from pydantic import ValidationError
 
@@ -101,12 +100,8 @@ def _metadata_cutover_created_at(conn: sqlite3.Connection) -> int:
     return int(row[0])
 
 
-def _scalar_count(
-    conn: sqlite3.Connection,
-    sql: str,
-    params: tuple[Any, ...] = (),
-) -> int:
-    row = conn.execute(sql, params).fetchone()
+def _scalar_count(conn: sqlite3.Connection, sql: str) -> int:
+    row = conn.execute(sql).fetchone()
     if row is None:
         raise SignalMetadataError("SIGNAL_METADATA_QUERY_FAILED")
     return int(row[0])
@@ -149,9 +144,10 @@ class SignalMetadataStore:
     """Read-only canonical metadata inspection helper.
 
     This class never creates, migrates, repairs, classifies, or backfills rows.
-    Historical ledger rows that pre-date migration v3 are intentionally not
-    auto-classified. Completeness remains fail-closed for every post-cutover
-    signal, where ledger and metadata are persisted atomically by the runtime.
+    Historical ledger rows that pre-date migration v3 may remain entirely
+    unclassified and therefore outside the canonical view. If legacy metadata
+    classification has begun, however, partial historical coverage remains a
+    fail-closed condition. Every post-cutover signal always requires metadata.
     """
 
     def __init__(self, db_path: str | Path) -> None:
@@ -163,6 +159,8 @@ class SignalMetadataStore:
             conn.execute("BEGIN")
             _require_schema(conn)
             cutover_created_at = _metadata_cutover_created_at(conn)
+            cutoff = str(cutover_created_at)
+
             ledger_count = _scalar_count(
                 conn,
                 "SELECT COUNT(*) FROM lbank_signal_ledger",
@@ -175,22 +173,30 @@ class SignalMetadataStore:
                 conn,
                 "SELECT COUNT(*) FROM canonical_signal_view",
             )
-            required_ledger_count = _scalar_count(
-                conn,
-                "SELECT COUNT(*) FROM lbank_signal_ledger WHERE created_at >= ?",
-                (cutover_created_at,),
-            )
-            required_canonical_count = _scalar_count(
-                conn,
-                "SELECT COUNT(*) FROM canonical_signal_view WHERE created_at >= ?",
-                (cutover_created_at,),
-            )
-            missing_metadata_count = _scalar_count(
+            post_cutover_missing_count = _scalar_count(
                 conn,
                 "SELECT COUNT(*) FROM lbank_signal_ledger AS s "
                 "LEFT JOIN signal_metadata AS m ON m.signal_id = s.id "
-                "WHERE m.signal_id IS NULL AND s.created_at >= ?",
-                (cutover_created_at,),
+                "WHERE m.signal_id IS NULL AND s.created_at >= " + cutoff,
+            )
+            legacy_ledger_count = _scalar_count(
+                conn,
+                "SELECT COUNT(*) FROM lbank_signal_ledger "
+                "WHERE created_at < " + cutoff,
+            )
+            legacy_metadata_count = _scalar_count(
+                conn,
+                "SELECT COUNT(*) FROM signal_metadata AS m "
+                "INNER JOIN lbank_signal_ledger AS s ON s.id = m.signal_id "
+                "WHERE s.created_at < " + cutoff,
+            )
+            legacy_missing_count = (
+                legacy_ledger_count - legacy_metadata_count
+                if legacy_metadata_count > 0
+                else 0
+            )
+            missing_metadata_count = (
+                post_cutover_missing_count + max(0, legacy_missing_count)
             )
             orphan_metadata_count = _scalar_count(
                 conn,
@@ -217,7 +223,7 @@ class SignalMetadataStore:
             reasons.append("ORPHAN_METADATA")
         if invalid_metadata_count:
             reasons.append("INVALID_METADATA")
-        if required_canonical_count != required_ledger_count:
+        if canonical_count != metadata_count:
             reasons.append("CANONICAL_VIEW_COUNT_MISMATCH")
 
         return MetadataCompletenessResult(
@@ -243,7 +249,7 @@ def verify_signal_metadata_completeness(
 def require_signal_metadata_completeness(
     db_path: str | Path,
 ) -> MetadataCompletenessResult:
-    """Fail closed unless every post-cutover ledger row has canonical metadata."""
+    """Fail closed unless the canonical post-cutover metadata contract holds."""
 
     result = verify_signal_metadata_completeness(db_path)
     if result.complete:
