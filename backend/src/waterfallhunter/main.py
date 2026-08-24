@@ -2638,7 +2638,9 @@ async def notification_delivery_status(response: Response):
     "/metrics"
 )
 async def metrics():
-    active_candidates = db.get_all_active_candidates()
+    active_candidates = await asyncio.to_thread(
+        db.get_all_active_candidates
+    )
     tracked_candidates.set(
         len(active_candidates)
     )
