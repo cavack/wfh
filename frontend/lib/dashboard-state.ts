@@ -53,7 +53,11 @@ function candidateRank(candidate: CandidateLike): CandidateRank | undefined {
   const metrics = asRecord(candidate.metrics);
   const primaryScore = finiteNumber(candidate.score);
 
-  if (primaryScore !== undefined && metrics?.score_version === "score_v2") {
+  if (
+    primaryScore !== undefined
+    && metrics?.score_version === "score_v2"
+    && metrics.trade_eligible === true
+  ) {
     return {
       source: "primary",
       score: primaryScore,
