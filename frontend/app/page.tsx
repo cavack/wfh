@@ -258,7 +258,7 @@ export default function Dashboard() {
       <FinalRanking ranking={data?.final_ranking} />
 
       <section id="live-candidates" className="mx-auto mb-5 max-w-7xl scroll-mt-4">
-        {rows.length > 0 && <p className="mb-3 text-xs text-slate-500">All candidates remain ordered by the existing Score V2/watch score view. Watch-score ties are coverage-aware; missing evidence is never converted into points. The Top 3 panel is a separate observational ranking and does not alter state or eligibility.</p>}
+        {rows.length > 0 && <p className="mb-3 text-xs text-slate-500">All candidates remain ordered by the existing Score V2/watch score view. Watch-score ordering is evidence-coverage aware; missing evidence is never converted into points. The Top 3 panel is a separate observational ranking and does not alter state or eligibility.</p>}
         {emptyState}
       </section>
 
