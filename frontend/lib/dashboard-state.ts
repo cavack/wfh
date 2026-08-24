@@ -74,6 +74,50 @@ function candidateRank(candidate: CandidateLike): CandidateRank | undefined {
   };
 }
 
+function comparePresence<T>(left: T | undefined, right: T | undefined): number {
+  if (left !== undefined && right === undefined) {
+    return -1;
+  }
+  if (left === undefined && right !== undefined) {
+    return 1;
+  }
+  return 0;
+}
+
+function compareWatchCoverage(left: CandidateRank, right: CandidateRank): number {
+  if (left.source !== "watch" || right.source !== "watch") {
+    return 0;
+  }
+
+  const presenceOrder = comparePresence(left.coverage, right.coverage);
+  if (presenceOrder !== 0) {
+    return presenceOrder;
+  }
+
+  if (left.coverage === undefined || right.coverage === undefined) {
+    return 0;
+  }
+
+  return right.coverage - left.coverage;
+}
+
+function compareRanks(
+  left: CandidateRank | undefined,
+  right: CandidateRank | undefined,
+): number {
+  const presenceOrder = comparePresence(left, right);
+  if (presenceOrder !== 0 || left === undefined || right === undefined) {
+    return presenceOrder;
+  }
+
+  const coverageOrder = compareWatchCoverage(left, right);
+  if (coverageOrder !== 0) {
+    return coverageOrder;
+  }
+
+  return right.score - left.score;
+}
+
 /**
  * Preserve the existing Score V2 / Watch Score ordering while preventing a
  * low-coverage Watch Score from outranking a better-observed Watch Score only
@@ -88,43 +132,9 @@ export function compareCandidateEntries(
 ): number {
   const [leftSymbol, left] = leftEntry;
   const [rightSymbol, right] = rightEntry;
-  const leftRank = candidateRank(left);
-  const rightRank = candidateRank(right);
+  const rankOrder = compareRanks(candidateRank(left), candidateRank(right));
 
-  if (leftRank !== undefined && rightRank !== undefined) {
-    if (leftRank.source === "watch" && rightRank.source === "watch") {
-      const leftCoverage = leftRank.coverage;
-      const rightCoverage = rightRank.coverage;
-
-      if (leftCoverage !== undefined && rightCoverage === undefined) {
-        return -1;
-      }
-
-      if (leftCoverage === undefined && rightCoverage !== undefined) {
-        return 1;
-      }
-
-      if (
-        leftCoverage !== undefined
-        && rightCoverage !== undefined
-        && leftCoverage !== rightCoverage
-      ) {
-        return rightCoverage - leftCoverage;
-      }
-    }
-
-    if (leftRank.score !== rightRank.score) {
-      return rightRank.score - leftRank.score;
-    }
-  }
-
-  if (leftRank !== undefined && rightRank === undefined) {
-    return -1;
-  }
-
-  if (leftRank === undefined && rightRank !== undefined) {
-    return 1;
-  }
-
-  return leftSymbol.localeCompare(rightSymbol);
+  return rankOrder !== 0
+    ? rankOrder
+    : leftSymbol.localeCompare(rightSymbol);
 }
