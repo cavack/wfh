@@ -1326,7 +1326,7 @@ def _publish_dashboard_snapshot(
 
 
 def _broadcast_dashboard_event(event: DashboardStreamEvent) -> None:
-    for queue in _sse_clients:
+    for queue in list(_sse_clients):
         try:
             queue.put_nowait(event)
         except asyncio.QueueFull:
