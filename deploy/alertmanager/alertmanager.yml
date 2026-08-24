@@ -7,5 +7,5 @@ route:
 receivers:
   - name: telegram-webhook
     webhook_configs:
-      - url: http://172.23.0.2:8080/alerts
+      - url: http://waterfall-watchdog:8080/alerts
         send_resolved: true
