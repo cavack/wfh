@@ -7,11 +7,17 @@ from pathlib import Path
 from typing import Any, Literal
 
 import sqlite3
+import subprocess
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from waterfallhunter.core.deployment_provenance import (
     DEPLOYMENT_PROVENANCE_VERIFIED,
     evaluate_deployment_provenance,
+)
+from waterfallhunter.core.github_ci_verification import (
+    TrustedCIVerification,
+    TrustedCIVerificationError,
+    resolve_github_ci_verification,
 )
 from waterfallhunter.core.signal_metadata import canonical_sha256
 from waterfallhunter.core.schema_contract import CURRENT_RUNTIME_SCHEMA_VERSION
@@ -23,8 +29,11 @@ from waterfallhunter.core.sqlite_backup_certification import (
 
 MINIMUM_SHADOW_SOAK_SECONDS = 86_400
 MAXIMUM_SHADOW_ERROR_RATE = 0.001
+MINIMUM_SHADOW_REQUEST_COUNT = 1_000
 MAXIMUM_READINESS_AGE_SECONDS = 3_600
 MAXIMUM_BACKUP_AGE_SECONDS = 604_800
+MAXIMUM_BACKUP_START_BIRTHTIME_SKEW_SECONDS = 300
+MAXIMUM_REPORT_VALIDITY_SECONDS = 3_600
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
 IMAGE_DIGEST_PATTERN = r"^sha256:[0-9a-f]{64}$"
 
@@ -45,7 +54,6 @@ class VerificationEvidence(BaseModel):
 
     source_revision: str = Field(min_length=40, max_length=40)
     tested_image_digest: str = Field(pattern=IMAGE_DIGEST_PATTERN)
-    verification_report_sha256: str = Field(pattern=SHA256_PATTERN)
     backend_tests_passed: StrictBool
     frontend_tests_passed: StrictBool
     e2e_tests_passed: StrictBool
@@ -55,6 +63,7 @@ class VerificationEvidence(BaseModel):
     security_tests_passed: StrictBool
     secret_scan_passed: StrictBool
     blocker_review_findings: int = Field(ge=0, strict=True)
+    verification_report_sha256: str = Field(pattern=SHA256_PATTERN)
 
     @model_validator(mode="after")
     def _revision_shape(self) -> "VerificationEvidence":
@@ -94,6 +103,7 @@ class ShadowSoakEvidence(BaseModel):
     environment: Literal["STAGING_SHADOW"]
     started_at: int = Field(ge=0, strict=True)
     ended_at: int = Field(ge=0, strict=True)
+    request_count: int = Field(ge=0, strict=True)
     request_error_rate: float = Field(ge=0, le=1, allow_inf_nan=False)
     oom_events: int = Field(ge=0, strict=True)
     schema_errors: int = Field(ge=0, strict=True)
@@ -284,20 +294,97 @@ def _backup_artifact_revalidation_reasons(backup: dict[str, Any]) -> list[str]:
     return []
 
 
+def _filesystem_birthtime_epoch(path: Path) -> int | None:
+    """Read Linux filesystem birth time independently of packet timestamps."""
+    if not path.is_absolute() or path.is_symlink() or not path.is_file():
+        return None
+
+    executable = next(
+        (
+            candidate
+            for candidate in (Path("/usr/bin/stat"), Path("/bin/stat"))
+            if candidate.is_file()
+        ),
+        None,
+    )
+    if executable is None:
+        return None
+
+    try:
+        completed = subprocess.run(
+            [
+                str(executable),
+                "--format=%W",
+                "--",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (
+        OSError,
+        subprocess.SubprocessError,
+        ValueError,
+    ):
+        return None
+
+    raw = completed.stdout.strip()
+    if not raw.isdigit():
+        return None
+
+    value = int(raw)
+    return value if value >= 1 else None
+
+
 def _backup_freshness_reasons(
     backup: dict[str, Any],
     *,
     now: int,
 ) -> list[str]:
+    started_at = backup.get("backup_started_at")
     completed_at = backup.get("backup_completed_at")
-    if not isinstance(completed_at, int) or completed_at < 1:
-        return ["BACKUP_FRESHNESS_UNPROVEN"]
-    if completed_at > now:
-        return ["BACKUP_TIMESTAMP_IN_FUTURE"]
-    if now - completed_at > MAXIMUM_BACKUP_AGE_SECONDS:
-        return ["BACKUP_EVIDENCE_STALE"]
-    return []
+    backup_path = Path(str(backup.get("backup_path", "")))
 
+    if (
+        not isinstance(started_at, int)
+        or started_at < 1
+        or not isinstance(completed_at, int)
+        or completed_at < started_at
+    ):
+        return ["BACKUP_FRESHNESS_UNPROVEN"]
+
+    birthtime = _filesystem_birthtime_epoch(backup_path)
+    if birthtime is None:
+        return ["BACKUP_ARTIFACT_BIRTHTIME_UNAVAILABLE"]
+
+    reasons: list[str] = []
+
+    if completed_at > now:
+        reasons.append("BACKUP_TIMESTAMP_IN_FUTURE")
+
+    if birthtime > now:
+        reasons.append("BACKUP_ARTIFACT_BIRTHTIME_IN_FUTURE")
+
+    if (
+        abs(started_at - birthtime)
+        > MAXIMUM_BACKUP_START_BIRTHTIME_SKEW_SECONDS
+    ):
+        reasons.append("BACKUP_TIMESTAMP_ARTIFACT_MISMATCH")
+
+    if completed_at < birthtime:
+        reasons.append("BACKUP_COMPLETION_PRECEDES_ARTIFACT_BIRTH")
+
+    # Preserve the claimed-timestamp stale check as an additional diagnostic,
+    # but certification freshness is independently bounded by artifact birth.
+    if now - completed_at > MAXIMUM_BACKUP_AGE_SECONDS:
+        reasons.append("BACKUP_EVIDENCE_STALE")
+
+    if birthtime <= now and now - birthtime > MAXIMUM_BACKUP_AGE_SECONDS:
+        reasons.append("BACKUP_ARTIFACT_STALE")
+
+    return reasons
 
 def _backup_reasons(
     backup: dict[str, Any],
@@ -322,6 +409,42 @@ def _backup_reasons(
         reasons.extend(_backup_freshness_reasons(backup, now=now))
         reasons.extend(_backup_artifact_revalidation_reasons(backup))
     return reasons
+
+
+def _rehearsal_artifact_revalidation_reasons(
+    *,
+    path: Path,
+    expected_audit: Any,
+    unreadable_reason: str,
+    tampered_reason: str,
+) -> list[str]:
+    if not isinstance(expected_audit, dict):
+        return [unreadable_reason]
+    try:
+        if (
+            not path.is_absolute()
+            or path.is_symlink()
+            or not path.is_file()
+        ):
+            return [unreadable_reason]
+        current_audit = audit_sqlite_snapshot(path)
+    except (
+        BackupCertificationError,
+        OSError,
+        ValueError,
+        TypeError,
+        sqlite3.Error,
+    ):
+        return [unreadable_reason]
+
+    mismatches = [
+        field
+        for field in _BACKUP_ARTIFACT_COMPARABLE_FIELDS
+        if current_audit.get(field) != expected_audit.get(field)
+    ]
+    if mismatches:
+        return [tampered_reason]
+    return []
 
 
 def _rehearsal_reasons(
@@ -393,7 +516,25 @@ def _rehearsal_reasons(
         ),
         (not complete, "MIGRATION_REHEARSAL_CONTRACT_INVALID"),
     )
-    return [reason for failed, reason in checks if failed]
+    reasons = [reason for failed, reason in checks if failed]
+    if not reasons:
+        reasons.extend(
+            _rehearsal_artifact_revalidation_reasons(
+                path=migration_path,
+                expected_audit=post_migration_audit,
+                unreadable_reason="MIGRATION_REHEARSAL_ARTIFACT_UNREADABLE",
+                tampered_reason="MIGRATION_REHEARSAL_ARTIFACT_TAMPERED",
+            )
+        )
+        reasons.extend(
+            _rehearsal_artifact_revalidation_reasons(
+                path=rollback_path,
+                expected_audit=rollback_audit,
+                unreadable_reason="ROLLBACK_REHEARSAL_ARTIFACT_UNREADABLE",
+                tampered_reason="ROLLBACK_REHEARSAL_ARTIFACT_TAMPERED",
+            )
+        )
+    return reasons
 
 
 def _verification_reasons(
@@ -402,6 +543,8 @@ def _verification_reasons(
     source_revision: str,
     ci_revision: str,
     tested_image_digest: Any,
+    trusted_ci: TrustedCIVerification | None,
+    trusted_ci_failure: str | None,
 ) -> list[str]:
     fields = (
         "backend_tests_passed",
@@ -424,6 +567,16 @@ def _verification_reasons(
         reasons.append("VERIFICATION_REVISION_MISMATCH")
     if evidence.tested_image_digest != tested_image_digest:
         reasons.append("VERIFICATION_IMAGE_MISMATCH")
+
+    if trusted_ci is None:
+        reasons.append(trusted_ci_failure or "CI_VERIFICATION_TRUST_UNAVAILABLE")
+        return reasons
+    if trusted_ci.source_revision != source_revision or trusted_ci.source_revision != ci_revision:
+        reasons.append("CI_TRUSTED_REVISION_MISMATCH")
+    if trusted_ci.tested_image_digest != tested_image_digest:
+        reasons.append("CI_TRUSTED_IMAGE_MISMATCH")
+    if evidence.verification_report_sha256 != trusted_ci.verification_report_sha256:
+        reasons.append("CI_VERIFICATION_REPORT_MISMATCH")
     return reasons
 
 
@@ -468,7 +621,12 @@ def _runtime_reasons(
             soak.runtime_fingerprint_sha256 != runtime_fingerprint_sha256,
             "SHADOW_SOAK_RUNTIME_FINGERPRINT_MISMATCH",
         ),
+        (soak.ended_at > now, "SHADOW_SOAK_ENDED_IN_FUTURE"),
         (duration_seconds < MINIMUM_SHADOW_SOAK_SECONDS, "SHADOW_SOAK_DURATION_INSUFFICIENT"),
+        (
+            soak.request_count < MINIMUM_SHADOW_REQUEST_COUNT,
+            "SHADOW_SOAK_TRAFFIC_INSUFFICIENT",
+        ),
         (soak.request_error_rate > MAXIMUM_SHADOW_ERROR_RATE, "SHADOW_SOAK_ERROR_RATE_EXCEEDED"),
         (soak.oom_events != 0, "SHADOW_SOAK_OOM_EVENTS_PRESENT"),
         (soak.schema_errors != 0, "SHADOW_SOAK_SCHEMA_ERRORS_PRESENT"),
@@ -481,12 +639,29 @@ def evaluate_deployment_certification(
     request: DeploymentCertificationRequest | dict[str, Any],
     *,
     now: int | None = None,
+    github_repository: str | None = None,
+    github_run_id: int | None = None,
 ) -> dict[str, Any]:
     packet = (
         request
         if isinstance(request, DeploymentCertificationRequest)
         else DeploymentCertificationRequest.model_validate(request)
     )
+    trusted_ci: TrustedCIVerification | None = None
+    trusted_ci_failure: str | None = None
+    if github_repository is None and github_run_id is None:
+        trusted_ci_failure = "CI_VERIFICATION_TRUST_UNAVAILABLE"
+    elif github_repository is None or github_run_id is None:
+        trusted_ci_failure = "CI_VERIFICATION_TRUST_CONFIGURATION_INVALID"
+    else:
+        try:
+            trusted_ci = resolve_github_ci_verification(
+                repository=github_repository,
+                run_id=github_run_id,
+                expected_revision=packet.source_revision,
+            )
+        except TrustedCIVerificationError as error:
+            trusted_ci_failure = str(error) or "CI_VERIFICATION_TRUST_FAILED"
     observed_now = int(time.time() if now is None else now)
     if observed_now < 1:
         raise ValueError("certification evaluation time must be a positive UTC epoch")
@@ -511,6 +686,8 @@ def evaluate_deployment_certification(
             source_revision=packet.source_revision,
             ci_revision=packet.ci_revision,
             tested_image_digest=links["tested_image_digest"],
+            trusted_ci=trusted_ci,
+            trusted_ci_failure=trusted_ci_failure,
         ),
         *_runtime_reasons(
             packet.readiness,
@@ -523,8 +700,21 @@ def evaluate_deployment_certification(
         ),
     ]
 
+    validity_deadlines = [
+        observed_now + MAXIMUM_REPORT_VALIDITY_SECONDS,
+        packet.readiness.observed_at + MAXIMUM_READINESS_AGE_SECONDS,
+    ]
+    backup_completed_at = backup.get("backup_completed_at")
+    if isinstance(backup_completed_at, int) and backup_completed_at >= 1:
+        validity_deadlines.append(
+            backup_completed_at + MAXIMUM_BACKUP_AGE_SECONDS
+        )
+    valid_until = min(validity_deadlines)
+
     body = {
         "contract_version": "deployment_certification_report_v1",
+        "evaluated_at": observed_now,
+        "valid_until": valid_until,
         "source_revision": packet.source_revision,
         "status": (
             "READY_FOR_EXPLICIT_OWNER_APPROVAL"
@@ -535,6 +725,10 @@ def evaluate_deployment_certification(
         "artifact_provenance_sha256": provenance["provenance_sha256"],
         "backup_certification_sha256": backup.get("certification_sha256"),
         "migration_rehearsal_sha256": rehearsal.get("rehearsal_sha256"),
+        "trusted_ci_verification_sha256": (
+            trusted_ci.verification_report_sha256 if trusted_ci is not None else None
+        ),
+        "trusted_ci_run_id": trusted_ci.run_id if trusted_ci is not None else None,
         "deployment_allowed": False,
         "migration_allowed": False,
         "telegram_send_allowed": False,

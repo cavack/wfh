@@ -63,8 +63,12 @@ Build one `deployment_certification_request_v1` JSON packet containing:
 - exact Git/CI revision and complete `deployment_provenance_v1` links;
 - the backup and rehearsal reports above;
 - backend, frontend, E2E, migration, load, fault, security and secret-scan PASS
-  bound to the exact tested revision, tested image digest, and an immutable
-  verification report hash;
+  claims in the packet; these claims cannot authorize certification by themselves;
+- an independently queried GitHub Actions run for the exact source revision, with
+  successful backend/frontend/dependency-audit/container-validation/repository-hygiene
+  jobs and a tested-backend image digest emitted by the same container-validation
+  job after that exact image is tested; the operator derives the verification report
+  hash from this GitHub-controlled run evidence rather than trusting a packet hash;
 - zero blocker review findings;
 - liveness, health, readiness, schema readiness and database readiness bound to
   source revision, running image digest, runtime fingerprint, staging
@@ -80,7 +84,9 @@ Evaluate it offline:
 ```bash
 PYTHONPATH=backend/src:. python scripts/evaluate_deployment_certification.py \
   --input /absolute/path/deployment-evidence.json \
-  --report /absolute/path/deployment-certification.json
+  --report /absolute/path/deployment-certification.json \
+  --github-repository cavack/wfh \
+  --github-run-id <exact-successful-run-id-for-source-revision>
 ```
 
 Even a passing report says `READY_FOR_EXPLICIT_OWNER_APPROVAL` and keeps

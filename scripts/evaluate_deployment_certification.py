@@ -16,6 +16,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True, type=_canonical_absolute_path)
     parser.add_argument("--report", required=True, type=_canonical_absolute_path)
+    parser.add_argument("--github-repository", required=True)
+    parser.add_argument("--github-run-id", required=True, type=int)
     args = parser.parse_args()
     if args.input == args.report:
         parser.error("input and report paths must be different")
@@ -24,7 +26,11 @@ def main() -> int:
     payload = json.loads(args.input.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("deployment certification input must be an object")
-    report = evaluate_deployment_certification(payload)
+    report = evaluate_deployment_certification(
+        payload,
+        github_repository=args.github_repository,
+        github_run_id=args.github_run_id,
+    )
     _write_report_atomic(
         args.report,
         report,
