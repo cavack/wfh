@@ -125,3 +125,25 @@ def test_dashboard_snapshot_normalizes_non_finite_numbers_to_unavailable(monkeyp
     assert event is not None
     assert event.payload is not None
     assert event.payload.candidates["TEST"]["metrics"]["spread_pct"] is None
+
+
+def test_polling_snapshot_normalizes_non_finite_numbers_to_unavailable(monkeypatch) -> None:
+    buffer = DashboardEventBuffer()
+    unsafe_payload = {
+        "total": 1,
+        "candidates": {
+            "TEST": {
+                "status": "WATCH",
+                "metrics": {"spread_pct": float("inf")},
+            }
+        },
+        "final_ranking": {"version": "test"},
+        "signal_funnel": {"version": "test"},
+    }
+    monkeypatch.setattr(main, "_dashboard_event_buffer", buffer)
+    monkeypatch.setattr(main, "get_formatted_candidates", lambda **_: unsafe_payload)
+    response = Response()
+
+    snapshot = asyncio.run(main.get_candidates(response))
+
+    assert snapshot.candidates["TEST"]["metrics"]["spread_pct"] is None
