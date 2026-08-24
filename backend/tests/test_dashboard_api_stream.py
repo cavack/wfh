@@ -80,3 +80,22 @@ def test_stream_falls_back_to_full_snapshot_when_replay_is_unavailable(monkeypat
     assert event["event_type"] == "snapshot"
     assert event["full_snapshot"] is True
     assert event["payload"]["state"] == "READY"
+
+
+def test_broadcast_tolerates_client_set_mutation_during_delivery(monkeypatch) -> None:
+    buffer = DashboardEventBuffer()
+    event = buffer.publish_heartbeat(generated_at=10.0)
+    clients: set[object] = set()
+
+    class SelfRemovingQueue:
+        def put_nowait(self, delivered_event) -> None:
+            assert delivered_event is event
+            clients.discard(self)
+
+    queue = SelfRemovingQueue()
+    clients.add(queue)
+    monkeypatch.setattr(main, "_sse_clients", clients)
+
+    main._broadcast_dashboard_event(event)
+
+    assert clients == set()
