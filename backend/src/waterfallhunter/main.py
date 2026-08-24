@@ -2190,10 +2190,6 @@ async def hunter_loop(
 
     while _hunter_running:
         try:
-            _hunter_last_progress_at = (
-                time.time()
-            )
-
             await (
                 scanner
                 .refresh_live_references()
@@ -2225,10 +2221,10 @@ async def hunter_loop(
                                     symbol,
                                     data,
                                 )
+                                _hunter_last_progress_at = (
+                                    time.time()
+                                )
                         finally:
-                            _hunter_last_progress_at = (
-                                time.time()
-                            )
                             evaluations_since_flush += 1
 
                             if evaluations_since_flush >= 30:
@@ -2260,10 +2256,6 @@ async def hunter_loop(
                             result,
                         )
 
-                    _hunter_last_progress_at = (
-                        time.time()
-                    )
-
             await asyncio.to_thread(
                 execution_decision_logger
                 .flush_evaluations
@@ -2275,6 +2267,11 @@ async def hunter_loop(
             )
 
             validator.ws_manager.prune_stale_cache()
+
+            if not candidates:
+                _hunter_last_progress_at = (
+                    time.time()
+                )
 
             _hunter_last_completed_at = (
                 time.time()
