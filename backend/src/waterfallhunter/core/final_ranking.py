@@ -74,6 +74,28 @@ class FinalRanking:
         return max(0.0, 1.0 - (evaluation_time - observed) / 180.0)
 
     @classmethod
+    def _signal_score(cls, candidate: dict, metrics: dict) -> float | None:
+        watch = metrics.get("watch_score")
+        partial_watch = (
+            metrics.get("trade_eligible") is False
+            and isinstance(watch, dict)
+        )
+
+        if partial_watch:
+            watch_score = cls._finite(watch.get("score"))
+            coverage = cls._finite(watch.get("coverage_pct"))
+            if watch_score is None or coverage is None:
+                return None
+            return (watch_score / 100.0) * (coverage / 100.0)
+
+        score = cls._finite(candidate.get("score"))
+        if score is None:
+            score = cls._finite(metrics.get("score"))
+        if score is None:
+            return None
+        return score / 100.0
+
+    @classmethod
     def for_candidate(
         cls,
         symbol: str,
@@ -85,9 +107,6 @@ class FinalRanking:
         if evaluated_at is None or evaluated_at < 0:
             raise ValueError("evaluation_time must be a non-negative finite timestamp")
         metrics = candidate.get("metrics") if isinstance(candidate.get("metrics"), dict) else {}
-        score = cls._finite(candidate.get("score"))
-        if score is None:
-            score = cls._finite(metrics.get("observation_score"))
         execution = candidate.get("execution_suitability")
         execution_status = execution.get("status") if isinstance(execution, dict) else None
         components = {
@@ -95,7 +114,9 @@ class FinalRanking:
                 cls._readiness(candidate, metrics), cls.WEIGHTS["cascade_readiness"], "lifecycle stages unavailable",
             ),
             "signal_score": cls._component(
-                score / 100.0 if score is not None else None, cls.WEIGHTS["signal_score"], "live and observation scores unavailable",
+                cls._signal_score(candidate, metrics),
+                cls.WEIGHTS["signal_score"],
+                "complete Score V2 or coverage-qualified Watch Score unavailable",
             ),
             "execution_quality": cls._component(
                 {"SUITABLE": 1.0, "MARGINAL": 0.6, "POOR": 0.0}.get(execution_status),
