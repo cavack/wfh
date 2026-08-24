@@ -27,8 +27,8 @@ test("a higher snapshot version wins even if its generated_at is lower", () => {
   assert.equal(shouldAcceptDashboardSnapshot(current, incoming), true);
 });
 
-test("watch-score ordering prefers stronger evidence coverage before partial score", () => {
-  const lowCoverage = {
+test("watch-score ordering uses normalized score multiplied by evidence coverage", () => {
+  const lowerEffectiveScore = {
     metrics: {
       watch_score: {
         score: 100,
@@ -36,7 +36,7 @@ test("watch-score ordering prefers stronger evidence coverage before partial sco
       },
     },
   };
-  const highCoverage = {
+  const higherEffectiveScore = {
     metrics: {
       watch_score: {
         score: 70,
@@ -47,13 +47,39 @@ test("watch-score ordering prefers stronger evidence coverage before partial sco
 
   assert.ok(
     compareCandidateEntries(
-      ["LOW", lowCoverage],
-      ["HIGH", highCoverage],
+      ["LOW_EFFECTIVE", lowerEffectiveScore],
+      ["HIGH_EFFECTIVE", higherEffectiveScore],
     ) > 0,
   );
 });
 
-test("watch-score ordering uses score when evidence coverage is equal", () => {
+test("effective watch score may outrank fuller coverage when signal evidence is much stronger", () => {
+  const strongAtNinetyPercent = {
+    metrics: {
+      watch_score: {
+        score: 100,
+        coverage_pct: 90,
+      },
+    },
+  };
+  const weakerAtFullCoverage = {
+    metrics: {
+      watch_score: {
+        score: 70,
+        coverage_pct: 100,
+      },
+    },
+  };
+
+  assert.ok(
+    compareCandidateEntries(
+      ["STRONG", strongAtNinetyPercent],
+      ["FULL", weakerAtFullCoverage],
+    ) < 0,
+  );
+});
+
+test("watch-score ordering uses raw score when evidence coverage is equal", () => {
   const lowerScore = {
     metrics: {
       watch_score: {
