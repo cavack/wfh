@@ -10,6 +10,7 @@ type CandidateRank = Readonly<{
   source: "primary" | "watch";
   score: number;
   coverage: number | undefined;
+  effectiveScore: number | undefined;
 }>;
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -57,6 +58,7 @@ function candidateRank(candidate: CandidateLike): CandidateRank | undefined {
       source: "primary",
       score: primaryScore,
       coverage: undefined,
+      effectiveScore: primaryScore,
     };
   }
 
@@ -67,10 +69,15 @@ function candidateRank(candidate: CandidateLike): CandidateRank | undefined {
     return undefined;
   }
 
+  const coverage = finiteNumber(watch?.coverage_pct);
+
   return {
     source: "watch",
     score: watchScore,
-    coverage: finiteNumber(watch?.coverage_pct),
+    coverage,
+    effectiveScore: coverage === undefined
+      ? undefined
+      : watchScore * coverage / 100,
   };
 }
 
@@ -84,47 +91,47 @@ function comparePresence<T>(left: T | undefined, right: T | undefined): number {
   return 0;
 }
 
-function compareWatchCoverage(left: CandidateRank, right: CandidateRank): number {
-  if (left.source !== "watch" || right.source !== "watch") {
-    return 0;
-  }
-
-  const presenceOrder = comparePresence(left.coverage, right.coverage);
-  if (presenceOrder !== 0) {
+function compareFiniteDescending(
+  left: number | undefined,
+  right: number | undefined,
+): number {
+  const presenceOrder = comparePresence(left, right);
+  if (presenceOrder !== 0 || left === undefined || right === undefined) {
     return presenceOrder;
   }
-
-  if (left.coverage === undefined || right.coverage === undefined) {
-    return 0;
-  }
-
-  return right.coverage - left.coverage;
+  return right - left;
 }
 
 function compareRanks(
   left: CandidateRank | undefined,
   right: CandidateRank | undefined,
 ): number {
-  const presenceOrder = comparePresence(left, right);
-  if (presenceOrder !== 0 || left === undefined || right === undefined) {
-    return presenceOrder;
+  const rankPresence = comparePresence(left, right);
+  if (rankPresence !== 0 || left === undefined || right === undefined) {
+    return rankPresence;
   }
 
-  const coverageOrder = compareWatchCoverage(left, right);
-  if (coverageOrder !== 0) {
-    return coverageOrder;
+  const effectiveOrder = compareFiniteDescending(
+    left.effectiveScore,
+    right.effectiveScore,
+  );
+  if (effectiveOrder !== 0) {
+    return effectiveOrder;
   }
 
-  return right.score - left.score;
+  const scoreOrder = right.score - left.score;
+  if (scoreOrder !== 0) {
+    return scoreOrder;
+  }
+
+  return compareFiniteDescending(left.coverage, right.coverage);
 }
 
 /**
- * Preserve the existing Score V2 / Watch Score ordering while preventing a
- * low-coverage Watch Score from outranking a better-observed Watch Score only
- * because missing evidence was redistributed by score_v2_watch_v1.
- *
- * Coverage is an ordering dimension, not a replacement score: unknown or
- * missing evidence is never converted to zero points.
+ * Complete Score V2 keeps its existing score. A partial Watch Score is ranked
+ * by normalized score multiplied by evidence coverage so redistributed
+ * missing evidence cannot make a sparse observation look stronger than it is.
+ * Missing coverage stays unavailable rather than being treated as zero or 100%.
  */
 export function compareCandidateEntries(
   leftEntry: CandidateEntry,
