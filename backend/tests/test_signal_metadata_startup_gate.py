@@ -20,12 +20,26 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _cutover_created_at(conn: sqlite3.Connection) -> int:
+    row = conn.execute(
+        "SELECT applied_at FROM schema_migrations WHERE version = 3"
+    ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
 def _insert_ledger_row(
     conn: sqlite3.Connection,
     *,
     symbol: str = "TEST/USDT:USDT",
     triggered_at: int = 1_700_000_000,
+    created_at: int | None = None,
 ) -> int:
+    effective_created_at = (
+        _cutover_created_at(conn) + 1
+        if created_at is None
+        else int(created_at)
+    )
     cursor = conn.execute(
         """
         INSERT INTO lbank_signal_ledger (
@@ -52,7 +66,7 @@ def _insert_ledger_row(
             "SUITABLE",
             "[]",
             "{}",
-            triggered_at,
+            effective_created_at,
         ),
     )
     assert cursor.lastrowid is not None
@@ -154,7 +168,27 @@ def test_complete_canonical_database_passes_without_mutation(tmp_path: Path) -> 
     assert _sha256(db_path) == before
 
 
-def test_missing_metadata_fails_closed(tmp_path: Path) -> None:
+def test_pre_cutover_legacy_row_without_metadata_is_quarantined(
+    tmp_path: Path,
+) -> None:
+    db_path = migrate_test_database(tmp_path / "legacy.db")
+    with sqlite3.connect(db_path) as conn:
+        cutover = _cutover_created_at(conn)
+        _insert_ledger_row(conn, created_at=max(0, cutover - 1))
+    before = _sha256(db_path)
+
+    result = verify_signal_metadata_completeness(db_path)
+
+    assert result.complete is True
+    assert result.ledger_count == 1
+    assert result.metadata_count == 0
+    assert result.canonical_count == 0
+    assert result.missing_metadata_count == 0
+    assert result.reason_codes == ()
+    assert _sha256(db_path) == before
+
+
+def test_missing_post_cutover_metadata_fails_closed(tmp_path: Path) -> None:
     db_path = migrate_test_database(tmp_path / "missing-metadata.db")
     with sqlite3.connect(db_path) as conn:
         _insert_ledger_row(conn)
