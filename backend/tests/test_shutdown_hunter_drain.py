@@ -11,6 +11,7 @@ def test_shutdown_allows_inflight_hunter_evaluation_to_finish(monkeypatch) -> No
     monkeypatch.setattr(main, "_background_tasks", set())
     monkeypatch.setattr(main, "_lbank_execution_shadow_worker", None)
     monkeypatch.setattr(main, "_signal_settlement_worker", None)
+    monkeypatch.setattr(main, "_hunter_task", None, raising=False)
 
     monkeypatch.setattr(main.feature_replay_worker, "stop", lambda: None)
     monkeypatch.setattr(main.scanner, "stop", lambda: None)
@@ -84,6 +85,7 @@ def test_shutdown_allows_inflight_hunter_evaluation_to_finish(monkeypatch) -> No
         hunter_task = main._start_background_task(
             main.hunter_loop(interval_seconds=60)
         )
+        main._hunter_task = hunter_task
         await started.wait()
 
         shutdown_task = asyncio.create_task(main.shutdown_event())
