@@ -2214,25 +2214,30 @@ async def hunter_loop(
                     global _hunter_last_progress_at
                     nonlocal evaluations_since_flush
 
-                    async with semaphore:
-                        try:
-                            if _hunter_running:
-                                await evaluate_candidate(
-                                    symbol,
-                                    data,
-                                )
-                                _hunter_last_progress_at = (
-                                    time.time()
-                                )
-                        finally:
-                            evaluations_since_flush += 1
+                    should_flush = False
+                    try:
+                        async with semaphore:
+                            try:
+                                if _hunter_running:
+                                    await evaluate_candidate(
+                                        symbol,
+                                        data,
+                                    )
+                                    _hunter_last_progress_at = (
+                                        time.time()
+                                    )
+                            finally:
+                                evaluations_since_flush += 1
 
-                            if evaluations_since_flush >= 30:
-                                evaluations_since_flush = 0
-                                await asyncio.to_thread(
-                                    execution_decision_logger
-                                    .flush_evaluations
-                                )
+                                if evaluations_since_flush >= 30:
+                                    evaluations_since_flush = 0
+                                    should_flush = True
+                    finally:
+                        if should_flush:
+                            await asyncio.to_thread(
+                                execution_decision_logger
+                                .flush_evaluations
+                            )
 
                 results = await asyncio.gather(
                     *(
