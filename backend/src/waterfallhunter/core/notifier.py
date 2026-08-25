@@ -33,9 +33,20 @@ class TelegramNotifier:
             else None
         )
         self.enabled = bool(self.token and self.chat_id)
+        configured_cutover = settings.telegram_signal_delivery_cutover_at
+        self.signal_delivery_cutover_at = (
+            configured_cutover
+            if (
+                isinstance(configured_cutover, int)
+                and not isinstance(configured_cutover, bool)
+                and configured_cutover > 0
+            )
+            else None
+        )
         self.signal_delivery_enabled = bool(
             self.enabled
             and settings.telegram_signal_delivery_enabled
+            and self.signal_delivery_cutover_at is not None
         )
         self.db = db_adapter
         self.scanner = scanner
@@ -147,7 +158,8 @@ class TelegramNotifier:
         # Never post directly here: waking the durable worker preserves retry,
         # lease and dead-letter semantics if Telegram is unavailable.
         del symbol, data
-        self.delivery_wakeup.set()
+        if self.signal_delivery_enabled:
+            self.delivery_wakeup.set()
 
     def _load_strict_signal_material(
         self,
@@ -241,6 +253,34 @@ class TelegramNotifier:
                 DeliveryDisposition.PERMANENT_FAILURE,
                 error_code="UNSUPPORTED_SIGNAL_CLASS",
             )
+
+        cutover_at = self.signal_delivery_cutover_at
+        if not self.signal_delivery_enabled or cutover_at is None:
+            return DeliveryResult(
+                DeliveryDisposition.PERMANENT_FAILURE,
+                error_code="SIGNAL_DELIVERY_DISABLED",
+            )
+
+        created_at = payload.get("created_at")
+        if (
+            isinstance(created_at, bool)
+            or not isinstance(created_at, int)
+            or created_at < 0
+        ):
+            return DeliveryResult(
+                DeliveryDisposition.PERMANENT_FAILURE,
+                error_code="INVALID_EVENT_CREATED_AT",
+            )
+
+        if created_at < cutover_at:
+            logger.info(
+                "Suppressing pre-cutover STRICT Telegram event %s "
+                "(created_at=%s cutover_at=%s)",
+                event.get("event_id"),
+                created_at,
+                cutover_at,
+            )
+            return DeliveryResult(DeliveryDisposition.DELIVERED)
 
         raw_signal_id = payload.get("signal_id")
         if (
@@ -373,7 +413,11 @@ class TelegramNotifier:
         url = f"https://api.telegram.org/bot{self.token}/getUpdates"
         logger.info("📡 Interactive Telegram Command Center Online.")
         if self.signal_delivery_enabled:
-            logger.info("Durable STRICT Telegram signal delivery enabled.")
+            logger.info(
+                "Durable STRICT Telegram signal delivery enabled "
+                "from cutover_at=%s.",
+                self.signal_delivery_cutover_at,
+            )
         else:
             logger.info("Durable STRICT Telegram signal delivery disabled.")
 
