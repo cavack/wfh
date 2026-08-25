@@ -13,10 +13,11 @@ def test_bootstrap_candidate_poll_builds_preview_once_for_concurrent_clients(
 ) -> None:
     """Concurrent bootstrap polls must share one expensive preview build."""
 
+    buffer = DashboardEventBuffer(replay_limit=100)
     monkeypatch.setattr(
         main,
         "_dashboard_event_buffer",
-        DashboardEventBuffer(replay_limit=100),
+        buffer,
     )
 
     build_calls = 0
@@ -48,7 +49,12 @@ def test_bootstrap_candidate_poll_builds_preview_once_for_concurrent_clients(
         assert len(snapshots) == 8
         assert all(snapshot.snapshot_version == 1 for snapshot in snapshots)
         assert all(snapshot.state == "READY" for snapshot in snapshots)
+        assert len({snapshot.generated_at for snapshot in snapshots}) == 1
 
     asyncio.run(scenario())
 
     assert build_calls == 1
+    # Poll bootstrap stays a read-only preview. It must not advance the SSE
+    # event/snapshot sequence or become a retained replay snapshot.
+    assert buffer.snapshot_version == 0
+    assert buffer.latest_snapshot() is None
