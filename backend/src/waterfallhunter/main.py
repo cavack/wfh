@@ -277,6 +277,12 @@ _signal_evidence_metrics_last_refresh = 0.0
 _signal_evidence_metrics_lock = asyncio.Lock()
 _sse_clients = set()
 _dashboard_event_buffer = DashboardEventBuffer(replay_limit=100)
+_dashboard_preview_cache: tuple[
+    DashboardEventBuffer,
+    DashboardSnapshot,
+    float,
+] | None = None
+_DASHBOARD_PREVIEW_CACHE_SECONDS = 1.0
 _background_tasks = set()
 
 if "tracked_candidates" not in globals():
@@ -2955,6 +2961,47 @@ async def stream_candidates(
     )
 
 
+def _get_dashboard_poll_snapshot() -> DashboardSnapshot:
+    global _dashboard_preview_cache
+
+    latest = _dashboard_event_buffer.latest_snapshot()
+    if latest is not None:
+        return latest
+
+    now_monotonic = time.monotonic()
+    cached = _dashboard_preview_cache
+
+    if cached is not None:
+        (
+            cached_buffer,
+            cached_snapshot,
+            cached_at,
+        ) = cached
+
+        if (
+            cached_buffer is _dashboard_event_buffer
+            and now_monotonic - cached_at
+            <= _DASHBOARD_PREVIEW_CACHE_SECONDS
+        ):
+            return cached_snapshot
+
+    generated_at = time.time()
+    snapshot = _dashboard_event_buffer.preview_snapshot(
+        get_formatted_candidates(
+            evaluation_time=generated_at
+        ),
+        generated_at=generated_at,
+    )
+
+    _dashboard_preview_cache = (
+        _dashboard_event_buffer,
+        snapshot,
+        time.monotonic(),
+    )
+
+    return snapshot
+
+
 @app.get(
     "/api/candidates",
     response_model=DashboardSnapshot,
@@ -2962,11 +3009,4 @@ async def stream_candidates(
 )
 async def get_candidates(response: Response):
     response.headers["Cache-Control"] = "no-store"
-    latest = _dashboard_event_buffer.latest_snapshot()
-    if latest is not None:
-        return latest
-    generated_at = time.time()
-    return _dashboard_event_buffer.preview_snapshot(
-        get_formatted_candidates(evaluation_time=generated_at),
-        generated_at=generated_at,
-    )
+    return _get_dashboard_poll_snapshot()
