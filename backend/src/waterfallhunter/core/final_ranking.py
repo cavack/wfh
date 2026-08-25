@@ -88,6 +88,12 @@ class FinalRanking:
                 return None
             return (watch_score / 100.0) * (coverage / 100.0)
 
+        if (
+            metrics.get("score_version") != "score_v2"
+            or metrics.get("trade_eligible") is not True
+        ):
+            return None
+
         score = cls._finite(candidate.get("score"))
         if score is None:
             score = cls._finite(metrics.get("score"))
