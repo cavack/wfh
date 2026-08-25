@@ -1013,6 +1013,133 @@ def _store_live_metrics(
     )
 
 
+async def _refresh_ai_advisory_observational(
+    symbol: str,
+    *,
+    analysis_observed_at: int,
+    orderbook: dict,
+    ticker: dict,
+) -> None:
+    try:
+        advisory = await (
+            ai_veto
+            .get_observational_advisory(
+                symbol,
+                orderbook,
+                ticker,
+            )
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception(
+            "Observational AI advisory failed for %s",
+            symbol,
+        )
+        return
+
+    live = scanner.active_candidates.get(
+        symbol
+    )
+    if not isinstance(
+        live,
+        dict,
+    ):
+        return
+
+    if (
+        live.get(
+            "analysis_observed_at"
+        )
+        != analysis_observed_at
+    ):
+        logger.info(
+            "Discarding stale Gemini advisory for %s",
+            symbol,
+        )
+        return
+
+    current_metrics = live.get(
+        "metrics"
+    )
+    if not isinstance(
+        current_metrics,
+        dict,
+    ):
+        return
+
+    updated_metrics = dict(
+        current_metrics
+    )
+
+    current_advisory = (
+        updated_metrics.get(
+            "ai_advisory"
+        )
+    )
+    merged_advisory = (
+        dict(current_advisory)
+        if isinstance(
+            current_advisory,
+            dict,
+        )
+        else {}
+    )
+    merged_advisory.update(
+        advisory
+    )
+
+    updated_metrics[
+        "ai_advisory"
+    ] = merged_advisory
+
+    live[
+        "metrics"
+    ] = (
+        compact_metrics(
+            updated_metrics
+        )
+        or {}
+    )
+
+
+def _schedule_ai_advisory_observational(
+    symbol: str,
+    *,
+    analysis_observed_at: int,
+    orderbook: dict | None,
+    ticker: dict | None,
+) -> None:
+    if (
+        not isinstance(
+            orderbook,
+            dict,
+        )
+        or not orderbook
+        or not isinstance(
+            ticker,
+            dict,
+        )
+        or not ticker
+    ):
+        return
+
+    _start_background_task(
+        _refresh_ai_advisory_observational(
+            symbol,
+            analysis_observed_at=(
+                analysis_observed_at
+            ),
+            orderbook=dict(
+                orderbook
+            ),
+            ticker=dict(
+                ticker
+            ),
+        )
+    )
+
+
 def get_formatted_candidates(*, evaluation_time: float | None = None):  # NOSONAR
     now = time.time() if evaluation_time is None else float(evaluation_time)
     if not math.isfinite(now) or now < 0:
@@ -1995,7 +2122,7 @@ async def evaluate_candidate(
         (
             is_vetoed,
             advisory,
-        ) = await ai_veto.evaluate_symbol(
+        ) = ai_veto.evaluate_deterministic(
             symbol,
             metrics.get(
                 "orderbook",
@@ -2018,9 +2145,14 @@ async def evaluate_candidate(
             )
 
             record_final_production_decision(
-                "AI_VETOED",
-                "AI advisory vetoed the validated trigger candidate",
+                "DETERMINISTIC_VETOED",
+                (
+                    "deterministic market-data veto rejected "
+                    "the validated trigger candidate"
+                ),
                 state_persisted=bool(state_persisted),
+                veto_source="deterministic_market_data",
+                llm_decision_critical=False,
             )
             persist_lifecycle_v2_shadow(
                 "WATCH" if state_persisted else str(current_state)
@@ -2034,6 +2166,19 @@ async def evaluate_candidate(
             _store_live_metrics(
                 symbol,
                 metrics,
+            )
+
+            _schedule_ai_advisory_observational(
+                symbol,
+                analysis_observed_at=(
+                    analysis_observed_at
+                ),
+                orderbook=metrics.get(
+                    "orderbook"
+                ),
+                ticker=metrics.get(
+                    "ticker"
+                ),
             )
 
             return
@@ -2192,6 +2337,19 @@ async def evaluate_candidate(
         _store_live_metrics(
             symbol,
             metrics,
+        )
+
+        _schedule_ai_advisory_observational(
+            symbol,
+            analysis_observed_at=(
+                analysis_observed_at
+            ),
+            orderbook=metrics.get(
+                "orderbook"
+            ),
+            ticker=metrics.get(
+                "ticker"
+            ),
         )
 
         return
