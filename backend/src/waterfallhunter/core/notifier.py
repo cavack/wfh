@@ -33,6 +33,10 @@ class TelegramNotifier:
             else None
         )
         self.enabled = bool(self.token and self.chat_id)
+        self.signal_delivery_enabled = bool(
+            self.enabled
+            and settings.telegram_signal_delivery_enabled
+        )
         self.db = db_adapter
         self.scanner = scanner
         self.offset = 0
@@ -272,7 +276,10 @@ class TelegramNotifier:
         )
 
     async def _delivery_loop(self) -> None:
-        if not self.enabled or self.delivery_worker is None:
+        if (
+            not self.signal_delivery_enabled
+            or self.delivery_worker is None
+        ):
             return
         while True:
             try:
@@ -356,9 +363,19 @@ class TelegramNotifier:
         if not self.enabled:
             return
 
-        delivery_task = asyncio.create_task(self._delivery_loop())
+        delivery_task = (
+            asyncio.create_task(
+                self._delivery_loop()
+            )
+            if self.signal_delivery_enabled
+            else None
+        )
         url = f"https://api.telegram.org/bot{self.token}/getUpdates"
         logger.info("📡 Interactive Telegram Command Center Online.")
+        if self.signal_delivery_enabled:
+            logger.info("Durable STRICT Telegram signal delivery enabled.")
+        else:
+            logger.info("Durable STRICT Telegram signal delivery disabled.")
 
         try:
             try:
@@ -400,8 +417,12 @@ class TelegramNotifier:
                     pass
                 await asyncio.sleep(1)
         finally:
-            delivery_task.cancel()
-            await asyncio.gather(delivery_task, return_exceptions=True)
+            if delivery_task is not None:
+                delivery_task.cancel()
+                await asyncio.gather(
+                    delivery_task,
+                    return_exceptions=True,
+                )
 
     async def _process_command(self, text: str):
         cmd = text.split("@")[0].lower().strip()
