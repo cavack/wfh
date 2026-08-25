@@ -14,6 +14,98 @@ const snapshot = (version: number, generatedAt: number) => ({
   signal_funnel: {},
 });
 
+const ancillaryResponses: Record<string, unknown> = {
+  "/dashboard/api/execution-outcome-validation": {
+    observational_only: true,
+    threshold_calibration_allowed: false,
+    hard_gating_allowed: false,
+    settlement: {
+      signal_count: 0,
+      settled_outcome_count: 0,
+      mature_settlement_coverage_rate: null,
+    },
+    evidence: {
+      status: "INSUFFICIENT_EVIDENCE",
+      ready: false,
+      decisive_outcome_count: 0,
+      observation_span_days: 0,
+      requirements: {
+        minimum_decisive_outcomes: 100,
+        minimum_outcomes_per_status: 20,
+        minimum_observation_span_days: 42,
+      },
+    },
+    by_execution_status: {},
+  },
+  "/dashboard/api/feature-replay": {
+    operational: true,
+    observational_only: true,
+    hard_gating_allowed: false,
+    replayed_count: 0,
+    equivalent_count: 0,
+    mismatch_count: 0,
+    not_replayable_count: 0,
+    equivalence_rate: null,
+    strategy_equivalent: false,
+    requirements: {
+      minimum_replays: 100,
+      triggered_path_replay_required: true,
+    },
+  },
+  "/dashboard/api/historical-outcomes": {
+    available: false,
+    operational: true,
+    observational_only: true,
+    hard_gating_allowed: false,
+    dataset: null,
+    summary: {
+      event_count: 0,
+      settled_count: 0,
+      win_rate: null,
+      net_expectancy_r: null,
+    },
+  },
+  "/dashboard/api/production-evidence": {
+    operational: true,
+    observational_only: true,
+    hard_gating_allowed: false,
+    snapshot_count_24h: 0,
+    symbol_count_24h: 0,
+    latest_age_seconds: null,
+    coverage: {
+      decision_packet_complete_rate: null,
+      orderbook_rate: null,
+      confirmation_source_rate: null,
+    },
+    replay: {
+      decision_packet_replay: false,
+      source_replay_ready: false,
+      source_replay_ready_rate: null,
+      raw_ohlcv_capture_rate: null,
+      raw_trades_capture_rate: null,
+    },
+  },
+  "/dashboard/api/lifecycle-v2-shadow": {
+    shadow_only: true,
+    promotion_allowed: false,
+    event_count: 0,
+    divergence_count: 0,
+    returned_event_count: 0,
+    analysis: {
+      state_counts: {},
+      episode_count_in_returned_window: 0,
+      triggered_episode_count_in_returned_window: 0,
+      lead_time_seconds: { available: false, median: null },
+      promotion_decision: "DO_NOT_PROMOTE",
+    },
+    events: [],
+  },
+  "/dashboard/api/lifecycle-v2-contract": {
+    shadow_only: true,
+    promotion_allowed: false,
+  },
+};
+
 async function mockDashboardApis(page: Page): Promise<{ candidateCalls: () => number }> {
   let calls = 0;
 
@@ -29,10 +121,20 @@ async function mockDashboardApis(page: Page): Promise<{ candidateCalls: () => nu
       return;
     }
 
+    const response = ancillaryResponses[path];
+    if (response !== undefined) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(response),
+      });
+      return;
+    }
+
     await route.fulfill({
-      status: 503,
+      status: 501,
       contentType: "application/json",
-      body: JSON.stringify({ detail: "E2E fixture intentionally unavailable" }),
+      body: JSON.stringify({ detail: `Unhandled E2E dashboard API fixture: ${path}` }),
     });
   });
 
