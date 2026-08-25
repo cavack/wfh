@@ -24,6 +24,9 @@ class CapturingNotifier(TelegramNotifier):
         self.enabled = True
         self.token = "test-token"
         self.chat_id = "123"
+        # This harness intentionally exercises the active delivery path.
+        self.signal_delivery_cutover_at = 1
+        self.signal_delivery_enabled = True
 
     async def _send_text_result(self, text: str) -> DeliveryResult:
         self.sent.append(text)
