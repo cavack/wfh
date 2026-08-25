@@ -2259,6 +2259,11 @@ async def hunter_loop(
                         logger.warning(
                             "Candidate evaluation failed: %s",
                             result,
+                            exc_info=(
+                                type(result),
+                                result,
+                                result.__traceback__,
+                            ),
                         )
 
             await asyncio.to_thread(
