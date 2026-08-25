@@ -146,6 +146,40 @@ def test_complete_score_v2_is_not_coverage_penalized():
     assert signal["points"] == 16.0
 
 
+def test_ineligible_primary_score_is_unavailable_without_coverage_qualified_watch_score():
+    candidate = _candidate(score=99.0)
+    candidate["metrics"]["trade_eligible"] = False
+    candidate["metrics"].pop("watch_score", None)
+
+    packet = FinalRanking.for_candidate(
+        "INELIGIBLE_PRIMARY",
+        candidate,
+        evaluation_time=EVALUATION_TIME,
+    )
+
+    signal = packet["components"]["signal_score"]
+    assert signal["available"] is False
+    assert signal["points"] is None
+    assert "signal_score" in packet["missing_components"]
+
+
+def test_non_score_v2_primary_score_is_unavailable_without_coverage_qualified_watch_score():
+    candidate = _candidate(score=99.0)
+    candidate["metrics"]["score_version"] = "legacy_score_v1"
+    candidate["metrics"].pop("watch_score", None)
+
+    packet = FinalRanking.for_candidate(
+        "LEGACY_PRIMARY",
+        candidate,
+        evaluation_time=EVALUATION_TIME,
+    )
+
+    signal = packet["components"]["signal_score"]
+    assert signal["available"] is False
+    assert signal["points"] is None
+    assert "signal_score" in packet["missing_components"]
+
+
 def test_ranking_rejects_hidden_or_invalid_evaluation_clock():
     import pytest
 
