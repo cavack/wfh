@@ -1745,6 +1745,10 @@ async def evaluate_candidate(
                 "trade_eligible"
             ] = False
 
+            observation_state_aligned = (
+                current_state == observation_status
+            )
+
             if (
                 current_state
                 != observation_status
@@ -1762,6 +1766,7 @@ async def evaluate_candidate(
                     )
                 else:
                     final_v1_shadow_state = str(observation_status)
+                    observation_state_aligned = True
 
             observation_exchange = (
                 stored_metrics.get(
@@ -1776,7 +1781,8 @@ async def evaluate_candidate(
             )
 
             if (
-                observation_exchange
+                observation_state_aligned
+                and observation_exchange
                 and observation_symbol
             ):
                 validator.ws_manager.unsubscribe(
@@ -1798,6 +1804,8 @@ async def evaluate_candidate(
                 "analysis_status"
             ] = "unavailable"
 
+            watch_state_persisted = False
+
             if current_state in {
                 "FUEL-RICH",
                 "PRE-TRIGGER",
@@ -1810,6 +1818,23 @@ async def evaluate_candidate(
                 )
                 if watch_state_persisted:
                     final_v1_shadow_state = "WATCH"
+
+            if watch_state_persisted:
+                unavailable_exchange = stored_metrics.get(
+                    "exchange"
+                )
+                unavailable_symbol = stored_metrics.get(
+                    "mapped_symbol"
+                )
+
+                if (
+                    unavailable_exchange
+                    and unavailable_symbol
+                ):
+                    validator.ws_manager.unsubscribe(
+                        unavailable_exchange,
+                        unavailable_symbol,
+                    )
 
         if data.get(
             "dex_context"
