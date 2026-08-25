@@ -269,6 +269,8 @@ ai_veto = AIVetoEngine()
 _hunter_running = False
 _hunter_last_completed_at: float | None = None
 _hunter_last_progress_at: float | None = None
+_hunter_task: asyncio.Task | None = None
+_HUNTER_SHUTDOWN_GRACE_SECONDS = 5.0
 _lbank_execution_shadow_worker: LBankExecutionShadowWorker | None = None
 _signal_settlement_worker: LBankSignalSettlementWorker | None = None
 _signal_evidence_metrics_last_refresh = 0.0
@@ -2287,9 +2289,10 @@ async def hunter_loop(
                 time.time()
             )
 
-            await asyncio.sleep(
-                interval_seconds
-            )
+            if _hunter_running:
+                await asyncio.sleep(
+                    interval_seconds
+                )
 
         except asyncio.CancelledError:
             break
@@ -2330,6 +2333,7 @@ async def live_reference_loop(
 
 
 async def startup_event():
+    global _hunter_task
     global _lbank_execution_shadow_worker
     global _signal_settlement_worker
 
@@ -2355,7 +2359,7 @@ async def startup_event():
         live_reference_loop()
     )
 
-    _start_background_task(
+    _hunter_task = _start_background_task(
         hunter_loop(
             interval_seconds=60
         )
@@ -2428,6 +2432,7 @@ async def startup_event():
 
 async def shutdown_event():
     global _hunter_running
+    global _hunter_task
     global _lbank_execution_shadow_worker
     global _signal_settlement_worker
 
@@ -2445,6 +2450,22 @@ async def shutdown_event():
 
     if _signal_settlement_worker is not None:
         _signal_settlement_worker.stop()
+
+    hunter_task = _hunter_task
+    if (
+        hunter_task is not None
+        and not hunter_task.done()
+    ):
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(hunter_task),
+                timeout=_HUNTER_SHUTDOWN_GRACE_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning(
+                "Hunter shutdown drain timed out; "
+                "cancelling remaining task"
+            )
 
     tasks = list(
         _background_tasks
@@ -2471,6 +2492,7 @@ async def shutdown_event():
         _lbank_execution_shadow_worker = None
 
     _signal_settlement_worker = None
+    _hunter_task = None
 
     await scanner.close()
     await validator.close_all()
