@@ -10,7 +10,7 @@ from waterfallhunter.core.signal_metadata import STRICT_STRATEGY_PROFILE
 
 def test_trigger_persistence_does_not_wait_for_gemini_advisory(monkeypatch) -> None:
     symbol = "AIOUTSIDE/USDT:USDT"
-    reference_observed_at = time.time()
+    reference_observed_at = int(time.time()) - 1
 
     monkeypatch.setattr(
         main.scanner,
