@@ -142,9 +142,10 @@ class PositionCalculator:
         sl_aligned = self.align_to_tick(sl_price, tick_size)
         tp1_aligned = self.align_to_tick(tp1_price, tick_size)
         tp2_aligned = self.align_to_tick(tp2_price, tick_size)
-        # A coarse tick can collapse the aligned targets into each other or
-        # past the entry even when the raw levels were valid.
-        if not (0 < tp2_aligned < tp1_aligned < entry_aligned):
+        # A coarse tick can collapse the aligned targets into each other,
+        # past the entry, or round the stop onto the entry even when the raw
+        # levels and risk math were valid.
+        if not (0 < tp2_aligned < tp1_aligned < entry_aligned < sl_aligned):
             return {"status": "REJECTED: Invalid aligned take-profit geometry"}
         # محاسبه حجم پوزیشن (ارزش دلاری تقسیم بر قیمت ورود، سپس تقسیم بر سایز قرارداد)
         raw_amount_contracts = (self.default_capital / entry_aligned) / contract_size
