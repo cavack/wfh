@@ -32,9 +32,28 @@ class FinalRanking:
 
     @classmethod
     def _readiness(cls, candidate: dict, metrics: dict) -> float | None:
+        fields = ("hype", "damage", "setup", "trigger")
+        lifecycle = metrics.get("stage_lifecycle")
+        confirmed = (
+            lifecycle.get("confirmed")
+            if isinstance(lifecycle, dict)
+            and isinstance(lifecycle.get("confirmed"), dict)
+            else None
+        )
+        if (
+            isinstance(lifecycle, dict)
+            and lifecycle.get("available") is True
+            and lifecycle.get("stale") is False
+            and lifecycle.get("observational_only") is False
+            and lifecycle.get("hard_gating_allowed") is True
+            and isinstance(confirmed, dict)
+            and confirmed.get("passed") is True
+            and all(confirmed.get(field) is True for field in fields)
+        ):
+            return 1.0
+
         stages = metrics.get("strategy_stages")
         if isinstance(stages, dict):
-            fields = ("hype", "damage", "setup", "trigger")
             if all(isinstance(stages.get(field), bool) for field in fields):
                 return sum(stages[field] for field in fields) / len(fields)
         status = candidate.get("status") or metrics.get("observation_status")
