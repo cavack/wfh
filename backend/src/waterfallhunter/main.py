@@ -1363,6 +1363,29 @@ async def sse_broadcaster():
         )
 
 
+def _build_runtime_lifecycle_v2_evidence(
+    *,
+    metrics: dict,
+    decision_clock_at: float,
+    analysis_observed_at: int | float | None,
+    reference_observed_at: int | float | None,
+):
+    if not math.isfinite(decision_clock_at) or decision_clock_at < 0:
+        raise ValueError(
+            "decision_clock_at must be a non-negative finite timestamp"
+        )
+
+    decision_at = math.ceil(decision_clock_at)
+
+    return build_lifecycle_v2_evidence_from_metrics(
+        metrics=metrics,
+        decision_at=decision_at,
+        analysis_observed_at=analysis_observed_at,
+        reference_observed_at=reference_observed_at,
+        decision_clock_at=decision_clock_at,
+    )
+
+
 async def evaluate_candidate(
     symbol: str,
     data: dict,
@@ -1547,6 +1570,7 @@ async def evaluate_candidate(
             ),
         )
     )
+    lifecycle_v2_decision_clock_at = time.time()
 
     result_metrics = result.setdefault(
         "metrics",
@@ -1578,9 +1602,9 @@ async def evaluate_candidate(
                 symbol=symbol,
                 episode_id=episode_id,
             )
-            v2_evidence = build_lifecycle_v2_evidence_from_metrics(
+            v2_evidence = _build_runtime_lifecycle_v2_evidence(
                 metrics=result_metrics,
-                decision_at=analysis_observed_at,
+                decision_clock_at=lifecycle_v2_decision_clock_at,
                 analysis_observed_at=analysis_observed_at,
                 reference_observed_at=(
                     float(reference_observed_at)
