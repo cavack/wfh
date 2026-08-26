@@ -95,7 +95,8 @@ export default function Dashboard() {
       latestVersion.current = snapshot.snapshot_version;
       hasSnapshot = true;
       setData(snapshot);
-      setGeneratedAt(Date.now());
+      // The backend timestamp is authoritative for replays and delayed polls.
+      setGeneratedAt(snapshot.generated_at * 1000);
     };
 
     const schedulePoll = (delay: number) => {
@@ -231,9 +232,9 @@ export default function Dashboard() {
 
   const kpis = [
     { label: "Tracked candidates", value: data?.total ?? undefined },
-    { label: "STRICT confirmed", value: groups.strictConfirmed.length, tone: "text-emerald-300" as const },
-    { label: "Armed / pre-trigger", value: groups.strictSetup.length, tone: "text-amber-300" as const },
-    { label: "Experimental research", value: groups.experimental.length, tone: "text-violet-300" as const },
+    { label: "STRICT confirmed", value: data ? groups.strictConfirmed.length : undefined, tone: "text-emerald-300" as const },
+    { label: "Armed / pre-trigger", value: data ? groups.strictSetup.length : undefined, tone: "text-amber-300" as const },
+    { label: "Experimental research", value: data ? groups.experimental.length : undefined, tone: "text-violet-300" as const },
   ];
 
   return (

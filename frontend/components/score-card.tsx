@@ -36,7 +36,12 @@ function priceText(value: unknown): string {
   if (number === undefined) return "—";
   if (number >= 1000) return number.toLocaleString("en-US", { maximumFractionDigits: 2 });
   if (number >= 1) return number.toLocaleString("en-US", { maximumFractionDigits: 4 });
-  return number.toPrecision(4).replace(/0+$/, "");
+  const precisioned = number.toPrecision(4);
+  // A value like 0.99995 rounds up to "1.000" at four significant digits;
+  // keep that magnitude instead of trimming into a wrong one. Zero keeps
+  // its decimal-free form ("0"), never the trimmed artifact "0.".
+  if (Number(precisioned) >= 1 || !precisioned.includes(".")) return precisioned.replace(/\.?0+$/, "");
+  return precisioned.replace(/0+$/, "").replace(/\.$/, "");
 }
 
 function stateClass(state: string): string {

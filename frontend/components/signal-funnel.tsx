@@ -80,14 +80,14 @@ export function SignalFunnel({ funnel }: { funnel?: SignalFunnelData }) {
         <span className="status-pill border border-sky-400/25 bg-sky-500/10 text-sky-200">OBSERVATIONAL</span>
       </div>
 
-      <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-5">
+      <dl className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-5">
         {states.map((state) => (
           <div key={state} className="stat">
             <dt>{state}</dt>
             <dd>{count(funnel.lifecycle?.[state])}</dd>
           </div>
         ))}
-      </div>
+      </dl>
 
       <div className="mt-5 border-t border-slate-800 pt-4">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -97,7 +97,7 @@ export function SignalFunnel({ funnel }: { funnel?: SignalFunnelData }) {
           </div>
           <p className="text-[11px] text-slate-500">Available: {count(funnel.stage_lifecycle?.availability?.passed)} / {count(funnel.candidate_count)}</p>
         </div>
-        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-5">
+        <dl className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-5">
           {lifecycleStages.map(([key, label]) => (
             <div key={key} className="stat">
               <dt>{label}</dt>
@@ -106,7 +106,7 @@ export function SignalFunnel({ funnel }: { funnel?: SignalFunnelData }) {
               </dd>
             </div>
           ))}
-        </div>
+        </dl>
       </div>
 
       <div className="mt-5 border-t border-slate-800 pt-4">
@@ -125,13 +125,13 @@ export function SignalFunnel({ funnel }: { funnel?: SignalFunnelData }) {
         </div>
       </div>
 
-      <div className="mt-5 grid gap-3 sm:grid-cols-3">
+      <dl className="mt-5 grid gap-3 sm:grid-cols-3">
         {breakdownChecks.map(([key, label]) => {
           const check = funnel.breakdown_evidence?.[key];
           const rate = typeof check?.pass_rate === "number" ? `${(check.pass_rate * 100).toFixed(1)}%` : "—";
           return <div key={key} className="stat"><dt>{label}</dt><dd className="text-sm font-normal text-slate-200"><span className="font-mono text-emerald-300">{count(check?.passed)}</span> pass · <span className="font-mono text-rose-300">{count(check?.failed)}</span> fail</dd><p className="mt-1 text-[11px] text-slate-500">{rate} pass · {count(check?.unavailable)} unavailable</p></div>;
         })}
-      </div>
+      </dl>
 
       {systemicZero ? (
         <p className="mt-4 flex items-start gap-2 rounded-xl border border-amber-400/25 bg-amber-500/10 p-3 text-xs leading-5 text-amber-100">
