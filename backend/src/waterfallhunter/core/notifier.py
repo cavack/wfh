@@ -99,6 +99,11 @@ class TelegramNotifier:
             while True:
                 try:
                     resp = await client.get(url, params={"offset": self.offset, "timeout": 20})
+                    if resp.status_code == 429:
+                        retry_after = float(resp.headers.get("Retry-After", "30"))
+                        logger.warning("Telegram poll rate-limited; backing off %ss.", retry_after)
+                        await asyncio.sleep(retry_after)
+                        continue
                     if resp.status_code == 200:
                         updates = resp.json().get("result", [])
                         for update in updates:

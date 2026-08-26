@@ -825,7 +825,7 @@
             "structural_post_pump": 35
           },
           "coverage_pct": 85,
-          "coverage_ratio_pct": 100.0,
+          "coverage_ratio_pct": 85,
           "raw_score": 85,
           "score": 100,
           "score_version": "score_v2_watch_v1",
@@ -836,7 +836,7 @@
         }
       },
       "input_hash": "2d6370dc8dc20089f6d18c5424e5af0e5801900d734d63bfd99475a6083d67cc",
-      "expected_semantic_hash": "02dfbf9d5d6692004d66933cc1aa7fa0a7bbd7c2e6622b6ce46448a917a95408",
+      "expected_semantic_hash": "f8bd79c08cf8fbe062ef14971d965731a86f4809461d72507686b7c762ef7c59",
       "reason_code_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "lifecycle_trace_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "execution_plan_hash": null,
@@ -845,5 +845,5 @@
       "model_impact": "BASELINE_BEHAVIOR"
     }
   ],
-  "corpus_sha256": "b921553c51dd6ac288c77bfbf850dafe99b518f7a88cb5aefbea2775220fa61d"
+  "corpus_sha256": "ab424cd46b69153f12b06bd5947033c9ac33696e9ce941e02d9f55b660e61d9c"
 }

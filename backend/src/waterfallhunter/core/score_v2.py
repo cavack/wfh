@@ -170,9 +170,9 @@ class ScoreV2:
             # own 0-100 scale (max watch-model weight is 85). The name is kept
             # for contract compatibility with EvidenceQualityPacket.
             "coverage_pct": round(available_weight, 2),
-            # True percentage of the full 85-point watch model that was
-            # evaluable in this snapshot.
-            "coverage_ratio_pct": round(available_weight / 85.0 * 100, 2)
+            # True percentage of the fully observable watch packet that was
+            # evaluable in this snapshot (component maximums total 100).
+            "coverage_ratio_pct": round(available_weight / 100.0 * 100, 2)
             if available_weight else None,
             "components": components,
             "component_maximums": maximums,
