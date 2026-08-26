@@ -51,3 +51,20 @@ def test_runtime_lifecycle_freshness_uses_raw_clock_not_rounded_persistence_time
     assert evidence.decision_at == 1001
     assert evidence.decision_clock_at == 1000.10
     assert evidence.lbank_constraints_fresh is True
+
+
+def test_runtime_lifecycle_global_freshness_uses_raw_clock() -> None:
+    evidence = main._build_runtime_lifecycle_v2_evidence(
+        metrics={
+            "microstructure": {
+                "observed_at": 1000.00,
+            },
+        },
+        decision_clock_at=1000.10,
+        analysis_observed_at=940.15,
+        reference_observed_at=999.50,
+    )
+
+    assert evidence.decision_at == 1001
+    assert evidence.decision_clock_at == 1000.10
+    assert evidence.fresh is True
