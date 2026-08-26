@@ -418,6 +418,10 @@ class TelegramNotifier:
         if not self.enabled:
             return
 
+        # This notifier instance is module-scoped. Recreate the wake event for
+        # every application lifespan so it is never bound to a previous loop.
+        self.delivery_wakeup = asyncio.Event()
+
         delivery_task = (
             asyncio.create_task(self._delivery_loop())
             if self.signal_delivery_enabled
