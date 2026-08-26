@@ -1363,6 +1363,22 @@ async def sse_broadcaster():
         )
 
 
+def _build_runtime_lifecycle_v2_evidence(
+    *,
+    metrics: dict,
+    analysis_observed_at: int | float | None,
+    reference_observed_at: int | float | None,
+):
+    decision_at = math.ceil(time.time())
+
+    return build_lifecycle_v2_evidence_from_metrics(
+        metrics=metrics,
+        decision_at=decision_at,
+        analysis_observed_at=analysis_observed_at,
+        reference_observed_at=reference_observed_at,
+    )
+
+
 async def evaluate_candidate(
     symbol: str,
     data: dict,
@@ -1578,9 +1594,8 @@ async def evaluate_candidate(
                 symbol=symbol,
                 episode_id=episode_id,
             )
-            v2_evidence = build_lifecycle_v2_evidence_from_metrics(
+            v2_evidence = _build_runtime_lifecycle_v2_evidence(
                 metrics=result_metrics,
-                decision_at=analysis_observed_at,
                 analysis_observed_at=analysis_observed_at,
                 reference_observed_at=(
                     float(reference_observed_at)
