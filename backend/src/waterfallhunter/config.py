@@ -27,9 +27,13 @@ class Settings(BaseSettings):
     lbank_execution_shadow_success_recheck_seconds: float = 1800.0
     lbank_execution_shadow_failure_recheck_seconds: float = 600.0
 
-    # Optional Telegram notifications.
+    # Optional Telegram command bot. Credentials alone never authorize
+    # durable STRICT signal delivery. Signal delivery requires both the
+    # explicit owner gate and a positive owner-approved cutover timestamp.
     telegram_token: str | None = None
     telegram_chat_id: str | None = None
+    telegram_signal_delivery_enabled: bool = False
+    telegram_signal_delivery_cutover_at: int | None = None
 
     # Optional Gemini advisory. Model availability is tied to the configured
     # Google AI project and may change independently of this application.

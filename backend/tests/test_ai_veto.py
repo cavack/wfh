@@ -11,6 +11,35 @@ def test_ai_veto_engine_has_no_local_model_fallback():
     assert not hasattr(engine, "_get_ollama_opinion")
 
 
+def test_deterministic_veto_does_not_invoke_gemini(monkeypatch):
+    engine = AIVetoEngine()
+    invoked = False
+
+    async def opinion(*args, **kwargs):
+        nonlocal invoked
+        invoked = True
+        return {
+            "advice": "AVOID",
+            "confidence": 99,
+            "reasoning": "provider must not be part of deterministic evaluation",
+            "provider": "gemini",
+        }
+
+    monkeypatch.setattr(engine, "_get_gemini_opinion", opinion)
+
+    vetoed, advisory = engine.evaluate_deterministic(
+        "TESTUSDT",
+        {"bids": [[1.0, 1.0]], "asks": [[1.1, 1.0]]},
+        {"last": 1.0},
+    )
+
+    assert vetoed is False
+    assert invoked is False
+    assert advisory["deterministic_veto"] is False
+    assert advisory["ai_observational_only"] is True
+    assert advisory["ai_decision_critical"] is False
+
+
 def test_evaluate_symbol_preserves_the_advisory_provider(monkeypatch):
     engine = AIVetoEngine()
 
@@ -34,3 +63,5 @@ def test_evaluate_symbol_preserves_the_advisory_provider(monkeypatch):
     assert vetoed is False
     assert advisory["ai_provider"] == "gemini"
     assert advisory["ai_advice"] == "NEUTRAL"
+    assert advisory["ai_observational_only"] is True
+    assert advisory["ai_decision_critical"] is False

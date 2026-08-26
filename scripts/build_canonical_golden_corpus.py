@@ -102,6 +102,8 @@ def _candidate(
         "reference_observed_at": evaluation_time - reference_age,
         "execution_suitability": {"status": execution},
         "metrics": {
+            "score_version": "score_v2",
+            "trade_eligible": True,
             "strategy_stages": {
                 "hype": True,
                 "damage": True,

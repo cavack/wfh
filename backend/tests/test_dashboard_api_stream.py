@@ -80,3 +80,70 @@ def test_stream_falls_back_to_full_snapshot_when_replay_is_unavailable(monkeypat
     assert event["event_type"] == "snapshot"
     assert event["full_snapshot"] is True
     assert event["payload"]["state"] == "READY"
+
+
+def test_broadcast_tolerates_client_set_mutation_during_delivery(monkeypatch) -> None:
+    buffer = DashboardEventBuffer()
+    event = buffer.publish_heartbeat(generated_at=10.0)
+    clients: set[object] = set()
+
+    class SelfRemovingQueue:
+        def put_nowait(self, delivered_event) -> None:
+            assert delivered_event is event
+            clients.discard(self)
+
+    queue = SelfRemovingQueue()
+    clients.add(queue)
+    monkeypatch.setattr(main, "_sse_clients", clients)
+
+    main._broadcast_dashboard_event(event)
+
+    assert clients == set()
+
+
+def test_dashboard_snapshot_normalizes_non_finite_numbers_to_unavailable(monkeypatch) -> None:
+    buffer = DashboardEventBuffer()
+    unsafe_payload = {
+        "total": 1,
+        "candidates": {
+            "TEST": {
+                "status": "WATCH",
+                "metrics": {"spread_pct": float("nan")},
+            }
+        },
+        "final_ranking": {"version": "test"},
+        "signal_funnel": {"version": "test"},
+    }
+    monkeypatch.setattr(main, "_dashboard_event_buffer", buffer)
+    monkeypatch.setattr(main, "get_formatted_candidates", lambda **_: unsafe_payload)
+
+    event = main._publish_dashboard_snapshot(
+        full_snapshot=False,
+        only_if_changed=True,
+    )
+
+    assert event is not None
+    assert event.payload is not None
+    assert event.payload.candidates["TEST"]["metrics"]["spread_pct"] is None
+
+
+def test_polling_snapshot_normalizes_non_finite_numbers_to_unavailable(monkeypatch) -> None:
+    buffer = DashboardEventBuffer()
+    unsafe_payload = {
+        "total": 1,
+        "candidates": {
+            "TEST": {
+                "status": "WATCH",
+                "metrics": {"spread_pct": float("inf")},
+            }
+        },
+        "final_ranking": {"version": "test"},
+        "signal_funnel": {"version": "test"},
+    }
+    monkeypatch.setattr(main, "_dashboard_event_buffer", buffer)
+    monkeypatch.setattr(main, "get_formatted_candidates", lambda **_: unsafe_payload)
+    response = Response()
+
+    snapshot = asyncio.run(main.get_candidates(response))
+
+    assert snapshot.candidates["TEST"]["metrics"]["spread_pct"] is None
