@@ -29,6 +29,7 @@ function number(value: unknown, digits = 0): string {
 
 export function HistoricalOutcomes() {
   const [report, setReport] = useState<Report>();
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -37,9 +38,9 @@ export function HistoricalOutcomes() {
         const response = await fetch("/dashboard/api/historical-outcomes", { cache: "no-store" });
         const payload = await response.json() as Report;
         if (!response.ok || payload.operational !== true || payload.observational_only !== true || payload.hard_gating_allowed !== false) throw new Error("unsafe contract");
-        if (active) setReport(payload);
+        if (active) { setReport(payload); setFailed(false); }
       } catch {
-        if (active) setReport(undefined);
+        if (active) setFailed(true);
       }
     };
     void load();
@@ -47,15 +48,16 @@ export function HistoricalOutcomes() {
     return () => { active = false; window.clearInterval(timer); };
   }, []);
 
-  if (!report?.available) return null;
+  if (!report) return <section className="panel mx-auto mb-7 max-w-7xl p-5 sm:p-6"><p className="text-sm text-slate-400">{failed ? "Historical outcomes unavailable; no values are inferred." : "Loading historical outcomes…"}</p></section>;
   const winRate = typeof report.summary?.win_rate === "number" ? report.summary.win_rate * 100 : undefined;
 
   return (
     <section className="panel mx-auto mb-7 max-w-7xl p-5 sm:p-6" aria-label="Operational historical outcomes">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div><h2 className="flex items-center gap-2 text-sm font-semibold"><Archive size={17} className="text-cyan-300" />Operational historical outcomes</h2><p className="mt-1 text-sm text-slate-400">Downloaded historical evidence is served from the production database with explicit provenance.</p></div>
-        <span className="status-pill border border-cyan-400/25 bg-cyan-500/10 text-cyan-200">PRODUCTION DATA</span>
+        <span className={report.available === true ? "status-pill border border-cyan-400/25 bg-cyan-500/10 text-cyan-200" : "status-pill border border-amber-400/25 bg-amber-500/10 text-amber-200"}>{report.available === true ? "PRODUCTION DATA" : "NO DATA"}</span>
       </div>
+      {failed ? <p className="mt-4 rounded-xl border border-amber-400/25 bg-amber-500/10 p-3 text-xs text-amber-100">Refresh unavailable. The last verified report remains displayed.</p> : null}
       <dl className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <div className="stat"><dt>Window</dt><dd>{number(report.dataset?.days)}d</dd></div>
         <div className="stat"><dt>Historical events</dt><dd>{number(report.summary?.event_count)}</dd></div>

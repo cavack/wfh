@@ -13,6 +13,7 @@ import { ProductionEvidence } from "@/components/production-evidence";
 import { FeatureReplay } from "@/components/feature-replay";
 import { BacktestLab } from "@/components/backtest-lab";
 import { LifecycleShadow } from "@/components/lifecycle-shadow";
+import { RecentSignals } from "@/components/recent-signals";
 import type { DashboardSnapshot } from "@/generated/dashboard-contract";
 import { dashboardSnapshot, dashboardStreamEvent } from "@/lib/dashboard-contract";
 
@@ -196,12 +197,14 @@ export default function Dashboard() {
     [data],
   );
 
-  const groups = useMemo(() => ({
-    strictConfirmed: rows.filter(([, candidate]) => candidate.signal_class === "STRICT" && candidate.status === "TRIGGERED"),
-    strictSetup: rows.filter(([, candidate]) => candidate.signal_class === "STRICT" && ["FUEL-RICH", "PRE-TRIGGER", "ARMED"].includes(String(candidate.status))),
-    experimental: rows.filter(([, candidate]) => candidate.signal_class === "EXPERIMENTAL"),
-    discovery: rows.filter(([, candidate]) => candidate.signal_class !== "EXPERIMENTAL" && !(candidate.signal_class === "STRICT" && ["TRIGGERED", "FUEL-RICH", "PRE-TRIGGER", "ARMED"].includes(String(candidate.status)))),
-  }), [rows]);
+  const groups = useMemo(() => {
+    const strictConfirmed = rows.filter(([, candidate]) => candidate.signal_class === "STRICT" && candidate.status === "TRIGGERED");
+    const experimental = rows.filter(([, candidate]) => candidate.signal_class === "EXPERIMENTAL");
+    const setupPipeline = rows.filter(([, candidate]) => candidate.signal_class !== "EXPERIMENTAL" && ["FUEL-RICH", "PRE-TRIGGER", "ARMED"].includes(String(candidate.status)));
+    const armedPretrigger = setupPipeline.filter(([, candidate]) => ["PRE-TRIGGER", "ARMED"].includes(String(candidate.status)));
+    const discovery = rows.filter(([, candidate]) => candidate.signal_class !== "EXPERIMENTAL" && candidate.status !== "TRIGGERED" && !["FUEL-RICH", "PRE-TRIGGER", "ARMED"].includes(String(candidate.status)));
+    return { strictConfirmed, experimental, setupPipeline, armedPretrigger, discovery };
+  }, [rows]);
 
   const renderGroup = (title: string, items: [string, Candidate][], tone: "slate" | "experimental" = "slate") => items.length > 0 && (
     <section className={`mx-auto mb-8 max-w-7xl scroll-mt-28 px-4 sm:px-6 lg:px-8 ${tone === "experimental" ? "" : ""}`}>
@@ -233,7 +236,7 @@ export default function Dashboard() {
   const kpis = [
     { label: "Tracked candidates", value: data?.total ?? undefined },
     { label: "STRICT confirmed", value: data ? groups.strictConfirmed.length : undefined, tone: "text-emerald-300" as const },
-    { label: "Armed / pre-trigger", value: data ? groups.strictSetup.length : undefined, tone: "text-amber-300" as const },
+    { label: "Armed / pre-trigger", value: data ? groups.armedPretrigger.length : undefined, tone: "text-amber-300" as const },
     { label: "Experimental research", value: data ? groups.experimental.length : undefined, tone: "text-violet-300" as const },
   ];
 
@@ -298,6 +301,8 @@ export default function Dashboard() {
         {/* -------------------------------------------------------------- */}
         <div id="evidence" className="scroll-mt-32"><OutcomeEvidence /></div>
 
+        <RecentSignals />
+
         <HistoricalOutcomes />
 
         <ProductionEvidence />
@@ -318,7 +323,7 @@ export default function Dashboard() {
         </section>
 
         {renderGroup("Confirmed STRICT signals", groups.strictConfirmed)}
-        {renderGroup("STRICT armed and pre-trigger setups", groups.strictSetup)}
+        {renderGroup("Current setup pipeline", groups.setupPipeline)}
         {renderGroup("Experimental research — never mixed with STRICT", groups.experimental, "experimental")}
         {renderGroup("Watch and discovery", groups.discovery)}
       </div>

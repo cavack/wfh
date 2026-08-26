@@ -90,6 +90,7 @@ from waterfallhunter.routes_lifecycle_v2_shadow import (
     build_lifecycle_v2_shadow_router,
 )
 from waterfallhunter.routes_backtest_lab import build_backtest_lab_router
+from waterfallhunter.routes_recent_signals import build_recent_signals_router
 from waterfallhunter.core.request_body_limit import RequestBodyLimitMiddleware
 from waterfallhunter.core.lbank_execution_outcome_report import (
     LBankExecutionOutcomeReport,
@@ -201,6 +202,10 @@ app.include_router(
     build_backtest_lab_router(
         artifact_hmac_key=settings.backtest_artifact_hmac_key,
     )
+)
+
+app.include_router(
+    build_recent_signals_router(db.db_path)
 )
 
 execution_suitability_enricher = (
