@@ -1,4 +1,4 @@
-import { CheckCircle2, CircleAlert, Gauge, Sparkles } from "lucide-react";
+import { CheckCircle2, CircleAlert, Gauge, MinusCircle, Sparkles, XCircle } from "lucide-react";
 
 export type Candidate = Record<string, unknown>;
 type RecordValue = Record<string, unknown>;
@@ -249,7 +249,10 @@ function ScoreEvidence({ metrics, strict }: { metrics: RecordValue; strict: bool
               : state === "FAIL"
                 ? "border-rose-400/25 bg-rose-500/10 text-rose-200"
                 : "border-slate-600/40 bg-slate-800/50 text-slate-400";
-            return <span key={name} className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs ${tone}`}><CheckCircle2 size={12} />{state} · {gateLabel(name)}</span>;
+            let Icon = MinusCircle;
+            if (state === "PASS") Icon = CheckCircle2;
+            else if (state === "FAIL") Icon = XCircle;
+            return <span key={name} className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs ${tone}`}><Icon size={12} />{state} · {gateLabel(name)}</span>;
           })}
         </div>
       </div>

@@ -91,9 +91,9 @@ def recommend_signal_leverage(
         if isinstance(metrics.get("market_constraints"), dict)
         else {}
     )
-    exchange_max = _finite_number(
-        constraints.get("maximum_leverage", suitability.get("maximum_leverage"))
-    )
+    exchange_max = _finite_number(constraints.get("maximum_leverage"))
+    if exchange_max is None:
+        exchange_max = _finite_number(suitability.get("maximum_leverage"))
     exchange_bound = math.floor(exchange_max) if exchange_max is not None and exchange_max > 0 else 18
 
     raw = min(18, score_bound, stop_bound, volatility_bound, execution_bound, suitability_bound, exchange_bound)

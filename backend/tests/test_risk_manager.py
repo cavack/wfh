@@ -86,3 +86,11 @@ def test_adaptive_leverage_uses_current_market_maximum():
     )
 
     assert leverage == 7
+
+
+def test_adaptive_leverage_falls_back_to_suitability_maximum_when_constraint_is_null():
+    leverage = recommend_signal_leverage(
+        _metrics(maximum_leverage=None),
+        {"status": "SUITABLE", "maximum_leverage": 5},
+    )
+    assert leverage == 5
