@@ -24,26 +24,22 @@ def _stub_hunter_cycle(monkeypatch, candidates: dict) -> None:
         "flush_evaluations",
         lambda: None,
     )
+    def stop_after_cycle() -> None:
+        main._hunter_running = False
+        main._hunter_stop_event.set()
+
     monkeypatch.setattr(
         main.execution_decision_logger,
         "record_universe_snapshot",
-        lambda: None,
+        stop_after_cycle,
     )
     monkeypatch.setattr(
         main.validator.ws_manager,
         "prune_stale_cache",
         lambda: None,
     )
-
-    sleep_calls = 0
-
-    async def controlled_sleep(_: float) -> None:
-        nonlocal sleep_calls
-        sleep_calls += 1
-        if sleep_calls >= 2:
-            main._hunter_running = False
-
-    monkeypatch.setattr(main.asyncio, "sleep", controlled_sleep)
+    monkeypatch.setattr(main, "_HUNTER_STARTUP_DELAY_SECONDS", 0.0)
+    main._hunter_stop_event.clear()
 
 
 def test_failed_candidate_evaluation_does_not_mark_hunter_progress(

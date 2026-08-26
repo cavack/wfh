@@ -28,11 +28,17 @@ def test_periodic_flush_does_not_hold_evaluation_semaphore(
         "get_all_active_candidates",
         lambda: candidates,
     )
+    def stop_after_cycle() -> None:
+        main._hunter_running = False
+        main._hunter_stop_event.set()
+
     monkeypatch.setattr(
         main.execution_decision_logger,
         "record_universe_snapshot",
-        lambda: None,
+        stop_after_cycle,
     )
+    monkeypatch.setattr(main, "_HUNTER_STARTUP_DELAY_SECONDS", 0.0)
+    main._hunter_stop_event.clear()
     monkeypatch.setattr(
         main.validator.ws_manager,
         "prune_stale_cache",

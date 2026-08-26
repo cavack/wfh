@@ -432,8 +432,14 @@ class TelegramNotifier:
                         updates = resp.json().get("result", [])
                         if updates:
                             self.offset = updates[-1]["update_id"] + 1
-            except Exception:
-                pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Telegram getUpdates bootstrap failed (%s): %.200s",
+                    type(exc).__name__,
+                    str(exc),
+                )
 
             while True:
                 try:
@@ -457,8 +463,12 @@ class TelegramNotifier:
                                     await self._process_command(text)
                 except asyncio.CancelledError:
                     raise
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "Telegram getUpdates poll failed (%s): %.200s",
+                        type(exc).__name__,
+                        str(exc),
+                    )
                 await asyncio.sleep(1)
         finally:
             if delivery_task is not None:

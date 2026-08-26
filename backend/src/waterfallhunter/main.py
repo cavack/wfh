@@ -270,6 +270,8 @@ _hunter_running = False
 _hunter_last_completed_at: float | None = None
 _hunter_last_progress_at: float | None = None
 _hunter_task: asyncio.Task | None = None
+_hunter_stop_event = asyncio.Event()
+_HUNTER_STARTUP_DELAY_SECONDS = 5.0
 _HUNTER_SHUTDOWN_GRACE_SECONDS = 5.0
 _lbank_execution_shadow_worker: LBankExecutionShadowWorker | None = None
 _signal_settlement_worker: LBankSignalSettlementWorker | None = None
@@ -2371,7 +2373,7 @@ async def hunter_loop(
     _hunter_running = True
 
     await asyncio.sleep(
-        5
+        _HUNTER_STARTUP_DELAY_SECONDS
     )
 
     logger.info(
@@ -2479,9 +2481,13 @@ async def hunter_loop(
             )
 
             if _hunter_running:
-                await asyncio.sleep(
-                    interval_seconds
-                )
+                try:
+                    await asyncio.wait_for(
+                        _hunter_stop_event.wait(),
+                        timeout=interval_seconds,
+                    )
+                except TimeoutError:
+                    pass
 
         except asyncio.CancelledError:
             break
@@ -2525,6 +2531,8 @@ async def startup_event():
     global _hunter_task
     global _lbank_execution_shadow_worker
     global _signal_settlement_worker
+
+    _hunter_stop_event.clear()
 
     if settings.live_trading_enabled:
         raise RuntimeError(
@@ -2626,6 +2634,7 @@ async def shutdown_event():
     global _signal_settlement_worker
 
     _hunter_running = False
+    _hunter_stop_event.set()
 
     feature_replay_worker.stop()
 
