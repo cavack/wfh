@@ -30,6 +30,20 @@ function compactNumberText(value: unknown, digits = 2): string {
   return number === undefined ? "—" : number.toLocaleString("en-US", { maximumFractionDigits: digits });
 }
 
+/** Price formatting that adapts magnitude: $0.00000412 vs $41,208.5 */
+function priceText(value: unknown): string {
+  const number = finiteNumber(value);
+  if (number === undefined) return "—";
+  if (number >= 1000) return number.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  if (number >= 1) return number.toLocaleString("en-US", { maximumFractionDigits: 4 });
+  const precisioned = number.toPrecision(4);
+  // A value like 0.99995 rounds up to "1.000" at four significant digits;
+  // keep that magnitude instead of trimming into a wrong one. Zero keeps
+  // its decimal-free form ("0"), never the trimmed artifact "0.".
+  if (Number(precisioned) >= 1 || !precisioned.includes(".")) return precisioned.replace(/\.?0+$/, "");
+  return precisioned.replace(/0+$/, "").replace(/\.$/, "");
+}
+
 function stateClass(state: string): string {
   const classes: Record<string, string> = {
     TRIGGERED: "border-rose-400/30 bg-rose-500/15 text-rose-200",
@@ -133,11 +147,16 @@ function CandidateHeader({ symbol, candidate, live, state }: {
   state: string;
 }) {
   return (
-    <div className="flex flex-wrap items-start justify-between gap-4">
-      <div>
-        <p className="font-mono text-lg font-semibold text-sky-300">{symbol}</p>
-        <p className="mt-1 text-2xl font-semibold tabular-nums">${numberText(live ? candidate.last_price : undefined)}</p>
-        <p className="mt-1 text-xs text-slate-500">{live ? `reference ${numberText(candidate.reference_age_seconds, 1)}s · analysis ${numberText(candidate.analysis_age_seconds, 1)}s` : "live reference unavailable"}</p>
+    <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
+      <div className="min-w-0">
+        {/* Break the contract suffix onto its own line on phones so long
+            symbols never overflow the card. */}
+        <p className="break-all font-mono text-base font-semibold text-sky-300 sm:text-lg">
+          {symbol.split(":")[0]}
+          {symbol.includes(":") ? <span className="text-slate-500">:{symbol.split(":").slice(1).join(":")}</span> : null}
+        </p>
+        <p className="mt-1 text-2xl font-semibold tabular-nums sm:text-3xl">${priceText(live ? candidate.last_price : undefined)}</p>
+        <p className="mt-1 text-xs text-slate-500">{live ? `ref ${numberText(candidate.reference_age_seconds, 1)}s · analysis ${numberText(candidate.analysis_age_seconds, 1)}s` : "live reference unavailable"}</p>
       </div>
       <span className={`status-pill ${stateClass(state)}`}>{state}</span>
     </div>
@@ -157,13 +176,13 @@ function ScoreSummary({ ready, watchScore, coverage, derivativePressure, takerRa
   const displayedScore = ready ? score : watchScore;
   return (
     <section className="score-summary mt-5">
-      <div>
+      <div className="min-w-0">
         <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">{ready ? "Score V2" : partial ? "Watch score · partial" : "Score V2"}</p>
         <p className="mt-1 text-4xl font-semibold tabular-nums text-slate-50">{displayedScore === undefined ? "—" : rawNumberText(displayedScore)}<span className="ml-1 text-base font-medium text-slate-500">/100</span></p>
         <p className="mt-1 text-xs text-slate-400">{ready ? "Complete live evidence" : partial ? `${coverage === undefined ? "Partial" : `${rawNumberText(coverage)}%`} evidence coverage · not trade eligible` : "Awaiting complete live evidence"}</p>
         {partial && derivativePressure !== undefined ? <p className="mt-2 text-xs text-slate-300">Derivative short pressure <span className="font-mono">{rawNumberText(derivativePressure)}/15</span>{takerRatio === undefined ? "" : takerRatio < 1 ? " · sell dominance confirmed" : " · buyers still active"}</p> : null}
       </div>
-      <div className="text-right">
+      <div className="shrink-0 text-right">
         <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Leverage</p>
         <p className="mt-1 font-mono text-lg font-medium text-slate-100">{ready && leverage !== undefined ? `${rawNumberText(leverage)}×` : "—"}</p>
       </div>
@@ -249,7 +268,7 @@ export function ScoreCard({ symbol, candidate, hasFreshSnapshot }: { symbol: str
   const ready = hasStrictScoreEvidence(live, metrics);
   const hasWatchEvidence = partialWatchScore !== undefined && asRecord(watchScore?.components) !== undefined;
 
-  return <div className="p-5 sm:p-6">
+  return <article className="p-4 sm:p-6">
     <CandidateHeader symbol={symbol} candidate={candidate} live={live} state={state} />
     <ScoreSummary ready={ready} watchScore={partialWatchScore} coverage={coverage} derivativePressure={derivativePressure} takerRatio={takerRatio} score={strictScore} leverage={leverage} />
     <ExecutionSuitability packet={executionSuitability} />
@@ -257,5 +276,5 @@ export function ScoreCard({ symbol, candidate, hasFreshSnapshot }: { symbol: str
     {!ready && hasWatchEvidence && metrics ? <ScoreEvidence metrics={metrics} strict={false} /> : null}
     {!ready ? <StrictScoreUnavailable reason={unavailableReason} /> : null}
     <Advisory advisory={advisory} confidence={confidence} />
-  </div>;
+  </article>;
 }

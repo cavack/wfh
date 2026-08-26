@@ -204,7 +204,7 @@ export function BacktestLab() {
   };
 
   return (
-    <section id="backtest-lab" className="mx-auto mb-7 max-w-7xl rounded-3xl border border-cyan-500/20 bg-gradient-to-br from-slate-900 via-slate-900 to-cyan-950/20 p-5 shadow-2xl shadow-slate-950/40 sm:p-7" aria-label="Backtest Lab">
+    <section id="backtest-lab" className="panel mx-auto mb-7 max-w-7xl scroll-mt-32 border-cyan-500/20 bg-gradient-to-br from-slate-900 via-slate-900 to-cyan-950/20 p-5 sm:p-7" aria-label="Backtest Lab">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <p className="mb-2 text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">Research workspace</p>
@@ -249,12 +249,12 @@ export function BacktestLab() {
       {result && report && (
         <div className="mt-6 space-y-5">
           <dl className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-            <div className="metric-card"><dt className="text-xs text-slate-500">Final marked equity</dt><dd className="mt-1 text-xl font-semibold">{number(report.final_marked_equity)}</dd></div>
-            <div className="metric-card"><dt className="text-xs text-slate-500">Maximum drawdown</dt><dd className="mt-1 text-xl font-semibold text-amber-200">{percent(report.maximum_drawdown_rate)}</dd></div>
-            <div className="metric-card"><dt className="text-xs text-slate-500">Closed / open</dt><dd className="mt-1 text-xl font-semibold">{number(report.closed_positions?.length, 0)} / {number(report.open_positions?.length, 0)}</dd></div>
-            <div className="metric-card"><dt className="text-xs text-slate-500">Skipped</dt><dd className="mt-1 text-xl font-semibold">{number(skipped.length, 0)}</dd></div>
-            <div className="metric-card"><dt className="text-xs text-slate-500">Capacity rejects</dt><dd className="mt-1 text-xl font-semibold">{number(report.capacity_reject_count, 0)}</dd></div>
-            <div className="metric-card"><dt className="text-xs text-slate-500">Signal rows</dt><dd className="mt-1 text-xl font-semibold">{number(result.signal_level_report.row_count, 0)}</dd></div>
+            <div className="stat"><dt>Final marked equity</dt><dd>{number(report.final_marked_equity)}</dd></div>
+            <div className="stat"><dt>Maximum drawdown</dt><dd className="text-amber-200">{percent(report.maximum_drawdown_rate)}</dd></div>
+            <div className="stat"><dt>Closed / open</dt><dd>{number(report.closed_positions?.length, 0)} / {number(report.open_positions?.length, 0)}</dd></div>
+            <div className="stat"><dt>Skipped</dt><dd>{number(skipped.length, 0)}</dd></div>
+            <div className="stat"><dt>Capacity rejects</dt><dd>{number(report.capacity_reject_count, 0)}</dd></div>
+            <div className="stat"><dt>Signal rows</dt><dd>{number(result.signal_level_report.row_count, 0)}</dd></div>
           </dl>
 
           <div className="grid gap-4 lg:grid-cols-[1.6fr_1fr]">

@@ -107,7 +107,7 @@ export function OutcomeEvidence() {
 
   if (!report) {
     return (
-      <section className="mx-auto mb-7 max-w-7xl rounded-2xl border border-slate-800 bg-slate-900 p-5" aria-label="Execution outcome evidence">
+      <section className="panel mx-auto mb-7 max-w-7xl p-5" aria-label="Execution outcome evidence">
         <div className="flex items-center gap-2 text-sm font-medium text-slate-200">
           {failed ? <CircleAlert size={17} className="text-amber-400" /> : <Beaker size={17} className="text-slate-400" />}
           {failed ? "Outcome evidence unavailable" : "Loading outcome evidence…"}
@@ -126,7 +126,7 @@ export function OutcomeEvidence() {
   const minimumSpan = finite(requirements?.minimum_observation_span_days);
 
   return (
-    <section className="mx-auto mb-7 max-w-7xl rounded-2xl border border-slate-800 bg-slate-900 p-5 sm:p-6" aria-label="Execution outcome evidence">
+    <section className="panel mx-auto mb-7 max-w-7xl p-5 sm:p-6" aria-label="Execution outcome evidence">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-100"><Beaker size={17} className="text-sky-300" />Execution outcome evidence</h2>
@@ -138,10 +138,10 @@ export function OutcomeEvidence() {
       </div>
 
       <dl className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <div className="metric-card"><dt className="text-xs text-slate-500">Natural signals</dt><dd className="mt-1 text-xl font-semibold tabular-nums text-slate-100">{count(report.settlement?.signal_count)}</dd></div>
-        <div className="metric-card"><dt className="text-xs text-slate-500">Settled 24h</dt><dd className="mt-1 text-xl font-semibold tabular-nums text-slate-100">{count(report.settlement?.settled_outcome_count)}</dd></div>
-        <div className="metric-card"><dt className="text-xs text-slate-500">Decisive outcomes</dt><dd className="mt-1 text-xl font-semibold tabular-nums text-slate-100">{count(decisive)}</dd></div>
-        <div className="metric-card"><dt className="text-xs text-slate-500">Observation span</dt><dd className="mt-1 text-xl font-semibold tabular-nums text-slate-100">{spanDays === undefined ? "—" : `${spanDays.toFixed(1)}d`}</dd></div>
+        <div className="stat"><dt>Natural signals</dt><dd>{count(report.settlement?.signal_count)}</dd></div>
+        <div className="stat"><dt>Settled 24h</dt><dd>{count(report.settlement?.settled_outcome_count)}</dd></div>
+        <div className="stat"><dt>Decisive outcomes</dt><dd>{count(decisive)}</dd></div>
+        <div className="stat"><dt>Observation span</dt><dd>{spanDays === undefined ? "—" : `${spanDays.toFixed(1)}d`}</dd></div>
       </dl>
 
       {!ready ? (
