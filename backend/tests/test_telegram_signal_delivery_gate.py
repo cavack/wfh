@@ -79,3 +79,40 @@ def test_delivery_loop_stops_claiming_after_telegram_rate_limit() -> None:
         assert worker.calls == 1
 
     asyncio.run(scenario())
+
+
+def test_interactive_bot_recreates_delivery_wakeup_for_each_lifespan(monkeypatch) -> None:
+    notifier = TelegramNotifier()
+    notifier.enabled = True
+    notifier.signal_delivery_enabled = False
+    prior_wakeup = notifier.delivery_wakeup
+
+    async def bind_prior_event() -> None:
+        waiter = asyncio.create_task(prior_wakeup.wait())
+        await asyncio.sleep(0)
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+
+    asyncio.run(bind_prior_event())
+
+    class AbortClient:
+        async def __aenter__(self):
+            raise asyncio.CancelledError()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(
+        "waterfallhunter.core.notifier.httpx.AsyncClient",
+        lambda *args, **kwargs: AbortClient(),
+    )
+
+    async def start_second_lifespan() -> None:
+        try:
+            await notifier.start_interactive_bot()
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(start_second_lifespan())
+
+    assert notifier.delivery_wakeup is not prior_wakeup
