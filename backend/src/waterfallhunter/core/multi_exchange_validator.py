@@ -42,6 +42,7 @@ class MultiExchangeValidator:
         )
 
         self._benchmark_cache: dict[str, tuple[float, dict]] = {}
+        self.stage_lifecycle_store = None
 
     @staticmethod
     def _finite_positive(value: Any) -> bool:
@@ -566,6 +567,7 @@ class MultiExchangeValidator:
         ticker: dict,
         reference_price: float,
         strategy_stages: Dict[str, Any],
+        persisted_stage_chain_complete: bool = False,
     ) -> dict:
         del reference_price
 
@@ -606,8 +608,10 @@ class MultiExchangeValidator:
         quality_gates = {
             **score_result["gates"],
             "channel_stage_chain": (
-                self._stage_chain_complete(
-                    strategy_stages
+                self._stage_chain_complete(strategy_stages)
+                or (
+                    persisted_stage_chain_complete is True
+                    and strategy_stages.get("trigger") is True
                 )
             ),
         }
@@ -708,11 +712,17 @@ class MultiExchangeValidator:
         stages: Dict[str, Any],
         microstructure_approved: bool,
         cross_exchange_confirmed: bool,
+        persisted_stage_chain_complete: bool = False,
     ) -> str:
-        if not (
-            self._stage_chain_complete(
-                stages
+        chain_complete = (
+            self._stage_chain_complete(stages)
+            or (
+                persisted_stage_chain_complete is True
+                and stages.get("trigger") is True
             )
+        )
+        if not (
+            chain_complete
             and microstructure_approved
             and cross_exchange_confirmed
         ):
@@ -1214,6 +1224,7 @@ class MultiExchangeValidator:
         symbol: str,
         reference_price: float,
         reference_source: str = "lbank",
+        lifecycle_id: int | None = None,
     ) -> Dict[str, Any]:
         source_failures = []
         selected = None
@@ -1845,6 +1856,31 @@ class MultiExchangeValidator:
             "strategy_stages"
         ] = strategy_stages
 
+        persisted_stage_chain_complete = False
+        lifecycle_store = self.stage_lifecycle_store
+        if lifecycle_store is not None and lifecycle_id is not None:
+            stage_lifecycle = await asyncio.to_thread(
+                lifecycle_store.advance,
+                symbol,
+                int(lifecycle_id),
+                strategy_stages,
+            )
+            metrics["stage_lifecycle"] = stage_lifecycle
+            confirmed = (
+                stage_lifecycle.get("confirmed")
+                if isinstance(stage_lifecycle, dict)
+                and isinstance(stage_lifecycle.get("confirmed"), dict)
+                else {}
+            )
+            persisted_stage_chain_complete = bool(
+                isinstance(stage_lifecycle, dict)
+                and stage_lifecycle.get("available") is True
+                and stage_lifecycle.get("stale") is False
+                and int(stage_lifecycle.get("lifecycle_id") or -1) == int(lifecycle_id)
+                and confirmed.get("passed") is True
+                and strategy_stages.get("trigger") is True
+            )
+
         if not derivatives.get(
             "available"
         ):
@@ -1979,6 +2015,9 @@ class MultiExchangeValidator:
                 ),
                 strategy_stages=(
                     strategy_stages
+                ),
+                persisted_stage_chain_complete=(
+                    persisted_stage_chain_complete
                 ),
             )
         )
@@ -2186,6 +2225,9 @@ class MultiExchangeValidator:
                 strategy_stages,
                 bool(microstructure.get("approved")),
                 bool(candle_results.get("is_breakdown_confirmed")),
+                persisted_stage_chain_complete=(
+                    persisted_stage_chain_complete
+                ),
             )
         )
 

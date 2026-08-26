@@ -258,6 +258,7 @@ execution_decision_logger = (
 )
 
 validator = MultiExchangeValidator()
+validator.stage_lifecycle_store = stage_lifecycle_store
 
 notifier = TelegramNotifier(
     db_adapter=db,
@@ -1708,6 +1709,7 @@ async def evaluate_candidate(
             reference_source=(
                 reference_source
             ),
+            lifecycle_id=int(data.get("lifecycle_id") or 1),
         )
     )
     lifecycle_v2_decision_clock_at = time.time()
@@ -1726,13 +1728,14 @@ async def evaluate_candidate(
             "observational_only": True,
             "hard_gating_allowed": False,
         }
-        result_metrics["stage_lifecycle"] = (
-            stage_lifecycle_store.advance(
-                symbol,
-                int(data.get("lifecycle_id") or 1),
-                snapshot_stages,
+        if not isinstance(result_metrics.get("stage_lifecycle"), dict):
+            result_metrics["stage_lifecycle"] = (
+                stage_lifecycle_store.advance(
+                    symbol,
+                    int(data.get("lifecycle_id") or 1),
+                    snapshot_stages,
+                )
             )
-        )
 
     episode_id = f"{symbol}:{int(data.get('lifecycle_id') or 1)}"
 
