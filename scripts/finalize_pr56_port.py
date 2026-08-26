@@ -54,12 +54,6 @@ if any(path.startswith("frontend/") for path in changed):
 # commit on current main. This intentionally avoids carrying the 85-commit PR56
 # ancestry into the replacement PR.
 tree = git("write-tree")
-commit = run(
-    "git", "commit-tree", tree, "-p", BASE,
-    input=None if False else None,
-    check=False,
-)
-# subprocess helper above cannot feed stdin; invoke commit-tree once with input.
 p = subprocess.run(
     ["git", "commit-tree", tree, "-p", BASE],
     input=MESSAGE + "\n",
