@@ -1857,7 +1857,7 @@ class MultiExchangeValidator:
         ] = strategy_stages
 
         persisted_stage_chain_complete = False
-        lifecycle_store = self.stage_lifecycle_store
+        lifecycle_store = getattr(self, "stage_lifecycle_store", None)
         if lifecycle_store is not None and lifecycle_id is not None:
             stage_lifecycle = await asyncio.to_thread(
                 lifecycle_store.advance,
