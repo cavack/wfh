@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import sqlite3
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -16,7 +17,7 @@ from waterfallhunter.core.execution_planning import (
     RiskPolicy,
 )
 from waterfallhunter.core.canonical_json import canonical_json_bytes
-from waterfallhunter.core.managed_sqlite import connect_managed_sqlite
+from waterfallhunter.core.managed_sqlite import ManagedSQLiteError, connect_managed_sqlite
 from waterfallhunter.core.portfolio_replay import (
     PortfolioEvent,
     build_signal_level_research_report,
@@ -215,7 +216,13 @@ def build_backtest_lab_router(
             raise HTTPException(status_code=503, detail="production backtest dataset is unavailable")
         if artifact_hmac_key is None or len(artifact_hmac_key.encode("utf-8")) < 32:
             raise HTTPException(status_code=503, detail="backtest artifact verification is unavailable")
-        rows = await asyncio.to_thread(_production_signal_rows, db_path, limit)
+        try:
+            rows = await asyncio.to_thread(_production_signal_rows, db_path, limit)
+        except (ManagedSQLiteError, sqlite3.Error) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="production backtest dataset is unavailable",
+            ) from exc
         manifest_material = {
             "contract_version": "production_signal_bundle_v1",
             "source": "lbank_signal_ledger",

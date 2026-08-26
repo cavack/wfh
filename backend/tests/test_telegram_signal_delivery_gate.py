@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 from waterfallhunter.config import settings
 from waterfallhunter.core.notifier import TelegramNotifier
@@ -13,6 +14,18 @@ class _CountingWorker:
     async def dispatch_once(self, *, now: int):
         del now
         self.calls += 1
+        return None
+
+
+class _RateLimitedWorker:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def dispatch_once(self, *, now: int):
+        del now
+        self.calls += 1
+        if self.calls == 1:
+            return SimpleNamespace(state="RETRY_WAIT", error_code="HTTP_429")
         return None
 
 
@@ -47,3 +60,22 @@ def test_delivery_loop_returns_without_claiming_when_signal_delivery_disabled() 
     )
 
     assert worker.calls == 0
+
+
+def test_delivery_loop_stops_claiming_after_telegram_rate_limit() -> None:
+    async def scenario() -> None:
+        notifier = TelegramNotifier()
+        notifier.enabled = True
+        notifier.signal_delivery_enabled = True
+        worker = _RateLimitedWorker()
+        notifier.delivery_worker = worker
+
+        task = asyncio.create_task(notifier._delivery_loop())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        assert worker.calls == 1
+
+    asyncio.run(scenario())

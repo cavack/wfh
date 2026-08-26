@@ -54,6 +54,25 @@ class MultiExchangeValidator:
         )
 
     @classmethod
+    def _market_maximum_leverage(cls, market: Any) -> float | None:
+        packet = market if isinstance(market, dict) else {}
+        info = packet.get("info") if isinstance(packet.get("info"), dict) else {}
+        limits = (
+            packet.get("limits") if isinstance(packet.get("limits"), dict) else {}
+        )
+        leverage_limits = (
+            limits.get("leverage")
+            if isinstance(limits.get("leverage"), dict)
+            else {}
+        )
+        value = info.get("maxLeverage", leverage_limits.get("max"))
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if cls._finite_positive(number) else None
+
+    @classmethod
     def _position_reference_price(
         cls,
         ticker: dict[str, Any],
@@ -144,6 +163,8 @@ class MultiExchangeValidator:
             and int(stage_lifecycle.get("lifecycle_id") or -1) == int(lifecycle_id)
             and confirmed.get("passed") is True
             and strategy_stages.get("trigger") is True
+            and stage_lifecycle.get("observational_only") is False
+            and stage_lifecycle.get("hard_gating_allowed") is True
         )
         return stage_lifecycle, persisted_complete
 
@@ -1528,6 +1549,11 @@ class MultiExchangeValidator:
                 "exchange": (
                     ex_name
                 ),
+                "market_constraints": {
+                    "maximum_leverage": self._market_maximum_leverage(
+                        market_info
+                    ),
+                },
                 "data_sources": {
                     "reference": (
                         reference_source

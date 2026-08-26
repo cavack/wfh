@@ -340,6 +340,11 @@ class TelegramNotifier:
                     )
                     if outcome is None:
                         break
+                    if (
+                        outcome.state == "RETRY_WAIT"
+                        and outcome.error_code == "HTTP_429"
+                    ):
+                        break
                 try:
                     await asyncio.wait_for(
                         self.delivery_wakeup.wait(),

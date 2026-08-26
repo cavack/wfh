@@ -1,6 +1,7 @@
 import asyncio
 
 from waterfallhunter.core.lbank_execution import LBankExecutionObserver
+from waterfallhunter.core.multi_exchange_validator import MultiExchangeValidator
 
 
 def _swap_market():
@@ -26,6 +27,13 @@ def _orderbook():
         "bids": [[100.0, 10.0]],
         "asks": [[100.1, 10.0]],
     }
+
+
+def test_validator_extracts_current_market_maximum_leverage():
+    market = _swap_market()
+    market["info"]["maxLeverage"] = "7"
+
+    assert MultiExchangeValidator._market_maximum_leverage(market) == 7.0
 
 
 def test_observe_accepts_ccxt_lbank_marked_price_field():

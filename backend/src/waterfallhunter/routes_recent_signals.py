@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from waterfallhunter.core.managed_sqlite import connect_managed_sqlite
+from waterfallhunter.core.managed_sqlite import ManagedSQLiteError, connect_managed_sqlite
 
 
 def _json_object(value: Any) -> dict[str, Any]:
@@ -75,7 +76,10 @@ def build_recent_signals_router(db_path: str) -> APIRouter:
 
     @router.get(
         "/api/recent-signals",
-        responses={422: {"description": "Unsupported query parameter"}},
+        responses={
+            422: {"description": "Unsupported query parameter"},
+            503: {"description": "Recent signal history unavailable"},
+        },
     )
     async def recent_signals(
         request: Request,
@@ -88,6 +92,12 @@ def build_recent_signals_router(db_path: str) -> APIRouter:
                 "unsupported_parameters": unsupported,
                 "allowed_parameters": ["limit"],
             })
-        return await asyncio.to_thread(_build_report, db_path, limit)
+        try:
+            return await asyncio.to_thread(_build_report, db_path, limit)
+        except (ManagedSQLiteError, sqlite3.Error) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="recent signal history is unavailable",
+            ) from exc
 
     return router

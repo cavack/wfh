@@ -252,3 +252,19 @@ def test_production_bundle_is_server_signed_and_replayable(tmp_path) -> None:
     replay = client.post("/api/backtest-lab/replay", json=bundle)
     assert replay.status_code == 200
     assert replay.json()["signal_level_report"]["row_count"] == 1
+
+
+def test_production_bundle_translates_database_failure_to_503(tmp_path) -> None:
+    app = FastAPI()
+    app.include_router(
+        build_backtest_lab_router(
+            artifact_hmac_key=ARTIFACT_KEY,
+            db_path=str(tmp_path / "missing" / "signals.db"),
+        )
+    )
+
+    response = TestClient(app, raise_server_exceptions=False).get(
+        "/api/backtest-lab/production-bundle"
+    )
+
+    assert response.status_code == 503

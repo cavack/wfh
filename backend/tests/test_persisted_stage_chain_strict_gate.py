@@ -97,3 +97,30 @@ def test_stage_lifecycle_persistence_failure_is_observational_and_fail_open():
     assert lifecycle["available"] is False
     assert lifecycle["hard_gating_allowed"] is False
     assert lifecycle["error_type"] == "RuntimeError"
+
+
+def test_observational_lifecycle_packet_cannot_satisfy_strict_gate():
+    import asyncio
+
+    class ObservationalStore:
+        def advance(self, *args, **kwargs):
+            return {
+                "available": True,
+                "stale": False,
+                "lifecycle_id": 7,
+                "confirmed": {"passed": True},
+                "observational_only": True,
+                "hard_gating_allowed": False,
+            }
+
+    validator = _validator()
+    validator.stage_lifecycle_store = ObservationalStore()
+    _, persisted = asyncio.run(
+        validator._advance_stage_lifecycle(
+            "OBSERVE/USDT:USDT",
+            7,
+            {"hype": False, "damage": False, "setup": False, "trigger": True},
+        )
+    )
+
+    assert persisted is False

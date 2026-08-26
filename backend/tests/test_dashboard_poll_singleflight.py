@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 from fastapi import Response
 
@@ -58,3 +59,35 @@ def test_bootstrap_candidate_poll_builds_preview_once_for_concurrent_clients(
     # event/snapshot sequence or become a retained replay snapshot.
     assert buffer.snapshot_version == 0
     assert buffer.latest_snapshot() is None
+
+
+def test_poll_refreshes_retained_snapshot_after_it_becomes_stale(monkeypatch) -> None:
+    buffer = DashboardEventBuffer(replay_limit=100)
+    buffer.publish_snapshot(
+        {
+            "total": 1,
+            "candidates": {"OLD": {"status": "WATCH"}},
+            "final_ranking": {},
+            "signal_funnel": {},
+        },
+        generated_at=time.time() - main._DASHBOARD_PREVIEW_CACHE_SECONDS - 1,
+        full_snapshot=True,
+    )
+    monkeypatch.setattr(main, "_dashboard_event_buffer", buffer)
+    monkeypatch.setattr(main, "_sse_clients", set())
+    monkeypatch.setattr(main, "_dashboard_preview_cache", None)
+    monkeypatch.setattr(
+        main,
+        "get_formatted_candidates",
+        lambda *, evaluation_time=None: {
+            "total": 1,
+            "candidates": {"NEW": {"status": "ARMED"}},
+            "final_ranking": {},
+            "signal_funnel": {},
+        },
+    )
+
+    snapshot = main._get_dashboard_poll_snapshot()
+
+    assert "NEW" in snapshot.candidates
+    assert "OLD" not in snapshot.candidates

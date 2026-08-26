@@ -2201,10 +2201,11 @@ async def evaluate_candidate(
                 "WATCH" if state_persisted else str(current_state)
             )
 
-            validator.ws_manager.unsubscribe(
-                ex_name,
-                mapped_sym,
-            )
+            if state_persisted:
+                validator.ws_manager.unsubscribe(
+                    ex_name,
+                    mapped_sym,
+                )
 
             _store_live_metrics(
                 symbol,
@@ -3025,7 +3026,10 @@ def _get_dashboard_poll_snapshot() -> DashboardSnapshot:
     global _dashboard_preview_cache
 
     latest = _dashboard_event_buffer.latest_snapshot()
-    if latest is not None:
+    if latest is not None and (
+        _sse_clients
+        or time.time() - latest.generated_at <= _DASHBOARD_PREVIEW_CACHE_SECONDS
+    ):
         return latest
 
     now_monotonic = time.monotonic()

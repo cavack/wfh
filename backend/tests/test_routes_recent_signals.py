@@ -99,3 +99,16 @@ def test_recent_signals_route_rejects_unsupported_or_out_of_range_queries(tmp_pa
     client = TestClient(app)
     assert client.get("/api/recent-signals?promote=true").status_code == 422
     assert client.get("/api/recent-signals?limit=101").status_code == 422
+
+
+def test_recent_signals_translates_database_failure_to_503(tmp_path):
+    app = FastAPI()
+    app.include_router(
+        build_recent_signals_router(str(tmp_path / "missing" / "recent.db"))
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.get("/api/recent-signals")
+
+    assert response.status_code == 503
+    assert "503" in app.openapi()["paths"]["/api/recent-signals"]["get"]["responses"]

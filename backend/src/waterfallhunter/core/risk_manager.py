@@ -38,6 +38,7 @@ def recommend_signal_leverage(
     micro = metrics.get("microstructure") if isinstance(metrics.get("microstructure"), dict) else {}
     spread = _finite_number(micro.get("spread_pct"))
     slippage = _finite_number(micro.get("slippage_pct"))
+    exit_slippage = _finite_number(micro.get("exit_slippage_pct"))
 
     if score is None or score < 85.0 or score > 100.0:
         raise ValueError("strict finite score required for leverage")
@@ -58,7 +59,7 @@ def recommend_signal_leverage(
 
     stop_distance_pct = (stop - entry) / entry * 100.0
     atr_pct = max(atr_values)
-    friction_pct = max(spread, slippage)
+    friction_pct = max(spread, slippage, exit_slippage or slippage)
 
     score_bound = math.floor(4.0 + ((score - 85.0) / 15.0) * 14.0)
     stop_bound = math.floor(36.0 / stop_distance_pct)
@@ -85,7 +86,14 @@ def recommend_signal_leverage(
         "POOR": 4,
     }.get(str(suitability.get("status") or "UNKNOWN").upper(), 8)
 
-    exchange_max = _finite_number(suitability.get("maximum_leverage"))
+    constraints = (
+        metrics.get("market_constraints")
+        if isinstance(metrics.get("market_constraints"), dict)
+        else {}
+    )
+    exchange_max = _finite_number(
+        constraints.get("maximum_leverage", suitability.get("maximum_leverage"))
+    )
     exchange_bound = math.floor(exchange_max) if exchange_max is not None and exchange_max > 0 else 18
 
     raw = min(18, score_bound, stop_bound, volatility_bound, execution_bound, suitability_bound, exchange_bound)

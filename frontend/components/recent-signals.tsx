@@ -47,21 +47,28 @@ export function RecentSignals() {
 
   useEffect(() => {
     let active = true;
+    let controller: AbortController | undefined;
     const refresh = async () => {
+      controller?.abort();
+      const requestController = new AbortController();
+      controller = requestController;
       try {
-        const response = await fetch("/dashboard/api/recent-signals?limit=30", { cache: "no-store" });
+        const response = await fetch("/dashboard/api/recent-signals?limit=30", {
+          cache: "no-store",
+          signal: requestController.signal,
+        });
         const payload = await response.json() as RecentSignalReport;
         if (!response.ok || payload.operational !== true || payload.observational_only !== true || payload.hard_gating_allowed !== false) {
           throw new Error("unsafe recent signal contract");
         }
-        if (active) { setReport(payload); setFailed(false); }
+        if (active && controller === requestController) { setReport(payload); setFailed(false); }
       } catch {
-        if (active) setFailed(true);
+        if (active && controller === requestController) setFailed(true);
       }
     };
     void refresh();
     const timer = window.setInterval(() => void refresh(), 15_000);
-    return () => { active = false; window.clearInterval(timer); };
+    return () => { active = false; controller?.abort(); window.clearInterval(timer); };
   }, []);
 
   const rows = Array.isArray(report?.signals) ? report.signals : [];
