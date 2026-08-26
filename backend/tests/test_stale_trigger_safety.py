@@ -84,8 +84,8 @@ def test_stale_trigger_persistence_failure_suppresses_telegram(
     )
     monkeypatch.setattr(
         main,
-        "get_leverage",
-        lambda requested_symbol: 1,
+        "recommend_signal_leverage",
+        lambda metrics, execution_suitability=None: 4,
     )
     monkeypatch.setattr(
         main.execution_suitability_enricher,

@@ -27,7 +27,7 @@ from waterfallhunter.core.notification_delivery import (
     notification_delivery_health,
 )
 from waterfallhunter.core.ai_veto import AIVetoEngine
-from waterfallhunter.core.risk_manager import get_leverage
+from waterfallhunter.core.risk_manager import get_leverage, recommend_signal_leverage
 from waterfallhunter.core.dashboard import compact_metrics
 from waterfallhunter.core.dashboard_stream import (
     DashboardEventBuffer,
@@ -2220,33 +2220,43 @@ async def evaluate_candidate(
 
             return
 
+        execution_suitability = (
+            execution_suitability_enricher
+            .for_symbol(symbol)
+        )
+
         try:
             metrics[
                 "applied_leverage"
-            ] = get_leverage(
-                symbol
+            ] = recommend_signal_leverage(
+                metrics,
+                execution_suitability,
             )
+            metrics["leverage_policy"] = {
+                "version": "adaptive_signal_leverage_v1",
+                "minimum": 4,
+                "maximum": 18,
+                "symbol_agnostic": True,
+                "paper_only": True,
+            }
 
         except Exception as exc:
             persist_lifecycle_v2_shadow(str(current_state))
             record_final_production_decision(
                 "LEVERAGE_REJECTED",
-                "leverage calculation failed",
+                "adaptive leverage calculation failed",
                 error_type=type(exc).__name__,
+                error=str(exc),
             )
 
             logger.warning(
-                "Leverage calculation failed "
+                "Adaptive leverage calculation failed "
                 "for %s: %s",
                 symbol,
                 exc,
             )
             return
 
-        execution_suitability = (
-            execution_suitability_enricher
-            .for_symbol(symbol)
-        )
         quote_volume = data.get(
             "quote_volume"
         )

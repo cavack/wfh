@@ -56,8 +56,8 @@ def test_trigger_persistence_does_not_wait_for_gemini_advisory(monkeypatch) -> N
     )
     monkeypatch.setattr(
         main,
-        "get_leverage",
-        lambda requested_symbol: 1,
+        "recommend_signal_leverage",
+        lambda metrics, execution_suitability=None: 4,
     )
     monkeypatch.setattr(
         main.execution_suitability_enricher,
