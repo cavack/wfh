@@ -185,3 +185,34 @@ def test_ranking_rejects_hidden_or_invalid_evaluation_clock():
 
     with pytest.raises(ValueError, match="evaluation_time"):
         FinalRanking.for_candidate("TEST", _candidate(), evaluation_time=float("nan"))
+
+
+def test_persisted_strict_lifecycle_chain_counts_as_full_readiness():
+    candidate = _candidate(status="TRIGGERED", score=90.0)
+    candidate["metrics"]["strategy_stages"] = {
+        "hype": False,
+        "damage": False,
+        "setup": False,
+        "trigger": True,
+    }
+    candidate["metrics"]["stage_lifecycle"] = {
+        "available": True,
+        "stale": False,
+        "observational_only": False,
+        "hard_gating_allowed": True,
+        "confirmed": {
+            "hype": True,
+            "damage": True,
+            "setup": True,
+            "trigger": True,
+            "passed": True,
+        },
+    }
+
+    packet = FinalRanking.for_candidate(
+        "PERSISTED_CHAIN",
+        candidate,
+        evaluation_time=EVALUATION_TIME,
+    )
+
+    assert packet["components"]["cascade_readiness"]["value"] == 1.0
