@@ -24,7 +24,7 @@ export function FinalRanking({ ranking }: { ranking: Ranking | undefined }) {
   const top = Array.isArray(ranking?.top) ? ranking.top.map(asRecord).filter(Boolean) : [];
   if (ranking?.observational_only !== true || top.length === 0) {
     return (
-      <section className="mx-auto mb-7 max-w-7xl rounded-2xl border border-slate-800 bg-slate-900 p-5">
+      <section className="panel mx-auto mb-7 max-w-7xl p-5">
         <p className="flex items-center gap-2 text-sm font-medium text-slate-200"><Medal size={17} />Final ranking unavailable</p>
         <p className="mt-1 text-xs text-slate-500">No ranking is inferred until the backend supplies a safe observational packet.</p>
       </section>
@@ -49,7 +49,7 @@ export function FinalRanking({ ranking }: { ranking: Ranking | undefined }) {
           const components = asRecord(packet?.components);
           const antiChase = asRecord(packet?.anti_chase);
           return (
-            <article key={symbol} className="rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-lg shadow-slate-950/25">
+            <article key={symbol} className="panel p-5">
               <div className="flex items-start justify-between gap-3">
                 <div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-300">Rank #{finite(packet?.rank) ?? "—"}</p><p className="mt-1 break-all font-mono text-lg font-semibold text-sky-200">{symbol}</p></div>
                 <div className="text-right"><p className="text-2xl font-semibold tabular-nums">{finite(packet?.score)?.toFixed(1) ?? "—"}</p><p className="text-xs text-slate-500">ranking score</p></div>

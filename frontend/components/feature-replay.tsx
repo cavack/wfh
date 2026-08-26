@@ -40,13 +40,13 @@ export function FeatureReplay() {
   if (!report) return null;
   const rate = typeof report.equivalence_rate === "number" ? `${(report.equivalence_rate * 100).toFixed(1)}%` : "—";
   return (
-    <section className="mx-auto mb-7 max-w-7xl rounded-2xl border border-slate-800 bg-slate-900 p-5 sm:p-6" aria-label="Feature equivalent replay">
+    <section className="panel mx-auto mb-7 max-w-7xl p-5 sm:p-6" aria-label="Feature equivalent replay">
       <div className="flex flex-wrap items-start justify-between gap-4"><div><h2 className="flex items-center gap-2 text-sm font-semibold"><GitCompare size={17} className="text-fuchsia-300" />Feature-equivalent replay</h2><p className="mt-1 text-sm text-slate-400">Raw production sources are replayed through the same candle, microstructure, stage, gate, and score code.</p></div><span className={`status-pill border ${report.strategy_equivalent === true ? "border-emerald-400/25 bg-emerald-500/10 text-emerald-200" : "border-amber-400/25 bg-amber-500/10 text-amber-200"}`}>{report.strategy_equivalent === true ? "EQUIVALENT" : "VALIDATING"}</span></div>
       <dl className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <div className="metric-card"><dt className="text-xs text-slate-500">Replayed</dt><dd className="mt-1 text-xl font-semibold">{count(report.replayed_count)}</dd></div>
-        <div className="metric-card"><dt className="text-xs text-slate-500">Equivalent</dt><dd className="mt-1 text-xl font-semibold text-emerald-200">{count(report.equivalent_count)}</dd></div>
-        <div className="metric-card"><dt className="text-xs text-slate-500">Mismatch</dt><dd className="mt-1 text-xl font-semibold text-rose-200">{count(report.mismatch_count)}</dd></div>
-        <div className="metric-card"><dt className="text-xs text-slate-500">Equivalence rate</dt><dd className="mt-1 text-xl font-semibold">{rate}</dd></div>
+        <div className="stat"><dt>Replayed</dt><dd>{count(report.replayed_count)}</dd></div>
+        <div className="stat"><dt>Equivalent</dt><dd className="text-emerald-200">{count(report.equivalent_count)}</dd></div>
+        <div className="stat"><dt>Mismatch</dt><dd className="text-rose-200">{count(report.mismatch_count)}</dd></div>
+        <div className="stat"><dt>Equivalence rate</dt><dd>{rate}</dd></div>
       </dl>
       <p className="mt-3 text-xs text-slate-500">Global equivalence requires at least {count(report.requirements?.minimum_replays)} replays, zero mismatches, and coverage of the natural TRIGGERED path.</p>
       <p className="mt-4 flex items-start gap-2 border-t border-slate-800 pt-3 text-xs leading-5 text-slate-500"><ShieldCheck size={15} className="mt-0.5 shrink-0 text-emerald-400/80" />Replay results are immutable and observational. They cannot promote thresholds, ranking, lifecycle state, alerts, or orders.</p>
