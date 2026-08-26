@@ -75,6 +75,13 @@ def test_signal_evidence_refresh_failure_is_throttled(monkeypatch) -> None:
     monkeypatch.setattr(main.execution_outcome_report, "build_report", failing_report)
     monkeypatch.setattr(main, "_signal_evidence_metrics_last_refresh", 0.0)
 
+    class FreshProcessClock:
+        @staticmethod
+        def monotonic() -> float:
+            return 10.0
+
+    monkeypatch.setattr(main, "time", FreshProcessClock)
+
     for _ in range(2):
         try:
             asyncio.run(main._update_signal_evidence_metrics())

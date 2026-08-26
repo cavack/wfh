@@ -892,6 +892,7 @@ async def _update_signal_evidence_metrics(
     now = time.monotonic()
     if (
         not force
+        and _signal_evidence_metrics_last_refresh > 0.0
         and now
         - _signal_evidence_metrics_last_refresh
         < 60.0
@@ -902,6 +903,7 @@ async def _update_signal_evidence_metrics(
         now = time.monotonic()
         if (
             not force
+            and _signal_evidence_metrics_last_refresh > 0.0
             and now
             - _signal_evidence_metrics_last_refresh
             < 60.0
