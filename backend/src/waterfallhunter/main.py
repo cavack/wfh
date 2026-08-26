@@ -2579,10 +2579,11 @@ async def live_reference_loop(
 
 async def startup_event():
     global _hunter_task
+    global _hunter_stop_event
     global _lbank_execution_shadow_worker
     global _signal_settlement_worker
 
-    _hunter_stop_event.clear()
+    _hunter_stop_event = asyncio.Event()
 
     if settings.live_trading_enabled:
         raise RuntimeError(

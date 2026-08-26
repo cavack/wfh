@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from waterfallhunter.config import settings
 from waterfallhunter.core.notification_delivery import DeliveryDisposition, DeliveryResult
 from waterfallhunter.core.notifier import TelegramNotifier
+from waterfallhunter.core.signal_metadata import canonical_sha256
 
 
 class CapturingActivationNotifier(TelegramNotifier):
@@ -129,7 +130,7 @@ def test_pre_cutover_strict_event_is_acknowledged_without_network_send(
                 "event_type": "SIGNAL_CONFIRMED",
                 "payload_contract_version": "signal_confirmed_event_v1",
                 "payload_json": json.dumps(payload),
-                "payload_hash": "unused-in-transport-test",
+                "payload_hash": canonical_sha256(payload),
             }
         )
     )
@@ -180,7 +181,7 @@ def test_post_cutover_strict_event_reaches_transport_after_identity_validation(
                 "event_type": "SIGNAL_CONFIRMED",
                 "payload_contract_version": "signal_confirmed_event_v1",
                 "payload_json": json.dumps(payload),
-                "payload_hash": "unused-in-transport-test",
+                "payload_hash": canonical_sha256(payload),
             }
         )
     )
@@ -217,11 +218,39 @@ def test_strict_event_with_invalid_created_at_fails_closed(
                 "event_type": "SIGNAL_CONFIRMED",
                 "payload_contract_version": "signal_confirmed_event_v1",
                 "payload_json": json.dumps(payload),
-                "payload_hash": "unused-in-transport-test",
+                "payload_hash": canonical_sha256(payload),
             }
         )
     )
 
     assert result.disposition is DeliveryDisposition.PERMANENT_FAILURE
     assert result.error_code == "INVALID_EVENT_CREATED_AT"
+    assert notifier.sent == []
+
+
+def test_corrupted_outbox_payload_hash_fails_closed(monkeypatch) -> None:
+    _configure(monkeypatch, delivery_enabled=True, cutover_at=1)
+    notifier = CapturingActivationNotifier()
+    payload = {
+        "contract_version": "signal_confirmed_event_v1",
+        "signal_id": 9,
+        "symbol": "CORRUPT/USDT:USDT",
+        "signal_class": "STRICT",
+        "strategy_profile": "strict_score_v2",
+        "created_at": 10,
+    }
+    result = asyncio.run(
+        notifier.deliver(
+            {
+                "event_id": "signal:9:confirmed:1",
+                "idempotency_key": "signal:9:confirmed:1",
+                "event_type": "SIGNAL_CONFIRMED",
+                "payload_contract_version": "signal_confirmed_event_v1",
+                "payload_json": json.dumps(payload),
+                "payload_hash": "0" * 64,
+            }
+        )
+    )
+    assert result.disposition is DeliveryDisposition.PERMANENT_FAILURE
+    assert result.error_code == "EVENT_PAYLOAD_HASH_MISMATCH"
     assert notifier.sent == []

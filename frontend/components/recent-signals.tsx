@@ -75,7 +75,7 @@ export function RecentSignals() {
         <span className="status-pill border border-cyan-400/25 bg-cyan-500/10 text-cyan-200">LEDGER HISTORY</span>
       </div>
       {failed ? <p className="mt-4 rounded-xl border border-amber-400/25 bg-amber-500/10 p-3 text-xs text-amber-100">Refresh unavailable. The last verified rows remain displayed.</p> : null}
-      {!report ? <p className="mt-5 text-sm text-slate-500">Loading immutable signal history…</p> : rows.length === 0 ? <p className="mt-5 text-sm text-slate-500">No persisted signals are available.</p> : (
+      {!report ? <p className="mt-5 text-sm text-slate-500">{failed ? "Recent signal history is unavailable; no rows are inferred." : "Loading immutable signal history…"}</p> : rows.length === 0 ? <p className="mt-5 text-sm text-slate-500">No persisted signals are available.</p> : (
         <div className="table-scroll mt-5">
           <table className="data-table min-w-[980px]">
             <thead><tr><th>Triggered</th><th>Symbol</th><th>Class</th><th>Score</th><th>Leverage</th><th>Entry</th><th>SL</th><th>TP1</th><th>TP2</th><th>Execution</th><th>Outcome</th></tr></thead>

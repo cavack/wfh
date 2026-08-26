@@ -98,6 +98,55 @@ class MultiExchangeValidator:
             )
         )
 
+    async def _advance_stage_lifecycle(
+        self,
+        symbol: str,
+        lifecycle_id: int | None,
+        strategy_stages: Dict[str, Any],
+    ) -> tuple[dict[str, Any] | None, bool]:
+        lifecycle_store = getattr(self, "stage_lifecycle_store", None)
+        if lifecycle_store is None or lifecycle_id is None:
+            return None, False
+        try:
+            stage_lifecycle = await asyncio.to_thread(
+                lifecycle_store.advance,
+                symbol,
+                int(lifecycle_id),
+                strategy_stages,
+            )
+        except Exception as exc:
+            logger.exception(
+                "Stage lifecycle persistence unavailable for %s lifecycle %s",
+                symbol,
+                lifecycle_id,
+            )
+            return {
+                "available": False,
+                "stale": False,
+                "lifecycle_id": int(lifecycle_id),
+                "confirmed": {},
+                "reason": "stage lifecycle persistence unavailable",
+                "error_type": type(exc).__name__,
+                "observational_only": True,
+                "hard_gating_allowed": False,
+            }, False
+
+        confirmed = (
+            stage_lifecycle.get("confirmed")
+            if isinstance(stage_lifecycle, dict)
+            and isinstance(stage_lifecycle.get("confirmed"), dict)
+            else {}
+        )
+        persisted_complete = bool(
+            isinstance(stage_lifecycle, dict)
+            and stage_lifecycle.get("available") is True
+            and stage_lifecycle.get("stale") is False
+            and int(stage_lifecycle.get("lifecycle_id") or -1) == int(lifecycle_id)
+            and confirmed.get("passed") is True
+            and strategy_stages.get("trigger") is True
+        )
+        return stage_lifecycle, persisted_complete
+
     @staticmethod
     def _observational_status(stages: Dict[str, Any]) -> str:
         """
@@ -1856,30 +1905,15 @@ class MultiExchangeValidator:
             "strategy_stages"
         ] = strategy_stages
 
-        persisted_stage_chain_complete = False
-        lifecycle_store = getattr(self, "stage_lifecycle_store", None)
-        if lifecycle_store is not None and lifecycle_id is not None:
-            stage_lifecycle = await asyncio.to_thread(
-                lifecycle_store.advance,
+        stage_lifecycle, persisted_stage_chain_complete = (
+            await self._advance_stage_lifecycle(
                 symbol,
-                int(lifecycle_id),
+                lifecycle_id,
                 strategy_stages,
             )
+        )
+        if stage_lifecycle is not None:
             metrics["stage_lifecycle"] = stage_lifecycle
-            confirmed = (
-                stage_lifecycle.get("confirmed")
-                if isinstance(stage_lifecycle, dict)
-                and isinstance(stage_lifecycle.get("confirmed"), dict)
-                else {}
-            )
-            persisted_stage_chain_complete = bool(
-                isinstance(stage_lifecycle, dict)
-                and stage_lifecycle.get("available") is True
-                and stage_lifecycle.get("stale") is False
-                and int(stage_lifecycle.get("lifecycle_id") or -1) == int(lifecycle_id)
-                and confirmed.get("passed") is True
-                and strategy_stages.get("trigger") is True
-            )
 
         if not derivatives.get(
             "available"

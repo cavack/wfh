@@ -20,6 +20,7 @@ from waterfallhunter.core.notification_delivery import (
     DeliveryResult,
     DurableNotificationWorker,
 )
+from waterfallhunter.core.signal_metadata import canonical_sha256
 
 logger = logging.getLogger("WaterfallHunter.Telegram")
 
@@ -244,6 +245,12 @@ class TelegramNotifier:
                 error_code="INVALID_EVENT_PAYLOAD",
             )
 
+        if str(event.get("payload_hash") or "") != canonical_sha256(payload):
+            return DeliveryResult(
+                DeliveryDisposition.PERMANENT_FAILURE,
+                error_code="EVENT_PAYLOAD_HASH_MISMATCH",
+            )
+
         signal_class = str(payload.get("signal_class") or "")
         if signal_class == "EXPERIMENTAL":
             # Experimental observations are intentionally never Telegram alerts.
@@ -293,7 +300,10 @@ class TelegramNotifier:
                 error_code="INVALID_SIGNAL_ID",
             )
 
-        material = self._load_strict_signal_material(raw_signal_id)
+        material = await asyncio.to_thread(
+            self._load_strict_signal_material,
+            raw_signal_id,
+        )
         if material is None:
             return DeliveryResult(
                 DeliveryDisposition.TRANSIENT_FAILURE,

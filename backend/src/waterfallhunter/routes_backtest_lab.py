@@ -203,7 +203,10 @@ def build_backtest_lab_router(
             "production_bundle_portfolio_events": False,
         }
 
-    @router.get("/api/backtest-lab/production-bundle")
+    @router.get(
+        "/api/backtest-lab/production-bundle",
+        responses={503: {"description": "Production bundle unavailable"}},
+    )
     async def backtest_production_bundle(
         limit: int = Query(250, ge=1, le=1000),
         initial_equity: float = Query(1000.0, gt=0, le=1_000_000_000),

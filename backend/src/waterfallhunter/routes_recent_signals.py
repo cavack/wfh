@@ -73,7 +73,10 @@ def _build_report(db_path: str, limit: int) -> dict[str, Any]:
 def build_recent_signals_router(db_path: str) -> APIRouter:
     router = APIRouter()
 
-    @router.get("/api/recent-signals")
+    @router.get(
+        "/api/recent-signals",
+        responses={422: {"description": "Unsupported query parameter"}},
+    )
     async def recent_signals(
         request: Request,
         limit: int = Query(default=20, ge=1, le=100),

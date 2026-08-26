@@ -74,3 +74,26 @@ def test_persisted_chain_status_requires_current_trigger_and_secondary_confirmat
     assert validator._suggested_status(90.0, stages, True, True, persisted_stage_chain_complete=True) == "TRIGGERED"
     assert validator._suggested_status(90.0, {**stages, "trigger": False}, True, True, persisted_stage_chain_complete=True) == "WATCH"
     assert validator._suggested_status(90.0, stages, True, False, persisted_stage_chain_complete=True) == "WATCH"
+
+
+def test_stage_lifecycle_persistence_failure_is_observational_and_fail_open():
+    import asyncio
+
+    class FailingStore:
+        def advance(self, *args, **kwargs):
+            raise RuntimeError("sqlite unavailable")
+
+    validator = _validator()
+    validator.stage_lifecycle_store = FailingStore()
+    lifecycle, persisted = asyncio.run(
+        validator._advance_stage_lifecycle(
+            "FAIL/USDT:USDT",
+            7,
+            {"hype": True, "damage": True, "setup": True, "trigger": True},
+        )
+    )
+    assert persisted is False
+    assert lifecycle is not None
+    assert lifecycle["available"] is False
+    assert lifecycle["hard_gating_allowed"] is False
+    assert lifecycle["error_type"] == "RuntimeError"

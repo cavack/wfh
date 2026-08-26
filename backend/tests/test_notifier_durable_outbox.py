@@ -15,6 +15,7 @@ from waterfallhunter.core.notification_delivery import (
     DeliveryResult,
 )
 from waterfallhunter.core.notifier import TelegramNotifier
+from waterfallhunter.core.signal_metadata import canonical_sha256
 
 
 class CapturingNotifier(TelegramNotifier):
@@ -124,7 +125,7 @@ def test_experimental_event_is_acknowledged_without_telegram_send(tmp_path: Path
                 "event_type": "SIGNAL_CONFIRMED",
                 "payload_contract_version": "signal_confirmed_event_v1",
                 "payload_json": json.dumps(payload),
-                "payload_hash": "unused-in-transport-test",
+                "payload_hash": canonical_sha256(payload),
             }
         )
     )
