@@ -183,3 +183,72 @@ def test_replay_requires_server_attestation_and_strict_signal_time() -> None:
     assert tampered.json()["detail"] == "backtest artifact attestation invalid"
     assert coerced_time.status_code == 422
     assert unavailable.status_code == 503
+
+
+def test_production_bundle_is_server_signed_and_replayable(tmp_path) -> None:
+    import json
+    import sqlite3
+
+    db_path = tmp_path / "production-signals.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE lbank_signal_ledger (
+                id INTEGER PRIMARY KEY, symbol TEXT, triggered_at INTEGER,
+                score REAL, trigger_metrics_json TEXT
+            );
+            CREATE TABLE signal_metadata (
+                signal_id INTEGER PRIMARY KEY, signal_class TEXT,
+                strategy_profile TEXT, score_version TEXT
+            );
+            CREATE TABLE lbank_signal_outcomes (
+                id INTEGER PRIMARY KEY, signal_id INTEGER,
+                outcome_status TEXT, resolved_at INTEGER
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO lbank_signal_ledger VALUES (1, ?, ?, ?, ?)",
+            (
+                "BUNDLE/USDT:USDT",
+                1_700_000_000,
+                92.5,
+                json.dumps({"applied_leverage": 12}),
+            ),
+        )
+        conn.execute(
+            "INSERT INTO signal_metadata VALUES (1, 'STRICT', 'strict_v3', 'score_v2')"
+        )
+        conn.execute(
+            "INSERT INTO lbank_signal_outcomes VALUES (1, 1, 'TP1_HIT', 1700003600)"
+        )
+
+    app = FastAPI()
+    app.include_router(
+        build_backtest_lab_router(
+            artifact_hmac_key=ARTIFACT_KEY,
+            db_path=str(db_path),
+        )
+    )
+    client = TestClient(app)
+    response = client.get(
+        "/api/backtest-lab/production-bundle?limit=10&initial_equity=100"
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["contract_version"] == "backtest_production_bundle_v1"
+    assert payload["execution_mode"] == "PAPER_ONLY"
+    assert payload["strategy_equivalent"] is False
+    assert payload["portfolio_events_available"] is False
+    assert payload["row_count"] == 1
+    bundle = payload["bundle"]
+    assert bundle["initial_equity"] == 100
+    assert bundle["events"] == []
+    assert bundle["signal_rows"][0]["symbol"] == "BUNDLE/USDT:USDT"
+    assert bundle["signal_rows"][0]["applied_leverage"] == 12
+    assert bundle["signal_rows"][0]["outcome_status"] == "TP1_HIT"
+    assert bundle["artifact_hmac_sha256"] != "0" * 64
+
+    replay = client.post("/api/backtest-lab/replay", json=bundle)
+    assert replay.status_code == 200
+    assert replay.json()["signal_level_report"]["row_count"] == 1

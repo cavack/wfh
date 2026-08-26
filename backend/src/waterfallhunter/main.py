@@ -201,6 +201,7 @@ app.include_router(
 app.include_router(
     build_backtest_lab_router(
         artifact_hmac_key=settings.backtest_artifact_hmac_key,
+        db_path=db.db_path,
     )
 )
 
