@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import threading
 from collections import deque
 from typing import Any, Literal
@@ -14,6 +15,19 @@ from waterfallhunter.core.signal_metadata import canonical_sha256
 DASHBOARD_SCHEMA_VERSION = "1.0"
 DASHBOARD_SNAPSHOT_CONTRACT = "dashboard_snapshot_v1"
 DASHBOARD_EVENT_CONTRACT = "dashboard_stream_event_v1"
+
+
+def _normalize_dashboard_json(value: Any) -> Any:
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, list):
+        return [_normalize_dashboard_json(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _normalize_dashboard_json(item)
+            for key, item in value.items()
+        }
+    return value
 
 
 class DashboardSnapshot(BaseModel):
@@ -86,9 +100,10 @@ class DashboardEventBuffer:
         generated_at: float,
         full_snapshot: bool,
     ) -> DashboardStreamEvent:
+        normalized_payload = _normalize_dashboard_json(payload)
         with self._lock:
             return self._publish_snapshot_locked(
-                payload,
+                normalized_payload,
                 generated_at=generated_at,
                 full_snapshot=full_snapshot,
             )
@@ -100,12 +115,13 @@ class DashboardEventBuffer:
         generated_at: float,
     ) -> DashboardStreamEvent | None:
         """Retain a periodic snapshot only when its business payload changed."""
-        content_hash = canonical_sha256(payload)
+        normalized_payload = _normalize_dashboard_json(payload)
+        content_hash = canonical_sha256(normalized_payload)
         with self._lock:
             if content_hash == self._last_snapshot_content_hash:
                 return None
             return self._publish_snapshot_locked(
-                payload,
+                normalized_payload,
                 generated_at=generated_at,
                 full_snapshot=False,
                 content_hash=content_hash,
@@ -220,6 +236,7 @@ class DashboardEventBuffer:
         generated_at: float,
     ) -> DashboardSnapshot:
         """Build a read-only snapshot for initial polling without retaining it."""
+        normalized_payload = _normalize_dashboard_json(payload)
         with self._lock:
             snapshot_version = max(1, self._snapshot_sequence)
         return DashboardSnapshot.model_validate(
@@ -229,7 +246,7 @@ class DashboardEventBuffer:
                 "snapshot_version": snapshot_version,
                 "generated_at": generated_at,
                 "state": "READY",
-                **payload,
+                **normalized_payload,
             }
         )
 

@@ -13,9 +13,9 @@ logger = logging.getLogger("WaterfallHunter.AIVeto")
 class AIVetoEngine:
     """Deterministic veto plus optional Gemini advisory.
 
-    AI output is observational only. If Gemini is unavailable, deterministic
-    logic continues and the advisory is reported as unavailable; there is no
-    local-model fallback.
+    Deterministic market-data checks may participate in the critical decision
+    path. Gemini output is observational only and must not be required before
+    signal persistence. There is no local-model fallback.
     """
 
     def __init__(self, *args, **kwargs):
@@ -124,20 +124,25 @@ class AIVetoEngine:
                 f"Gemini unavailable ({type(exc).__name__})."
             )
 
-    async def evaluate_symbol(
+    def evaluate_deterministic(
         self,
         symbol: str,
         orderbook: Dict,
         ticker: Dict,
     ) -> Tuple[bool, Dict[str, Any]]:
+        """Return provider-free veto state plus observational-AI placeholder."""
+
         if not orderbook or not ticker:
             logger.warning("HARD VETO [%s]: Missing real market data.", symbol)
             return True, {
+                "deterministic_veto": True,
                 "deterministic_reason": "Missing real data",
                 "ai_advice": "ERROR",
                 "ai_confidence": 0,
                 "ai_reasoning": "Insufficient data",
                 "ai_provider": "none",
+                "ai_observational_only": True,
+                "ai_decision_critical": False,
             }
 
         bids = orderbook.get("bids", [])[:10]
@@ -158,24 +163,77 @@ class AIVetoEngine:
                 "Long squeeze risk."
             )
 
-        ai_opinion = await self._get_gemini_opinion(symbol, orderbook, ticker)
-        advisory_data = {
-            "deterministic_veto": deterministic_veto,
-            "deterministic_reason": veto_reason,
-            "ai_advice": ai_opinion.get("advice", "UNKNOWN"),
-            "ai_confidence": ai_opinion.get("confidence", 0),
-            "ai_reasoning": ai_opinion.get("reasoning", "None"),
-            "ai_provider": ai_opinion.get("provider", "none"),
-        }
-
         if deterministic_veto:
             logger.warning("HARD VETO APPLIED for %s: %s", symbol, veto_reason)
 
+        if self.api_key:
+            ai_advice = "PENDING"
+            ai_reasoning = (
+                "Gemini advisory runs asynchronously after immutable trigger "
+                "persistence and is not decision-critical."
+            )
+        else:
+            ai_advice = "UNAVAILABLE"
+            ai_reasoning = "Missing Gemini API key."
+
+        return deterministic_veto, {
+            "deterministic_veto": deterministic_veto,
+            "deterministic_reason": veto_reason,
+            "ai_advice": ai_advice,
+            "ai_confidence": 0,
+            "ai_reasoning": ai_reasoning,
+            "ai_provider": "none",
+            "ai_observational_only": True,
+            "ai_decision_critical": False,
+        }
+
+    async def get_observational_advisory(
+        self,
+        symbol: str,
+        orderbook: Dict,
+        ticker: Dict,
+    ) -> Dict[str, Any]:
+        """Fetch optional Gemini output without granting it veto authority."""
+
+        opinion = await self._get_gemini_opinion(symbol, orderbook, ticker)
+        advisory = {
+            "ai_advice": opinion.get("advice", "UNKNOWN"),
+            "ai_confidence": opinion.get("confidence", 0),
+            "ai_reasoning": opinion.get("reasoning", "None"),
+            "ai_provider": opinion.get("provider", "none"),
+            "ai_observational_only": True,
+            "ai_decision_critical": False,
+        }
         logger.info(
             "Gemini Advisory [%s]: %s (Conf: %s%%) | Reason: %s",
             symbol,
-            advisory_data["ai_advice"],
-            advisory_data["ai_confidence"],
-            advisory_data["ai_reasoning"],
+            advisory["ai_advice"],
+            advisory["ai_confidence"],
+            advisory["ai_reasoning"],
+        )
+        return advisory
+
+    async def evaluate_symbol(
+        self,
+        symbol: str,
+        orderbook: Dict,
+        ticker: Dict,
+    ) -> Tuple[bool, Dict[str, Any]]:
+        """Compatibility API for non-critical callers that want full advisory."""
+
+        deterministic_veto, advisory_data = self.evaluate_deterministic(
+            symbol,
+            orderbook,
+            ticker,
+        )
+        if not orderbook or not ticker:
+            return deterministic_veto, advisory_data
+
+        advisory_data.update(
+            await self.get_observational_advisory(
+                symbol,
+                orderbook,
+                ticker,
+            )
         )
         return deterministic_veto, advisory_data
