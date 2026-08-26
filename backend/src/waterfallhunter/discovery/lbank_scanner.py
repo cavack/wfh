@@ -115,6 +115,11 @@ class LBankCatalogScanner:
             min_volume_usdt
         )
 
+        # Guards concurrent mutation of active_candidates: the six-hour
+        # catalogue swap (update_catalog) versus per-evaluation writes from
+        # concurrently running hunter evaluations.
+        self._candidates_lock = asyncio.Lock()
+
         self.active_candidates: Dict[
             str,
             Dict[str, Any],
@@ -140,6 +145,8 @@ class LBankCatalogScanner:
         symbol: str,
         last_price: float,
         quote_volume: float,
+        *,
+        currently_eligible: bool = False,
     ) -> bool:
         """
         Transitional universe filter.
@@ -149,17 +156,26 @@ class LBankCatalogScanner:
         BTC/ETH remain forced because they are benchmark/reference contracts.
         The rigid volume floor will be removed once LBank execution suitability
         is available.
+
+        Hysteresis: an already-eligible contract must fall 20% below the floor
+        before losing eligibility, so volume oscillating around the threshold
+        no longer flips scan_eligible (and thereby recycles lifecycle_id,
+        wiping ARMED/TRIGGERED state) every refresh.
         """
         if symbol in FORCED_SCAN_SYMBOLS:
             return True
 
-        return (
+        if not (
             0.0
             < last_price
             <= self.max_price
-            and quote_volume
-            >= self.min_volume_usdt
-        )
+        ):
+            return False
+
+        if currently_eligible:
+            return quote_volume >= self.min_volume_usdt * 0.8
+
+        return quote_volume >= self.min_volume_usdt
 
     async def fetch_lbank_futures_symbols(
         self,
@@ -229,6 +245,9 @@ class LBankCatalogScanner:
                         symbol,
                         last_price,
                         quote_volume,
+                        currently_eligible=bool(
+                            (self.active_candidates.get(symbol) or {}).get("scan_eligible")
+                        ),
                     )
                 )
 
@@ -532,9 +551,13 @@ class LBankCatalogScanner:
                 None,
             )
 
-        self.active_candidates = (
-            next_active
-        )
+        # Swap atomically under the candidates lock so in-flight evaluations
+        # either finish against the old dict (their writes are copied into
+        # next_active via the per-symbol merge above) or start on the new one.
+        async with self._candidates_lock:
+            self.active_candidates = (
+                next_active
+            )
 
         await self._enrich_dex_context(
             set(

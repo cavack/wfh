@@ -87,6 +87,12 @@
     </div>
 
     <script>
+        function escapeHtml(value) {
+            return String(value).replace(/[&<>"']/g, ch => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            })[ch]);
+        }
+
         function getStatusBadge(status) {
             if (status === 'WATCH') return `<span class="px-2 py-1 rounded-md bg-blue-500/10 text-blue-400 border border-blue-500/20 text-xs font-bold">👁️ WATCH</span>`;
             if (status === 'ARMED') return `<span class="px-2 py-1 rounded-md bg-yellow-500/10 text-yellow-500 border border-yellow-500/20 text-xs font-bold pulse-armed">🎯 ARMED</span>`;
@@ -135,7 +141,7 @@
 
                         tableHtml += `
                             <tr class="hover:bg-slate-700/20 transition-colors">
-                                <td class="px-6 py-4 font-bold text-white">${c.symbol.split(':')[0]}</td>
+                                <td class="px-6 py-4 font-bold text-white">${escapeHtml(c.symbol.split(':')[0])}</td>
                                 <td class="px-6 py-4 text-slate-400">${c.is_meme ? '🐸 Meme' : '🪙 Altcoin'}</td>
                                 <td class="px-6 py-4 font-mono text-slate-300">$${parseFloat(c.last_price).toFixed(6)}</td>
                                 <td class="px-6 py-4 font-mono ${scoreColor}">${score}/100</td>

@@ -2198,8 +2198,13 @@ class MultiExchangeValidator:
             and orderbook
             and ticker
         ):
+            # Use the measured executable sell VWAP; best_bid would apply
+            # entry slippage a second time inside the position calculator.
             vwap_entry = (
                 microstructure.get(
+                    "sell_vwap"
+                )
+                or microstructure.get(
                     "best_bid"
                 )
             )

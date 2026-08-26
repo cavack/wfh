@@ -38,3 +38,27 @@ def connect_managed_sqlite(
         raise ManagedSQLiteError(
             "MANAGED_SQLITE_FOREIGN_KEYS_UNAVAILABLE"
         ) from exc
+
+
+class _ManagedConnection:
+    """Connection wrapper whose context manager commits, rolls back, and closes."""
+
+    def __init__(self, conn: sqlite3.Connection):
+        self._conn = conn
+
+    def __enter__(self) -> sqlite3.Connection:
+        return self._conn
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        try:
+            if exc_type is None:
+                self._conn.commit()
+            else:
+                self._conn.rollback()
+        finally:
+            self._conn.close()
+
+
+def managed_connection(database: str | Path, *, timeout: float = 5.0) -> _ManagedConnection:
+    """Open, verify, and hand out a self-closing managed SQLite connection."""
+    return _ManagedConnection(connect_managed_sqlite(database, timeout=timeout))

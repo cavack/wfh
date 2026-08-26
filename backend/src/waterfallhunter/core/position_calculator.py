@@ -115,6 +115,13 @@ class PositionCalculator:
         raw_tp1 = net_entry_price - target_net_profit_1 - carrying_cost
         raw_tp2 = net_entry_price - target_net_profit_2 - carrying_cost
 
+        # A short setup requires 0 < tp2 < tp1 < entry. Wide-stop or
+        # high-cost configurations (small-priced meme contracts) can push a
+        # target below zero or above entry; such geometry is invalid and must
+        # fail the setup instead of persisting corrupted levels.
+        if not (0 < raw_tp2 < raw_tp1 < net_entry_price):
+            return {"status": "REJECTED: Invalid take-profit geometry"}
+
         tp1_price = self.avoid_round_level(raw_tp1, is_tp=True)
         tp2_price = self.avoid_round_level(raw_tp2, is_tp=True)
 
