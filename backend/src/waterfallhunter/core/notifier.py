@@ -83,20 +83,27 @@ class TelegramNotifier:
         url = f"https://api.telegram.org/bot{self.token}/getUpdates"
         logger.info("📡 Interactive Telegram Command Center Online.")
 
-        try:
-            async with httpx.AsyncClient() as client:
+        # One long-lived client for the whole polling loop; a fresh client per
+        # second previously churned connections and hid every error behind a
+        # bare except, so an invalid token looped forever with no log output.
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
                 resp = await client.get(url, params={"offset": -1, "timeout": 5})
                 if resp.status_code == 200:
                     updates = resp.json().get("result", [])
                     if updates:
                         self.offset = updates[-1]["update_id"] + 1
-        except Exception:
-            pass
+            except Exception as exc:
+                logger.warning("Telegram getUpdates bootstrap failed: %s", exc)
 
-        while True:
-            try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
+            while True:
+                try:
                     resp = await client.get(url, params={"offset": self.offset, "timeout": 20})
+                    if resp.status_code == 429:
+                        retry_after = float(resp.headers.get("Retry-After", "30"))
+                        logger.warning("Telegram poll rate-limited; backing off %ss.", retry_after)
+                        await asyncio.sleep(retry_after)
+                        continue
                     if resp.status_code == 200:
                         updates = resp.json().get("result", [])
                         for update in updates:
@@ -107,9 +114,15 @@ class TelegramNotifier:
 
                             if str(chat.get("id")) == self.chat_id and text.startswith("/"):
                                 await self._process_command(text)
-            except Exception:
-                pass
-            await asyncio.sleep(1)
+                    elif resp.status_code in (401, 403):
+                        logger.error(
+                            "Telegram polling rejected (HTTP %s): check TELEGRAM_TOKEN/CHAT_ID.",
+                            resp.status_code,
+                        )
+                        await asyncio.sleep(60)
+                except Exception as exc:
+                    logger.warning("Telegram poll failed: %s", type(exc).__name__)
+                await asyncio.sleep(1)
 
     async def _process_command(self, text: str):
         cmd = text.split("@")[0].lower().strip()
@@ -119,7 +132,8 @@ class TelegramNotifier:
             await self.send_message(f"✅ <b>Waterfall Engine:</b> ONLINE\n🌊 <b>Live Targets Tracked:</b> {total}")
 
         elif cmd == "/armed":
-            if not self.db: return
+            if self.db is None:
+                return
             candidates = self.db.get_all_active_candidates()
             armed = [s.split(':')[0] for s, d in candidates.items() if d['status'] == 'ARMED']
             if armed:

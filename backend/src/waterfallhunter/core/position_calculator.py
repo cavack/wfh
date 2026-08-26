@@ -115,6 +115,13 @@ class PositionCalculator:
         raw_tp1 = net_entry_price - target_net_profit_1 - carrying_cost
         raw_tp2 = net_entry_price - target_net_profit_2 - carrying_cost
 
+        # A short setup requires 0 < tp2 < tp1 < entry. Wide-stop or
+        # high-cost configurations (small-priced meme contracts) can push a
+        # target below zero or above entry; such geometry is invalid and must
+        # fail the setup instead of persisting corrupted levels.
+        if not (0 < raw_tp2 < raw_tp1 < net_entry_price):
+            return {"status": "REJECTED: Invalid take-profit geometry"}
+
         tp1_price = self.avoid_round_level(raw_tp1, is_tp=True)
         tp2_price = self.avoid_round_level(raw_tp2, is_tp=True)
 
@@ -135,6 +142,11 @@ class PositionCalculator:
         sl_aligned = self.align_to_tick(sl_price, tick_size)
         tp1_aligned = self.align_to_tick(tp1_price, tick_size)
         tp2_aligned = self.align_to_tick(tp2_price, tick_size)
+        # A coarse tick can collapse the aligned targets into each other,
+        # past the entry, or round the stop onto the entry even when the raw
+        # levels and risk math were valid.
+        if not (0 < tp2_aligned < tp1_aligned < entry_aligned < sl_aligned):
+            return {"status": "REJECTED: Invalid aligned take-profit geometry"}
         # محاسبه حجم پوزیشن (ارزش دلاری تقسیم بر قیمت ورود، سپس تقسیم بر سایز قرارداد)
         raw_amount_contracts = (self.default_capital / entry_aligned) / contract_size
         amount_aligned = self.align_to_step(raw_amount_contracts, step_size)

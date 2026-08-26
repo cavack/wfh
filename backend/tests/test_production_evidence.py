@@ -30,7 +30,17 @@ def _result():
             "mapped_symbol": "TEST/USDT:USDT",
             "data_sources": {"confirmation": "bybit"},
             "valid_candle_timeframes": 4,
-            "candle_analysis": {"details": {"5m": {"valid": True}}},
+            "candle_analysis": {
+                "details": {"5m": {"valid": True}},
+                "source_capture": {
+                    "raw_ohlcv_captured": True,
+                    "confirmation_ohlcv_captured": True,
+                    "primary_closed_ohlcv": {
+                        "5m": [[100, 1, 2, 0.5, 1.5, 10]],
+                    },
+                    "confirmation_closed_ohlcv_15m": [[100, 1, 2, 0.5, 1.5, 10]],
+                },
+            },
             "microstructure": {
                 "approved": True,
                 "source_capture": {
@@ -62,17 +72,6 @@ def _result():
             },
             "strategy_stages": {"hype": True, "damage": True, "setup": True, "trigger": False, "passed": False},
             "quality_gates": {"cross_exchange_confirmed": True},
-            "candle_analysis": {
-                "details": {"5m": {"valid": True}},
-                "source_capture": {
-                    "raw_ohlcv_captured": True,
-                    "confirmation_ohlcv_captured": True,
-                    "primary_closed_ohlcv": {
-                        "5m": [[100, 1, 2, 0.5, 1.5, 10]],
-                    },
-                    "confirmation_closed_ohlcv_15m": [[100, 1, 2, 0.5, 1.5, 10]],
-                },
-            },
             "orderbook": {"bids": [[1.0, 2.0]] * 30, "asks": [[1.1, 2.0]] * 30, "timestamp": 123},
             "ticker": {"last": 1.05, "mark": 1.04, "quoteVolume": 1_000_000, "info": {"must_not": "persist"}},
         },

@@ -609,7 +609,7 @@ class MultiTimeframeAnalyzer:
         exchange: Any,
         symbol: str,
         confirmation_exchange: Any = None,
-        confirmation_symbol: str = None,
+        confirmation_symbol: str | None = None,
     ) -> Dict[str, Any]:
         primary = await asyncio.gather(
             *(
@@ -642,7 +642,6 @@ class MultiTimeframeAnalyzer:
                 continue
             source_ohlcv[tf] = candles
 
-        cross_exchange = False
         confirmation_ohlcv = None
 
         if (
@@ -664,7 +663,7 @@ class MultiTimeframeAnalyzer:
                 confirmation_ohlcv = candles
 
             except Exception:
-                cross_exchange = False
+                confirmation_ohlcv = None
 
         return self.evaluate_closed_sources(
             source_ohlcv,

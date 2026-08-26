@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -158,7 +159,15 @@ class AIVetoEngine:
                 "Long squeeze risk."
             )
 
-        ai_opinion = await self._get_gemini_opinion(symbol, orderbook, ticker)
+        # The advisory is informational only and must never gate or delay the
+        # deterministic veto decision; run it off the critical path.
+        try:
+            ai_opinion = await asyncio.wait_for(
+                self._get_gemini_opinion(symbol, orderbook, ticker),
+                timeout=8.0,
+            )
+        except Exception:
+            ai_opinion = self._unavailable_advisory("Gemini advisory timed out.")
         advisory_data = {
             "deterministic_veto": deterministic_veto,
             "deterministic_reason": veto_reason,

@@ -18,8 +18,10 @@ services:
       LBANK_EXECUTION_SHADOW_SUCCESS_RECHECK_SECONDS: "1800"
       LBANK_EXECUTION_SHADOW_FAILURE_RECHECK_SECONDS: "600"
       # User-authorized, calibration-pending signal discovery. This profile
-      # remains paper-only and is never allowed to place orders.
-      EXPERIMENTAL_PRETRIGGER_ENABLED: "true"
+      # remains paper-only and is never allowed to place orders. It stays
+      # opt-in: enable it explicitly in .env after reviewing its calibration
+      # status, instead of every base-compose deploy turning it on.
+      # EXPERIMENTAL_PRETRIGGER_ENABLED: "true"
       EXPERIMENTAL_PRETRIGGER_THRESHOLD: "45.0"
     read_only: true
     tmpfs:

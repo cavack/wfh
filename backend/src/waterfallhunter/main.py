@@ -2210,14 +2210,18 @@ async def hunter_loop(
                 )
                 evaluations_since_flush = 0
 
+                bound_semaphore = semaphore  # bind loop variable (B023)
+
                 async def evaluate_bounded(
                     symbol,
                     data,
+                    *,
+                    _semaphore=bound_semaphore,
                 ):
                     global _hunter_last_progress_at
                     nonlocal evaluations_since_flush
 
-                    async with semaphore:
+                    async with _semaphore:
                         try:
                             if _hunter_running:
                                 await evaluate_candidate(
