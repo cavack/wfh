@@ -34,7 +34,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$WFH_DEPLOY_SHA"
           git fetch --no-tags origin main
           git cat-file -e "${WFH_DEPLOY_SHA}^{commit}"
-          git merge-base --is-ancestor "$WFH_DEPLOY_SHA" origin/main
+          test "$(git rev-parse origin/main)" = "$WFH_DEPLOY_SHA"
 
       - name: Validate Production connection contract
         shell: bash
