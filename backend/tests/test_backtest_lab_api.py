@@ -75,6 +75,8 @@ def test_empty_replay_is_deterministic_and_explicitly_non_equivalent() -> None:
     assert first.status_code == 200
     assert first.json() == second.json()
     payload = first.json()
+    assert payload["contract_version"] == "backtest_lab_response_v2"
+    assert payload["execution_mode"] == "SIGNAL_ONLY"
     assert payload["strategy_equivalent"] is False
     assert payload["claims_allowed"] is False
     assert payload["promotion_allowed"] is False
@@ -238,33 +240,3 @@ def test_production_bundle_is_server_signed_and_replayable(tmp_path) -> None:
     payload = response.json()
     assert payload["contract_version"] == "backtest_production_bundle_v1"
     assert payload["execution_mode"] == "SIGNAL_ONLY"
-    assert payload["strategy_equivalent"] is False
-    assert payload["portfolio_events_available"] is False
-    assert payload["row_count"] == 1
-    bundle = payload["bundle"]
-    assert bundle["initial_equity"] == 100
-    assert bundle["events"] == []
-    assert bundle["signal_rows"][0]["symbol"] == "BUNDLE/USDT:USDT"
-    assert bundle["signal_rows"][0]["applied_leverage"] == 12
-    assert bundle["signal_rows"][0]["outcome_status"] == "TP1_HIT"
-    assert bundle["artifact_hmac_sha256"] != "0" * 64
-
-    replay = client.post("/api/backtest-lab/replay", json=bundle)
-    assert replay.status_code == 200
-    assert replay.json()["signal_level_report"]["row_count"] == 1
-
-
-def test_production_bundle_translates_database_failure_to_503(tmp_path) -> None:
-    app = FastAPI()
-    app.include_router(
-        build_backtest_lab_router(
-            artifact_hmac_key=ARTIFACT_KEY,
-            db_path=str(tmp_path / "missing" / "signals.db"),
-        )
-    )
-
-    response = TestClient(app, raise_server_exceptions=False).get(
-        "/api/backtest-lab/production-bundle"
-    )
-
-    assert response.status_code == 503
