@@ -45,7 +45,7 @@ def test_contract_is_fixed_read_only_and_rejects_unknown_queries() -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["execution_mode"] == "PAPER_ONLY"
+    assert payload["execution_mode"] == "SIGNAL_ONLY"
     assert payload["risk_policy"]["policy_hash"] == RiskPolicy.v1().policy_hash
     assert payload["caller_risk_overrides_allowed"] is False
     assert payload["database_writes"] is False
@@ -237,7 +237,7 @@ def test_production_bundle_is_server_signed_and_replayable(tmp_path) -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["contract_version"] == "backtest_production_bundle_v1"
-    assert payload["execution_mode"] == "PAPER_ONLY"
+    assert payload["execution_mode"] == "SIGNAL_ONLY"
     assert payload["strategy_equivalent"] is False
     assert payload["portfolio_events_available"] is False
     assert payload["row_count"] == 1

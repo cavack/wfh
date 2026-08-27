@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     registry_db_path: str = "/app/data/waterfall_registry.db"
     backtest_artifact_hmac_key: str | None = None
 
-    # Safety boundary: WaterfallHunter remains signal/paper-only.
+    # Safety boundary: WaterfallHunter remains SIGNAL_ONLY and never places orders.
     live_trading_enabled: bool = False
 
     # Temporary, explicitly versioned signal-discovery profile. It never
@@ -29,7 +29,7 @@ class Settings(BaseSettings):
 
     # Optional Telegram command bot. Credentials alone never authorize
     # durable STRICT signal delivery. Signal delivery requires both the
-    # explicit owner gate and a positive owner-approved cutover timestamp.
+    # explicit delivery gate and a positive release cutover timestamp.
     telegram_token: str | None = None
     telegram_chat_id: str | None = None
     telegram_signal_delivery_enabled: bool = False

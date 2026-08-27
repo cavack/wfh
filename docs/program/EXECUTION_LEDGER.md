@@ -45,7 +45,7 @@ Worktree: isolated development checkout; Production source and state are exclude
 
 ## Controller rulings
 
-1. Existing ScoreV2 and balanced-signal plans remain historical implementation evidence. Their real-data-only, paper-only, conservative same-bar, and validator-ownership rules remain binding.
+1. Existing ScoreV2 and balanced-signal plans remain historical implementation evidence. Their real-data-only, signal-only, conservative same-bar, and validator-ownership rules remain binding.
 2. Their old `ARMED`-requires-trigger semantics are superseded only in Lifecycle V2 shadow work; current model behavior is preserved until Golden Corpus and OOS gates pass.
 3. No Production DB, backup, migration, deployment, restart, Telegram message, live trading, or merge is authorized.
 4. The canonical fixture corpus is not a substitute for real-data replay, OOS evidence, or the legacy-runtime corpus.

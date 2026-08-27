@@ -7,8 +7,8 @@ export const viewport = {
 }
 
 export const metadata = {
-  title: 'WaterfallHunter — Paper Research Terminal',
-  description: 'Observational USDT perpetual futures monitoring. Paper-only, no live orders.',
+  title: 'WaterfallHunter — Simulated Research Terminal',
+  description: 'Observational USDT perpetual futures monitoring. Signal-only, no live orders.',
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

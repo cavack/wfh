@@ -1,4 +1,4 @@
-"""Bounded, read-only API for deterministic paper portfolio research."""
+"""Bounded, read-only API for deterministic portfolio simulation research."""
 
 from __future__ import annotations
 
@@ -70,7 +70,7 @@ class BacktestLabResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     contract_version: Literal["backtest_lab_response_v1"]
-    execution_mode: Literal["PAPER_ONLY"]
+    execution_mode: Literal["SIGNAL_ONLY"]
     strategy_equivalent: Literal[False]
     claims_allowed: Literal[False]
     promotion_allowed: Literal[False]
@@ -107,7 +107,7 @@ def _run_replay(payload: BacktestLabRequest) -> BacktestLabResponse:
     )
     return BacktestLabResponse(
         contract_version="backtest_lab_response_v1",
-        execution_mode="PAPER_ONLY",
+        execution_mode="SIGNAL_ONLY",
         strategy_equivalent=False,
         claims_allowed=False,
         promotion_allowed=False,
@@ -186,7 +186,7 @@ def build_backtest_lab_router(
         policy = RiskPolicy.v1()
         return {
             "contract_version": "backtest_lab_contract_v1",
-            "execution_mode": "PAPER_ONLY",
+            "execution_mode": "SIGNAL_ONLY",
             "maximum_replay_events": MAX_REPLAY_EVENTS,
             "maximum_signal_rows": MAX_SIGNAL_ROWS,
             "maximum_processing_payload_bytes": MAX_REPLAY_PAYLOAD_BYTES,
@@ -243,7 +243,7 @@ def build_backtest_lab_router(
         bundle = provisional.model_copy(update={"artifact_hmac_sha256": digest})
         return {
             "contract_version": "backtest_production_bundle_v1",
-            "execution_mode": "PAPER_ONLY",
+            "execution_mode": "SIGNAL_ONLY",
             "strategy_equivalent": False,
             "portfolio_events_available": False,
             "source": "lbank_signal_ledger",

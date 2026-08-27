@@ -8,4 +8,4 @@ Alertmanager reaches the watchdog through Docker DNS using the service/container
 
 `http://waterfall-watchdog:8080/alerts`
 
-This removes the dependency on `172.23.0.2` while preserving the internal-only alerting network. Production remains paper-only; this change does not enable trading or order placement.
+This removes the dependency on `172.23.0.2` while preserving the internal-only alerting network. Production remains signal-only; this change does not enable trading or order placement.

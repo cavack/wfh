@@ -241,7 +241,7 @@ Run all tests for these four modules, then `pytest -q backend/tests`.
 
 **Interfaces:**
 - Consumes: schema verifier and migrated test helper.
-- Produces: verify-only constructors; PAPER_ONLY/read-only execution semantics unchanged.
+- Produces: verify-only constructors; SIGNAL_ONLY/read-only execution semantics unchanged.
 
 - [ ] **Step 1: Add constructor no-mutation/fail-closed RED tests**
 - [ ] **Step 2: Remove DDL/ALTER and add subset verification**

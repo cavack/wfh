@@ -36,7 +36,7 @@ type PortfolioReport = {
 
 type BacktestResponse = {
   contract_version: string;
-  execution_mode: "PAPER_ONLY";
+  execution_mode: "SIGNAL_ONLY";
   strategy_equivalent: false;
   claims_allowed: false;
   promotion_allowed: false;
@@ -47,7 +47,7 @@ type BacktestResponse = {
 
 type ProductionBundleResponse = {
   contract_version: "backtest_production_bundle_v1";
-  execution_mode: "PAPER_ONLY";
+  execution_mode: "SIGNAL_ONLY";
   strategy_equivalent: false;
   portfolio_events_available: false;
   row_count: number;
@@ -168,7 +168,7 @@ export function BacktestLab() {
       const payload = await response.json() as BacktestResponse | { detail?: unknown };
       if (!response.ok) throw new Error(`Replay rejected: ${JSON.stringify((payload as { detail?: unknown }).detail ?? payload)}`);
       const safe = payload as BacktestResponse;
-      if (safe.execution_mode !== "PAPER_ONLY" || safe.strategy_equivalent !== false || safe.claims_allowed !== false || safe.promotion_allowed !== false) {
+      if (safe.execution_mode !== "SIGNAL_ONLY" || safe.strategy_equivalent !== false || safe.claims_allowed !== false || safe.promotion_allowed !== false) {
         throw new Error("Unsafe or incompatible replay contract received.");
       }
       if (runRevision === inputRevision.current) setResult(safe);
@@ -192,7 +192,7 @@ export function BacktestLab() {
       const payload = await response.json() as ProductionBundleResponse | { detail?: unknown };
       if (!response.ok) throw new Error(`Production bundle unavailable: ${JSON.stringify((payload as { detail?: unknown }).detail ?? payload)}`);
       const safe = payload as ProductionBundleResponse;
-      if (safe.execution_mode !== "PAPER_ONLY" || safe.strategy_equivalent !== false || safe.portfolio_events_available !== false) {
+      if (safe.execution_mode !== "SIGNAL_ONLY" || safe.strategy_equivalent !== false || safe.portfolio_events_available !== false) {
         throw new Error("Unsafe or incompatible production bundle received.");
       }
       const bundle = safe.bundle;
@@ -246,7 +246,7 @@ export function BacktestLab() {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `wfh-paper-replay-${report?.replay_sha256?.slice(0, 12) ?? "report"}.json`;
+    anchor.download = `wfh-simulated-replay-${report?.replay_sha256?.slice(0, 12) ?? "report"}.json`;
     anchor.click();
     URL.revokeObjectURL(url);
   };
@@ -260,7 +260,7 @@ export function BacktestLab() {
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">Deterministic replay with the canonical risk policy, portfolio capacity, isolated liquidation and explicit cost attribution. Input data is never inferred or repaired.</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <span className="status-pill border border-cyan-400/30 bg-cyan-500/10 text-cyan-100">PAPER ONLY</span>
+          <span className="status-pill border border-cyan-400/30 bg-cyan-500/10 text-cyan-100">SIMULATED ONLY</span>
           <span className="status-pill border border-rose-400/30 bg-rose-500/10 text-rose-100">STRATEGY-EQUIVALENT: FALSE</span>
         </div>
       </div>
@@ -270,7 +270,7 @@ export function BacktestLab() {
           <label className="text-xs font-medium text-slate-300"><span className="block">Dataset manifest SHA-256</span>
             <input value={manifestHash} onChange={(event) => { invalidateAttestation(); setManifestHash(event.target.value.trim()); }} placeholder="64 lowercase hexadecimal characters" spellCheck={false} className={`mt-2 w-full rounded-xl border bg-slate-950 px-3 py-2.5 font-mono text-xs outline-none ${manifestHash && !validHash ? "border-rose-500/60" : "border-slate-700 focus:border-cyan-500"}`} />
           </label>
-          <label className="text-xs font-medium text-slate-300"><span className="block">Initial paper equity</span>
+          <label className="text-xs font-medium text-slate-300"><span className="block">Initial simulated equity</span>
             <input type="number" min="0.01" step="0.01" value={initialEquity} onChange={(event) => { invalidateAttestation(); setInitialEquity(event.target.value); }} className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm outline-none focus:border-cyan-500" />
           </label>
         </div>

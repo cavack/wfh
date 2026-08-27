@@ -10,14 +10,14 @@
 
 ## Goal
 
-Introduce versioned, typed canonical domain contracts without changing current scoring, thresholds, lifecycle behavior, trigger behavior, ranking behavior, execution levels, or paper-only safety. Consumers are migrated in later workstreams only after the contracts are independently validated.
+Introduce versioned, typed canonical domain contracts without changing current scoring, thresholds, lifecycle behavior, trigger behavior, ranking behavior, execution levels, or signal-only safety. Consumers are migrated in later workstreams only after the contracts are independently validated.
 
 ## Source and safety invariants
 
 - Canonical repository: `cavack/wfh`.
 - GitHub is code truth; Production runtime is runtime truth.
 - `LIVE_TRADING_ENABLED=false` remains a hard invariant.
-- Execution semantics remain `PAPER_ONLY` and `ISOLATED`.
+- Execution semantics remain `SIGNAL_ONLY` and `ISOLATED`.
 - No live create/cancel/modify order path may be added.
 - Missing canonical metadata or evidence must fail closed in later consumer cutovers; this Wave does not add silent fallbacks.
 - Current ScoreV2 and lifecycle semantics remain unchanged by this workstream.
@@ -120,7 +120,7 @@ Required identity and provenance:
 - `execution_risk`
 - `execution_plan_id`
 - `reason_codes`
-- `execution_mode=PAPER_ONLY`
+- `execution_mode=SIGNAL_ONLY`
 
 `final_signal_score` is not probability. `calibrated_probability` may be unavailable/`None`; no replacement probability is invented in this Wave.
 
@@ -189,7 +189,7 @@ Carries stable event identity, aggregate identity, signal/lifecycle/decision pro
 - Signal class is restricted to `STRICT|EXPERIMENTAL`.
 - Margin mode is restricted to `ISOLATED`.
 - `cross_margin_allowed` and `auto_add_margin` must remain false.
-- `execution_mode` must remain `PAPER_ONLY`.
+- `execution_mode` must remain `SIGNAL_ONLY`.
 - Scores use finite numeric values and declared ranges.
 - Probabilities, when present, are finite values in `[0,1]`; absence remains explicit.
 - Prices and leverage inputs reject NaN/Inf.
