@@ -30,6 +30,7 @@ cleanup() {
 trap cleanup EXIT
 
 git archive --format=tar HEAD | tar -xf - -C "$TMP"
+git ls-files > "$TMP/.wfh-source-manifest"
 # mktemp creates the checkout root as 0700. The backend image runs as the
 # non-root waterfall user, so grant traversal/read access to this disposable
 # read-only bind mount without changing artifact runtime privileges.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -22,11 +23,18 @@ CANONICAL_DOCS = {
 }
 
 
-def _tracked_files() -> set[str]:
-    output = subprocess.check_output(
-        ["git", "ls-files"], cwd=ROOT, text=True
-    )
-    return {line.strip() for line in output.splitlines() if line.strip()}
+SOURCE_MANIFEST = ".wfh-source-manifest"
+
+
+def _tracked_files(root: Path = ROOT) -> set[str]:
+    git = shutil.which("git")
+    if git is not None and (root / ".git").exists():
+        output = subprocess.check_output([git, "ls-files"], cwd=root, text=True)
+        return {line.strip() for line in output.splitlines() if line.strip()}
+    manifest = root / SOURCE_MANIFEST
+    if not manifest.is_file():
+        raise RuntimeError("tracked source manifest unavailable")
+    return {line.strip() for line in manifest.read_text(encoding="utf-8").splitlines() if line.strip()}
 
 
 def test_canonical_handoff_docs_exist() -> None:
@@ -92,3 +100,9 @@ def test_active_production_tree_has_no_ollama_runtime_dependency() -> None:
         if "ollama" in text:
             offenders.append(rel)
     assert offenders == []
+
+
+def test_tracked_files_can_use_export_manifest_without_git(tmp_path: Path) -> None:
+    manifest = tmp_path / SOURCE_MANIFEST
+    manifest.write_text("README.md\ndocs/PROJECT_HANDOFF.md\n", encoding="utf-8")
+    assert _tracked_files(tmp_path) == {"README.md", "docs/PROJECT_HANDOFF.md"}

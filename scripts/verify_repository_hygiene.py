@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -19,9 +20,18 @@ FORBIDDEN_SUFFIXES = (".pyc", ".log", ".db", ".sqlite", ".sqlite3", ".tsbuildinf
 CONFLICT = re.compile(r"^(<<<<<<<|=======|>>>>>>>)", re.MULTILINE)
 
 
+SOURCE_MANIFEST = ".wfh-source-manifest"
+
+
 def tracked(root: Path) -> list[str]:
-    out = subprocess.check_output(["git", "ls-files"], cwd=root, text=True)
-    return [line.strip() for line in out.splitlines() if line.strip()]
+    git = shutil.which("git")
+    if git is not None and (root / ".git").exists():
+        out = subprocess.check_output([git, "ls-files"], cwd=root, text=True)
+        return [line.strip() for line in out.splitlines() if line.strip()]
+    manifest = root / SOURCE_MANIFEST
+    if not manifest.is_file():
+        raise RuntimeError("tracked source manifest unavailable")
+    return [line.strip() for line in manifest.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def main() -> int:
