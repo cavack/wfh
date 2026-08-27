@@ -16,7 +16,8 @@ def _payload(symbol: str = "TEST") -> dict:
     return {
         "total": 1,
         "candidates": {symbol: {"status": "WATCH"}},
-        "final_ranking": {"version": "test"},
+        "decision_terminal": {"contract_version": "decision_terminal_v1", "counts": {}},
+    "final_ranking": {"version": "test"},
         "signal_funnel": {"version": "test"},
     }
 

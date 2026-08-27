@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Activity, FlaskConical, GitBranch, LayoutDashboard, Radio, ShieldCheck, Wifi, WifiOff } from "lucide-react";
+import { Activity, FlaskConical, LayoutDashboard, Radio, ShieldCheck, Wifi, WifiOff } from "lucide-react";
 import { MarketContext } from "@/components/market-context";
 import { OutcomeEvidence } from "@/components/outcome-evidence";
 import { Candidate, ScoreCard } from "@/components/score-card";
@@ -13,6 +13,7 @@ import { ProductionEvidence } from "@/components/production-evidence";
 import { FeatureReplay } from "@/components/feature-replay";
 import { BacktestLab } from "@/components/backtest-lab";
 import { LifecycleShadow } from "@/components/lifecycle-shadow";
+import { DecisionTerminal } from "@/components/decision-terminal";
 import type { DashboardSnapshot } from "@/generated/dashboard-contract";
 import { dashboardSnapshot, dashboardStreamEvent } from "@/lib/dashboard-contract";
 
@@ -204,8 +205,8 @@ export default function Dashboard() {
   }), [rows]);
 
   const renderGroup = (title: string, items: [string, Candidate][], tone: "slate" | "experimental" = "slate") => items.length > 0 && (
-    <section className={`mx-auto mb-8 max-w-7xl scroll-mt-28 px-4 sm:px-6 lg:px-8 ${tone === "experimental" ? "" : ""}`}>
-      <h2 className={`mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-wide ${tone === "experimental" ? "text-violet-300" : "text-slate-300"}`}>{title}</h2>
+    <section className="mb-6">
+      <h3 className={`mb-3 text-sm font-semibold uppercase tracking-wide ${tone === "experimental" ? "text-violet-300" : "text-slate-300"}`}>{title}</h3>
       <div className={`grid gap-4 xl:grid-cols-2 ${tone === "experimental" ? "rounded-2xl border border-violet-500/25 bg-violet-950/10 p-3 sm:p-4" : ""}`}>
         {items.map(([symbol, candidate]) => <CandidatePanel key={symbol} symbol={symbol} candidate={candidate} hasFreshSnapshot={data !== null} />)}
       </div>
@@ -215,7 +216,7 @@ export default function Dashboard() {
   let emptyState: ReactNode = null;
   if (data === null) {
     emptyState = (
-      <div className="panel mx-auto max-w-7xl px-6 py-16 text-center sm:mx-6 lg:mx-auto">
+      <div className="panel mx-auto max-w-7xl px-6 py-16 text-center">
         <span className="live-dot mx-auto block" aria-hidden="true" />
         <p className="mt-4 text-lg font-medium">Initializing live state…</p>
         <p className="mt-2 text-sm text-slate-400">Waiting for a schema-valid stream snapshot or polling fallback.</p>
@@ -223,31 +224,21 @@ export default function Dashboard() {
     );
   } else if (rows.length === 0) {
     emptyState = (
-      <div className="panel mx-auto max-w-7xl px-6 py-16 text-center sm:mx-6 lg:mx-auto">
+      <div className="panel mx-auto max-w-7xl px-6 py-16 text-center">
         <p className="text-lg font-medium">No active candidates in the latest valid snapshot</p>
-        <p className="mt-2 text-sm text-slate-400">This is a real READY snapshot, not an initializing placeholder.</p>
+        <p className="mt-2 text-sm text-slate-400">The decision terminal is live; there is simply nothing to evaluate yet.</p>
       </div>
     );
   }
 
-  const kpis = [
-    { label: "Tracked candidates", value: data?.total ?? undefined },
-    { label: "STRICT confirmed", value: data ? groups.strictConfirmed.length : undefined, tone: "text-emerald-300" as const },
-    { label: "Armed / pre-trigger", value: data ? groups.strictSetup.length : undefined, tone: "text-amber-300" as const },
-    { label: "Experimental research", value: data ? groups.experimental.length : undefined, tone: "text-violet-300" as const },
-  ];
-
   return (
     <main className="min-h-dvh pb-14 text-slate-100">
-      {/* ---------------------------------------------------------------- */}
-      {/* Sticky header: brand + connection state always reachable         */}
-      {/* ---------------------------------------------------------------- */}
       <header className="sticky top-0 z-40 border-b border-slate-800/80 bg-slate-950/85 backdrop-blur supports-[backdrop-filter]:bg-slate-950/70">
         <div className="mx-auto flex h-14 max-w-7xl items-center gap-3 px-4 sm:h-16 sm:px-6 lg:px-8">
           <Activity className="shrink-0 text-emerald-400" size={24} aria-hidden="true" />
           <div className="min-w-0 leading-tight">
             <h1 className="truncate text-base font-bold tracking-tight sm:text-lg">WaterfallHunter</h1>
-            <p className="hidden text-xs text-slate-400 sm:block">Evidence-first paper research terminal · no live orders</p>
+            <p className="hidden text-xs text-slate-400 sm:block">Canonical waterfall decision terminal · signal only</p>
           </div>
           <div className="ml-auto flex items-center gap-2">
             {generatedAt !== null && (
@@ -258,69 +249,47 @@ export default function Dashboard() {
             <StreamStatus mode={mode} />
           </div>
         </div>
-
-        {/* Section navigation — horizontally scrollable on phones */}
         <nav aria-label="Dashboard sections" className="border-t border-slate-800/60">
           <div className="mx-auto flex max-w-7xl gap-1 overflow-x-auto px-3 py-1.5 sm:px-6 lg:px-8">
-            <a href="#overview" className="section-nav-link"><LayoutDashboard size={14} />Overview</a>
-            <a href="#evidence" className="section-nav-link"><ShieldCheck size={14} />Evidence</a>
-            <a href="#lifecycle-shadow" className="section-nav-link"><GitBranch size={14} />Lifecycle shadow</a>
-            <a href="#backtest-lab" className="section-nav-link"><FlaskConical size={14} />Backtest Lab</a>
-            <a href="#live-candidates" className="section-nav-link"><Radio size={14} />Candidates</a>
-            <span className="ml-auto hidden shrink-0 self-center pr-1 font-mono text-[11px] font-semibold tracking-wider text-emerald-300/90 md:inline" title="Project invariant: this system never places orders">PAPER ONLY · LIVE TRADING OFF</span>
+            <a href="#decision-terminal" className="section-nav-link"><LayoutDashboard size={14} />Decision terminal</a>
+            <a href="#all-candidates" className="section-nav-link"><Radio size={14} />All candidates</a>
+            <a href="#research" className="section-nav-link"><FlaskConical size={14} />Research</a>
+            <span className="ml-auto hidden shrink-0 self-center pr-1 font-mono text-[11px] font-semibold tracking-wider text-emerald-300/90 md:inline">SIGNAL ONLY · NO ORDER EXECUTION</span>
           </div>
         </nav>
       </header>
 
       <div className="px-4 pt-5 sm:px-6 lg:px-8">
-        {/* -------------------------------------------------------------- */}
-        {/* Overview KPIs                                                  */}
-        {/* -------------------------------------------------------------- */}
-        <section id="overview" className="mx-auto mb-7 max-w-7xl scroll-mt-32">
-          <dl className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            {kpis.map((kpi) => (
-              <div key={kpi.label} className="panel px-4 py-3.5">
-                <dt className="text-xs font-medium text-slate-400">{kpi.label}</dt>
-                <dd className={`mt-1 text-2xl font-semibold tabular-nums sm:text-3xl ${kpi.tone ?? "text-slate-50"}`}>
-                  {kpi.value === undefined ? "—" : kpi.value.toLocaleString()}
-                </dd>
+        {emptyState}
+        {data !== null && rows.length > 0 ? (
+          <DecisionTerminal terminal={data.decision_terminal} candidates={data.candidates as Record<string, Candidate>} />
+        ) : null}
+
+        <details id="research" className="panel mx-auto mt-8 max-w-7xl scroll-mt-32 overflow-hidden">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-4 text-sm font-semibold text-slate-200">
+            <span className="flex items-center gap-2"><ShieldCheck size={16} className="text-slate-400" />Research, validation & raw diagnostics</span>
+            <span className="text-xs font-normal text-slate-500">Secondary · never an entry command</span>
+          </summary>
+          <div className="border-t border-slate-800 px-4 py-5 sm:px-5">
+            <OutcomeEvidence />
+            <HistoricalOutcomes />
+            <ProductionEvidence />
+            <FeatureReplay />
+            <LifecycleShadow />
+            <BacktestLab />
+            <SignalFunnel funnel={data?.signal_funnel as SignalFunnelData | undefined} />
+            <FinalRanking ranking={data?.final_ranking} />
+            <details className="mt-6 rounded-xl border border-slate-800 bg-slate-950/30 p-4">
+              <summary className="cursor-pointer text-sm font-semibold text-slate-300">Raw candidate cards</summary>
+              <div className="mt-5">
+                {renderGroup("Confirmed STRICT diagnostics", groups.strictConfirmed)}
+                {renderGroup("STRICT setup diagnostics", groups.strictSetup)}
+                {renderGroup("Experimental research", groups.experimental, "experimental")}
+                {renderGroup("Watch and discovery", groups.discovery)}
               </div>
-            ))}
-          </dl>
-          <p className="mt-3 flex items-start gap-2 rounded-xl border border-slate-800/80 bg-slate-900/40 px-3.5 py-2.5 text-xs leading-5 text-slate-400">
-            <ShieldCheck size={15} className="mt-0.5 shrink-0 text-emerald-400/80" />
-            Only current exchange evidence is shown. Missing analysis stays unavailable — it is never converted into a score, and nothing here places orders.
-          </p>
-        </section>
-
-        {/* -------------------------------------------------------------- */}
-        {/* Evidence & research sections                                   */}
-        {/* -------------------------------------------------------------- */}
-        <div id="evidence" className="scroll-mt-32"><OutcomeEvidence /></div>
-
-        <HistoricalOutcomes />
-
-        <ProductionEvidence />
-
-        <FeatureReplay />
-
-        <LifecycleShadow />
-
-        <BacktestLab />
-
-        <SignalFunnel funnel={data?.signal_funnel as SignalFunnelData | undefined} />
-
-        <FinalRanking ranking={data?.final_ranking} />
-
-        <section id="live-candidates" className="mx-auto mb-5 max-w-7xl scroll-mt-32">
-          {rows.length > 0 && <p className="mb-3 text-xs text-slate-500">All candidates remain ordered by the existing Score V2/watch score view. The Top 3 panel is a separate observational ranking and does not alter state or eligibility.</p>}
-          {emptyState}
-        </section>
-
-        {renderGroup("Confirmed STRICT signals", groups.strictConfirmed)}
-        {renderGroup("STRICT armed and pre-trigger setups", groups.strictSetup)}
-        {renderGroup("Experimental research — never mixed with STRICT", groups.experimental, "experimental")}
-        {renderGroup("Watch and discovery", groups.discovery)}
+            </details>
+          </div>
+        </details>
       </div>
     </main>
   );

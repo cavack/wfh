@@ -1,4 +1,4 @@
-"""Hash-bound LBank constraints and risk-first paper execution planning."""
+"""Hash-bound LBank constraints and risk-first signal trade planning."""
 
 from __future__ import annotations
 

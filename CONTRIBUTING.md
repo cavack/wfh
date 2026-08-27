@@ -1,6 +1,6 @@
 # Contributing
 
-WaterfallHunter is a paper-only monitoring and research system. Changes must preserve the safety boundary that live order placement is disabled.
+WaterfallHunter is a signal-only monitoring and research system. Changes must preserve the safety boundary that order execution is disabled.
 
 ## Development workflow
 

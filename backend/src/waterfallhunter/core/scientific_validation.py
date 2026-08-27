@@ -1,4 +1,4 @@
-"""Fail-closed scientific validation for STRICT paper-only evidence."""
+"""Fail-closed scientific validation for STRICT signal-only evidence."""
 
 from __future__ import annotations
 

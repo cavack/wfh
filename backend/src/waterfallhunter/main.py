@@ -32,6 +32,7 @@ from waterfallhunter.core.notification_delivery import (
 from waterfallhunter.core.ai_veto import AIVetoEngine
 from waterfallhunter.core.risk_manager import get_leverage
 from waterfallhunter.core.dashboard import compact_metrics
+from waterfallhunter.core.decision_terminal import build_decision_terminal
 from waterfallhunter.core.dashboard_stream import (
     DashboardEventBuffer,
     DashboardSnapshot,
@@ -1359,6 +1360,11 @@ def get_formatted_candidates(*, evaluation_time: float | None = None):  # NOSONA
         )
     }
 
+    decision_terminal = build_decision_terminal(
+        sorted_candidates,
+        recent_changes=entry_decision_store.recent_changes(limit=10),
+    )
+
     return {
         "total": len(
             sorted_candidates
@@ -1366,6 +1372,7 @@ def get_formatted_candidates(*, evaluation_time: float | None = None):  # NOSONA
         "candidates": (
             sorted_candidates
         ),
+        "decision_terminal": decision_terminal,
         "final_ranking": {
             key: value
             for key, value in final_ranking.items()

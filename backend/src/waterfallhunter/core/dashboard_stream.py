@@ -26,6 +26,7 @@ class DashboardSnapshot(BaseModel):
     state: Literal["READY"]
     total: int = Field(ge=0)
     candidates: dict[str, dict[str, Any]]
+    decision_terminal: dict[str, Any]
     final_ranking: dict[str, Any]
     signal_funnel: dict[str, Any]
 

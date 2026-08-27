@@ -12,6 +12,7 @@ from waterfallhunter.core.dashboard_stream import DashboardEventBuffer
 PAYLOAD = {
     "total": 1,
     "candidates": {"TEST": {"status": "WATCH"}},
+    "decision_terminal": {"contract_version": "decision_terminal_v1", "counts": {}},
     "final_ranking": {"version": "test"},
     "signal_funnel": {"version": "test"},
 }

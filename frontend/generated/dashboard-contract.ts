@@ -9,6 +9,7 @@ export interface DashboardSnapshot {
   state: "READY";
   total: number;
   candidates: Record<string, JsonObject>;
+  decision_terminal: JsonObject;
   final_ranking: JsonObject;
   signal_funnel: JsonObject;
 }

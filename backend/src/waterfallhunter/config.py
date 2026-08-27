@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     registry_db_path: str = "/app/data/waterfall_registry.db"
     backtest_artifact_hmac_key: str | None = None
 
-    # Safety boundary: WaterfallHunter remains signal/paper-only.
+    # Safety boundary: WaterfallHunter is signal-only; order execution remains disabled.
     live_trading_enabled: bool = False
 
     # Temporary, explicitly versioned signal-discovery profile. It never
