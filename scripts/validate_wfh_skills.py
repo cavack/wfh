@@ -24,6 +24,7 @@ REQUIRED_HEADINGS = {
     "## Overview",
     "## When to Use",
     "## Scope",
+    "## Protected Invariants",
     "## Workflow",
     "## Evidence and Readiness",
     "## Verification",
@@ -31,23 +32,74 @@ REQUIRED_HEADINGS = {
     "## Common Mistakes",
 }
 
+REQUIRED_SHARED_SECTIONS = {
+    "## Discovery adapters",
+    "## Shared evidence taxonomy",
+    "## Freshness rule",
+    "## Protected invariants",
+    "## Stop and escalation conditions",
+    "## Correct invocation and failure examples",
+    "## External tools and plugins",
+    "## Safety boundary",
+}
+
 NAME_RE = re.compile(r"^[a-z0-9-]+$")
 PLACEHOLDER_RE = re.compile(
     r"\b(?:TBD|TODO|FIXME)\b|implement later|fill in details",
     flags=re.IGNORECASE,
 )
+ALLOWED_FRONTMATTER_KEYS = {"name", "description"}
+LIVE_SAFETY_MARKER = "Live order placement is outside this skill system"
+ADAPTER_MARKER = "contains no independent workflow"
+
+
+def _read_text(path: Path) -> tuple[str | None, list[str]]:
+    try:
+        return path.read_text(encoding="utf-8"), []
+    except OSError as exc:
+        return None, [f"{path}: unable to read: {exc}"]
+
+
+def _frontmatter_bounds(lines: list[str], path: Path) -> tuple[int | None, list[str]]:
+    if not lines or lines[0].strip() != "---":
+        return None, [f"{path}: missing opening YAML frontmatter delimiter"]
+    try:
+        return next(i for i in range(1, len(lines)) if lines[i].strip() == "---"), []
+    except StopIteration:
+        return None, [f"{path}: missing closing YAML frontmatter delimiter"]
+
+
+def _parse_frontmatter_line(
+    stripped: str, path: Path, values: dict[str, str]
+) -> list[str]:
+    if ":" not in stripped:
+        return [f"{path}: invalid frontmatter line: {stripped!r}"]
+
+    key, raw_value = stripped.split(":", 1)
+    key = key.strip()
+    value = raw_value.strip()
+    if key not in ALLOWED_FRONTMATTER_KEYS:
+        return [f"{path}: unsupported frontmatter field {key!r}"]
+    if key in values:
+        return [f"{path}: duplicate frontmatter field {key!r}"]
+    if not value:
+        return [f"{path}: frontmatter field {key!r} must not be empty"]
+    if value[0] in {'\"', "'"} or value[-1] in {'\"', "'"}:
+        return [
+            f"{path}: quoted frontmatter values are not supported; use a plain scalar for {key!r}"
+        ]
+    if value.startswith(("[", "{", "|", ">", "&", "*", "!")):
+        return [f"{path}: unsupported YAML syntax in frontmatter field {key!r}"]
+
+    values[key] = value
+    return []
 
 
 def _parse_frontmatter(text: str, path: Path) -> tuple[dict[str, str], list[str]]:
-    errors: list[str] = []
     lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
-        return {}, [f"{path}: missing opening YAML frontmatter delimiter"]
-
-    try:
-        closing = next(i for i in range(1, len(lines)) if lines[i].strip() == "---")
-    except StopIteration:
-        return {}, [f"{path}: missing closing YAML frontmatter delimiter"]
+    closing, errors = _frontmatter_bounds(lines, path)
+    if closing is None:
+        return {}, errors
 
     raw = "\n".join(lines[: closing + 1])
     if len(raw) > 1024:
@@ -58,87 +110,132 @@ def _parse_frontmatter(text: str, path: Path) -> tuple[dict[str, str], list[str]
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
-        if ":" not in stripped:
-            errors.append(f"{path}: invalid frontmatter line: {stripped!r}")
-            continue
-        key, value = stripped.split(":", 1)
-        values[key.strip()] = value.strip().strip('"').strip("'")
-
+        errors.extend(_parse_frontmatter_line(stripped, path, values))
     return values, errors
 
 
-def _validate_skill(path: Path, expected_name: str) -> list[str]:
-    errors: list[str] = []
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        return [f"{path}: unable to read: {exc}"]
-
-    frontmatter, frontmatter_errors = _parse_frontmatter(text, path)
-    errors.extend(frontmatter_errors)
-
-    name = frontmatter.get("name")
-    description = frontmatter.get("description")
-
+def _validate_name(path: Path, expected_name: str, name: str | None) -> list[str]:
     if not name:
-        errors.append(f"{path}: frontmatter field 'name' is required")
-    else:
-        if name != expected_name:
-            errors.append(
-                f"{path}: frontmatter name {name!r} must equal directory {expected_name!r}"
-            )
-        if not NAME_RE.fullmatch(name):
-            errors.append(f"{path}: name must match ^[a-z0-9-]+$")
+        return [f"{path}: frontmatter field 'name' is required"]
 
+    errors: list[str] = []
+    if name != expected_name:
+        errors.append(
+            f"{path}: frontmatter name {name!r} must equal directory {expected_name!r}"
+        )
+    if not NAME_RE.fullmatch(name):
+        errors.append(f"{path}: name must match ^[a-z0-9-]+$")
+    return errors
+
+
+def _validate_description(path: Path, description: str | None) -> list[str]:
     if not description:
-        errors.append(f"{path}: frontmatter field 'description' is required")
-    else:
-        if not description.startswith("Use when"):
-            errors.append(f"{path}: description must start with 'Use when'")
-        if len(description) > 500:
-            errors.append(f"{path}: description exceeds 500 characters")
+        return [f"{path}: frontmatter field 'description' is required"]
 
-    body_lines = text.splitlines()
-    title_lines = [line for line in body_lines if line.startswith("# ")]
-    if not title_lines:
+    errors: list[str] = []
+    if not description.startswith("Use when"):
+        errors.append(f"{path}: description must start with 'Use when'")
+    if len(description) > 500:
+        errors.append(f"{path}: description exceeds 500 characters")
+    return errors
+
+
+def _validate_body(path: Path, text: str) -> list[str]:
+    errors: list[str] = []
+    if not any(line.startswith("# ") for line in text.splitlines()):
         errors.append(f"{path}: missing top-level '# ' title")
-
     for heading in sorted(REQUIRED_HEADINGS):
         if heading not in text:
             errors.append(f"{path}: missing required heading {heading!r}")
-
     match = PLACEHOLDER_RE.search(text)
     if match:
         errors.append(f"{path}: contains placeholder text {match.group(0)!r}")
-
+    if LIVE_SAFETY_MARKER not in text:
+        errors.append(f"{path}: missing categorical live-order safety boundary")
     return errors
+
+
+def _validate_skill(path: Path, expected_name: str) -> list[str]:
+    text, errors = _read_text(path)
+    if text is None:
+        return errors
+
+    frontmatter, frontmatter_errors = _parse_frontmatter(text, path)
+    errors.extend(frontmatter_errors)
+    errors.extend(_validate_name(path, expected_name, frontmatter.get("name")))
+    errors.extend(_validate_description(path, frontmatter.get("description")))
+    errors.extend(_validate_body(path, text))
+    return errors
+
+
+def _validate_shared_readme(path: Path) -> list[str]:
+    text, errors = _read_text(path)
+    if text is None:
+        return errors
+    for heading in sorted(REQUIRED_SHARED_SECTIONS):
+        if heading not in text:
+            errors.append(f"{path}: missing shared contract section {heading!r}")
+    if ".agents/skills/" not in text:
+        errors.append(f"{path}: missing discovery-adapter path documentation")
+    if "must not authorize, design, implement, or enable live order placement" not in text:
+        errors.append(f"{path}: missing categorical live-order safety policy")
+    return errors
+
+
+def _validate_adapter(path: Path, expected_name: str) -> list[str]:
+    text, errors = _read_text(path)
+    if text is None:
+        return errors
+    frontmatter, frontmatter_errors = _parse_frontmatter(text, path)
+    errors.extend(frontmatter_errors)
+    errors.extend(_validate_name(path, expected_name, frontmatter.get("name")))
+    errors.extend(_validate_description(path, frontmatter.get("description")))
+
+    canonical = f"../../../skills/waterfallhunter/{expected_name}/SKILL.md"
+    for marker in ("../../../skills/waterfallhunter/README.md", canonical, ADAPTER_MARKER):
+        if marker not in text:
+            errors.append(f"{path}: missing discovery adapter marker {marker!r}")
+    return errors
+
+
+def _validate_skill_directories(skill_root: Path) -> list[str]:
+    if not skill_root.is_dir():
+        return [f"{skill_root}: missing skill root"]
+    actual_dirs = {
+        path.name
+        for path in skill_root.iterdir()
+        if path.is_dir() and path.name != "tests"
+    }
+    return [
+        f"{skill_root / name}: unexpected skill directory"
+        for name in sorted(actual_dirs - EXPECTED_SKILLS)
+    ]
 
 
 def validate(root: Path) -> list[str]:
     root = root.resolve()
     skill_root = root / "skills" / "waterfallhunter"
-    errors: list[str] = []
+    adapter_root = root / ".agents" / "skills"
+    errors = _validate_skill_directories(skill_root)
 
     readme = skill_root / "README.md"
     if not readme.is_file():
         errors.append(f"{readme}: missing system README")
-
-    if skill_root.is_dir():
-        actual_dirs = {
-            path.name
-            for path in skill_root.iterdir()
-            if path.is_dir() and path.name != "tests"
-        }
-        unexpected = sorted(actual_dirs - EXPECTED_SKILLS)
-        for name in unexpected:
-            errors.append(f"{skill_root / name}: unexpected skill directory")
+    else:
+        errors.extend(_validate_shared_readme(readme))
 
     for name in sorted(EXPECTED_SKILLS):
         skill_file = skill_root / name / "SKILL.md"
         if not skill_file.is_file():
             errors.append(f"{skill_file}: missing skill file")
-            continue
-        errors.extend(_validate_skill(skill_file, name))
+        else:
+            errors.extend(_validate_skill(skill_file, name))
+
+        adapter_file = adapter_root / name / "SKILL.md"
+        if not adapter_file.is_file():
+            errors.append(f"{adapter_file}: missing discovery adapter")
+        else:
+            errors.extend(_validate_adapter(adapter_file, name))
 
     return errors
 

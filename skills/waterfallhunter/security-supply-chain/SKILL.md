@@ -17,6 +17,12 @@ Use for CodeQL/Sonar/security scanner findings, dependency CVEs, secrets/history
 
 Own security triage, reachability/exploitability validation, dependency and artifact provenance, secret exposure, container/host boundaries, abuse surfaces, credential handling/scrubbing, and remediation verification.
 
+## Protected Invariants
+
+Unless a separately authorized and validated strategy or policy change explicitly requires otherwise, do not incidentally change ScoreV2 weights or evidence semantics, lifecycle transitions, strict/experimental eligibility boundaries, anti-chase behavior, signal provenance or immutable-ledger semantics, persistence-before-notification ordering, scientific holdout/walk-forward rules, or production execution policy.
+
+Current repository policy is observational and does not place orders. Live order placement is outside this skill system: this skill must not authorize, design, implement, or enable live order placement. Any future execution capability requires a separately reviewed safety design and repository-policy change before ordinary release gates apply.
+
 ## Workflow
 
 1. Resolve exact affected version/SHA and obtain the scanner/advisory evidence.

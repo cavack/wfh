@@ -20,6 +20,12 @@ Repository-local engineering skills for `cavack/wfh`. The system has one orchest
 | `observability-incident-response` | "Investigate an incident or improve metrics, alerts, tracing, logging, or SLOs." |
 | `release-production-certification` | "Prepare or certify merge, migration, deployment, rollback, or production verification." |
 
+## Discovery adapters
+
+Canonical skill bodies live under `skills/waterfallhunter/<skill-name>/SKILL.md`. Repository discovery is exposed through thin adapters under `.agents/skills/<skill-name>/SKILL.md`.
+
+Every adapter must load this README and then its matching canonical skill before acting. The canonical file remains authoritative; adapters must not duplicate an independent workflow. This keeps auto-discovery compatible with agent environments without maintaining two divergent skill systems.
+
 ## Shared evidence taxonomy
 
 Repository-grounded conclusions use these labels when material:
@@ -33,6 +39,8 @@ Repository-grounded conclusions use these labels when material:
 ## Freshness rule
 
 Before trusting a prior audit, bug report, issue, or design-time observation, resolve the current target branch/SHA and inspect relevant open PRs, issues, and recent commits. Historical findings are context, not permanent truth.
+
+When external repository evidence such as GitHub PRs or issues is unavailable, record that limitation and continue from locally available branch/SHA and recent-commit evidence. Missing optional integrations must reduce confidence, not make ordinary repository-grounded work impossible.
 
 ## Protected invariants
 
@@ -48,6 +56,14 @@ Infrastructure, UX, performance, refactor, observability, security, and release 
 - production execution policy.
 
 A required change to these boundaries is explicitly routed through `strategy-score-lifecycle` and, for promotion/evidence claims, `scientific-backtest-validation`.
+
+## Stop and escalation conditions
+
+- Stop before changing a protected invariant unless that model/policy change is separately authorized and routed to the owning strategy/scientific skills.
+- Stop before any live-order implementation or enablement. The current skill system has no authority to design, authorize, implement, or enable live order placement.
+- Escalate production-readiness declarations to `release-production-certification`; other skills may report evidence and non-production readiness only.
+- Record unavailable optional tools or remote evidence explicitly and continue with local evidence when the task remains verifiable locally.
+- Stop rather than guess when required source-of-truth files, artifact identity, or a safety-critical prerequisite cannot be established.
 
 ## Routing examples
 
@@ -70,6 +86,12 @@ A required change to these boundaries is explicitly routed through `strategy-sco
 ### Production incident
 
 `engineering-orchestrator` → `observability-incident-response` → indicated runtime/backend/frontend specialist → `verification-regression` → `release-production-certification`.
+
+## Correct invocation and failure examples
+
+Correct: a dashboard ranking mismatch that may involve payload semantics routes through the orchestrator, API contract guardian, frontend specialist, and regression verification without copying ranking logic into React.
+
+Failure: accepting an old issue as current truth without resolving the present SHA, silently changing a ScoreV2 threshold during UI work, treating unavailable evidence as failed evidence, or calling CI success equivalent to production verification.
 
 ## Readiness ownership
 
@@ -95,6 +117,10 @@ Unavailable plugins must not block core repository work.
 
 See `tests/README.md` and `tests/scenarios.md`. Every skill is pressure-tested RED/GREEN with a fresh conversation/context in addition to repository-local static validation.
 
+Post-review clarifications to the original design/implementation-plan snapshots are recorded in `docs/superpowers/2026-08-27-wfh-skill-system-review-errata.md`.
+
 ## Safety boundary
 
-This skill system does not by itself authorize live-order execution, model-threshold changes, Telegram delivery-policy changes, production migrations, merges, or deployments. Those actions require the user request plus the relevant specialist/release gates.
+Under the current repository policy, this skill system must not authorize, design, implement, or enable live order placement. A user request alone is not sufficient. Any future execution capability first requires a separately reviewed safety design and an explicit repository-policy change; only after those changes exist may ordinary release gates apply.
+
+The skill system also does not silently authorize model-threshold changes, Telegram delivery-policy changes, production migrations, merges, or deployments; those require the relevant explicit request, domain ownership, and release gates.

@@ -20,7 +20,8 @@ Do not use as a substitute for a specialist's domain analysis.
 At the start of repository-grounded work:
 
 - resolve repository, target branch, current `main` SHA, and working branch;
-- inspect relevant open PRs/issues and recent commits;
+- inspect relevant open PRs/issues and recent commits when that external repository evidence is available;
+- if remote PR/issue evidence is unavailable, record the limitation and continue from local branch/SHA and recent-commit evidence;
 - identify source-of-truth files and runtime boundaries;
 - classify material claims as `VERIFIED_FACT`, `REPRODUCED_DEFECT`, `INFERENCE`, `DEBT`, or `PROPOSAL`;
 - declare protected invariants and expected blast radius.
@@ -34,7 +35,7 @@ Current repository policy is observational and does not place orders. Live order
 ## Workflow
 
 1. Restate the concrete outcome and classify it as explanatory, code-affecting, model-affecting, policy-affecting, or production-affecting.
-2. Re-check current repository state before accepting any older audit or issue as current truth.
+2. Re-check current repository state before accepting any older audit or issue as current truth; record any unavailable remote evidence rather than inventing it.
 3. Build a task map and select only necessary specialists.
 4. Assign one primary owner for each file or semantic boundary; sequence overlapping work instead of allowing conflicting edits.
 5. Route model/eligibility changes to `strategy-score-lifecycle`; route promotion claims to `scientific-backtest-validation` too.
@@ -46,11 +47,11 @@ Current repository policy is observational and does not place orders. Live order
 
 Use only these non-production readiness states: `NOT_READY`, `ANALYSIS_COMPLETE`, `CODE_READY`, `MERGE_READY`.
 
-Production readiness belongs exclusively to `release-production-certification`. Never infer it from local tests or a stale CI run.
+The orchestrator aggregates and reports readiness evidence but does not declare `DEPLOY_READY`, `DEPLOYED_UNVERIFIED`, or `PRODUCTION_VERIFIED`. Those states belong exclusively to `release-production-certification`.
 
 ## Verification
 
-Confirm that current SHA was resolved, relevant PRs/issues were checked, each changed file has a primary owner, protected invariants were either preserved or explicitly escalated, exact changed artifacts were verified, and final claims distinguish repository state from production state.
+Confirm that current SHA was resolved, remote repository evidence was either checked or explicitly recorded as unavailable, each changed file has a primary owner, protected invariants were either preserved or explicitly escalated, exact changed artifacts were verified, and final claims distinguish repository state from production state.
 
 ## Handoffs
 
@@ -69,6 +70,7 @@ Confirm that current SHA was resolved, relevant PRs/issues were checked, each ch
 ## Common Mistakes
 
 - Trusting an old audit without checking current `main`.
+- Treating unavailable remote evidence as permission to guess.
 - Treating all requested cleanup as in-scope.
 - Allowing two specialists to independently change the same semantic boundary.
 - Hiding a threshold/model change inside a UI, reliability, or refactor task.

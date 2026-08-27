@@ -1,10 +1,17 @@
 import re
 from pathlib import Path
 
-from scripts.validate_wfh_skills import EXPECTED_SKILLS, validate
+from scripts.validate_wfh_skills import EXPECTED_SKILLS, _parse_frontmatter, validate
 
 ROOT = Path(__file__).resolve().parents[2]
 SKILL_ROOT = ROOT / "skills" / "waterfallhunter"
+ADAPTER_ROOT = ROOT / ".agents" / "skills"
+PRODUCTION_STATES = ("DEPLOY_READY", "DEPLOYED_UNVERIFIED", "PRODUCTION_VERIFIED")
+AUTHORIZATION_RE = re.compile(
+    r"\b(?:may|can|shall|is authorized to|has authority to)\s+"
+    r"(?:declare|certify|set|grant)\b",
+    re.IGNORECASE,
+)
 
 
 def _skill_text(name: str) -> str:
@@ -40,19 +47,37 @@ def test_skill_tree_passes_static_validation() -> None:
     assert validate(ROOT) == []
 
 
+def test_discovery_adapters_delegate_to_canonical_skills() -> None:
+    for name in EXPECTED_SKILLS:
+        text = (ADAPTER_ROOT / name / "SKILL.md").read_text(encoding="utf-8")
+        assert "../../../skills/waterfallhunter/README.md" in text
+        assert f"../../../skills/waterfallhunter/{name}/SKILL.md" in text
+        assert "contains no independent workflow" in text
+
+
+def test_malformed_frontmatter_is_rejected() -> None:
+    text = '---\nname: broken\ndescription: "Use when broken\n---\n# Broken\n'
+    _, errors = _parse_frontmatter(text, Path("broken/SKILL.md"))
+    assert any("quoted frontmatter values are not supported" in error for error in errors)
+
+
 def test_cross_skill_authority_and_handoffs() -> None:
     texts = {name: _skill_text(name) for name in EXPECTED_SKILLS}
     release = texts["release-production-certification"]
 
-    for state in ("DEPLOY_READY", "DEPLOYED_UNVERIFIED", "PRODUCTION_VERIFIED"):
+    for state in PRODUCTION_STATES:
         assert state in release
     assert "sole authority" in release.lower()
 
     for name, text in texts.items():
         if name == "release-production-certification":
             continue
-        assert "this skill is the sole authority" not in text.lower()
-        assert "this skill may declare" not in text.lower()
+        for state in PRODUCTION_STATES:
+            for match in re.finditer(re.escape(state), text):
+                window = text[max(0, match.start() - 180) : match.end() + 40]
+                assert AUTHORIZATION_RE.search(window) is None, (
+                    f"{name}: grants production-state authority near {state}: {window!r}"
+                )
 
     assert "scientific-backtest-validation" in texts["strategy-score-lifecycle"]
     assert "api-contract-schema-guardian" in texts["frontend-dashboard-ux"]
@@ -67,7 +92,7 @@ def test_skills_do_not_authorize_live_execution() -> None:
         text = _skill_text(name)
         lowered = text.lower()
         assert "LIVE_TRADING_ENABLED=true" not in text
-        assert "authorize order placement" not in lowered
+        assert "Live order placement is outside this skill system" in text
         assert "may place live orders" not in lowered
         assert "place live orders" not in lowered
 
