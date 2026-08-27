@@ -66,3 +66,82 @@ def test_decision_events_are_immutable(tmp_path) -> None:
             pass
         else:
             raise AssertionError("entry decision events must be immutable")
+
+
+def test_latest_transition_uses_append_order_when_clock_moves_backward(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    store.append_if_changed("SXT/USDT:USDT", packet("ENTRY_READY", 84.0, 200))
+    late_id = store.append_if_changed("SXT/USDT:USDT", packet("LATE", 80.0, 100))
+    assert late_id is not None
+
+    latest = store.latest_for_symbol("SXT/USDT:USDT")
+    assert latest is not None
+    assert latest["decision"] == "LATE"
+
+    duplicate = store.append_if_changed("SXT/USDT:USDT", packet("LATE", 79.0, 150))
+    assert duplicate is None
+    history = store.history_for_symbol("SXT/USDT:USDT", limit=10)
+    assert [row["decision"] for row in history] == ["LATE", "ENTRY_READY"]
+
+
+def test_latest_for_symbol_includes_latest_durable_advisory(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    event_id = store.append_if_changed(
+        "SXT/USDT:USDT",
+        packet("ENTRY_READY", 84.0, 100),
+    )
+    assert event_id is not None
+    store.append_advisory(
+        event_id,
+        {
+            "observational_only": True,
+            "decision_mutated": False,
+            "ai_advice": "SHORT",
+            "ai_confidence": 81,
+            "ai_reasoning": "Evidence agrees.",
+            "ai_provider": "gemini",
+            "ai_model": "gemini-test",
+            "ai_status": "AVAILABLE",
+        },
+        advisory_at=110,
+    )
+
+    latest = EntryDecisionStore(db_path).latest_for_symbol("SXT/USDT:USDT")
+    assert latest is not None
+    assert latest["event_id"] == event_id
+    assert latest["ai_advisory"]["ai_advice"] == "SHORT"
+
+
+def test_advisory_is_append_only_and_survives_store_restart(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    decision_event_id = store.append_if_changed(
+        "SXT/USDT:USDT",
+        packet("ENTRY_READY", 84.0, 100),
+    )
+    assert decision_event_id is not None
+
+    advisory_event_id = store.append_advisory(
+        decision_event_id,
+        {
+            "observational_only": True,
+            "decision_mutated": False,
+            "ai_advice": "SHORT",
+            "ai_confidence": 81,
+            "ai_reasoning": "Derivatives and sell flow agree.",
+            "ai_provider": "gemini",
+            "ai_model": "gemini-test",
+            "ai_status": "AVAILABLE",
+        },
+        advisory_at=110,
+    )
+
+    restarted = EntryDecisionStore(db_path)
+    history = restarted.history_for_symbol("SXT/USDT:USDT", limit=10)
+    assert advisory_event_id > 0
+    assert history[0]["decision"] == "ENTRY_READY"
+    assert history[0]["ai_advisory"]["ai_advice"] == "SHORT"
+    assert history[0]["ai_advisory"]["ai_model"] == "gemini-test"
+    assert history[0]["ai_advisory"]["advisory_at"] == 110

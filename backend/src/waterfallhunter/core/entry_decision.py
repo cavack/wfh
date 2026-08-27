@@ -84,44 +84,62 @@ def _timing_points(metrics: dict[str, Any]) -> tuple[float, float, list[str]]:
     return score, available, ["TIMING_CONFIRMED" if score >= 10.0 else "TIMING_INCOMPLETE"]
 
 
+def _taker_ratio_points(taker_ratio: float | None) -> tuple[float, float]:
+    if taker_ratio is None:
+        return 0.0, 0.0
+    if taker_ratio <= 0.8:
+        score = 10.0
+    elif taker_ratio <= 0.9:
+        score = 8.0
+    elif taker_ratio < 1.0:
+        score = 6.0
+    elif taker_ratio <= 1.1:
+        score = 3.0
+    else:
+        score = 0.0
+    return score, 10.0
+
+
+def _flow_imbalance_points(
+    sell_flow: float | None, buy_flow: float | None
+) -> tuple[float, float]:
+    if sell_flow is None or buy_flow is None:
+        return 0.0, 0.0
+    total = sell_flow + buy_flow
+    score = _ramp(sell_flow / total, 0.5, 0.75, 5.0) if total > 0 else 0.0
+    return score, 5.0
+
+
+def _footprint_points(footprint: dict[str, Any]) -> tuple[float, float]:
+    aggressive = footprint.get("aggressive_selling")
+    if not isinstance(aggressive, bool):
+        return 0.0, 0.0
+    score = 3.0 if footprint.get("available") is True and aggressive is True else 0.0
+    return score, 3.0
+
+
+def _micro_approval_points(micro: dict[str, Any]) -> tuple[float, float]:
+    approved = micro.get("approved")
+    if not isinstance(approved, bool):
+        return 0.0, 0.0
+    score = 2.0 if approved is True and micro.get("spoofing_detected") is not True else 0.0
+    return score, 2.0
+
+
 def _order_flow_points(metrics: dict[str, Any]) -> tuple[float, float, list[str], bool]:
     micro = _record(metrics.get("microstructure"))
     derivatives = _record(metrics.get("derivatives"))
     taker_ratio = _finite(derivatives.get("taker_buy_sell_ratio"))
     sell_flow = _finite(micro.get("sell_flow_usdt"))
     buy_flow = _finite(micro.get("buy_flow_usdt"))
-    footprint = _record(micro.get("footprint"))
-    available = 0.0
-    score = 0.0
-
-    if taker_ratio is not None:
-        available += 10.0
-        if taker_ratio <= 0.8:
-            score += 10.0
-        elif taker_ratio <= 0.9:
-            score += 8.0
-        elif taker_ratio < 1.0:
-            score += 6.0
-        elif taker_ratio <= 1.1:
-            score += 3.0
-
-    if sell_flow is not None and buy_flow is not None:
-        available += 5.0
-        total = sell_flow + buy_flow
-        if total > 0:
-            sell_share = sell_flow / total
-            score += _ramp(sell_share, 0.5, 0.75, 5.0)
-
-    if isinstance(footprint.get("aggressive_selling"), bool):
-        available += 3.0
-        if footprint.get("available") is True and footprint.get("aggressive_selling") is True:
-            score += 3.0
-
-    if isinstance(micro.get("approved"), bool):
-        available += 2.0
-        if micro.get("approved") is True and micro.get("spoofing_detected") is not True:
-            score += 2.0
-
+    point_pairs = (
+        _taker_ratio_points(taker_ratio),
+        _flow_imbalance_points(sell_flow, buy_flow),
+        _footprint_points(_record(micro.get("footprint"))),
+        _micro_approval_points(micro),
+    )
+    score = sum(pair[0] for pair in point_pairs)
+    available = sum(pair[1] for pair in point_pairs)
     direction_ok = bool(
         (taker_ratio is not None and taker_ratio < 1.0)
         or (sell_flow is not None and buy_flow is not None and sell_flow > buy_flow)
@@ -129,50 +147,55 @@ def _order_flow_points(metrics: dict[str, Any]) -> tuple[float, float, list[str]
     reason = "SELL_PRESSURE_CONFIRMED" if direction_ok else "BUYERS_ACTIVE"
     return score, available, [reason], direction_ok
 
-def _derivative_points(metrics: dict[str, Any]) -> tuple[float, float, list[str]]:
-    derivatives = _record(metrics.get("derivatives"))
-    if derivatives.get("available") is not True:
-        return 0.0, 0.0, ["DERIVATIVES_UNAVAILABLE"]
+def _funding_points(funding: float | None) -> tuple[float, float]:
+    if funding is None:
+        return 0.0, 0.0
+    return (min(2.0, _ramp(funding, 0.0, 0.0005, 2.0)) if funding > 0 else 0.0), 2.0
 
-    score = 0.0
-    available = 0.0
-    funding = _finite(derivatives.get("funding_rate"))
-    funding_percentile = _finite(derivatives.get("funding_percentile"))
-    oi_change = _finite(derivatives.get("oi_change_1h_pct"))
-    taker_change = _finite(derivatives.get("taker_ratio_change_1h"))
-    top_ratio = _finite(derivatives.get("top_trader_long_short_ratio"))
-    taker_ratio = _finite(derivatives.get("taker_buy_sell_ratio"))
 
-    if funding is not None:
-        available += 2.0
-        if funding > 0:
-            score += min(2.0, _ramp(funding, 0.0, 0.0005, 2.0))
+def _funding_percentile_points(value: float | None) -> tuple[float, float]:
+    if value is None:
+        return 0.0, 0.0
+    return _ramp(value, 0.5, 0.95, 4.0), 4.0
 
-    if funding_percentile is not None:
-        available += 4.0
-        score += _ramp(funding_percentile, 0.5, 0.95, 4.0)
 
-    if oi_change is not None:
-        available += 4.0
-        if oi_change >= 0.5:
-            score += 4.0
-        elif oi_change > 0:
-            score += 3.0
-        elif oi_change >= -0.25:
-            score += 2.0
-        elif oi_change >= -0.5:
-            score += 1.0
+def _oi_points(value: float | None) -> tuple[float, float]:
+    if value is None:
+        return 0.0, 0.0
+    if value >= 0.5:
+        score = 4.0
+    elif value > 0:
+        score = 3.0
+    elif value >= -0.25:
+        score = 2.0
+    elif value >= -0.5:
+        score = 1.0
+    else:
+        score = 0.0
+    return score, 4.0
 
-    if top_ratio is not None:
-        available += 3.0
-        if taker_ratio is None or taker_ratio <= 1.5:
-            score += _ramp(top_ratio, 1.2, 2.0, 3.0)
 
-    if taker_change is not None:
-        available += 2.0
-        if taker_ratio is not None and taker_ratio < 1.0 and taker_change < 0:
-            score += _ramp(abs(taker_change), 0.1, 0.4, 2.0)
+def _top_ratio_points(top_ratio: float | None, taker_ratio: float | None) -> tuple[float, float]:
+    if top_ratio is None:
+        return 0.0, 0.0
+    score = _ramp(top_ratio, 1.2, 2.0, 3.0) if taker_ratio is None or taker_ratio <= 1.5 else 0.0
+    return score, 3.0
 
+
+def _taker_change_points(taker_change: float | None, taker_ratio: float | None) -> tuple[float, float]:
+    if taker_change is None:
+        return 0.0, 0.0
+    score = (
+        _ramp(abs(taker_change), 0.1, 0.4, 2.0)
+        if taker_ratio is not None and taker_ratio < 1.0 and taker_change < 0
+        else 0.0
+    )
+    return score, 2.0
+
+
+def _derivative_reasons(
+    *, funding: float | None, oi_change: float | None, top_ratio: float | None
+) -> list[str]:
     reasons: list[str] = []
     if top_ratio is not None and top_ratio >= 1.5:
         reasons.append("LONG_CROWDING_PRESENT")
@@ -180,7 +203,56 @@ def _derivative_points(metrics: dict[str, Any]) -> tuple[float, float, list[str]
         reasons.append("SHORT_SQUEEZE_RISK")
     if oi_change is not None and oi_change <= -0.5:
         reasons.append("OI_UNWINDING")
-    return score, available, reasons
+    return reasons
+
+
+def _derivative_points(metrics: dict[str, Any]) -> tuple[float, float, list[str]]:
+    derivatives = _record(metrics.get("derivatives"))
+    if derivatives.get("available") is not True:
+        return 0.0, 0.0, ["DERIVATIVES_UNAVAILABLE"]
+    funding = _finite(derivatives.get("funding_rate"))
+    funding_percentile = _finite(derivatives.get("funding_percentile"))
+    oi_change = _finite(derivatives.get("oi_change_1h_pct"))
+    taker_change = _finite(derivatives.get("taker_ratio_change_1h"))
+    top_ratio = _finite(derivatives.get("top_trader_long_short_ratio"))
+    taker_ratio = _finite(derivatives.get("taker_buy_sell_ratio"))
+    point_pairs = (
+        _funding_points(funding),
+        _funding_percentile_points(funding_percentile),
+        _oi_points(oi_change),
+        _top_ratio_points(top_ratio, taker_ratio),
+        _taker_change_points(taker_change, taker_ratio),
+    )
+    return (
+        sum(pair[0] for pair in point_pairs),
+        sum(pair[1] for pair in point_pairs),
+        _derivative_reasons(funding=funding, oi_change=oi_change, top_ratio=top_ratio),
+    )
+
+def _execution_approval_points(micro: dict[str, Any]) -> tuple[float, float]:
+    approved = micro.get("approved")
+    if not isinstance(approved, bool):
+        return 0.0, 0.0
+    return (4.0 if approved and micro.get("spoofing_detected") is not True else 0.0), 4.0
+
+
+def _execution_friction_points(value: float | None, maximum: float) -> tuple[float, float]:
+    if value is None:
+        return 0.0, 0.0
+    if value <= 0.10:
+        score = 2.0
+    elif value <= maximum:
+        score = 1.0
+    else:
+        score = 0.0
+    return score, 2.0
+
+
+def _execution_depth_points(bid_depth: float | None, ask_depth: float | None) -> tuple[float, float]:
+    if bid_depth is None or ask_depth is None:
+        return 0.0, 0.0
+    return (2.0 if bid_depth > 0 and ask_depth > 0 else 0.0), 2.0
+
 
 def _execution_points(metrics: dict[str, Any], policy: EntryDecisionPolicy) -> tuple[float, float, list[str], bool]:
     micro = _record(metrics.get("microstructure"))
@@ -189,30 +261,12 @@ def _execution_points(metrics: dict[str, Any], policy: EntryDecisionPolicy) -> t
     slippage = _finite(micro.get("slippage_pct"))
     bid_depth = _finite(micro.get("bid_depth_usdt"))
     ask_depth = _finite(micro.get("ask_depth_usdt"))
-    available = 0.0
-    score = 0.0
-
-    if isinstance(approved, bool):
-        available += 4.0
-        if approved and micro.get("spoofing_detected") is not True:
-            score += 4.0
-    if spread is not None:
-        available += 2.0
-        if spread <= 0.10:
-            score += 2.0
-        elif spread <= policy.maximum_spread_pct:
-            score += 1.0
-    if slippage is not None:
-        available += 2.0
-        if slippage <= 0.10:
-            score += 2.0
-        elif slippage <= policy.maximum_slippage_pct:
-            score += 1.0
-    if bid_depth is not None and ask_depth is not None:
-        available += 2.0
-        if bid_depth > 0 and ask_depth > 0:
-            score += 2.0
-
+    point_pairs = (
+        _execution_approval_points(micro),
+        _execution_friction_points(spread, policy.maximum_spread_pct),
+        _execution_friction_points(slippage, policy.maximum_slippage_pct),
+        _execution_depth_points(bid_depth, ask_depth),
+    )
     execution_ok = bool(
         approved is True
         and spread is not None
@@ -220,7 +274,8 @@ def _execution_points(metrics: dict[str, Any], policy: EntryDecisionPolicy) -> t
         and spread <= policy.maximum_spread_pct
         and slippage <= policy.maximum_slippage_pct
     )
-    return score, available, ["EXECUTION_OK" if execution_ok else "EXECUTION_DEGRADED"], execution_ok
+    reason = "EXECUTION_OK" if execution_ok else "EXECUTION_DEGRADED"
+    return sum(pair[0] for pair in point_pairs), sum(pair[1] for pair in point_pairs), [reason], execution_ok
 
 def _cross_exchange_points(metrics: dict[str, Any]) -> tuple[float, float, list[str], bool]:
     breakdown = _record(metrics.get("breakdown_confirmation"))
@@ -241,10 +296,12 @@ def _price_location_points(metrics: dict[str, Any]) -> tuple[float, float, list[
 def _cascade_points(metrics: dict[str, Any]) -> tuple[float, float, list[str]]:
     cascade = _record(metrics.get("cascade_intelligence"))
     points = _finite(cascade.get("readiness_points"))
-    if points is None:
-        return 0.0, 0.0, ["CASCADE_EVIDENCE_UNAVAILABLE"]
+    maximum = _finite(cascade.get("maximum_available"))
     status = str(cascade.get("status") or "UNAVAILABLE")
-    return _clamp(points, 0.0, 10.0), 10.0, [f"CASCADE_{status}"]
+    if points is None or maximum is None or maximum <= 0.0 or status == "UNAVAILABLE":
+        return 0.0, 0.0, ["CASCADE_EVIDENCE_UNAVAILABLE"]
+    available = _clamp(maximum, 0.0, 10.0)
+    return _clamp(points, 0.0, available), available, [f"CASCADE_{status}"]
 
 
 def _trade_plan(metrics: dict[str, Any]) -> dict[str, Any] | None:
@@ -254,7 +311,7 @@ def _trade_plan(metrics: dict[str, Any]) -> dict[str, Any] | None:
         return None
     if not all(_has_number(setup, key) for key in required):
         return None
-    return {
+    plan = {
         "entry_price": float(setup["entry_price"]),
         "stop_loss": float(setup["stop_loss"]),
         "take_profit_1": float(setup["take_profit_1"]),
@@ -263,11 +320,25 @@ def _trade_plan(metrics: dict[str, Any]) -> dict[str, Any] | None:
         "reward_to_risk": _finite(setup.get("reward_to_risk")),
         "leverage": _finite(metrics.get("applied_leverage")),
     }
+    expires_at = setup.get("expires_at")
+    if isinstance(expires_at, int) and not isinstance(expires_at, bool) and expires_at >= 0:
+        plan["expires_at"] = expires_at
+    return plan
 
 def _anti_chase_extension(metrics: dict[str, Any]) -> float | None:
     anti = _record(metrics.get("anti_chase"))
     cross = _record(anti.get("cross_timeframe"))
-    return _finite(cross.get("max_post_break_extension_atr"))
+    direct = _finite(cross.get("max_post_break_extension_atr"))
+    if direct is not None:
+        return direct
+    candles = _record(metrics.get("candle_features"))
+    extensions = [
+        value
+        for packet in candles.values()
+        if isinstance(packet, dict)
+        and (value := _finite(packet.get("extension_from_support_atr"))) is not None
+    ]
+    return max(extensions) if extensions else None
 
 
 def _evidence_summary(metrics: dict[str, Any]) -> dict[str, Any]:
@@ -318,6 +389,182 @@ def _evidence_summary(metrics: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def build_expired_entry_decision(
+    previous_decision: dict[str, Any],
+    *,
+    evaluated_at: int,
+) -> dict[str, Any] | None:
+    """Return a durable EXPIRED transition only for an explicit plan expiry."""
+    if isinstance(evaluated_at, bool) or not isinstance(evaluated_at, int) or evaluated_at < 0:
+        raise ValueError("evaluated_at must be a non-negative integer")
+    previous = _record(previous_decision)
+    if str(previous.get("decision") or "") not in {"ENTRY_READY", "ACTIVE"}:
+        return None
+    plan = _record(previous.get("trade_plan"))
+    expires_at = plan.get("expires_at")
+    if (
+        isinstance(expires_at, bool)
+        or not isinstance(expires_at, int)
+        or expires_at < 0
+        or evaluated_at < expires_at
+    ):
+        return None
+
+    packet = dict(previous)
+    for transient in (
+        "event_id",
+        "event_at",
+        "symbol",
+        "previous_decision",
+        "ai_advisory",
+        "event_persisted",
+    ):
+        packet.pop(transient, None)
+    packet["evaluated_at"] = evaluated_at
+    packet["decision"] = "EXPIRED"
+    packet["hard_blocked"] = True
+    packet["block_reasons"] = ["TRADE_PLAN_EXPIRED"]
+    packet["trade_plan"] = dict(plan)
+    return packet
+
+
+def _initial_block_reasons(
+    metrics: dict[str, Any],
+    status: str,
+    *,
+    analysis_age_seconds: float | None,
+    reference_age_seconds: float | None,
+    policy: EntryDecisionPolicy,
+) -> tuple[list[str], bool]:
+    reasons: list[str] = []
+    analysis_age = _finite(analysis_age_seconds)
+    reference_age = _finite(reference_age_seconds)
+    if analysis_age is None or analysis_age > policy.max_analysis_age_seconds:
+        reasons.append("STALE_ANALYSIS")
+    if reference_age is None or reference_age > policy.max_reference_age_seconds:
+        reasons.append("STALE_REFERENCE")
+    if status == "INVALIDATED":
+        reasons.append("STRUCTURE_INVALIDATED")
+    if _record(metrics.get("ai_advisory")).get("deterministic_veto") is True:
+        reasons.append("DETERMINISTIC_MARKET_DATA_VETO")
+    extension = _anti_chase_extension(metrics)
+    late = status == "EXHAUSTED" or (
+        extension is not None and extension >= policy.anti_chase_hard_block_atr
+    )
+    if late:
+        reasons.append("ANTI_CHASE_HARD_BLOCK")
+    return reasons, late
+
+
+def _record_component(
+    components: dict[str, dict[str, float]],
+    name: str,
+    points: float,
+    maximum: float,
+) -> None:
+    components[name] = {"points": round(points, 2), "maximum": maximum}
+
+
+def _score_entry_components(
+    metrics: dict[str, Any], policy: EntryDecisionPolicy
+) -> tuple[dict[str, dict[str, float]], float, float, list[str], bool, float, bool, bool]:
+    components: dict[str, dict[str, float]] = {}
+    reasons: list[str] = []
+    total_points = 0.0
+    available_weight = 0.0
+
+    structure, maximum, component_reasons = _structure_points(metrics)
+    _record_component(components, "structure", structure, maximum)
+    total_points += structure; available_weight += maximum; reasons.extend(component_reasons)
+
+    timing, maximum, component_reasons = _timing_points(metrics)
+    _record_component(components, "timing", timing, maximum)
+    total_points += timing; available_weight += maximum; reasons.extend(component_reasons)
+
+    order_flow, maximum, component_reasons, direction_ok = _order_flow_points(metrics)
+    _record_component(components, "order_flow", order_flow, maximum)
+    total_points += order_flow; available_weight += maximum; reasons.extend(component_reasons)
+
+    derivatives, maximum, component_reasons = _derivative_points(metrics)
+    _record_component(components, "derivatives", derivatives, maximum)
+    total_points += derivatives; available_weight += maximum; reasons.extend(component_reasons)
+
+    execution, maximum, component_reasons, execution_ok = _execution_points(metrics, policy)
+    _record_component(components, "execution", execution, maximum)
+    total_points += execution; available_weight += maximum; reasons.extend(component_reasons)
+
+    cross, maximum, component_reasons, cross_ok = _cross_exchange_points(metrics)
+    _record_component(components, "cross_exchange", cross, maximum)
+    total_points += cross; available_weight += maximum; reasons.extend(component_reasons)
+
+    location, maximum, component_reasons = _price_location_points(metrics)
+    _record_component(components, "price_location", location, maximum)
+    total_points += location; available_weight += maximum; reasons.extend(component_reasons)
+
+    cascade, maximum, component_reasons = _cascade_points(metrics)
+    _record_component(components, "cascade", cascade, maximum)
+    total_points += cascade; available_weight += maximum; reasons.extend(component_reasons)
+    return components, total_points, available_weight, reasons, direction_ok, timing, execution_ok, cross_ok
+
+
+def _base_decision(
+    *,
+    block_reasons: list[str],
+    late: bool,
+    status: str,
+    readiness: float,
+    coverage_pct: float,
+    direction_ok: bool,
+    timing_ok: bool,
+    execution_ok: bool,
+    cross_ok: bool,
+    trade_plan_ok: bool,
+    policy: EntryDecisionPolicy,
+) -> str:
+    if block_reasons:
+        if late and "STRUCTURE_INVALIDATED" not in block_reasons:
+            return "LATE"
+        if "STRUCTURE_INVALIDATED" in block_reasons:
+            return "INVALIDATED"
+        return "NO_TRADE"
+    gates_pass = (
+        readiness >= policy.entry_ready_minimum
+        and coverage_pct >= 65.0
+        and direction_ok and timing_ok and execution_ok and cross_ok and trade_plan_ok
+    )
+    if gates_pass:
+        return "ACTIVE" if status == "TRIGGERED" else "ENTRY_READY"
+    return "FORMING" if readiness >= policy.forming_minimum else "NO_TRADE"
+
+
+def _apply_previous_transition(
+    previous_decision: dict[str, Any] | None,
+    *,
+    evaluated_at: int,
+    decision: str,
+    block_reasons: list[str],
+) -> tuple[str, list[str]]:
+    previous = _record(previous_decision)
+    previous_state = str(previous.get("decision") or "")
+    if previous_state not in {"ENTRY_READY", "ACTIVE"}:
+        return decision, block_reasons
+    previous_expiry = _record(previous.get("trade_plan")).get("expires_at")
+    if (
+        isinstance(previous_expiry, int)
+        and not isinstance(previous_expiry, bool)
+        and evaluated_at >= previous_expiry
+    ):
+        return "EXPIRED", ["TRADE_PLAN_EXPIRED"]
+    valid = (
+        decision in {"LATE", "INVALIDATED", "EXPIRED"}
+        or (previous_state == "ENTRY_READY" and decision in {"ENTRY_READY", "ACTIVE"})
+        or (previous_state == "ACTIVE" and decision == "ACTIVE")
+    )
+    if valid:
+        return decision, block_reasons
+    return "INVALIDATED", [*block_reasons, "ENTRY_CONDITIONS_LOST"]
+
+
 def build_entry_decision(
     metrics: dict[str, Any],
     candidate_status: str,
@@ -326,113 +573,52 @@ def build_entry_decision(
     analysis_age_seconds: float | None,
     reference_age_seconds: float | None,
     policy: EntryDecisionPolicy | None = None,
+    previous_decision: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     policy = policy or EntryDecisionPolicy()
-    reasons: list[str] = []
-    block_reasons: list[str] = []
     status = str(candidate_status or "WATCH").upper()
-
-    analysis_age = _finite(analysis_age_seconds)
-    reference_age = _finite(reference_age_seconds)
-    if analysis_age is None or analysis_age > policy.max_analysis_age_seconds:
-        block_reasons.append("STALE_ANALYSIS")
-    if reference_age is None or reference_age > policy.max_reference_age_seconds:
-        block_reasons.append("STALE_REFERENCE")
-
-    if status == "INVALIDATED":
-        block_reasons.append("STRUCTURE_INVALIDATED")
-
-    advisory = _record(metrics.get("ai_advisory"))
-    if advisory.get("deterministic_veto") is True:
-        block_reasons.append("DETERMINISTIC_MARKET_DATA_VETO")
-
-    extension = _anti_chase_extension(metrics)
-    late = bool(
-        status == "EXHAUSTED"
-        or (extension is not None and extension >= policy.anti_chase_hard_block_atr)
+    block_reasons, late = _initial_block_reasons(
+        metrics, status, analysis_age_seconds=analysis_age_seconds,
+        reference_age_seconds=reference_age_seconds, policy=policy,
     )
-    if late:
-        block_reasons.append("ANTI_CHASE_HARD_BLOCK")
+    (
+        components, total_points, available_weight, reasons, direction_ok, timing,
+        execution_ok, cross_ok,
+    ) = _score_entry_components(metrics, policy)
 
-    components: dict[str, dict[str, float]] = {}
-    total_points = 0.0
-    available_weight = 0.0
-
-    structure, maximum, component_reasons = _structure_points(metrics)
-    components["structure"] = {"points": round(structure, 2), "maximum": maximum}
-    total_points += structure
-    available_weight += maximum
-    reasons.extend(component_reasons)
-
-    timing, maximum, component_reasons = _timing_points(metrics)
-    components["timing"] = {"points": round(timing, 2), "maximum": maximum}
-    total_points += timing
-    available_weight += maximum
-    reasons.extend(component_reasons)
-
-    order_flow, maximum, component_reasons, direction_ok = _order_flow_points(metrics)
-    components["order_flow"] = {"points": round(order_flow, 2), "maximum": maximum}
-    total_points += order_flow
-    available_weight += maximum
-    reasons.extend(component_reasons)
-
-    derivatives, maximum, component_reasons = _derivative_points(metrics)
-    components["derivatives"] = {"points": round(derivatives, 2), "maximum": maximum}
-    total_points += derivatives
-    available_weight += maximum
-    reasons.extend(component_reasons)
-
-    execution, maximum, component_reasons, execution_ok = _execution_points(metrics, policy)
-    components["execution"] = {"points": round(execution, 2), "maximum": maximum}
-    total_points += execution
-    available_weight += maximum
-    reasons.extend(component_reasons)
-
-    cross, maximum, component_reasons, cross_ok = _cross_exchange_points(metrics)
-    components["cross_exchange"] = {"points": round(cross, 2), "maximum": maximum}
-    total_points += cross
-    available_weight += maximum
-    reasons.extend(component_reasons)
-
-    location, maximum, component_reasons = _price_location_points(metrics)
-    components["price_location"] = {"points": round(location, 2), "maximum": maximum}
-    total_points += location
-    available_weight += maximum
-    reasons.extend(component_reasons)
-
-    cascade, maximum, component_reasons = _cascade_points(metrics)
-    components["cascade"] = {"points": round(cascade, 2), "maximum": maximum}
-    total_points += cascade
-    available_weight += maximum
-    reasons.extend(component_reasons)
+    execution_packet = _record(metrics.get("microstructure"))
+    execution_inputs_available = bool(
+        isinstance(execution_packet.get("approved"), bool)
+        and _finite(execution_packet.get("spread_pct")) is not None
+        and _finite(execution_packet.get("slippage_pct")) is not None
+    )
+    if not execution_inputs_available:
+        block_reasons.append("EXECUTION_UNAVAILABLE")
 
     readiness = round(_clamp(total_points, 0.0, 100.0), 2)
     coverage_pct = round(_clamp(available_weight, 0.0, 100.0), 2)
-    timing_ok = timing >= 10.0
     trade_plan = _trade_plan(metrics)
     trade_plan_ok = trade_plan is not None
     if not trade_plan_ok:
         reasons.append("TRADE_PLAN_UNAVAILABLE")
-
-    if block_reasons:
-        decision = "LATE" if late and "STRUCTURE_INVALIDATED" not in block_reasons else "INVALIDATED" if "STRUCTURE_INVALIDATED" in block_reasons else "NO_TRADE"
     elif (
-        readiness >= policy.entry_ready_minimum
-        and coverage_pct >= 65.0
-        and direction_ok
-        and timing_ok
-        and execution_ok
-        and cross_ok
-        and trade_plan_ok
+        isinstance(trade_plan.get("expires_at"), int)
+        and not isinstance(trade_plan.get("expires_at"), bool)
+        and evaluated_at >= int(trade_plan["expires_at"])
     ):
-        decision = "ACTIVE" if status == "TRIGGERED" else "ENTRY_READY"
-        reasons.append("ENTRY_GATES_PASS")
-    elif readiness >= policy.forming_minimum:
-        decision = "FORMING"
-    else:
-        decision = "NO_TRADE"
+        block_reasons.append("TRADE_PLAN_EXPIRED")
 
-    packet = {
+    decision = _base_decision(
+        block_reasons=block_reasons, late=late, status=status, readiness=readiness,
+        coverage_pct=coverage_pct, direction_ok=direction_ok, timing_ok=timing >= 10.0,
+        execution_ok=execution_ok, cross_ok=cross_ok, trade_plan_ok=trade_plan_ok, policy=policy,
+    )
+    if decision in {"ENTRY_READY", "ACTIVE"} and not block_reasons:
+        reasons.append("ENTRY_GATES_PASS")
+    decision, block_reasons = _apply_previous_transition(
+        previous_decision, evaluated_at=evaluated_at, decision=decision, block_reasons=block_reasons,
+    )
+    return {
         "contract_version": "entry_decision_v1",
         "policy_version": policy.version,
         "evaluated_at": int(evaluated_at),
@@ -448,4 +634,3 @@ def build_entry_decision(
         "trade_plan": trade_plan,
         "policy": asdict(policy),
     }
-    return packet

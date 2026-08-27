@@ -9,13 +9,109 @@ import waterfallhunter.main as main
 from waterfallhunter.core.dashboard_stream import DashboardEventBuffer
 
 
+DECISION_COUNTS = {
+    "ENTRY_READY": 0,
+    "FORMING": 0,
+    "ACTIVE": 0,
+    "LATE": 0,
+    "INVALIDATED": 0,
+    "EXPIRED": 0,
+    "NO_TRADE": 1,
+    "UNAVAILABLE": 0,
+}
+
+DECISION_TERMINAL = {
+    "contract_version": "decision_terminal_v1",
+    "counts": DECISION_COUNTS,
+    "entry_ready": [],
+    "forming": [],
+    "active": [],
+    "late": [],
+    "zero_entry_ready_diagnostics": {
+        "entry_ready_zero": True,
+        "evaluated_candidates": 1,
+        "top_reasons": [],
+    },
+    "recent_changes": [],
+}
+
 PAYLOAD = {
     "total": 1,
     "candidates": {"TEST": {"status": "WATCH"}},
-    "decision_terminal": {"contract_version": "decision_terminal_v1", "counts": {}},
+    "decision_terminal": DECISION_TERMINAL,
     "final_ranking": {"version": "test"},
     "signal_funnel": {"version": "test"},
 }
+
+
+def test_dashboard_snapshot_rejects_partial_decision_terminal() -> None:
+    from pydantic import ValidationError
+    from waterfallhunter.core.dashboard_stream import DashboardSnapshot
+
+    partial = {**PAYLOAD, "decision_terminal": {"contract_version": "decision_terminal_v1", "counts": {"ENTRY_READY": 1}}}
+    try:
+        DashboardSnapshot(
+            contract_version="dashboard_snapshot_v1",
+            schema_version="1.0",
+            snapshot_version=1,
+            generated_at=1.0,
+            state="READY",
+            **partial,
+        )
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("partial decision terminal must be rejected")
+
+
+def test_dashboard_snapshot_rejects_terminal_counts_that_do_not_match_candidates() -> None:
+    from pydantic import ValidationError
+    from waterfallhunter.core.dashboard_stream import DashboardSnapshot
+
+    bad_terminal = {
+        **DECISION_TERMINAL,
+        "counts": {**DECISION_COUNTS, "FORMING": 1},
+        "forming": ["TEST"],
+    }
+    try:
+        DashboardSnapshot(
+            contract_version="dashboard_snapshot_v1",
+            schema_version="1.0",
+            snapshot_version=1,
+            generated_at=1.0,
+            state="READY",
+            **{**PAYLOAD, "decision_terminal": bad_terminal},
+        )
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("terminal counts must reconcile to candidate total")
+
+
+def test_dashboard_snapshot_rejects_terminal_diagnostic_candidate_count_mismatch() -> None:
+    from pydantic import ValidationError
+    from waterfallhunter.core.dashboard_stream import DashboardSnapshot
+
+    bad_terminal = {
+        **DECISION_TERMINAL,
+        "zero_entry_ready_diagnostics": {
+            **DECISION_TERMINAL["zero_entry_ready_diagnostics"],
+            "evaluated_candidates": 2,
+        },
+    }
+    try:
+        DashboardSnapshot(
+            contract_version="dashboard_snapshot_v1",
+            schema_version="1.0",
+            snapshot_version=1,
+            generated_at=1.0,
+            state="READY",
+            **{**PAYLOAD, "decision_terminal": bad_terminal},
+        )
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("terminal diagnostics must reconcile to candidate total")
 
 
 def test_polling_endpoint_returns_a_valid_versioned_no_store_snapshot(monkeypatch) -> None:
@@ -112,7 +208,7 @@ def test_dashboard_snapshot_normalizes_non_finite_numbers_to_unavailable(monkeyp
                 "metrics": {"spread_pct": float("nan")},
             }
         },
-        "decision_terminal": {"version": "test"},
+        "decision_terminal": DECISION_TERMINAL,
         "final_ranking": {"version": "test"},
         "signal_funnel": {"version": "test"},
     }
@@ -139,7 +235,7 @@ def test_polling_snapshot_normalizes_non_finite_numbers_to_unavailable(monkeypat
                 "metrics": {"spread_pct": float("inf")},
             }
         },
-        "decision_terminal": {"version": "test"},
+        "decision_terminal": DECISION_TERMINAL,
         "final_ranking": {"version": "test"},
         "signal_funnel": {"version": "test"},
     }
@@ -172,7 +268,7 @@ def test_periodic_dashboard_broadcast_ignores_derived_age_only_changes(monkeypat
                     "reference_age_seconds": 2.0,
                 }
             },
-            "decision_terminal": {"version": "test"},
+            "decision_terminal": DECISION_TERMINAL,
             "final_ranking": {"version": "test"},
             "signal_funnel": {"version": "test"},
         },
@@ -186,7 +282,7 @@ def test_periodic_dashboard_broadcast_ignores_derived_age_only_changes(monkeypat
                     "reference_age_seconds": 3.0,
                 }
             },
-            "decision_terminal": {"version": "test"},
+            "decision_terminal": DECISION_TERMINAL,
             "final_ranking": {"version": "test"},
             "signal_funnel": {"version": "test"},
         },

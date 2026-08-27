@@ -5,18 +5,19 @@
 - Application checkout: `/srv/waterfallhunter/app`
 - Host-owned environment: `/etc/waterfallhunter/waterfallhunter.env`
 - Runtime/certification state: `/srv/waterfallhunter/runtime`
+- Optional host-owned Compose topology override: `/srv/waterfallhunter/runtime/production-volumes.override.yml`
 - Certified backups: `/srv/waterfallhunter/backups`
 
 ## Runtime
 
-Docker Compose manages backend, frontend, watchdog, Prometheus, Grafana, and Alertmanager. Nginx is the host edge. `waterfallhunter.service` asserts the Compose stack after boot; a timer performs bounded health checks without infinite restart storms.
+Docker Compose manages backend, frontend, watchdog, Prometheus, Grafana, and Alertmanager. Nginx is the host edge. `waterfallhunter.service` calls `scripts/production_compose.sh`, which always uses the canonical project name/environment and includes the host-owned topology override only when that file exists. This preserves adopted external volumes/networks on the current host without making the override mandatory for a fresh host. A timer performs bounded health checks without infinite restart storms.
 
 Useful commands:
 
 ```bash
 systemctl status waterfallhunter.service
 systemctl status waterfallhunter-healthcheck.timer
-docker compose -f /srv/waterfallhunter/app/docker-compose.yml ps
+/srv/waterfallhunter/app/scripts/production_compose.sh ps
 journalctl -u waterfallhunter.service -n 200 --no-pager
 ```
 

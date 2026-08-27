@@ -14,7 +14,7 @@ from waterfallhunter.core.schema_unique_constraints import (
 )
 
 
-CURRENT_RUNTIME_SCHEMA_VERSION = 6
+CURRENT_RUNTIME_SCHEMA_VERSION = 7
 NON_NEGATIVE_INTEGER_CREATED_AT_CHECK = (
     "check(typeof(created_at) = 'integer' and created_at >= 0)"
 )
@@ -790,6 +790,35 @@ _RUNTIME_SCHEMA: dict[str, ManagedTableSpec] = {
         triggers=_immutable(
             "entry_decision_events",
             message="entry decision events are immutable",
+        ),
+    ),
+    "entry_decision_advisories": ManagedTableSpec(
+        name="entry_decision_advisories",
+        columns=(
+            _c("id", "INTEGER", pk=1, autoincrement=True),
+            _c("decision_event_id", "INTEGER", not_null=True),
+            _c("advisory_at", "INTEGER", not_null=True),
+            _c("provider", "TEXT", not_null=True),
+            _c("model", "TEXT", not_null=True),
+            _c("status", "TEXT", not_null=True),
+            _c("advisory_json", "TEXT", not_null=True),
+            _c("advisory_hash", "TEXT", not_null=True),
+            _c("created_at", "INTEGER", not_null=True),
+        ),
+        indexes=(IndexSpec("idx_entry_decision_advisory_event", ("decision_event_id", "id")),),
+        foreign_keys=(ForeignKeySpec("decision_event_id", "entry_decision_events", "id"),),
+        check_fragments=(
+            "check(typeof(advisory_at) = 'integer' and advisory_at >= 0)",
+            "check(typeof(provider) = 'text' and length(provider) > 0)",
+            "check(typeof(model) = 'text' and length(model) > 0)",
+            "check(status in ('AVAILABLE','UNAVAILABLE'))",
+            "check(json_valid(advisory_json))",
+            "check(length(advisory_hash) = 64 and advisory_hash not glob '*[^0-9a-f]*')",
+            NON_NEGATIVE_INTEGER_CREATED_AT_CHECK,
+        ),
+        triggers=_immutable(
+            "entry_decision_advisories",
+            message="entry decision advisories are immutable",
         ),
     ),
     "entry_notification_outbox": ManagedTableSpec(

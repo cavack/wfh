@@ -78,12 +78,24 @@ def classify_docker_resource(kind: str, name: str, labels: dict[str, str] | None
             "waterfallhunter-watchdog:latest",
         },
     }
-    if name in canonical_names.get(kind, set()) and (kind == "image" or project == "waterfallhunter"):
+    canonical_services = {
+        "waterfall-backend", "frontend", "watchdog",
+        "prometheus", "grafana", "alertmanager",
+    }
+    service = labels.get("com.docker.compose.service", "")
+    if (
+        name in canonical_names.get(kind, set())
+        and (kind == "image" or project == "waterfallhunter")
+    ) or (
+        kind == "container"
+        and project == "waterfallhunter"
+        and service in canonical_services
+    ):
         return KEEP, "canonical WaterfallHunter Docker resource"
     is_wfh = (
-        name.startswith("waterfall") or "waterfallhunter" in name.lower()
+        name.startswith(("waterfall", "wfh-")) or "waterfallhunter" in name.lower()
         or project.startswith("waterfall") or bool(re.fullmatch(r"[0-9a-f]{40}", project))
-        or (kind == "image" and (name.startswith("wfh-") or name.startswith("waterfallhunter-")))
+        or (kind == "image" and name.startswith(("wfh-", "waterfallhunter-")))
     )
     if is_wfh:
         return DELETE, "legacy/orphan WaterfallHunter Docker resource"

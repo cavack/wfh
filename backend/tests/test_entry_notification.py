@@ -115,3 +115,100 @@ def test_telegram_transport_classifies_success_and_errors() -> None:
     assert limited.disposition is DeliveryDisposition.RATE_LIMITED
     assert limited.retry_after_seconds == 7
     assert forbidden.disposition is DeliveryDisposition.PERMANENT_FAILURE
+
+
+def test_pre_cutover_entry_ready_is_acknowledged_without_send() -> None:
+    calls = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    transport = TelegramSignalTransport(
+        "token",
+        "123",
+        cutover_at=200,
+        http_transport=httpx.MockTransport(handler),
+    )
+    event = {
+        "event_id": "entry:1:ready",
+        "payload_json": json.dumps({
+            "contract_version": "entry_ready_notification_v1",
+            "symbol": "SXT/USDT:USDT",
+            "decision_packet": entry_packet(),
+        }),
+    }
+    result = asyncio.run(transport.deliver(event))
+    assert result.disposition is DeliveryDisposition.DELIVERED
+    assert calls == []
+
+
+def test_telegram_transport_requires_ok_true_on_http_200() -> None:
+    responses = [
+        httpx.Response(200, json={"ok": False, "description": "logical failure"}),
+        httpx.Response(200, text="not-json"),
+    ]
+
+    async def run() -> list[DeliveryResult]:
+        queue = list(responses)
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            del request
+            return queue.pop(0)
+
+        transport = TelegramSignalTransport(
+            "token",
+            "123",
+            http_transport=httpx.MockTransport(handler),
+        )
+        event = {
+            "event_id": "entry:1:ready",
+            "payload_json": json.dumps({
+                "contract_version": "entry_ready_notification_v1",
+                "symbol": "SXT/USDT:USDT",
+                "decision_packet": entry_packet(),
+            }),
+        }
+        return [await transport.deliver(event), await transport.deliver(event)]
+
+    logical_failure, invalid_json = asyncio.run(run())
+    assert logical_failure.disposition is DeliveryDisposition.TRANSIENT_FAILURE
+    assert logical_failure.error_code == "INVALID_TELEGRAM_RESPONSE"
+    assert invalid_json.disposition is DeliveryDisposition.TRANSIENT_FAILURE
+    assert invalid_json.error_code == "INVALID_TELEGRAM_RESPONSE"
+
+
+def test_telegram_probe_requires_valid_bot_and_chat() -> None:
+    async def run(responses):
+        queue = list(responses)
+        seen = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            seen.append((request.method, str(request.url)))
+            return queue.pop(0)
+
+        transport = TelegramSignalTransport(
+            "token",
+            "123",
+            http_transport=httpx.MockTransport(handler),
+        )
+        return await transport.probe(), seen
+
+    success, success_seen = asyncio.run(run([
+        httpx.Response(200, json={"ok": True, "result": {"id": 1}}),
+        httpx.Response(200, json={"ok": True, "result": {"id": 123}}),
+    ]))
+    assert success["reachable"] is True
+    assert success["chat_reachable"] is True
+    assert len(success_seen) == 2
+    assert "getMe" in success_seen[0][1]
+    assert "getChat" in success_seen[1][1]
+
+    failed, failed_seen = asyncio.run(run([
+        httpx.Response(200, json={"ok": True, "result": {"id": 1}}),
+        httpx.Response(400, json={"ok": False, "description": "chat not found"}),
+    ]))
+    assert failed["reachable"] is False
+    assert failed["bot_reachable"] is True
+    assert failed["chat_reachable"] is False
+    assert len(failed_seen) == 2

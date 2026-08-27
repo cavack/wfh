@@ -1,6 +1,9 @@
 import asyncio
 
+from schema_test_support import migrate_test_database
+from waterfallhunter import main
 from waterfallhunter.core.ai_veto import AIVetoEngine
+from waterfallhunter.core.entry_decision_store import EntryDecisionStore
 
 
 def canonical_metrics() -> dict:
@@ -53,3 +56,131 @@ def test_canonical_advisory_failure_cannot_change_decision(monkeypatch) -> None:
     assert packet["decision"] == "ENTRY_READY"
     assert advisory["ai_advice"] == "UNAVAILABLE"
     assert advisory["ai_provider"] == "none"
+
+
+def test_canonical_advisory_is_persisted_before_live_projection(tmp_path, monkeypatch) -> None:
+    db_path = migrate_test_database(tmp_path / "advisory.db")
+    store = EntryDecisionStore(db_path)
+    decision = {
+        "contract_version": "entry_decision_v1",
+        "policy_version": "entry_policy_v1",
+        "evaluated_at": 100,
+        "decision": "ENTRY_READY",
+        "lifecycle_state": "ARMED",
+        "entry_readiness": 84.0,
+        "evidence_coverage_pct": 82.0,
+    }
+    event_id = store.append_if_changed("SXTUSDT", decision)
+    assert event_id is not None
+    live_decision = {**decision, "event_id": event_id}
+    monkeypatch.setattr(main, "entry_decision_store", store)
+    monkeypatch.setattr(
+        main.scanner,
+        "active_candidates",
+        {"SXTUSDT": {"metrics": {"entry_decision": live_decision}}},
+    )
+
+    async def advisory(*args, **kwargs):
+        return {
+            "observational_only": True,
+            "decision_mutated": False,
+            "ai_advice": "SHORT",
+            "ai_confidence": 81,
+            "ai_reasoning": "Evidence agrees.",
+            "ai_provider": "gemini",
+            "ai_model": "gemini-test",
+            "ai_status": "AVAILABLE",
+        }
+
+    monkeypatch.setattr(main.ai_veto, "advisory_for_decision", advisory)
+    asyncio.run(main._refresh_canonical_ai_advisory("SXTUSDT", event_id, {}, decision))
+
+    persisted = EntryDecisionStore(db_path).history_for_symbol("SXTUSDT")[0]
+    projected = main.scanner.active_candidates["SXTUSDT"]["metrics"]["ai_advisory"]
+    assert persisted["ai_advisory"]["ai_advice"] == "SHORT"
+    assert projected["ai_advice"] == "SHORT"
+    assert projected["advisory_event_id"] > 0
+
+
+def test_stable_decision_projection_carries_durable_advisory(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "stable-advisory.db")
+    store = EntryDecisionStore(db_path)
+    decision = {
+        "contract_version": "entry_decision_v1",
+        "policy_version": "entry_policy_v1",
+        "evaluated_at": 100,
+        "decision": "ENTRY_READY",
+        "lifecycle_state": "ARMED",
+        "entry_readiness": 84.0,
+        "evidence_coverage_pct": 82.0,
+        "trade_plan": None,
+    }
+    event_id = store.append_if_changed("SXTUSDT", decision)
+    assert event_id is not None
+    store.append_advisory(
+        event_id,
+        {
+            "observational_only": True,
+            "decision_mutated": False,
+            "ai_advice": "SHORT",
+            "ai_confidence": 81,
+            "ai_reasoning": "Evidence agrees.",
+            "ai_provider": "gemini",
+            "ai_model": "gemini-test",
+            "ai_status": "AVAILABLE",
+        },
+        advisory_at=110,
+    )
+    persisted = store.latest_for_symbol("SXTUSDT")
+    current = {**decision, "evaluated_at": 120}
+    metrics = {"ai_advisory": {"deterministic_veto": False}}
+
+    main._restore_persisted_decision_projection(current, metrics, persisted)
+
+    assert current["event_id"] == event_id
+    assert current["event_persisted"] is False
+    assert metrics["ai_advisory"]["ai_advice"] == "SHORT"
+
+
+def test_runtime_expiry_reconciliation_persists_explicit_expiry(tmp_path, monkeypatch) -> None:
+    db_path = migrate_test_database(tmp_path / "expiry.db")
+    store = EntryDecisionStore(db_path)
+    decision = {
+        "contract_version": "entry_decision_v1",
+        "policy_version": "entry_policy_v1",
+        "evaluated_at": 100,
+        "decision": "ENTRY_READY",
+        "lifecycle_state": "ARMED",
+        "entry_readiness": 84.0,
+        "evidence_coverage_pct": 82.0,
+        "hard_blocked": False,
+        "block_reasons": [],
+        "reason_codes": ["ENTRY_GATES_PASS"],
+        "components": {},
+        "evidence_summary": {},
+        "trade_plan": {
+            "entry_price": 0.1,
+            "stop_loss": 0.103,
+            "take_profit_1": 0.097,
+            "take_profit_2": 0.094,
+            "expires_at": 150,
+        },
+        "policy": {},
+    }
+    event_id = store.append_if_changed("SXTUSDT", decision)
+    assert event_id is not None
+    monkeypatch.setattr(main, "entry_decision_store", store)
+    monkeypatch.setattr(
+        main.scanner,
+        "active_candidates",
+        {"SXTUSDT": {"metrics": {"entry_decision": {**decision, "event_id": event_id}}}},
+    )
+
+    assert main._reconcile_explicit_entry_expirations(evaluated_at=149) == 0
+    assert main._reconcile_explicit_entry_expirations(evaluated_at=150) == 1
+
+    latest = store.latest_for_symbol("SXTUSDT")
+    assert latest is not None
+    assert latest["decision"] == "EXPIRED"
+    assert latest["trade_plan"]["expires_at"] == 150
+    assert main.scanner.active_candidates["SXTUSDT"]["metrics"]["entry_decision"]["decision"] == "EXPIRED"

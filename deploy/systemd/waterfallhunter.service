@@ -9,8 +9,8 @@ Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/srv/waterfallhunter/app
 Environment=WFH_ENV_FILE=/etc/waterfallhunter/waterfallhunter.env
-ExecStart=/usr/bin/docker compose --project-name waterfallhunter --env-file /etc/waterfallhunter/waterfallhunter.env -f /srv/waterfallhunter/app/docker-compose.yml up -d --remove-orphans
-ExecStop=/usr/bin/docker compose --project-name waterfallhunter --env-file /etc/waterfallhunter/waterfallhunter.env -f /srv/waterfallhunter/app/docker-compose.yml stop --timeout 30
+ExecStart=/srv/waterfallhunter/app/scripts/production_compose.sh up -d --remove-orphans
+ExecStop=/srv/waterfallhunter/app/scripts/production_compose.sh stop --timeout 30
 TimeoutStartSec=180
 TimeoutStopSec=60
 

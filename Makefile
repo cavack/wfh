@@ -1,12 +1,12 @@
 SHELL := /bin/bash
 PYTHON ?= python3
+VENV_PYTHON := .venv/bin/python
 DB_PATH ?= /srv/waterfallhunter/data/waterfall_registry.db
 
 .PHONY: help setup test typecheck build validate clean-install-check status logs backup-check migration-rehearsal
 
 help:
-	@printf '%s
-' 'setup test typecheck build validate clean-install-check status logs backup-check migration-rehearsal'
+	@printf '%s\n' 'setup test typecheck build validate clean-install-check status logs backup-check migration-rehearsal'
 
 setup:
 	$(PYTHON) -m venv .venv
@@ -14,7 +14,7 @@ setup:
 	npm --prefix frontend ci
 
 test:
-	PYTHONPATH=backend/src:. $(PYTHON) -m pytest -q backend/tests
+	PYTHONPATH=backend/src:. $(VENV_PYTHON) -m pytest -q backend/tests
 
 typecheck:
 	npm --prefix frontend run typecheck
@@ -23,9 +23,9 @@ build:
 	npm --prefix frontend run build
 
 validate:
-	$(PYTHON) scripts/verify_repository_hygiene.py --root .
-	$(PYTHON) scripts/validate_wfh_skills.py
-	PYTHONPATH=backend/src:. $(PYTHON) scripts/verify_runtime_parity.py
+	$(VENV_PYTHON) scripts/verify_repository_hygiene.py --root .
+	$(VENV_PYTHON) scripts/validate_wfh_skills.py
+	PYTHONPATH=backend/src:. $(VENV_PYTHON) scripts/verify_runtime_parity.py
 	$(MAKE) test
 	$(MAKE) typecheck
 	$(MAKE) build
@@ -40,7 +40,7 @@ logs:
 	docker compose logs --tail=200
 
 backup-check:
-	DB_PATH='$(DB_PATH)' $(PYTHON) -c "import os,sqlite3; p=os.environ['DB_PATH']; c=sqlite3.connect('file:'+p+'?mode=ro', uri=True); print(c.execute('PRAGMA integrity_check').fetchone()[0])"
+	DB_PATH='$(DB_PATH)' $(VENV_PYTHON) -c "import os,sqlite3; p=os.environ['DB_PATH']; c=sqlite3.connect('file:'+p+'?mode=ro', uri=True); print(c.execute('PRAGMA integrity_check').fetchone()[0])"
 
 migration-rehearsal:
-	$(PYTHON) scripts/rehearse_sqlite_migration.py --help
+	$(VENV_PYTHON) scripts/rehearse_sqlite_migration.py --help

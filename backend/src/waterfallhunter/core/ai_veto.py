@@ -108,6 +108,8 @@ class AIVetoEngine:
             "ai_confidence": opinion.get("confidence", 0),
             "ai_reasoning": opinion.get("reasoning", "No advisory available"),
             "ai_provider": opinion.get("provider", "none"),
+            "ai_model": self.model if opinion.get("provider") == "gemini" else "none",
+            "ai_status": "AVAILABLE" if opinion.get("provider") == "gemini" else "UNAVAILABLE",
         }
 
     async def _get_gemini_opinion(

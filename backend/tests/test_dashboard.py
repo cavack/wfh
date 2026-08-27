@@ -560,3 +560,67 @@ def test_compact_metrics_preserves_candle_geometry_features():
         ["trigger_ready"]
         is True
     )
+
+
+def test_dashboard_projects_stale_entry_ready_to_invalidated(monkeypatch):
+    import waterfallhunter.main as main
+
+    symbol = "STALEUI/USDT:USDT"
+    stored_decision = {
+        "contract_version": "entry_decision_v1",
+        "policy_version": "entry_policy_v1",
+        "evaluated_at": 1_700_000_000,
+        "decision": "ENTRY_READY",
+        "lifecycle_state": "PRE-TRIGGER",
+        "entry_readiness": 85.0,
+        "evidence_coverage_pct": 90.0,
+        "hard_blocked": False,
+        "block_reasons": [],
+        "reason_codes": ["ENTRY_GATES_PASS"],
+        "components": {},
+        "evidence_summary": {},
+        "trade_plan": {
+            "entry_price": 1.0,
+            "stop_loss": 1.1,
+            "take_profit_1": 0.9,
+            "take_profit_2": 0.8,
+        },
+        "policy": {},
+        "event_id": 123,
+    }
+    monkeypatch.setattr(
+        main.db,
+        "get_all_active_candidates",
+        lambda: {symbol: {"symbol": symbol, "status": "PRE-TRIGGER"}},
+    )
+    monkeypatch.setattr(
+        main.scanner,
+        "active_candidates",
+        {
+            symbol: {
+                "score": 80.0,
+                "quote_volume": 2_000_000.0,
+                "analysis_observed_at": 1_700_000_000,
+                "metrics": {"entry_decision": stored_decision},
+            }
+        },
+    )
+    monkeypatch.setattr(
+        main.scanner,
+        "get_live_reference",
+        lambda _symbol: (1.0, 1_700_000_195),
+    )
+    monkeypatch.setattr(main.historical_outcome_store, "symbol_summaries", lambda: {})
+    monkeypatch.setattr(
+        main.execution_suitability_enricher,
+        "for_symbol",
+        lambda _symbol: {"status": "UNKNOWN", "observational_only": True},
+    )
+    monkeypatch.setattr(main.entry_decision_store, "recent_changes", lambda limit=10: [])
+
+    payload = main.get_formatted_candidates(evaluation_time=1_700_000_200)
+    projected = payload["candidates"][symbol]["metrics"]["entry_decision"]
+    assert payload["candidates"][symbol]["analysis_age_seconds"] == 200.0
+    assert projected["decision"] == "INVALIDATED"
+    assert "STALE_ANALYSIS" in projected["block_reasons"]
+    assert projected["event_id"] == 123

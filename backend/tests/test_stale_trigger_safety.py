@@ -142,3 +142,47 @@ def test_stale_trigger_persistence_failure_suppresses_telegram(
     assert before <= metadata.analysis_observed_at <= after
     assert metadata.reference_observed_at == int(reference_observed_at)
     assert evidence_packets[-1]["metrics"]["production_decision"]["path"] == "PERSISTENCE_REJECTED"
+
+
+def test_missing_reference_persists_invalidation_after_entry_ready(monkeypatch):
+    symbol = "NREF/USDT:USDT"
+    monkeypatch.setattr(main.scanner, "active_candidates", {symbol: {}})
+    monkeypatch.setattr(main.scanner, "get_live_reference", lambda _: (None, None))
+    monkeypatch.setattr(main.execution_decision_logger, "observe_evaluation", lambda *a, **k: True)
+    monkeypatch.setattr(main.production_evidence_recorder, "record", lambda *a, **k: True)
+
+    async def no_reference(_symbol):
+        return {}
+
+    monkeypatch.setattr(main.validator, "resolve_live_reference", no_reference)
+    monkeypatch.setattr(main.db, "update_candidate_state", lambda *a, **k: True)
+    stored_metrics = []
+    monkeypatch.setattr(main, "_store_live_metrics", lambda _symbol, metrics: stored_metrics.append(metrics))
+    monkeypatch.setattr(
+        main.entry_decision_store,
+        "latest_for_symbol",
+        lambda _symbol: {
+            "contract_version": "entry_decision_v1",
+            "policy_version": "entry_policy_v1",
+            "decision": "ENTRY_READY",
+            "lifecycle_state": "PRE-TRIGGER",
+            "entry_readiness": 85.0,
+            "evidence_coverage_pct": 90.0,
+            "evaluated_at": 1_788_000_000,
+        },
+    )
+    persisted = []
+    monkeypatch.setattr(
+        main.entry_decision_store,
+        "append_if_changed",
+        lambda _symbol, packet: persisted.append(packet) or 777,
+    )
+
+    asyncio.run(main.evaluate_candidate(symbol, {"status": "ARMED"}))
+
+    assert len(persisted) == 1
+    assert persisted[0]["decision"] == "INVALIDATED"
+    assert "STALE_REFERENCE" in persisted[0]["block_reasons"]
+    assert "ENTRY_CONDITIONS_LOST" in persisted[0]["block_reasons"]
+    assert stored_metrics[-1]["entry_decision"]["decision"] == "INVALIDATED"
+    assert stored_metrics[-1]["entry_decision"]["event_id"] == 777

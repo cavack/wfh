@@ -9,7 +9,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
+
+WFH_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(WFH_REPOSITORY_ROOT))
+sys.path.insert(0, str(WFH_REPOSITORY_ROOT / "backend" / "src"))
 
 from scripts.certify_sqlite_backup import _canonical_absolute_path, _write_report_atomic
 from waterfallhunter.core.signal_metadata import canonical_sha256

@@ -11,8 +11,16 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPOSITORY_ROOT = SCRIPT_DIR.parent
+sys.path.insert(0, str(SCRIPT_DIR))
+sys.path.insert(0, str(REPOSITORY_ROOT / "backend" / "src"))
 from audit_host_inventory import DELETE, PROTECTED, classify_docker_resource, classify_path  # noqa: E402
+from waterfallhunter.core.signal_metadata import canonical_sha256  # noqa: E402
+from waterfallhunter.core.sqlite_backup_certification import (  # noqa: E402
+    BackupCertificationError,
+    audit_sqlite_snapshot,
+)
 
 
 def _load(path: Path) -> dict[str, object]:
@@ -25,29 +33,92 @@ def _load(path: Path) -> dict[str, object]:
 def validate_release_certificate(path: Path) -> dict[str, object]:
     data = _load(path)
     sha = str(data.get("release_sha", ""))
+    claimed = str(data.get("certificate_sha256", ""))
+    material = {key: value for key, value in data.items() if key != "certificate_sha256"}
+    evidence = data.get("evidence")
+    core_revisions = evidence.get("core_revisions") if isinstance(evidence, dict) else None
+    expected_core = {"waterfall-backend", "waterfall-frontend", "waterfall-watchdog"}
     if not (
         data.get("certificate_type") == "waterfallhunter_release_v1"
         and data.get("status") == "PASS"
-        and len(sha) == 40 and all(c in "0123456789abcdef" for c in sha)
+        and _lower_hex(sha, 40)
+        and _lower_hex(claimed, 64)
+        and claimed == canonical_sha256(material)
         and data.get("production_healthy") is True
         and data.get("live_trading_enabled") is False
+        and isinstance(evidence, dict)
+        and evidence.get("healthy") is True
+        and evidence.get("running_revision") == sha
+        and evidence.get("checkout_revision") == sha
+        and evidence.get("live_trading_enabled") is False
+        and isinstance(core_revisions, dict)
+        and set(core_revisions) == expected_core
+        and all(revision == sha for revision in core_revisions.values())
     ):
-        raise ValueError("release certificate is not a passing WaterfallHunter release certificate")
+        raise ValueError("release certificate is not a complete passing WaterfallHunter release certificate")
     return data
+
+
+def _lower_hex(value: object, length: int) -> bool:
+    text = str(value or "")
+    return len(text) == length and all(character in "0123456789abcdef" for character in text)
 
 
 def validate_db_certificate(path: Path) -> dict[str, object]:
     data = _load(path)
     digest = str(data.get("sha256", ""))
+    source_revision = str(data.get("source_revision", ""))
+    claimed_certificate_hash = str(data.get("certificate_sha256", ""))
+    material = {key: value for key, value in data.items() if key != "certificate_sha256"}
+    wrapped = data.get("sqlite_backup_certification")
+    if not isinstance(wrapped, dict):
+        raise ValueError("database certificate core certification missing")
+    backup_audit = wrapped.get("backup_audit")
+    if not isinstance(backup_audit, dict):
+        raise ValueError("database certificate backup audit missing")
+    wrapped_hash = str(wrapped.get("certification_sha256", ""))
+    wrapped_material = {key: value for key, value in wrapped.items() if key != "certification_sha256"}
+    backup_path = Path(str(data.get("backup_path") or ""))
     if not (
         data.get("certificate_type") == "waterfallhunter_db_backup_v1"
         and data.get("status") == "PASS"
-        and len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)
+        and _lower_hex(digest, 64)
+        and _lower_hex(source_revision, 40)
+        and _lower_hex(claimed_certificate_hash, 64)
+        and claimed_certificate_hash == canonical_sha256(material)
+        and data.get("device_separation_enforced") is False
+        and data.get("independent_disaster_recovery") is False
+        and data.get("source_volume_preserved_until_post_cutover") is True
         and str(data.get("integrity_check", "")).lower() == "ok"
-        and data.get("backup_path")
+        and backup_path.is_absolute()
+        and wrapped.get("contract_version") == "sqlite_backup_certification_v1"
+        and wrapped.get("status") == "BACKUP_RESTORE_CERTIFIED"
+        and wrapped.get("restore_matches_backup") is True
+        and wrapped.get("production_migration_authorized") is False
+        and wrapped.get("production_deployment_authorized") is False
+        and _lower_hex(wrapped_hash, 64)
+        and wrapped_hash == canonical_sha256(wrapped_material)
+        and str(wrapped.get("backup_path") or "") == str(backup_path)
+        and str(backup_audit.get("file_sha256") or "") == digest
+        and str(backup_audit.get("integrity_check") or "").lower() == "ok"
     ):
-        raise ValueError("database certificate is not a passing WaterfallHunter backup certificate")
+        raise ValueError("database certificate is not a complete passing WaterfallHunter backup certificate")
+    try:
+        current_audit = audit_sqlite_snapshot(backup_path)
+    except (BackupCertificationError, OSError) as exc:
+        raise ValueError("certified database backup is unreadable") from exc
+    if (
+        current_audit.get("audit_sha256") != backup_audit.get("audit_sha256")
+        or current_audit.get("file_sha256") != digest
+    ):
+        raise ValueError("certified database backup no longer matches its certificate")
     return data
+
+
+def _target_contains_certified_backup(target: Path, backup: Path) -> bool:
+    target_path = target.resolve(strict=False)
+    backup_path = backup.resolve(strict=False)
+    return target_path == backup_path or target_path in backup_path.parents
 
 
 def _validated_delete_entries(inventory: dict[str, object]) -> list[dict[str, object]]:
@@ -118,8 +189,16 @@ def main() -> int:
             raise ValueError("release certificate and database certificate are required for --execute")
         release = validate_release_certificate(args.release_certificate)
         db = validate_db_certificate(args.db_certificate)
+        certified_backup = Path(str(db["backup_path"]))
         removed: list[dict[str, object]] = []
         for entry in approved:
+            if entry.get("type") == "path" and _target_contains_certified_backup(
+                Path(str(entry.get("path_or_resource") or "")),
+                certified_backup,
+            ):
+                raise ValueError(
+                    f"cleanup target contains certified database backup: {entry.get('path_or_resource')}"
+                )
             _delete_entry(entry)
             removed.append({"type": entry["type"], "path_or_resource": entry["path_or_resource"]})
         certificate = {

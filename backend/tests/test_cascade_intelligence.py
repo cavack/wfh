@@ -63,3 +63,51 @@ def test_active_buying_reduces_cascade_readiness() -> None:
     packet = build_cascade_evidence(weak)
     assert packet["readiness_points"] < build_cascade_evidence(base_metrics())["readiness_points"]
     assert packet["components"]["trade_flow"]["sell_dominance"] is False
+
+
+def test_future_liquidation_observation_is_rejected() -> None:
+    metrics = base_metrics()
+    metrics["liquidation_flow"] = {
+        "available": True,
+        "observed_at": 1_788_000_020,
+        "long_liquidation_notional_1m": 420_000.0,
+        "short_liquidation_notional_1m": 40_000.0,
+        "liquidation_velocity_usd_per_min": 420_000.0,
+        "burst_ratio": 3.2,
+    }
+    packet = build_cascade_evidence(metrics, evaluated_at=1_788_000_010)
+    assert packet["components"]["liquidations"]["available"] is False
+    assert packet["maximum_available"] == 8.0
+
+
+def test_full_coverage_without_support_is_fail_not_pass() -> None:
+    metrics = base_metrics()
+    metrics["derivatives"].update({
+        "funding_rate": -0.0004,
+        "funding_percentile": 0.05,
+        "oi_change_1h_pct": -2.0,
+        "taker_buy_sell_ratio": 1.8,
+        "taker_ratio_change_1h": 0.6,
+        "top_trader_long_short_ratio": 0.7,
+    })
+    metrics["microstructure"].update({
+        "sell_flow_usdt": 20_000.0,
+        "buy_flow_usdt": 220_000.0,
+        "bid_depth_usdt": 250_000.0,
+        "ask_depth_usdt": 80_000.0,
+        "spread_pct": 0.25,
+        "slippage_pct": 0.25,
+    })
+    metrics["microstructure"]["footprint"]["aggressive_selling"] = False
+    metrics["liquidation_flow"] = {
+        "available": True,
+        "observed_at": 1_788_000_000,
+        "long_liquidation_notional_1m": 10_000.0,
+        "short_liquidation_notional_1m": 400_000.0,
+        "liquidation_velocity_usd_per_min": 1_000.0,
+        "burst_ratio": 0.2,
+    }
+    packet = build_cascade_evidence(metrics, evaluated_at=1_788_000_010)
+    assert packet["maximum_available"] == 10.0
+    assert packet["readiness_pct"] < 65.0
+    assert packet["status"] == "FAIL"

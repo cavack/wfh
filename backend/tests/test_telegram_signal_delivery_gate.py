@@ -116,3 +116,37 @@ def test_interactive_bot_recreates_delivery_wakeup_for_each_lifespan(monkeypatch
     asyncio.run(start_second_lifespan())
 
     assert notifier.delivery_wakeup is not prior_wakeup
+
+
+def test_interactive_bot_never_starts_legacy_signal_delivery_loop(monkeypatch) -> None:
+    notifier = TelegramNotifier()
+    notifier.enabled = True
+    notifier.signal_delivery_enabled = True
+    legacy_started = False
+
+    async def legacy_loop():
+        nonlocal legacy_started
+        legacy_started = True
+
+    notifier._delivery_loop = legacy_loop
+
+    class AbortClient:
+        async def __aenter__(self):
+            raise asyncio.CancelledError()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(
+        "waterfallhunter.core.notifier.httpx.AsyncClient",
+        lambda *args, **kwargs: AbortClient(),
+    )
+
+    async def run():
+        try:
+            await notifier.start_interactive_bot()
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(run())
+    assert legacy_started is False

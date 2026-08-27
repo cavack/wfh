@@ -30,7 +30,7 @@ def test_package_migration_discovery_is_contiguous_and_hashes_exact_bytes():
 
     discovered = migrations.discover_migrations()
 
-    assert [item.version for item in discovered] == [1, 2, 3, 4, 5, 6]
+    assert [item.version for item in discovered] == [1, 2, 3, 4, 5, 6, 7]
     assert [item.name for item in discovered] == [
         "db_readiness_probe",
         "runtime_schema_baseline",
@@ -38,6 +38,7 @@ def test_package_migration_discovery_is_contiguous_and_hashes_exact_bytes():
         "signal_decision_outbox",
         "lifecycle_v2_shadow",
         "entry_decisions",
+        "entry_decision_advisories",
     ]
 
     for migration in discovered:
@@ -53,7 +54,7 @@ def test_package_migration_discovery_is_contiguous_and_hashes_exact_bytes():
 def test_packaged_migrations_include_runtime_baseline():
     discovered = _migrations_module().discover_migrations()
 
-    assert [item.version for item in discovered] == [1, 2, 3, 4, 5, 6]
+    assert [item.version for item in discovered] == [1, 2, 3, 4, 5, 6, 7]
     assert discovered[1].name == "runtime_schema_baseline"
     assert discovered[1].filename == "0002_runtime_schema_baseline.sql"
 

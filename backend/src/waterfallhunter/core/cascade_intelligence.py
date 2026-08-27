@@ -128,8 +128,8 @@ def _liquidations(metrics: dict[str, Any], evaluated_at: int | None) -> tuple[di
     burst_ratio = _finite(packet.get("burst_ratio"))
     if None in {observed_at, long_notional, short_notional, velocity, burst_ratio}:
         return {"available": False, "reason": "incomplete liquidation flow"}, 0.0, 0.0
-    if evaluated_at is not None and evaluated_at - observed_at > 30:
-        return {"available": False, "reason": "stale liquidation flow"}, 0.0, 0.0
+    if evaluated_at is not None and not 0 <= evaluated_at - observed_at <= 30:
+        return {"available": False, "reason": "stale or future liquidation flow"}, 0.0, 0.0
     total = long_notional + short_notional
     long_share = long_notional / total if total > 0 else 0.0
     points = _ramp(long_share, 0.55, 0.9, 0.8)
@@ -167,8 +167,13 @@ def build_cascade_evidence(
             total_points += points
             maximum_available += maximum
 
-    status = "UNAVAILABLE" if maximum_available == 0 else "PASS" if maximum_available >= 10 else "PARTIAL"
     readiness_pct = (total_points / maximum_available * 100.0) if maximum_available else None
+    if maximum_available == 0:
+        status = "UNAVAILABLE"
+    elif maximum_available < 10.0:
+        status = "PARTIAL"
+    else:
+        status = "PASS" if readiness_pct is not None and readiness_pct >= 65.0 else "FAIL"
     return {
         "contract_version": "cascade_intelligence_v1",
         "status": status,

@@ -5,6 +5,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+from pathlib import Path
+
+WFH_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(WFH_REPOSITORY_ROOT))
+sys.path.insert(0, str(WFH_REPOSITORY_ROOT / "backend" / "src"))
 
 from scripts.certify_sqlite_backup import _canonical_absolute_path, _write_report_atomic
 from waterfallhunter.core.signal_metadata import canonical_sha256
@@ -42,7 +48,13 @@ def main() -> int:
             wrapped = certification.get("sqlite_backup_certification")
             if not isinstance(wrapped, dict):
                 raise MigrationRehearsalError("CUTOVER_BACKUP_CORE_CERTIFICATION_MISSING")
-            if certification.get("backup_path") != wrapped.get("backup_path") or certification.get("sha256") != wrapped.get("backup_audit", {}).get("file_sha256"):
+            backup_audit = wrapped.get("backup_audit")
+            if not isinstance(backup_audit, dict):
+                raise MigrationRehearsalError("CUTOVER_BACKUP_CORE_CERTIFICATION_MISMATCH")
+            if (
+                certification.get("backup_path") != wrapped.get("backup_path")
+                or certification.get("sha256") != backup_audit.get("file_sha256")
+            ):
                 raise MigrationRehearsalError("CUTOVER_BACKUP_CORE_CERTIFICATION_MISMATCH")
             certification = wrapped
         report = rehearse_migration_and_rollback(

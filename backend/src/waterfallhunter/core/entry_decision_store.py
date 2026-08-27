@@ -74,9 +74,10 @@ class EntryDecisionStore:
         lifecycle_state = str(packet.get("lifecycle_state") or "WATCH")
         created_at = int(time.time())
         with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 "SELECT decision FROM entry_decision_events "
-                "WHERE symbol=? ORDER BY event_at DESC, id DESC LIMIT 1",
+                "WHERE symbol=? ORDER BY id DESC LIMIT 1",
                 (symbol,),
             ).fetchone()
             if row is not None and str(row[0]) == decision:
@@ -141,14 +142,60 @@ class EntryDecisionStore:
         packet["decision"] = str(row[3])
         packet["entry_readiness"] = float(row[4])
         packet["evidence_coverage_pct"] = float(row[5])
+        if len(row) > 7 and row[7] is not None:
+            advisory = json.loads(str(row[7]))
+            if isinstance(advisory, dict):
+                packet["ai_advisory"] = advisory
+        if len(row) > 8:
+            packet["previous_decision"] = None if row[8] is None else str(row[8])
         return packet
+
+    def append_advisory(
+        self,
+        decision_event_id: int,
+        advisory: dict[str, Any],
+        *,
+        advisory_at: int,
+    ) -> int:
+        if isinstance(decision_event_id, bool) or not isinstance(decision_event_id, int) or decision_event_id <= 0:
+            raise ValueError("decision event id invalid")
+        if isinstance(advisory_at, bool) or not isinstance(advisory_at, int) or advisory_at < 0:
+            raise ValueError("advisory timestamp invalid")
+        if advisory.get("observational_only") is not True or advisory.get("decision_mutated") is not False:
+            raise ValueError("advisory must be observational only")
+        provider = str(advisory.get("ai_provider") or "none")
+        model = str(advisory.get("ai_model") or "none")
+        status = str(advisory.get("ai_status") or "UNAVAILABLE")
+        if status not in {"AVAILABLE", "UNAVAILABLE"}:
+            raise ValueError("advisory status invalid")
+        persisted = {**advisory, "advisory_at": advisory_at}
+        payload, payload_hash = self._encode(persisted)
+        created_at = int(time.time())
+        with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
+            cursor = conn.execute(
+                "INSERT INTO entry_decision_advisories ("
+                "decision_event_id,advisory_at,provider,model,status,"
+                "advisory_json,advisory_hash,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (decision_event_id, advisory_at, provider, model, status, payload, payload_hash, created_at),
+            )
+            return int(cursor.lastrowid)
+
+    @staticmethod
+    def _history_select(where: str = "") -> str:
+        return (
+            "SELECT e.id,e.symbol,e.event_at,e.decision,e.entry_readiness,"
+            "e.evidence_coverage_pct,e.packet_json,"
+            "(SELECT a.advisory_json FROM entry_decision_advisories a "
+            " WHERE a.decision_event_id=e.id ORDER BY a.id DESC LIMIT 1),"
+            "(SELECT p.decision FROM entry_decision_events p "
+            " WHERE p.symbol=e.symbol AND p.id<e.id ORDER BY p.id DESC LIMIT 1) "
+            "FROM entry_decision_events e " + where
+        )
 
     def latest_for_symbol(self, symbol: str) -> dict[str, Any] | None:
         with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
             row = conn.execute(
-                "SELECT id,symbol,event_at,decision,entry_readiness,"
-                "evidence_coverage_pct,packet_json FROM entry_decision_events "
-                "WHERE symbol=? ORDER BY event_at DESC, id DESC LIMIT 1",
+                self._history_select("WHERE e.symbol=? ORDER BY e.id DESC LIMIT 1"),
                 (str(symbol),),
             ).fetchone()
         return None if row is None else self._row_packet(row)
@@ -157,9 +204,7 @@ class EntryDecisionStore:
         bounded = max(1, min(int(limit), 200))
         with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
             rows = conn.execute(
-                "SELECT id,symbol,event_at,decision,entry_readiness,"
-                "evidence_coverage_pct,packet_json FROM entry_decision_events "
-                "WHERE symbol=? ORDER BY event_at DESC, id DESC LIMIT ?",
+                self._history_select("WHERE e.symbol=? ORDER BY e.id DESC LIMIT ?"),
                 (str(symbol), bounded),
             ).fetchall()
         return [self._row_packet(row) for row in rows]
@@ -183,9 +228,7 @@ class EntryDecisionStore:
         bounded = max(1, min(int(limit), 200))
         with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
             rows = conn.execute(
-                "SELECT id,symbol,event_at,decision,entry_readiness,"
-                "evidence_coverage_pct,packet_json FROM entry_decision_events "
-                "ORDER BY event_at DESC, id DESC LIMIT ?",
+                self._history_select("ORDER BY e.id DESC LIMIT ?"),
                 (bounded,),
             ).fetchall()
         return [self._row_packet(row) for row in rows]

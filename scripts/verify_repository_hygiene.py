@@ -34,14 +34,8 @@ def tracked(root: Path) -> list[str]:
     return [line.strip() for line in manifest.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Validate canonical WaterfallHunter repository hygiene.")
-    parser.add_argument("--root", type=Path, default=Path.cwd())
-    args = parser.parse_args()
-    root = args.root.resolve()
-    paths = tracked(root)
+def _required_path_errors(paths: list[str]) -> list[str]:
     errors: list[str] = []
-
     missing = sorted(CANONICAL_DOCS - set(paths))
     if missing:
         errors.append("missing canonical docs: " + ", ".join(missing))
@@ -49,31 +43,66 @@ def main() -> int:
     missing_root = sorted(required - set(paths))
     if missing_root:
         errors.append("missing root handoff files: " + ", ".join(missing_root))
+    return errors
 
-    debris = [p for p in paths if FORBIDDEN_PARTS.intersection(Path(p).parts) or p.endswith(FORBIDDEN_SUFFIXES)]
-    if debris:
-        errors.append("tracked runtime/generated debris: " + ", ".join(sorted(debris)))
 
-    workflows = {Path(p).name for p in paths if p.startswith(".github/workflows/")}
-    if workflows != WORKFLOW_ALLOWLIST:
-        errors.append(f"workflow set must be {sorted(WORKFLOW_ALLOWLIST)}, got {sorted(workflows)}")
+def _debris_errors(paths: list[str]) -> list[str]:
+    debris = [
+        path for path in paths
+        if FORBIDDEN_PARTS.intersection(Path(path).parts)
+        or path.endswith(FORBIDDEN_SUFFIXES)
+    ]
+    if not debris:
+        return []
+    return ["tracked runtime/generated debris: " + ", ".join(sorted(debris))]
 
-    text_candidates = [p for p in paths if Path(p).suffix.lower() in {".md", ".py", ".ts", ".tsx", ".js", ".yml", ".yaml", ".txt", ""}]
+
+def _workflow_errors(paths: list[str]) -> list[str]:
+    workflows = {Path(path).name for path in paths if path.startswith(".github/workflows/")}
+    if workflows == WORKFLOW_ALLOWLIST:
+        return []
+    return [f"workflow set must be {sorted(WORKFLOW_ALLOWLIST)}, got {sorted(workflows)}"]
+
+
+def _conflict_marker_errors(root: Path, paths: list[str]) -> list[str]:
+    text_candidates = [
+        path for path in paths
+        if Path(path).suffix.lower() in {".md", ".py", ".ts", ".tsx", ".js", ".yml", ".yaml", ".txt", ""}
+    ]
+    errors: list[str] = []
     for rel in text_candidates:
-        path = root / rel
         try:
-            text = path.read_text(encoding="utf-8")
+            text = (root / rel).read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
         if CONFLICT.search(text):
             errors.append(f"conflict marker: {rel}")
+    return errors
 
-    active_surface = ["README.md", *sorted(CANONICAL_DOCS)]
-    for rel in active_surface:
-        text = (root / rel).read_text(encoding="utf-8") if (root / rel).exists() else ""
+
+def _terminology_errors(root: Path) -> list[str]:
+    errors: list[str] = []
+    for rel in ["README.md", *sorted(CANONICAL_DOCS)]:
+        path = root / rel
+        text = path.read_text(encoding="utf-8") if path.exists() else ""
         if "PAPER_ONLY" in text:
             errors.append(f"deprecated PAPER_ONLY terminology in canonical surface: {rel}")
+    return errors
 
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Validate canonical WaterfallHunter repository hygiene.")
+    parser.add_argument("--root", type=Path, default=Path.cwd())
+    args = parser.parse_args()
+    root = args.root.resolve()
+    paths = tracked(root)
+    errors = [
+        *_required_path_errors(paths),
+        *_debris_errors(paths),
+        *_workflow_errors(paths),
+        *_conflict_marker_errors(root, paths),
+        *_terminology_errors(root),
+    ]
     for error in errors:
         print(f"ERROR: {error}")
     if errors:

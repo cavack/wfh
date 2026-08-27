@@ -36,6 +36,7 @@ EXPECTED_RUNTIME_TABLES = frozenset(
         "lifecycle_v2_shadow_events",
         "entry_decision_events",
         "entry_notification_outbox",
+        "entry_decision_advisories",
     }
 )
 
@@ -45,7 +46,7 @@ def _codes(result) -> set[str]:
 
 
 def test_manifest_covers_exact_runtime_tables_and_version():
-    assert CURRENT_RUNTIME_SCHEMA_VERSION == 6
+    assert CURRENT_RUNTIME_SCHEMA_VERSION == 7
     assert managed_runtime_table_names() == EXPECTED_RUNTIME_TABLES
 
 

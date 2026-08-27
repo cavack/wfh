@@ -83,3 +83,47 @@ def test_wfh_ollama_resources_are_cleanup_scoped_but_generic_image_is_not_blindl
     assert audit.classify_docker_resource("container", "waterfallhunter-ollama-1", {"com.docker.compose.project": "waterfallhunter"})[0] == "DELETE_AFTER_CERTIFICATION"
     assert audit.classify_docker_resource("volume", "waterfallhunter_ollama_models", {"com.docker.compose.project": "waterfallhunter"})[0] == "DELETE_AFTER_CERTIFICATION"
     assert audit.classify_docker_resource("image", "ollama/ollama:latest", {})[0] == "REVIEW"
+
+
+def test_audit_preserves_compose_managed_alertmanager() -> None:
+    audit = _load_module(AUDIT_PATH, "audit_host_inventory_alertmanager")
+    labels = {"com.docker.compose.project": "waterfallhunter", "com.docker.compose.service": "alertmanager"}
+    assert audit.classify_docker_resource("container", "waterfallhunter-alertmanager-1", labels)[0] == "KEEP"
+
+
+def test_cleanup_refuses_certified_backup_or_ancestor_target(tmp_path: Path) -> None:
+    cleanup = _load_module(CLEANUP_PATH, "cleanup_backup_protection")
+    backup = Path("/srv/wfh-release-backups/certified/backup.db")
+    assert cleanup._target_contains_certified_backup(Path("/srv/wfh-release-backups"), backup) is True
+    assert cleanup._target_contains_certified_backup(backup, backup) is True
+    assert cleanup._target_contains_certified_backup(Path("/srv/wfh-worktrees"), backup) is False
+
+
+def test_direct_operational_scripts_are_importable_without_pythonpath() -> None:
+    for script in (ROOT / "scripts/certify_cutover_sqlite_backup.py", ROOT / "scripts/rehearse_sqlite_migration.py"):
+        result = subprocess.run([sys.executable, str(script), "--help"], cwd=ROOT, text=True, capture_output=True, env={"PATH": __import__("os").environ.get("PATH", "")})
+        assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_generated_release_certificate_is_accepted_by_cleanup_validator(tmp_path: Path) -> None:
+    verify = _load_module(ROOT / "scripts/verify_production_cutover.py", "verify_release_cert_integration")
+    cleanup = _load_module(CLEANUP_PATH, "cleanup_release_cert_integration")
+    sha = "a" * 40
+    snapshot = {
+        "healthy": True,
+        "running_revision": sha,
+        "core_revisions": {
+            "waterfall-backend": sha,
+            "waterfall-frontend": sha,
+            "waterfall-watchdog": sha,
+        },
+        "checkout_revision": sha,
+        "live_trading_enabled": False,
+        "backend_endpoints": {"/livez": True, "/readyz": True, "/healthz": True},
+    }
+    certificate = verify.build_release_certificate(snapshot, generated_at=123)
+    path = tmp_path / "release.json"
+    path.write_text(json.dumps(certificate), encoding="utf-8")
+    accepted = cleanup.validate_release_certificate(path)
+    assert accepted["release_sha"] == sha
+    assert accepted["certificate_sha256"] == certificate["certificate_sha256"]

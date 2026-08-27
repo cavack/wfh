@@ -16,8 +16,21 @@ def _payload(symbol: str = "TEST") -> dict:
     return {
         "total": 1,
         "candidates": {symbol: {"status": "WATCH"}},
-        "decision_terminal": {"contract_version": "decision_terminal_v1", "counts": {}},
-    "final_ranking": {"version": "test"},
+        "decision_terminal": {
+            "contract_version": "decision_terminal_v1",
+            "counts": {
+                "ENTRY_READY": 0, "FORMING": 0, "ACTIVE": 0, "LATE": 0,
+                "INVALIDATED": 0, "EXPIRED": 0, "NO_TRADE": 1, "UNAVAILABLE": 0,
+            },
+            "entry_ready": [], "forming": [], "active": [], "late": [],
+            "zero_entry_ready_diagnostics": {
+                "entry_ready_zero": True,
+                "evaluated_candidates": 1,
+                "top_reasons": [],
+            },
+            "recent_changes": [],
+        },
+        "final_ranking": {"version": "test"},
         "signal_funnel": {"version": "test"},
     }
 

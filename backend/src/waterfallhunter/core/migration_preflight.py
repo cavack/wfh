@@ -60,6 +60,7 @@ _LEGACY_OPTIONAL_TABLES = frozenset(
         "lifecycle_v2_shadow_events",
         "entry_decision_events",
         "entry_notification_outbox",
+        "entry_decision_advisories",
     }
 )
 
@@ -229,11 +230,17 @@ def _applied_runtime_schema_valid(
             conn,
             check_user_version=CURRENT_RUNTIME_SCHEMA_VERSION,
         )
+    if applied == (1, 2, 3, 4, 5, 6):
+        return _verified_schema_result(
+            conn,
+            allow_missing_tables=frozenset({"entry_decision_advisories"}),
+            check_user_version=6,
+        )
     if applied == (1, 2, 3, 4, 5):
         return _verified_schema_result(
             conn,
             allow_missing_tables=frozenset(
-                {"entry_decision_events", "entry_notification_outbox"}
+                {"entry_decision_events", "entry_notification_outbox", "entry_decision_advisories"}
             ),
             check_user_version=5,
         )
@@ -246,7 +253,8 @@ def _applied_runtime_schema_valid(
                     "domain_outbox_events",
                     "lifecycle_v2_shadow_events",
                     "entry_decision_events",
-        "entry_notification_outbox",
+                    "entry_notification_outbox",
+                    "entry_decision_advisories",
                 }
             ),
             check_user_version=3,
@@ -254,7 +262,7 @@ def _applied_runtime_schema_valid(
     if applied == (1, 2, 3, 4):
         return _verified_schema_result(
             conn,
-            allow_missing_tables=frozenset({"lifecycle_v2_shadow_events", "entry_decision_events"}),
+            allow_missing_tables=frozenset({"lifecycle_v2_shadow_events", "entry_decision_events", "entry_notification_outbox", "entry_decision_advisories"}),
             check_user_version=4,
         )
     if applied == (1, 2):
@@ -268,7 +276,8 @@ def _applied_runtime_schema_valid(
                     "domain_outbox_events",
                     "lifecycle_v2_shadow_events",
                     "entry_decision_events",
-        "entry_notification_outbox",
+                    "entry_notification_outbox",
+                    "entry_decision_advisories",
                 }
             ),
             check_user_version=2,

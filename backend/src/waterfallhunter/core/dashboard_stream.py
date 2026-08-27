@@ -73,6 +73,66 @@ def _snapshot_content_material(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+class DecisionDiagnosticReason(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    reason: str = Field(min_length=1)
+    count: int = Field(ge=0)
+    share_pct: float = Field(ge=0, le=100, allow_inf_nan=False)
+
+
+class ZeroEntryReadyDiagnostics(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    entry_ready_zero: bool
+    evaluated_candidates: int = Field(ge=0)
+    top_reasons: list[DecisionDiagnosticReason]
+
+
+class DecisionTerminalCounts(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    ENTRY_READY: int = Field(ge=0)
+    FORMING: int = Field(ge=0)
+    ACTIVE: int = Field(ge=0)
+    LATE: int = Field(ge=0)
+    INVALIDATED: int = Field(ge=0)
+    EXPIRED: int = Field(ge=0)
+    NO_TRADE: int = Field(ge=0)
+    UNAVAILABLE: int = Field(ge=0)
+
+
+class DecisionTerminal(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    contract_version: Literal["decision_terminal_v1"]
+    counts: DecisionTerminalCounts
+    entry_ready: list[str]
+    forming: list[str]
+    active: list[str]
+    late: list[str]
+    zero_entry_ready_diagnostics: ZeroEntryReadyDiagnostics
+    recent_changes: list[dict[str, Any]]
+
+    @model_validator(mode="after")
+    def _validate_groups(self) -> "DecisionTerminal":
+        expected_lengths = {
+            "entry_ready": min(self.counts.ENTRY_READY, 3),
+            "forming": min(self.counts.FORMING, 6),
+            "active": min(self.counts.ACTIVE, 6),
+            "late": min(self.counts.LATE, 6),
+        }
+        for field, expected in expected_lengths.items():
+            values = getattr(self, field)
+            if len(values) != expected or any(not value for value in values):
+                raise ValueError(f"decision terminal {field} does not match counts")
+        if self.zero_entry_ready_diagnostics.entry_ready_zero != (self.counts.ENTRY_READY == 0):
+            raise ValueError("decision terminal zero-entry diagnostic disagrees with counts")
+        if len(self.recent_changes) > 10:
+            raise ValueError("decision terminal recent changes exceed bounded contract")
+        return self
+
+
 class DashboardSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -83,7 +143,7 @@ class DashboardSnapshot(BaseModel):
     state: Literal["READY"]
     total: int = Field(ge=0)
     candidates: dict[str, dict[str, Any]]
-    decision_terminal: dict[str, Any]
+    decision_terminal: DecisionTerminal
     final_ranking: dict[str, Any]
     signal_funnel: dict[str, Any]
 
@@ -91,6 +151,11 @@ class DashboardSnapshot(BaseModel):
     def _validate_total(self) -> "DashboardSnapshot":
         if self.total != len(self.candidates):
             raise ValueError("dashboard total must equal candidate count")
+        decision_total = sum(self.decision_terminal.counts.model_dump().values())
+        if decision_total != self.total:
+            raise ValueError("decision terminal counts must equal candidate count")
+        if self.decision_terminal.zero_entry_ready_diagnostics.evaluated_candidates != self.total:
+            raise ValueError("decision terminal diagnostic count must equal candidate count")
         return self
 
 

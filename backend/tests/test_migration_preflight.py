@@ -105,8 +105,8 @@ def test_preflight_accepts_migrated_schema_read_only(tmp_path: Path):
 
     assert result.state is PreflightState.MIGRATED_COMPATIBLE
     assert result.compatible is True
-    assert result.applied_versions == (1, 2, 3, 4, 5, 6)
-    assert result.user_version == 6
+    assert result.applied_versions == (1, 2, 3, 4, 5, 6, 7)
+    assert result.user_version == 7
     assert _sha256(db_path) == before
 
 

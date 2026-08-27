@@ -114,3 +114,14 @@ def test_tracked_files_can_use_export_manifest_without_git(tmp_path: Path) -> No
     manifest = tmp_path / SOURCE_MANIFEST
     manifest.write_text("README.md\ndocs/PROJECT_HANDOFF.md\n", encoding="utf-8")
     assert _tracked_files(tmp_path) == {"README.md", "docs/PROJECT_HANDOFF.md"}
+
+
+def test_makefile_help_parses_and_validation_uses_setup_venv() -> None:
+    text = (ROOT / "Makefile").read_text(encoding="utf-8")
+    assert "help:\n\t@printf" in text
+    assert "VENV_PYTHON := .venv/bin/python" in text
+    assert 'PYTHONPATH=backend/src:. $(VENV_PYTHON) -m pytest' in text
+    assert '$(VENV_PYTHON) scripts/verify_repository_hygiene.py' in text
+    if shutil.which("make") is not None:
+        help_result = subprocess.run(["make", "help"], cwd=ROOT, text=True, capture_output=True)
+        assert help_result.returncode == 0, help_result.stderr + help_result.stdout

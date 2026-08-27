@@ -254,3 +254,38 @@ def test_corrupted_outbox_payload_hash_fails_closed(monkeypatch) -> None:
     assert result.disposition is DeliveryDisposition.PERMANENT_FAILURE
     assert result.error_code == "EVENT_PAYLOAD_HASH_MISMATCH"
     assert notifier.sent == []
+
+
+def test_canonical_entry_worker_requires_signal_delivery_gate(monkeypatch) -> None:
+    import waterfallhunter.main as main
+
+    monkeypatch.setattr(main.notifier, "enabled", True)
+    monkeypatch.setattr(main.notifier, "signal_delivery_enabled", False)
+    monkeypatch.setattr(main.notifier, "signal_delivery_cutover_at", None)
+    assert main._build_entry_notification_worker() is None
+
+
+def test_canonical_entry_worker_carries_release_cutover(monkeypatch) -> None:
+    import waterfallhunter.main as main
+
+    monkeypatch.setattr(settings, "telegram_token", "test-token")
+    monkeypatch.setattr(settings, "telegram_chat_id", "123")
+    monkeypatch.setattr(main.notifier, "enabled", True)
+    monkeypatch.setattr(main.notifier, "signal_delivery_enabled", True)
+    monkeypatch.setattr(main.notifier, "signal_delivery_cutover_at", 200)
+    worker = main._build_entry_notification_worker()
+    assert worker is not None
+    assert getattr(worker.transport, "cutover_at", None) == 200
+
+
+def test_canonical_entry_probe_only_disables_worker_for_permanent_rejection() -> None:
+    import waterfallhunter.main as main
+
+    assert main._telegram_probe_allows_worker({"reachable": True, "status_code": 200}) is True
+    assert main._telegram_probe_allows_worker({"reachable": False, "status_code": None}) is True
+    assert main._telegram_probe_allows_worker({"reachable": False, "status_code": 429}) is True
+    assert main._telegram_probe_allows_worker({"reachable": False, "status_code": 503}) is True
+    assert main._telegram_probe_allows_worker({"reachable": False, "status_code": 400}) is False
+    assert main._telegram_probe_allows_worker({"reachable": False, "status_code": 401}) is False
+    assert main._telegram_probe_allows_worker({"reachable": False, "status_code": 403}) is False
+    assert main._telegram_probe_allows_worker({"reachable": False, "status_code": 404}) is False

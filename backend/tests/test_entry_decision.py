@@ -1,6 +1,7 @@
 from waterfallhunter.core.entry_decision import (
     EntryDecisionPolicy,
     build_entry_decision,
+    build_expired_entry_decision,
 )
 
 
@@ -104,3 +105,134 @@ def test_triggered_strong_setup_becomes_active_not_a_disappearing_trigger() -> N
     packet = decide(strong_metrics(), status="TRIGGERED")
     assert packet["decision"] == "ACTIVE"
     assert packet["hard_blocked"] is False
+
+
+def test_missing_execution_inputs_are_hard_blocked() -> None:
+    metrics = strong_metrics()
+    metrics.pop("microstructure")
+    packet = decide(metrics)
+    assert packet["decision"] == "NO_TRADE"
+    assert packet["hard_blocked"] is True
+    assert "EXECUTION_UNAVAILABLE" in packet["block_reasons"]
+
+
+def test_candle_feature_extension_is_used_for_anti_chase() -> None:
+    metrics = strong_metrics()
+    metrics["candle_features"]["5m"]["extension_from_support_atr"] = 1.35
+    packet = decide(metrics, status="TRIGGERED")
+    assert packet["decision"] == "LATE"
+    assert "ANTI_CHASE_HARD_BLOCK" in packet["block_reasons"]
+
+
+def test_partial_cascade_coverage_uses_actual_available_weight() -> None:
+    metrics = strong_metrics()
+    metrics["cascade_intelligence"] = {
+        "status": "PARTIAL",
+        "readiness_points": 4.0,
+        "maximum_available": 4.0,
+    }
+    packet = decide(metrics)
+    assert packet["components"]["cascade"]["maximum"] == 4.0
+    assert packet["evidence_coverage_pct"] == 94.0
+
+
+def test_entry_ready_cannot_regress_to_forming_when_trade_plan_disappears() -> None:
+    previous = decide(strong_metrics())
+    assert previous["decision"] == "ENTRY_READY"
+    metrics = strong_metrics()
+    metrics.pop("position_setup")
+    packet = build_entry_decision(
+        metrics,
+        "PRE-TRIGGER",
+        evaluated_at=1_788_000_010,
+        analysis_age_seconds=10.0,
+        reference_age_seconds=3.0,
+        previous_decision=previous,
+    )
+    assert packet["decision"] == "INVALIDATED"
+    assert "ENTRY_CONDITIONS_LOST" in packet["block_reasons"]
+
+
+def test_stale_entry_ready_projects_to_invalidated_not_no_trade() -> None:
+    previous = decide(strong_metrics())
+    packet = build_entry_decision(
+        strong_metrics(),
+        "PRE-TRIGGER",
+        evaluated_at=1_788_000_200,
+        analysis_age_seconds=181.0,
+        reference_age_seconds=3.0,
+        previous_decision=previous,
+    )
+    assert packet["decision"] == "INVALIDATED"
+    assert "STALE_ANALYSIS" in packet["block_reasons"]
+
+
+def test_expiry_reconciler_requires_and_preserves_explicit_trade_plan_expiry() -> None:
+    metrics = strong_metrics()
+    metrics["position_setup"]["expires_at"] = 1_788_000_100
+    previous = decide(metrics)
+
+    assert build_expired_entry_decision(previous, evaluated_at=1_788_000_099) is None
+    expired = build_expired_entry_decision(previous, evaluated_at=1_788_000_100)
+
+    assert expired is not None
+    assert expired["decision"] == "EXPIRED"
+    assert expired["trade_plan"]["expires_at"] == 1_788_000_100
+    assert expired["block_reasons"] == ["TRADE_PLAN_EXPIRED"]
+
+    no_expiry = decide(strong_metrics())
+    assert build_expired_entry_decision(no_expiry, evaluated_at=1_788_999_999) is None
+
+
+def test_current_trade_plan_expiry_cannot_emit_entry_ready() -> None:
+    metrics = strong_metrics()
+    metrics["position_setup"]["expires_at"] = 1_788_000_000
+    packet = decide(metrics)
+    assert packet["decision"] == "NO_TRADE"
+    assert packet["hard_blocked"] is True
+    assert "TRADE_PLAN_EXPIRED" in packet["block_reasons"]
+
+
+def test_expired_plan_does_not_reemit_entry_ready_after_expired_transition() -> None:
+    metrics = strong_metrics()
+    metrics["position_setup"]["expires_at"] = 1_788_000_100
+    ready = decide(metrics)
+    expired = build_entry_decision(
+        metrics,
+        "PRE-TRIGGER",
+        evaluated_at=1_788_000_100,
+        analysis_age_seconds=10.0,
+        reference_age_seconds=3.0,
+        previous_decision=ready,
+    )
+    assert expired["decision"] == "EXPIRED"
+    repeated = build_entry_decision(
+        metrics,
+        "PRE-TRIGGER",
+        evaluated_at=1_788_000_101,
+        analysis_age_seconds=10.0,
+        reference_age_seconds=3.0,
+        previous_decision=expired,
+    )
+    assert repeated["decision"] == "NO_TRADE"
+    assert "TRADE_PLAN_EXPIRED" in repeated["block_reasons"]
+
+
+def test_entry_ready_expires_only_at_explicit_trade_plan_expiry() -> None:
+    metrics = strong_metrics()
+    metrics["position_setup"]["expires_at"] = 1_788_000_100
+    previous = decide(metrics)
+    assert previous["decision"] == "ENTRY_READY"
+    assert previous["trade_plan"]["expires_at"] == 1_788_000_100
+
+    packet = build_entry_decision(
+        metrics,
+        "PRE-TRIGGER",
+        evaluated_at=1_788_000_100,
+        analysis_age_seconds=10.0,
+        reference_age_seconds=3.0,
+        previous_decision=previous,
+    )
+
+    assert packet["decision"] == "EXPIRED"
+    assert packet["block_reasons"] == ["TRADE_PLAN_EXPIRED"]

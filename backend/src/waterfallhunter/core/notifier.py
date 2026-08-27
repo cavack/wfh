@@ -451,23 +451,18 @@ class TelegramNotifier:
         # every application lifespan so it is never bound to a previous loop.
         self.delivery_wakeup = asyncio.Event()
 
-        delivery_task = (
-            asyncio.create_task(self._delivery_loop())
-            if self.signal_delivery_enabled
-            else None
-        )
+        # Proactive signal delivery is owned exclusively by the canonical
+        # ENTRY_READY outbox worker in main.py.  Keep the legacy worker
+        # implementation for historical/replay compatibility, but never
+        # activate it from the interactive command bot.
+        delivery_task = None
 
         url = f"https://api.telegram.org/bot{self.token}/getUpdates"
         logger.info("📡 Interactive Telegram Command Center Online.")
-
-        if self.signal_delivery_enabled:
-            logger.info(
-                "Durable STRICT Telegram signal delivery enabled "
-                "from cutover_at=%s.",
-                self.signal_delivery_cutover_at,
-            )
-        else:
-            logger.info("Durable STRICT Telegram signal delivery disabled.")
+        logger.info(
+            "Legacy TRIGGERED Telegram delivery is disabled; "
+            "canonical ENTRY_READY delivery is managed by the runtime."
+        )
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -579,11 +574,27 @@ class TelegramNotifier:
 class TelegramSignalTransport:
     """Durable Telegram transport with explicit HTTP outcome classification."""
 
-    def __init__(self, token: str, chat_id: str, *, http_transport=None):
+    def __init__(
+        self,
+        token: str,
+        chat_id: str,
+        *,
+        cutover_at: int | None = None,
+        http_transport=None,
+    ):
         self.token = str(token or "").strip()
         self.chat_id = str(chat_id or "").strip()
         if not self.token or not self.chat_id:
             raise ValueError("Telegram token and chat id are required")
+        self.cutover_at = (
+            cutover_at
+            if (
+                isinstance(cutover_at, int)
+                and not isinstance(cutover_at, bool)
+                and cutover_at > 0
+            )
+            else None
+        )
         self.http_transport = http_transport
 
     async def deliver(self, event: dict) -> DeliveryResult:
@@ -593,6 +604,29 @@ class TelegramSignalTransport:
             return DeliveryResult(DeliveryDisposition.PERMANENT_FAILURE, "INVALID_PAYLOAD_JSON")
         if payload.get("contract_version") != "entry_ready_notification_v1":
             return DeliveryResult(DeliveryDisposition.PERMANENT_FAILURE, "UNSUPPORTED_PAYLOAD")
+
+        if self.cutover_at is not None:
+            packet = payload.get("decision_packet")
+            event_at = packet.get("evaluated_at") if isinstance(packet, dict) else None
+            if (
+                isinstance(event_at, bool)
+                or not isinstance(event_at, int)
+                or event_at < 0
+            ):
+                return DeliveryResult(
+                    DeliveryDisposition.PERMANENT_FAILURE,
+                    "INVALID_EVENT_TIMESTAMP",
+                )
+            if event_at < self.cutover_at:
+                logger.info(
+                    "Suppressing pre-cutover ENTRY_READY event %s "
+                    "(evaluated_at=%s cutover_at=%s)",
+                    event.get("event_id"),
+                    event_at,
+                    self.cutover_at,
+                )
+                return DeliveryResult(DeliveryDisposition.DELIVERED)
+
         text = TelegramNotifier.build_entry_ready_message(payload)
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
         try:
@@ -603,7 +637,16 @@ class TelegramSignalTransport:
         except httpx.HTTPError:
             return DeliveryResult(DeliveryDisposition.TRANSIENT_FAILURE, "TELEGRAM_HTTP_ERROR")
         if 200 <= response.status_code < 300:
-            return DeliveryResult(DeliveryDisposition.DELIVERED)
+            try:
+                response_payload = response.json()
+            except (ValueError, json.JSONDecodeError):
+                response_payload = None
+            if isinstance(response_payload, dict) and response_payload.get("ok") is True:
+                return DeliveryResult(DeliveryDisposition.DELIVERED)
+            return DeliveryResult(
+                DeliveryDisposition.TRANSIENT_FAILURE,
+                "INVALID_TELEGRAM_RESPONSE",
+            )
         if response.status_code == 429:
             retry_after = None
             try:
@@ -616,10 +659,60 @@ class TelegramSignalTransport:
         return DeliveryResult(DeliveryDisposition.TRANSIENT_FAILURE, f"HTTP_{response.status_code}")
 
     async def probe(self) -> dict:
-        url = f"https://api.telegram.org/bot{self.token}/getMe"
+        bot_url = f"https://api.telegram.org/bot{self.token}/getMe"
+        chat_url = f"https://api.telegram.org/bot{self.token}/getChat"
         try:
             async with httpx.AsyncClient(timeout=10.0, transport=self.http_transport) as client:
-                response = await client.get(url)
-            return {"configured": True, "reachable": response.status_code == 200, "status_code": response.status_code}
+                bot_response = await client.get(bot_url)
+                try:
+                    bot_payload = bot_response.json()
+                except (ValueError, json.JSONDecodeError):
+                    bot_payload = None
+                bot_reachable = bool(
+                    bot_response.status_code == 200
+                    and isinstance(bot_payload, dict)
+                    and bot_payload.get("ok") is True
+                )
+                if not bot_reachable:
+                    return {
+                        "configured": True,
+                        "reachable": False,
+                        "bot_reachable": False,
+                        "chat_reachable": False,
+                        "status_code": bot_response.status_code,
+                        "bot_status_code": bot_response.status_code,
+                        "chat_status_code": None,
+                    }
+
+                chat_response = await client.get(
+                    chat_url,
+                    params={"chat_id": self.chat_id},
+                )
+                try:
+                    chat_payload = chat_response.json()
+                except (ValueError, json.JSONDecodeError):
+                    chat_payload = None
+                chat_reachable = bool(
+                    chat_response.status_code == 200
+                    and isinstance(chat_payload, dict)
+                    and chat_payload.get("ok") is True
+                )
+                return {
+                    "configured": True,
+                    "reachable": bool(bot_reachable and chat_reachable),
+                    "bot_reachable": bot_reachable,
+                    "chat_reachable": chat_reachable,
+                    "status_code": chat_response.status_code,
+                    "bot_status_code": bot_response.status_code,
+                    "chat_status_code": chat_response.status_code,
+                }
         except httpx.HTTPError:
-            return {"configured": True, "reachable": False, "status_code": None}
+            return {
+                "configured": True,
+                "reachable": False,
+                "bot_reachable": False,
+                "chat_reachable": False,
+                "status_code": None,
+                "bot_status_code": None,
+                "chat_status_code": None,
+            }

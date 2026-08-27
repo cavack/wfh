@@ -280,6 +280,45 @@ function DecisionSection({ title, icon, symbols: items, candidates }: Readonly<{
     </section>
   );
 }
+function timeText(value: unknown): string {
+  const timestamp = finite(value);
+  if (timestamp === undefined) return "—";
+  return new Date(timestamp * 1000).toLocaleString("en-US", {
+    month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
+}
+
+function RecentDecisionChanges({ value }: Readonly<{ value: unknown }>) {
+  const rows = Array.isArray(value)
+    ? value.map(record).filter((row) => Object.keys(row).length > 0).slice(0, 10)
+    : [];
+  if (rows.length === 0) return null;
+  return (
+    <section className="panel mt-6 p-4 sm:p-5" aria-label="Recent canonical decision changes">
+      <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-slate-300">
+        <Activity size={16} className="text-cyan-300" />Recent decision changes
+      </h2>
+      <div className="table-scroll mt-3">
+        <table className="data-table min-w-[760px]">
+          <thead><tr><th>Changed</th><th>Symbol</th><th>Previous</th><th>Decision</th><th>Reason</th></tr></thead>
+          <tbody>{rows.map((row, index) => {
+            const blocks = Array.isArray(row.block_reasons) ? row.block_reasons.filter((item) => typeof item === "string") : [];
+            const reasons = Array.isArray(row.reason_codes) ? row.reason_codes.filter((item) => typeof item === "string") : [];
+            const reason = String(row.transition_reason ?? blocks[0] ?? reasons[0] ?? "—");
+            return <tr key={String(row.event_id ?? `${row.symbol ?? "unknown"}-${row.event_at ?? index}`)}>
+              <td className="whitespace-nowrap text-slate-400">{timeText(row.event_at ?? row.evaluated_at)}</td>
+              <td className="font-mono text-sky-300">{String(row.symbol ?? "—")}</td>
+              <td>{String(row.previous_decision ?? "—")}</td>
+              <td className="font-medium text-cyan-100">{String(row.decision ?? "UNAVAILABLE")}</td>
+              <td className="max-w-[340px] truncate" title={reason}>{reason}</td>
+            </tr>;
+          })}</tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
 export function DecisionTerminal({ terminal, candidates }: Readonly<{
   terminal: unknown;
   candidates: Record<string, Candidate>;
@@ -328,6 +367,7 @@ export function DecisionTerminal({ terminal, candidates }: Readonly<{
         symbols={late}
         candidates={candidates}
       />
+      <RecentDecisionChanges value={packet.recent_changes} />
       <CandidateTable candidates={candidates} />
     </section>
   );
