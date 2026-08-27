@@ -439,6 +439,16 @@ class TelegramNotifier:
             f"🔻 Taker B/S: <b>{cls._number(flow.get('taker_buy_sell_ratio'), 3)}</b> · Sell share: <b>{cls._number(flow.get('sell_share_pct'), 1)}%</b>",
             f"💥 Cascade: <b>{escape(str(cascade.get('status') or 'UNAVAILABLE'))}</b> · {cls._number(cascade.get('readiness_points'), 1)}/10",
         ]
+        advisory = payload.get("ai_advisory") if isinstance(payload.get("ai_advisory"), dict) else {}
+        if advisory.get("ai_status") == "AVAILABLE":
+            lines.append(
+                "🤖 AI: "
+                f"<b>{escape(str(advisory.get('ai_advice') or 'UNAVAILABLE'))}</b> · "
+                f"{cls._number(advisory.get('ai_confidence'), 0)}% · "
+                f"{escape(str(advisory.get('ai_provider') or 'none'))}"
+            )
+        else:
+            lines.append("🤖 AI: <b>UNAVAILABLE</b>")
         if reasons:
             lines.append("🧾 " + " · ".join(reasons))
         lines.extend(["", "<i>Signal only. No live order is placed.</i>"])
@@ -664,6 +674,36 @@ class TelegramSignalTransport:
             return False, "ENTRY_READY_SUPERSEDED"
         return True, None
 
+    def _load_advisory_for_decision(self, decision_event_id: int) -> dict[str, Any] | None:
+        if self.decision_db_path is None:
+            return None
+        try:
+            db_path = Path(self.decision_db_path).resolve()
+            with closing(
+                sqlite3.connect(
+                    f"{db_path.as_uri()}?mode=ro", uri=True, timeout=5.0
+                )
+            ) as conn:
+                row = conn.execute(
+                    "SELECT advisory_json, advisory_hash "
+                    "FROM entry_decision_advisories "
+                    "WHERE decision_event_id=? ORDER BY id DESC LIMIT 1",
+                    (decision_event_id,),
+                ).fetchone()
+        except (OSError, sqlite3.Error):
+            return None
+        if row is None:
+            return None
+        try:
+            advisory = json.loads(str(row[0]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(advisory, dict):
+            return None
+        if str(row[1] or "") != canonical_sha256(advisory):
+            return None
+        return advisory
+
     async def deliver(self, event: dict) -> DeliveryResult:
         try:
             payload = json.loads(str(event.get("payload_json") or "{}"))
@@ -671,6 +711,11 @@ class TelegramSignalTransport:
             return DeliveryResult(DeliveryDisposition.PERMANENT_FAILURE, "INVALID_PAYLOAD_JSON")
         if payload.get("contract_version") != "entry_ready_notification_v1":
             return DeliveryResult(DeliveryDisposition.PERMANENT_FAILURE, "UNSUPPORTED_PAYLOAD")
+        expected_hash = event.get("payload_hash")
+        if expected_hash is not None and str(expected_hash) != canonical_sha256(payload):
+            return DeliveryResult(
+                DeliveryDisposition.PERMANENT_FAILURE, "PAYLOAD_HASH_MISMATCH"
+            )
 
         packet = payload.get("decision_packet")
         event_at = packet.get("evaluated_at") if isinstance(packet, dict) else None
@@ -696,6 +741,20 @@ class TelegramSignalTransport:
             )
             return DeliveryResult(DeliveryDisposition.DELIVERED)
 
+        decision_event_id = payload.get("decision_event_id")
+        advisory = (
+            self._load_advisory_for_decision(decision_event_id)
+            if isinstance(decision_event_id, int)
+            and not isinstance(decision_event_id, bool)
+            and decision_event_id > 0
+            else None
+        )
+        payload["ai_advisory"] = advisory or {
+            "ai_status": "UNAVAILABLE",
+            "ai_provider": "none",
+            "ai_advice": "UNAVAILABLE",
+            "ai_confidence": 0,
+        }
         text = TelegramNotifier.build_entry_ready_message(payload)
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
         try:

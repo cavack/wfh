@@ -103,7 +103,16 @@ def test_deterministic_market_data_veto_hard_blocks_strong_setup() -> None:
 
 
 def test_triggered_strong_setup_becomes_active_not_a_disappearing_trigger() -> None:
-    packet = decide(strong_metrics(), status="TRIGGERED")
+    previous = decide(strong_metrics(), status="PRE-TRIGGER")
+    assert previous["decision"] == "ENTRY_READY"
+    packet = build_entry_decision(
+        strong_metrics(),
+        "TRIGGERED",
+        evaluated_at=1_788_000_001,
+        analysis_age_seconds=10.0,
+        reference_age_seconds=3.0,
+        previous_decision=previous,
+    )
     assert packet["decision"] == "ACTIVE"
     assert packet["hard_blocked"] is False
 
@@ -331,3 +340,40 @@ def test_terminal_decision_can_reset_on_distinct_lifecycle() -> None:
     )
     assert fresh_episode["decision"] == "ENTRY_READY"
     assert fresh_episode["lifecycle_id"] == 8
+
+
+def test_triggered_setup_requires_same_lifecycle_entry_ready_predecessor() -> None:
+    packet = build_entry_decision(
+        strong_metrics(),
+        "TRIGGERED",
+        evaluated_at=1_788_000_000,
+        analysis_age_seconds=10.0,
+        reference_age_seconds=3.0,
+        lifecycle_id=9,
+    )
+    assert packet["decision"] == "NO_TRADE"
+    assert packet["hard_blocked"] is True
+    assert "ENTRY_READY_PREDECESSOR_REQUIRED" in packet["block_reasons"]
+
+
+def test_triggered_setup_becomes_active_after_same_lifecycle_entry_ready() -> None:
+    ready = build_entry_decision(
+        strong_metrics(),
+        "ARMED",
+        evaluated_at=1_788_000_000,
+        analysis_age_seconds=10.0,
+        reference_age_seconds=3.0,
+        lifecycle_id=9,
+    )
+    assert ready["decision"] == "ENTRY_READY"
+    active = build_entry_decision(
+        strong_metrics(),
+        "TRIGGERED",
+        evaluated_at=1_788_000_001,
+        analysis_age_seconds=10.0,
+        reference_age_seconds=3.0,
+        lifecycle_id=9,
+        previous_decision=ready,
+    )
+    assert active["decision"] == "ACTIVE"
+    assert active["hard_blocked"] is False

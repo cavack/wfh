@@ -111,6 +111,27 @@ class MultiExchangeValidator:
             "below_vwap": last_value < vwap_value,
         }
 
+    def _attach_live_liquidation_flow(
+        self,
+        metrics: dict[str, Any],
+        *,
+        exchange_name: str,
+        mapped_symbol: str,
+        now: float | None = None,
+    ) -> None:
+        getter = getattr(self.ws_manager, "get_realtime_liquidation_flow", None)
+        if not callable(getter):
+            metrics.pop("liquidation_flow", None)
+            return
+        flow = getter(exchange_name, mapped_symbol, now=now)
+        if not isinstance(flow, dict) or flow.get("available") is not True:
+            metrics.pop("liquidation_flow", None)
+            return
+        metrics["liquidation_flow"] = flow
+        sources = metrics.get("data_sources")
+        if isinstance(sources, dict):
+            sources["liquidations"] = f"{exchange_name}:public_ws"
+
     def _position_setup_from_candle_capture(
         self,
         *,
@@ -2043,9 +2064,16 @@ class MultiExchangeValidator:
         if stage_lifecycle is not None:
             metrics["stage_lifecycle"] = stage_lifecycle
 
+        cascade_evaluated_at = int(time.time())
+        self._attach_live_liquidation_flow(
+            metrics,
+            exchange_name=str(metrics.get("exchange") or ""),
+            mapped_symbol=mapped_sym,
+            now=float(cascade_evaluated_at),
+        )
         metrics["cascade_intelligence"] = build_cascade_evidence(
             metrics,
-            evaluated_at=int(time.time()),
+            evaluated_at=cascade_evaluated_at,
         )
 
         if not derivatives.get(

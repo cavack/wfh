@@ -446,3 +446,18 @@ def test_ci_exports_and_uploads_exact_tested_image_bundle_to_deploy_job() -> Non
     assert "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093" in deploy_text
     assert "WFH_TESTED_IMAGE_BUNDLE_SHA256" in deploy_text
     assert "WFH_TESTED_BACKEND_IMAGE_DIGEST" in deploy_text
+
+
+def test_production_compose_wrapper_exports_canonical_env_path() -> None:
+    wrapper = (ROOT / "scripts/production_compose.sh").read_text(encoding="utf-8")
+    assert 'ENV_FILE="${WFH_ENV_FILE:-/etc/waterfallhunter/waterfallhunter.env}"' in wrapper
+    assert 'export WFH_ENV_FILE="$ENV_FILE"' in wrapper
+
+
+def test_ci_tested_image_bundle_upload_path_is_not_hidden() -> None:
+    ci_text = CI_WORKFLOW.read_text(encoding="utf-8")
+    container_job = ci_text.split("\n  container-validation:\n", maxsplit=1)[1].split(
+        "\n  repository-hygiene:\n", maxsplit=1
+    )[0]
+    assert "path: ci-artifacts/" in container_job
+    assert ".ci-artifacts/" not in container_job

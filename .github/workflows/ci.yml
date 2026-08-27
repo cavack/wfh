@@ -122,15 +122,15 @@ jobs:
           for digest in "$TESTED_BACKEND_IMAGE_DIGEST" "$TESTED_FRONTEND_IMAGE_DIGEST" "$TESTED_WATCHDOG_IMAGE_DIGEST"; do
             [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "Invalid tested image digest" >&2; exit 1; }
           done
-          install -d -m 0755 .ci-artifacts
-          docker save -o .ci-artifacts/wfh-tested-images.tar \
+          install -d -m 0755 ci-artifacts
+          docker save -o ci-artifacts/wfh-tested-images.tar \
             waterfallhunter-waterfall-backend \
             waterfallhunter-frontend \
             waterfallhunter-watchdog
-          BUNDLE_SHA256="$(sha256sum .ci-artifacts/wfh-tested-images.tar | awk '{print $1}')"
+          BUNDLE_SHA256="$(sha256sum ci-artifacts/wfh-tested-images.tar | awk '{print $1}')"
           [[ "$BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]]
-          printf '%s  %s\n' "$BUNDLE_SHA256" wfh-tested-images.tar > .ci-artifacts/wfh-tested-images.tar.sha256
-          cat > .ci-artifacts/image-digests.txt <<EOF
+          printf '%s  %s\n' "$BUNDLE_SHA256" wfh-tested-images.tar > ci-artifacts/wfh-tested-images.tar.sha256
+          cat > ci-artifacts/image-digests.txt <<EOF
           backend=$TESTED_BACKEND_IMAGE_DIGEST
           frontend=$TESTED_FRONTEND_IMAGE_DIGEST
           watchdog=$TESTED_WATCHDOG_IMAGE_DIGEST
@@ -148,7 +148,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wfh-tested-images-${{ github.sha }}
-          path: .ci-artifacts/
+          path: ci-artifacts/
           if-no-files-found: error
           retention-days: 7
       - name: Verify OCI revision labels

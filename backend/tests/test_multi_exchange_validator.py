@@ -304,3 +304,30 @@ def test_live_position_setup_has_bounded_expiry(monkeypatch):
     )
     assert setup["status"] == "READY"
     assert setup["expires_at"] == 1_788_000_180
+
+
+def test_validator_attaches_observed_liquidation_flow_to_metrics():
+    instance = validator()
+    flow = {
+        "available": True,
+        "observed_at": 100.0,
+        "long_liquidation_notional_1m": 700.0,
+        "short_liquidation_notional_1m": 100.0,
+        "liquidation_velocity_usd_per_min": 800.0,
+        "burst_ratio": 4.0,
+    }
+
+    class LiquidationCache:
+        @staticmethod
+        def get_realtime_liquidation_flow(exchange, symbol, now=None):
+            assert exchange == "binance"
+            assert symbol == "TEST/USDT:USDT"
+            assert now == 100.0
+            return flow
+
+    instance.ws_manager = LiquidationCache()
+    metrics = {}
+    instance._attach_live_liquidation_flow(
+        metrics, exchange_name="binance", mapped_symbol="TEST/USDT:USDT", now=100.0
+    )
+    assert metrics["liquidation_flow"] == flow

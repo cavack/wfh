@@ -339,3 +339,85 @@ def test_telegram_transport_suppresses_superseded_entry_ready_before_send(tmp_pa
     result = asyncio.run(transport.deliver(event))
     assert result.disposition is DeliveryDisposition.DELIVERED
     assert calls == []
+
+
+def test_telegram_transport_rejects_payload_hash_mismatch_before_send() -> None:
+    calls = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    packet = entry_packet()
+    packet["evaluated_at"] = int(time.time())
+    payload = {
+        "contract_version": "entry_ready_notification_v1",
+        "event_id": "entry:1:ready",
+        "event_type": "ENTRY_READY",
+        "decision_event_id": 1,
+        "symbol": "SXT/USDT:USDT",
+        "decision_packet": packet,
+    }
+    transport = TelegramSignalTransport(
+        "token", "123", http_transport=httpx.MockTransport(handler)
+    )
+    result = asyncio.run(transport.deliver({
+        "event_id": "entry:1:ready",
+        "payload_json": json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        "payload_hash": "0" * 64,
+    }))
+    assert result.disposition is DeliveryDisposition.PERMANENT_FAILURE
+    assert result.error_code == "PAYLOAD_HASH_MISMATCH"
+    assert calls == []
+
+
+def test_telegram_transport_hydrates_available_ai_advisory_from_decision_event(tmp_path, monkeypatch) -> None:
+    import waterfallhunter.core.notifier as notifier_module
+
+    db_path = migrate_test_database(tmp_path / "entry-advisory-delivery.db")
+    store = EntryDecisionStore(db_path)
+    packet = entry_packet()
+    packet["evaluated_at"] = 100
+    decision_event_id = store.append_if_changed("SXT/USDT:USDT", packet)
+    assert decision_event_id == 1
+    store.append_advisory(
+        decision_event_id,
+        {
+            "observational_only": True,
+            "decision_mutated": False,
+            "ai_advice": "SHORT",
+            "ai_confidence": 88,
+            "ai_reasoning": "sell pressure aligns",
+            "ai_provider": "gemini",
+            "ai_model": "gemini-test",
+            "ai_status": "AVAILABLE",
+        },
+        advisory_at=100,
+    )
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT event_id,payload_json,payload_hash FROM entry_notification_outbox"
+        ).fetchone()
+    assert row is not None
+    sent = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    monkeypatch.setattr(notifier_module.time, "time", lambda: 101.0)
+    transport = TelegramSignalTransport(
+        "token", "123", decision_db_path=db_path,
+        max_entry_age_seconds=180, http_transport=httpx.MockTransport(handler),
+    )
+    result = asyncio.run(transport.deliver({
+        "event_id": row[0],
+        "payload_json": row[1],
+        "payload_hash": row[2],
+    }))
+    assert result.disposition is DeliveryDisposition.DELIVERED
+    assert len(sent) == 1
+    text = sent[0]["text"]
+    assert "AI" in text
+    assert "SHORT" in text
+    assert "88" in text

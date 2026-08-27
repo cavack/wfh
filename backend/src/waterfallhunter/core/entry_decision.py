@@ -597,6 +597,8 @@ def _apply_previous_transition(
             previous_state,
             list(previous_reasons) if isinstance(previous_reasons, list) else block_reasons,
         )
+    if distinct_lifecycle:
+        return decision, block_reasons
     if previous_state not in {"ENTRY_READY", "ACTIVE"}:
         return decision, block_reasons
     previous_expiry = _record(previous.get("trade_plan")).get("expires_at")
@@ -671,6 +673,18 @@ def build_entry_decision(
         coverage_pct=coverage_pct, direction_ok=direction_ok, timing_ok=timing >= 10.0,
         execution_ok=execution_ok, cross_ok=cross_ok, trade_plan_ok=trade_plan_ok, policy=policy,
     )
+    if decision == "ACTIVE":
+        previous = _record(previous_decision)
+        previous_state = str(previous.get("decision") or "")
+        previous_lifecycle_id = previous.get("lifecycle_id")
+        lifecycle_matches = (
+            previous_lifecycle_id == lifecycle_id
+            if lifecycle_id is not None
+            else previous_lifecycle_id is None
+        )
+        if previous_state not in {"ENTRY_READY", "ACTIVE"} or not lifecycle_matches:
+            decision = "NO_TRADE"
+            block_reasons.append("ENTRY_READY_PREDECESSOR_REQUIRED")
     if decision in {"ENTRY_READY", "ACTIVE"} and not block_reasons:
         reasons.append("ENTRY_GATES_PASS")
     decision, block_reasons = _apply_previous_transition(

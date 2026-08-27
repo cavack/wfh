@@ -5,6 +5,8 @@ PROJECT_DIR="${WFH_PROJECT_DIR:-/srv/waterfallhunter/app}"
 ENV_FILE="${WFH_ENV_FILE:-/etc/waterfallhunter/waterfallhunter.env}"
 OVERRIDE="${WFH_PRODUCTION_COMPOSE_OVERRIDE:-/srv/waterfallhunter/runtime/production-volumes.override.yml}"
 
+export WFH_ENV_FILE="$ENV_FILE"
+
 [[ -f "$PROJECT_DIR/docker-compose.yml" ]] || {
   echo "ERROR: production compose file missing: $PROJECT_DIR/docker-compose.yml" >&2
   exit 2
