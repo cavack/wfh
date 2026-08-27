@@ -2,7 +2,7 @@
 
 ## Objective
 
-Increase valid paper-alert coverage without relaxing execution quality. The system must not manufacture data, execute live orders, or promote a parameter set solely because of a small-sample win rate.
+Increase valid simulated-alert coverage without relaxing execution quality. The system must not manufacture data, execute live orders, or promote a parameter set solely because of a small-sample win rate.
 
 ## Architecture
 
@@ -37,7 +37,7 @@ The strategy is split into three deterministic stages:
 
 ## Acceptance Criteria
 
-A configuration may be proposed for paper deployment only when all conditions hold:
+A configuration may be proposed for simulated deployment only when all conditions hold:
 
 - At least 50 settled validation trades.
 - Positive net expectancy after configured costs.

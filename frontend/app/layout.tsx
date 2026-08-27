@@ -7,7 +7,7 @@ export const viewport = {
 }
 
 export const metadata = {
-  title: 'WaterfallHunter — Paper Research Terminal',
+  title: 'WaterfallHunter — Simulated Research Terminal',
   description: 'Observational USDT perpetual futures monitoring. Signal-only, no live orders.',
 }
 

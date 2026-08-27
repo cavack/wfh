@@ -1,4 +1,4 @@
-"""Deterministic isolated-margin paper portfolio replay."""
+"""Deterministic isolated-margin simulated portfolio replay."""
 
 from __future__ import annotations
 

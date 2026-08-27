@@ -73,7 +73,7 @@ live_execution_allowed=false
 ```
 
 Only a separate explicit `FEATURE_PROMOTION_APPROVAL` may authorize a later
-paper-product change. Live trading remains outside the system contract.
+simulated-product change. Live trading remains outside the system contract.
 
 Example invocation:
 

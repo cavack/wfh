@@ -2,7 +2,7 @@
 
 Release source: `feat/wave7-deployment-certification`.
 
-This release consolidates the stacked Wave 1C through Wave 7 implementation onto `main`, including the new dashboard, typed/streamed dashboard contracts, Backtest Lab, Lifecycle V2 shadow monitoring, strict scientific validation, risk-first paper execution/replay, and deployment certification tooling.
+This release consolidates the stacked Wave 1C through Wave 7 implementation onto `main`, including the new dashboard, typed/streamed dashboard contracts, Backtest Lab, Lifecycle V2 shadow monitoring, strict scientific validation, risk-first simulated execution/replay, and deployment certification tooling.
 
 Production safety boundary:
 

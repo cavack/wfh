@@ -27,7 +27,7 @@ def _tracked_text_files() -> list[Path]:
 
 
 def test_execution_mode_is_signal_only() -> None:
-    deprecated_mode = "PAPER" + "_ONLY"
+    deprecated_mode = "SIMULATED" + "_ONLY"
     assert ExecutionMode.SIGNAL_ONLY.value == "SIGNAL_ONLY"
     assert deprecated_mode not in {member.value for member in ExecutionMode}
 
@@ -39,13 +39,13 @@ def test_signal_decision_defaults_to_signal_only() -> None:
 
 def test_tracked_repository_text_does_not_use_deprecated_product_boundary_terms() -> None:
     forbidden = (
-        "PAPER" + "_ONLY",
-        "paper" + "-only",
-        "Paper" + "-only",
-        "paper" + " trading",
-        "Paper" + " trading",
-        "paper" + "-trading",
-        "Paper" + "-trading",
+        "SIMULATED" + "_ONLY",
+        "simulated" + "-only",
+        "Simulated" + "-only",
+        "simulated" + " trading",
+        "Simulated" + " trading",
+        "simulated" + "-trading",
+        "Simulated" + "-trading",
     )
     deprecated_word = "pa" + "per"
     standalone_deprecated = re.compile(

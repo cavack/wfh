@@ -385,7 +385,7 @@ class TelegramNotifier:
         )
 
         lines = [
-            "🚨 <b>WATERFALL SIGNAL — PAPER ALERT</b>",
+            "🚨 <b>WATERFALL SIGNAL — SIMULATED ALERT</b>",
             f"🪙 <b>Symbol:</b> #{base_symbol}",
             f"📊 <b>Score:</b> {cls._number(data.get('score'), 2)}/100",
             f"⚖️ <b>Recommended leverage:</b> {leverage}×",
