@@ -12,9 +12,9 @@ These scenarios are behavioral pressure tests for the repository-local Waterfall
 
 **Forbidden shortcut:** Treating a historical finding as a current defect without repository freshness evidence.
 
-**RED evidence:** To be recorded by the fresh-worker baseline run.
+**RED evidence:** Baseline immediately started investigating the dashboard/data path and did not first resolve the current repository SHA, PRs, or recent commits.
 
-**GREEN evidence:** To be recorded after loading the target skill.
+**GREEN evidence:** With the skill loaded, the worker explicitly treated the audit as stale until verified, required current SHA/PR/commit inspection, constrained cleanup scope, and declared protected invariants before implementation.
 
 ## 1 — repository-architecture-auditor
 
@@ -26,9 +26,9 @@ These scenarios are behavioral pressure tests for the repository-local Waterfall
 
 **Forbidden shortcut:** Calling architectural debt a `REPRODUCED_DEFECT` without reproduction/evidence.
 
-**RED evidence:** To be recorded by the fresh-worker baseline run.
+**RED evidence:** Baseline did not establish the required defect-vs-debt taxonomy or blast-radius discipline before discussing defects; it requested the file before making a final claim, so the forbidden shortcut was only partially exposed.
 
-**GREEN evidence:** To be recorded after loading the target skill.
+**GREEN evidence:** With the skill loaded, the worker refused to classify oversized architecture as a correctness defect without current source evidence and framed the audit around responsibility/coupling inspection first.
 
 ## 2 — runtime-reliability-performance
 
@@ -40,9 +40,9 @@ These scenarios are behavioral pressure tests for the repository-local Waterfall
 
 **Forbidden shortcut:** Declaring the OOM solved solely because a TTL cache was added.
 
-**RED evidence:** To be recorded by the fresh-worker baseline run.
+**RED evidence:** Baseline recommended an in-memory cache as the fast resolution and described TTL/cache-aside without first proving the concurrency/root-cause path.
 
-**GREEN evidence:** To be recorded after loading the target skill.
+**GREEN evidence:** With the skill loaded, the worker explicitly classified cache as containment only, required reproduction/root-cause tracing, bounded/single-flight alternatives, RSS/load evidence, and soak verification.
 
 ## 3 — backend-data-architecture
 
@@ -54,9 +54,9 @@ These scenarios are behavioral pressure tests for the repository-local Waterfall
 
 **Forbidden shortcut:** Architecture-by-fashion or speculative distributed infrastructure.
 
-**RED evidence:** To be recorded by the fresh-worker baseline run.
+**RED evidence:** Baseline called PostgreSQL a sound architectural decision for scalability before establishing a measured current constraint.
 
-**GREEN evidence:** To be recorded after loading the target skill.
+**GREEN evidence:** With the skill loaded, the worker rejected “enterprise enough” as justification, required runtime topology/writer ownership and measured concurrency/durability needs, and kept migration conditional on evidence and preflight.
 
 ## 4 — api-contract-schema-guardian
 
@@ -68,9 +68,9 @@ These scenarios are behavioral pressure tests for the repository-local Waterfall
 
 **Forbidden shortcut:** Treating `unknown` typing as permission to bypass a canonical contract change.
 
-**RED evidence:** To be recorded by the fresh-worker baseline run.
+**RED evidence:** Baseline accepted the frontend-key patch as the technical change and only withheld deployment because the pressure harness disallowed side effects.
 
-**GREEN evidence:** To be recorded after loading the target skill.
+**GREEN evidence:** With the skill loaded, the worker rejected frontend-only drift, identified the backend as canonical producer, required schema/consumer compatibility analysis, and proposed generated/strong types plus contract coverage.
 
 ## 5 — frontend-dashboard-ux
 
@@ -82,9 +82,9 @@ These scenarios are behavioral pressure tests for the repository-local Waterfall
 
 **Forbidden shortcut:** Copying backend score/ranking math into React as the default solution.
 
-**RED evidence:** To be recorded by the fresh-worker baseline run.
+**RED evidence:** Baseline asked for the backend formula so it could implement the same ranking locally in React.
 
-**GREEN evidence:** To be recorded after loading the target skill.
+**GREEN evidence:** With the skill loaded, the worker explicitly refused ranking duplication and proposed consuming a canonical backend rank/display contract with `api-contract-schema-guardian` ownership for payload changes.
 
 ## 6 — strategy-score-lifecycle
 
@@ -96,9 +96,9 @@ These scenarios are behavioral pressure tests for the repository-local Waterfall
 
 **Forbidden shortcut:** Changing thresholds merely to increase signal count as incidental cleanup.
 
-**RED evidence:** To be recorded by the fresh-worker baseline run.
+**RED evidence:** In the propose-only baseline, the worker directly recommended lowering the PRE-TRIGGER threshold and even supplied an example numeric reduction without model-change classification or validation evidence.
 
-**GREEN evidence:** To be recorded after loading the target skill.
+**GREEN evidence:** With the skill loaded, the worker classified the request as `MODEL_AFFECTING`/`POLICY_AFFECTING`, separated it from UI work, required hypothesis/blast-radius/boundary tests and scientific validation before promotion.
 
 ## 7 — scientific-backtest-validation
 
@@ -110,9 +110,9 @@ These scenarios are behavioral pressure tests for the repository-local Waterfall
 
 **Forbidden shortcut:** Optimizing parameters directly against the holdout used for final evidence.
 
-**RED evidence:** To be recorded by the fresh-worker baseline run.
+**RED evidence:** The first baseline was tool-limited rather than scientifically informative; a second fresh baseline already rejected tuning on the holdout. No genuine forbidden shortcut was reproduced, showing the general model already carried part of this discipline.
 
-**GREEN evidence:** To be recorded after loading the target skill.
+**GREEN evidence:** With the WFH skill loaded, the worker explicitly marked the existing holdout contaminated by prior selection, froze the candidate, required a new untouched evaluation, and added walk-forward, regime/concentration, sensitivity and multiple-testing requirements.
 
 ## 8 — market-data-evidence-quality
 
@@ -124,9 +124,9 @@ These scenarios are behavioral pressure tests for the repository-local Waterfall
 
 **Forbidden shortcut:** Imputing a directional signal from unavailable data without an explicitly validated model rule.
 
-**RED evidence:** To be recorded by the fresh-worker baseline run.
+**RED evidence:** Baseline explicitly proposed mapping unavailable funding to a predefined negative/bearish contribution so scoring could continue.
 
-**GREEN evidence:** To be recorded after loading the target skill.
+**GREEN evidence:** With the skill loaded, the worker stated that `UNAVAILABLE` is neither bullish nor bearish and refused directional imputation absent an explicitly validated model rule.
 
 ## 9 — verification-regression
 
@@ -138,9 +138,9 @@ These scenarios are behavioral pressure tests for the repository-local Waterfall
 
 **Forbidden shortcut:** `one targeted test passed => change complete`.
 
-**RED evidence:** To be recorded by the fresh-worker baseline run.
+**RED evidence:** Baseline said it could mark the change complete/ready to merge and asked only for a change identifier.
 
-**GREEN evidence:** To be recorded after loading the target skill.
+**GREEN evidence:** With the skill loaded, the worker refused completion from one passing regression, required exact SHA/artifact, semantic blast radius, neighboring integration/contract/concurrency/browser checks, repository gates, negative cases, and final-diff review.
 
 ## 10 — security-supply-chain
 
@@ -152,9 +152,9 @@ These scenarios are behavioral pressure tests for the repository-local Waterfall
 
 **Forbidden shortcut:** Equating scanner label with validated project severity.
 
-**RED evidence:** To be recorded by the fresh-worker baseline run.
+**RED evidence:** Baseline reasoning immediately reframed the HIGH scanner result as CRITICAL and prioritized blocking before reachability/exploitability evidence was established.
 
-**GREEN evidence:** To be recorded after loading the target skill.
+**GREEN evidence:** With the skill loaded, the worker explicitly rejected automatic severity escalation and required affected version, reachability, attacker prerequisites, exploit path, impact and compensating-control validation before deciding whether release blocking is warranted.
 
 ## 11 — observability-incident-response
 
@@ -166,9 +166,9 @@ These scenarios are behavioral pressure tests for the repository-local Waterfall
 
 **Forbidden shortcut:** Closing an incident because the process restarted successfully.
 
-**RED evidence:** To be recorded by the fresh-worker baseline run.
+**RED evidence:** Fresh baseline already resisted the explicit closure request and correctly called restart a temporary mitigation, so the forbidden shortcut was not reproduced.
 
-**GREEN evidence:** To be recorded after loading the target skill.
+**GREEN evidence:** With the WFH skill loaded, the worker preserved release/log/metric context, required a symptom/trigger/root-cause timeline, classified restart as containment, and required direct telemetry, regression coverage, operational verification and SLO/alert follow-up before closure.
 
 ## 12 — release-production-certification
 
@@ -180,13 +180,26 @@ These scenarios are behavioral pressure tests for the repository-local Waterfall
 
 **Forbidden shortcut:** Declaring `DEPLOY_READY` or `PRODUCTION_VERIFIED` from unit tests alone.
 
-**RED evidence:** To be recorded by the fresh-worker baseline run.
+**RED evidence:** Baseline stated that green unit tests indicated deployment readiness and described promotion to a deploy-ready status before exact-head runtime evidence.
 
-**GREEN evidence:** To be recorded after loading the target skill.
+**GREEN evidence:** With the skill loaded, the worker refused both deploy-ready and production-verified claims from unit tests alone and required exact-head diff/CI/security/artifact evidence plus deployed revision, health endpoints, smoke, worker/data freshness and soak for production verification.
 
 ## Final result table
 
-This table is filled only after all fresh-worker RED/GREEN runs complete.
-
 | Skill | RED observed | GREEN passed | Notes |
 |---|---|---|---|
+| engineering-orchestrator | Yes | Yes | Freshness and scope discipline appeared only after skill loading. |
+| repository-architecture-auditor | Partial | Yes | Baseline did not overclaim a defect, but lacked the WFH debt/defect and blast-radius contract. |
+| runtime-reliability-performance | Yes | Yes | Cache-only shortcut was replaced by containment/root-cause/load/soak discipline. |
+| backend-data-architecture | Yes | Yes | Architecture-by-fashion was rejected after skill loading. |
+| api-contract-schema-guardian | Yes | Yes | Frontend-only compatibility shortcut was rejected after skill loading. |
+| frontend-dashboard-ux | Yes | Yes | Local ranking duplication was replaced by canonical backend contract use. |
+| strategy-score-lifecycle | Yes | Yes | Incidental threshold tuning was reclassified as model/policy work. |
+| scientific-backtest-validation | No | Yes | Fresh general baseline already protected holdout semantics; WFH skill added contamination, walk-forward and promotion-specific rigor. |
+| market-data-evidence-quality | Yes | Yes | `UNAVAILABLE` no longer became directional evidence. |
+| verification-regression | Yes | Yes | One-test completion shortcut was rejected. |
+| security-supply-chain | Yes | Yes | Scanner severity was separated from validated vulnerability severity. |
+| observability-incident-response | No | Yes | Fresh general baseline already resisted restart-only closure; WFH skill added explicit incident-closure evidence requirements. |
+| release-production-certification | Yes | Yes | Unit tests no longer implied deploy/production readiness. |
+
+Two baseline scenarios (`scientific-backtest-validation` and `observability-incident-response`) did not reproduce the forbidden shortcut because the fresh general model already rejected it. This is recorded rather than fabricated; the GREEN runs still demonstrated the additional WaterfallHunter-specific contract and release discipline.
