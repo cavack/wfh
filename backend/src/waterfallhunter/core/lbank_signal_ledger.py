@@ -100,12 +100,12 @@ class LBankSignalLedger:
             "eligibility_gates": {
                 "catalog_compare_and_set": "PASSED",
                 "canonical_metadata": "PASSED",
-                "paper_only": True,
+                "signal_only": True,
             },
             "anti_chase_risk": "NOT_EVALUATED",
             "execution_risk": str(execution.get("status") or "UNKNOWN"),
             "reason_codes": failed_checks,
-            "execution_mode": "PAPER_ONLY",
+            "execution_mode": "SIGNAL_ONLY",
             "created_at": created_at,
         }
 
