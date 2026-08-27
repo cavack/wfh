@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -46,15 +47,29 @@ def test_tracked_repository_text_does_not_use_deprecated_product_boundary_terms(
         "paper" + "-trading",
         "Paper" + "-trading",
     )
+    deprecated_word = "pa" + "per"
+    standalone_deprecated = re.compile(
+        rf"(?i)(?<![A-Za-z0-9_]){deprecated_word}(?![A-Za-z0-9_])"
+    )
     offenders: list[str] = []
+    binary_suffixes = {
+        ".pyc",
+        ".map",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".ico",
+        ".pdf",
+    }
     for path in _tracked_text_files():
-        if path.suffix in {".pyc", ".map", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf"}:
+        if path.suffix in binary_suffixes:
             continue
         try:
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
-        if any(term in text for term in forbidden):
+        if any(term in text for term in forbidden) or standalone_deprecated.search(text):
             offenders.append(str(path.relative_to(ROOT)))
 
     assert offenders == []
