@@ -290,3 +290,52 @@ def test_host_deploy_never_enables_live_trading_or_destroys_persistent_volumes()
     assert "LIVE_TRADING_ENABLED=true" not in text
     assert "docker compose down -v" not in text
     assert "StrictHostKeyChecking=no" not in text
+
+
+def test_host_deploy_auto_uses_host_owned_compose_topology_override() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    assert 'PRODUCTION_COMPOSE_OVERRIDE="${STATE_DIR}/production-volumes.override.yml"' in text
+    assert "configure_production_compose_topology" in text
+    helper = text.split("configure_production_compose_topology() {", maxsplit=1)[1].split(
+        "}\n", maxsplit=1
+    )[0]
+    assert '[[ -f "$PRODUCTION_COMPOSE_OVERRIDE" ]]' in helper
+    assert 'export COMPOSE_FILE="${WFH_DEPLOY_ROOT}/docker-compose.yml:${PRODUCTION_COMPOSE_OVERRIDE}"' in helper
+    main_sequence = _main_deploy_sequence(text)
+    assert main_sequence.index("configure_production_compose_topology") < main_sequence.index(
+        "docker compose config --quiet"
+    )
+
+
+def test_host_deploy_removes_fixed_name_core_containers_before_activation_and_rollback() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    assert "remove_fixed_name_core_containers()" in text
+    helper = text.split("remove_fixed_name_core_containers() {", maxsplit=1)[1].split(
+        "}\n", maxsplit=1
+    )[0]
+    for container in ("waterfall-backend", "waterfall-frontend", "waterfall-watchdog"):
+        assert container in helper
+    assert "docker rm -f" in helper
+
+    rollback = text.split("rollback_previous_revision() {", maxsplit=1)[1].split(
+        "terminate_with_cleanup() {", maxsplit=1
+    )[0]
+    rollback_up = rollback.index("docker compose up -d")
+    assert rollback.rfind("remove_fixed_name_core_containers", 0, rollback_up) >= 0
+
+    main_sequence = _main_deploy_sequence(text)
+    target_up = main_sequence.index("docker compose up -d")
+    assert main_sequence.rfind("remove_fixed_name_core_containers", 0, target_up) >= 0
+
+
+def test_failed_deploys_also_enforce_backup_retention() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    cleanup = text.split("terminate_with_cleanup() {", maxsplit=1)[1].split(
+        "on_error() {", maxsplit=1
+    )[0]
+    assert "prune_database_backups" in cleanup
+
+
+def test_default_database_backup_retention_is_two() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    assert 'WFH_DEPLOY_BACKUP_RETENTION_COUNT="${WFH_DEPLOY_BACKUP_RETENTION_COUNT:-2}"' in text
