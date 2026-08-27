@@ -15,6 +15,13 @@ from waterfallhunter.core.signal_metadata import canonical_sha256
 DASHBOARD_SCHEMA_VERSION = "1.0"
 DASHBOARD_SNAPSHOT_CONTRACT = "dashboard_snapshot_v1"
 DASHBOARD_EVENT_CONTRACT = "dashboard_stream_event_v1"
+_VOLATILE_CANDIDATE_AGE_KEYS = frozenset(
+    {
+        "age_seconds",
+        "analysis_age_seconds",
+        "reference_age_seconds",
+    }
+)
 
 
 def _normalize_dashboard_json(value: Any) -> Any:
@@ -28,6 +35,42 @@ def _normalize_dashboard_json(value: Any) -> Any:
             for key, item in value.items()
         }
     return value
+
+
+def _snapshot_content_material(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return the business-state projection used for SSE change detection.
+
+    Candidate ages are display-time derivatives of absolute observation timestamps.
+    Including them in the change hash turns every one-second broadcaster tick into a
+    multi-megabyte snapshot even when the underlying market state is unchanged.
+    Keep the public payload intact and exclude only these known top-level derived
+    candidate fields from the deduplication material.
+    """
+
+    candidates = payload.get("candidates")
+    if not isinstance(candidates, dict):
+        return payload
+
+    stable_candidates: dict[str, Any] = {}
+    changed = False
+    for symbol, candidate in candidates.items():
+        if not isinstance(candidate, dict):
+            stable_candidates[symbol] = candidate
+            continue
+        stable_candidate = {
+            key: value
+            for key, value in candidate.items()
+            if key not in _VOLATILE_CANDIDATE_AGE_KEYS
+        }
+        stable_candidates[symbol] = stable_candidate
+        changed = changed or len(stable_candidate) != len(candidate)
+
+    if not changed:
+        return payload
+    return {
+        **payload,
+        "candidates": stable_candidates,
+    }
 
 
 class DashboardSnapshot(BaseModel):
@@ -101,11 +144,15 @@ class DashboardEventBuffer:
         full_snapshot: bool,
     ) -> DashboardStreamEvent:
         normalized_payload = _normalize_dashboard_json(payload)
+        content_hash = canonical_sha256(
+            _snapshot_content_material(normalized_payload)
+        )
         with self._lock:
             return self._publish_snapshot_locked(
                 normalized_payload,
                 generated_at=generated_at,
                 full_snapshot=full_snapshot,
+                content_hash=content_hash,
             )
 
     def publish_snapshot_if_changed(
@@ -116,7 +163,9 @@ class DashboardEventBuffer:
     ) -> DashboardStreamEvent | None:
         """Retain a periodic snapshot only when its business payload changed."""
         normalized_payload = _normalize_dashboard_json(payload)
-        content_hash = canonical_sha256(normalized_payload)
+        content_hash = canonical_sha256(
+            _snapshot_content_material(normalized_payload)
+        )
         with self._lock:
             if content_hash == self._last_snapshot_content_hash:
                 return None
@@ -147,7 +196,9 @@ class DashboardEventBuffer:
             }
         )
         self._snapshot_sequence = next_snapshot_version
-        self._last_snapshot_content_hash = content_hash or canonical_sha256(payload)
+        self._last_snapshot_content_hash = content_hash or canonical_sha256(
+            _snapshot_content_material(payload)
+        )
         return self._append(
             event_type="snapshot",
             snapshot_version=snapshot.snapshot_version,
