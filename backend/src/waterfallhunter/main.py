@@ -1480,7 +1480,7 @@ def _publish_dashboard_snapshot(
 
 
 def _new_dashboard_client_queue() -> asyncio.Queue:
-    \"\"\"Return the bounded latest-wins queue used by one SSE client.\"\"\"
+    """Return the bounded latest-wins queue used by one SSE client."""
     return asyncio.Queue(maxsize=_DASHBOARD_CLIENT_QUEUE_LIMIT)
 
 
