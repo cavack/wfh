@@ -19,6 +19,12 @@ Own OOM/RSS slope, allocation pressure, single-flight/coalescing/cache behavior,
 
 Historical incidents or PRs are examples only. Re-check their current status before treating them as active defects.
 
+## Protected Invariants
+
+Unless a separately authorized and validated strategy or policy change explicitly requires otherwise, do not incidentally change ScoreV2 weights or evidence semantics, lifecycle transitions, strict/experimental eligibility boundaries, anti-chase behavior, signal provenance or immutable-ledger semantics, persistence-before-notification ordering, scientific holdout/walk-forward rules, or production execution policy.
+
+Current repository policy is observational and does not place orders. Live order placement is outside this skill system: this skill must not authorize, design, implement, or enable live order placement. Any future execution capability requires a separately reviewed safety design and repository-policy change before ordinary release gates apply.
+
 ## Workflow
 
 1. Capture current SHA/runtime context and the observable symptom: RSS curve, latency, restarts, queue depth, duplicated calls, traces, or logs.
