@@ -3,21 +3,24 @@ set -Eeuo pipefail
 
 WFH_DEPLOY_ROOT="${WFH_DEPLOY_ROOT:-/srv/waterfallhunter/app}"
 WFH_DEPLOY_SHA="${WFH_DEPLOY_SHA:-}"
-LOCK_FILE="${WFH_DEPLOY_LOCK_FILE:-/var/lock/waterfallhunter-deploy.lock}"
 ENV_FILE="${WFH_DEPLOY_ROOT}/.env"
 DEPLOY_STATE_DIR="${WFH_DEPLOY_ROOT}/.deploy"
 BACKUP_DIR="${DEPLOY_STATE_DIR}/backups"
 STATE_DIR="${DEPLOY_STATE_DIR}/state"
+LOCK_FILE="${WFH_DEPLOY_LOCK_FILE:-${STATE_DIR}/deploy.lock}"
+WFH_DEPLOY_BACKUP_RETENTION_COUNT="${WFH_DEPLOY_BACKUP_RETENTION_COUNT:-10}"
 DB_PATH="/app/data/waterfall_registry.db"
 DEPLOY_EPOCH="$(date -u +%s)"
+TELEGRAM_CUTOVER_EPOCH=""
 BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 PREVIOUS_SHA=""
 ENV_BACKUP=""
 DB_BACKUP=""
 DB_BACKUP_SHA256=""
-MIGRATION_APPLIED=0
+MIGRATION_MAY_HAVE_MUTATED=0
 RUNTIME_REPLACED=0
 ROLLBACK_ACTIVE=0
+CLEANUP_ACTIVE=0
 
 log() {
   printf '[waterfallhunter-deploy] %s\n' "$*"
@@ -25,7 +28,7 @@ log() {
 
 fail() {
   log "ERROR: $*"
-  exit 1
+  terminate_with_cleanup 1
 }
 
 require_command() {
@@ -66,6 +69,21 @@ wait_for_backend_endpoint() {
   return 1
 }
 
+wait_for_container_healthy() {
+  local container="$1"
+  local attempts="${2:-30}"
+  local sleep_seconds="${3:-3}"
+  local state i
+  for ((i = 1; i <= attempts; i++)); do
+    state="$(docker inspect -f '{{if .State.Running}}{{if .State.Health}}{{.State.Health.Status}}{{else}}running{{end}}{{else}}stopped{{end}}' "$container" 2>/dev/null || true)"
+    if [[ "$state" == "healthy" || "$state" == "running" ]]; then
+      return 0
+    fi
+    sleep "$sleep_seconds"
+  done
+  return 1
+}
+
 verify_running_revision() {
   local container expected actual
   expected="$1"
@@ -91,6 +109,29 @@ build_revision() {
       --build-arg BUILD_DATE="$build_date" \
       --build-arg VERSION="$revision" \
       waterfall-backend frontend watchdog
+}
+
+resolve_previous_revision() {
+  local candidate certificate
+  candidate="$(docker inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' waterfall-backend 2>/dev/null || true)"
+  if [[ "$candidate" =~ ^[0-9a-f]{40}$ ]] && git cat-file -e "${candidate}^{commit}" 2>/dev/null; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  certificate="${STATE_DIR}/last-successful-deploy.txt"
+  if [[ -f "$certificate" ]]; then
+    candidate="$(awk -F= '$1 == "revision" {print $2; exit}' "$certificate")"
+    if [[ "$candidate" =~ ^[0-9a-f]{40}$ ]] && git cat-file -e "${candidate}^{commit}" 2>/dev/null; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  fi
+
+  candidate="$(git rev-parse HEAD 2>/dev/null || true)"
+  [[ "$candidate" =~ ^[0-9a-f]{40}$ ]] || return 1
+  git cat-file -e "${candidate}^{commit}" 2>/dev/null || return 1
+  printf '%s\n' "$candidate"
 }
 
 backup_database() {
@@ -127,31 +168,41 @@ print(h.hexdigest())' \
   log "database backup certified: ${DB_BACKUP} sha256=${DB_BACKUP_SHA256}"
 }
 
-run_migrations() {
-  docker compose run --rm --no-deps waterfall-backend \
-    /opt/venv/bin/python -m waterfallhunter.migrate_database \
-    --db-path "$DB_PATH" --preflight
-
-  docker compose run --rm --no-deps waterfall-backend \
-    /opt/venv/bin/python -m waterfallhunter.migrate_database \
-    --db-path "$DB_PATH" --apply --source-revision "$WFH_DEPLOY_SHA"
-  MIGRATION_APPLIED=1
+prune_database_backups() {
+  local keep="$WFH_DEPLOY_BACKUP_RETENTION_COUNT"
+  local line path index=0
+  [[ "$keep" =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ -d "$BACKUP_DIR" ]] || return 0
+  while IFS= read -r line; do
+    index=$((index + 1))
+    (( index > keep )) || continue
+    path="${line#* }"
+    [[ "$path" == "${BACKUP_DIR}/"* ]] || continue
+    rm -f -- "$path" "${path}.sha256"
+  done < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'waterfall_registry.*.db' -printf '%T@ %p\n' | sort -nr)
 }
 
 activate_telegram_for_release() {
   grep -Eq '^TELEGRAM_TOKEN=.+$' "$ENV_FILE" || fail "TELEGRAM_TOKEN is required for automatic signal delivery"
   grep -Eq '^TELEGRAM_CHAT_ID=.+$' "$ENV_FILE" || fail "TELEGRAM_CHAT_ID is required for automatic signal delivery"
-  ENV_BACKUP="${STATE_DIR}/env.${PREVIOUS_SHA:-unknown}.${DEPLOY_EPOCH}.bak"
+  TELEGRAM_CUTOVER_EPOCH="$(date -u +%s)"
+  ENV_BACKUP="${STATE_DIR}/env.${PREVIOUS_SHA:-unknown}.${TELEGRAM_CUTOVER_EPOCH}.bak"
   install -d -m 0750 "$STATE_DIR"
   cp -p "$ENV_FILE" "$ENV_BACKUP"
   set_env_value TELEGRAM_SIGNAL_DELIVERY_ENABLED true
-  set_env_value TELEGRAM_SIGNAL_DELIVERY_CUTOVER_AT "$DEPLOY_EPOCH"
+  set_env_value TELEGRAM_SIGNAL_DELIVERY_CUTOVER_AT "$TELEGRAM_CUTOVER_EPOCH"
 }
 
 restore_previous_env() {
   if [[ -n "$ENV_BACKUP" && -f "$ENV_BACKUP" ]]; then
     cp -p "$ENV_BACKUP" "$ENV_FILE"
   fi
+}
+
+restore_previous_workspace() {
+  [[ -n "$PREVIOUS_SHA" ]] || return 0
+  git checkout --detach "$PREVIOUS_SHA" >/dev/null 2>&1 || return 1
+  build_revision "$PREVIOUS_SHA" >/dev/null 2>&1 || return 1
 }
 
 previous_revision_accepts_current_schema() {
@@ -169,60 +220,91 @@ rollback_previous_revision() {
   restore_previous_env
   [[ -n "$PREVIOUS_SHA" ]] || return 1
 
-  if [[ "$MIGRATION_APPLIED" -eq 1 ]]; then
+  if [[ "$MIGRATION_MAY_HAVE_MUTATED" -eq 1 ]]; then
     if ! previous_revision_accepts_current_schema; then
-      log "rollback stopped: previous revision is not certified against the migrated schema"
+      log "rollback stopped: previous revision is not certified against the current schema"
       git checkout --detach "$WFH_DEPLOY_SHA" >/dev/null 2>&1 || true
       return 1
     fi
   else
-    git checkout --detach "$PREVIOUS_SHA" >/dev/null 2>&1 || return 1
-    build_revision "$PREVIOUS_SHA" || return 1
+    restore_previous_workspace || return 1
   fi
 
   docker compose up -d --remove-orphans || return 1
   wait_for_backend_endpoint /api/livez 20 3 || return 1
   wait_for_backend_endpoint /api/readyz 30 4 || return 1
+  wait_for_container_healthy waterfall-backend 30 3 || return 1
+  wait_for_container_healthy waterfall-frontend 30 3 || return 1
+  wait_for_container_healthy waterfall-watchdog 30 3 || return 1
   verify_running_revision "$PREVIOUS_SHA" || return 1
   verify_running_signal_only || return 1
   log "rollback certified at ${PREVIOUS_SHA}"
   return 0
 }
 
-on_error() {
-  local status=$?
-  trap - ERR
-  if [[ "$RUNTIME_REPLACED" -eq 1 || "$MIGRATION_APPLIED" -eq 1 ]]; then
+terminate_with_cleanup() {
+  local status="$1"
+  [[ "$CLEANUP_ACTIVE" -eq 0 ]] || exit "$status"
+  CLEANUP_ACTIVE=1
+  trap - ERR TERM HUP INT
+  set +e
+  if [[ "$RUNTIME_REPLACED" -eq 1 || "$MIGRATION_MAY_HAVE_MUTATED" -eq 1 ]]; then
     log "deployment failed after mutable Production step; attempting bounded rollback"
-    rollback_previous_revision || log "automatic rollback could not be certified; backup retained at ${DB_BACKUP:-unavailable}"
+    rollback_previous_revision \
+      || log "automatic rollback could not be certified; backup retained at ${DB_BACKUP:-unavailable}"
   else
     restore_previous_env || true
+    restore_previous_workspace \
+      || log "pre-mutation workspace restoration could not be certified"
   fi
   exit "$status"
 }
+
+on_error() {
+  local status=$?
+  terminate_with_cleanup "$status"
+}
+
+on_signal() {
+  local signal="$1"
+  local status=1
+  case "$signal" in
+    HUP) status=129 ;;
+    INT) status=130 ;;
+    TERM) status=143 ;;
+  esac
+  log "received ${signal}; initiating bounded cleanup"
+  terminate_with_cleanup "$status"
+}
+
 trap on_error ERR
+trap 'on_signal TERM' TERM
+trap 'on_signal HUP' HUP
+trap 'on_signal INT' INT
 
 require_command git
 require_command docker
 require_command flock
 require_command awk
-require_command sha256sum
+require_command find
+require_command sort
 
 [[ "$WFH_DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "WFH_DEPLOY_SHA must be an exact 40-character Git SHA"
 [[ -d "$WFH_DEPLOY_ROOT/.git" ]] || fail "deployment root is not a Git checkout: $WFH_DEPLOY_ROOT"
 [[ -f "$ENV_FILE" ]] || fail "Production .env is missing"
+[[ "$WFH_DEPLOY_BACKUP_RETENTION_COUNT" =~ ^[1-9][0-9]*$ ]] || fail "WFH_DEPLOY_BACKUP_RETENTION_COUNT must be a positive integer"
 
 cd "$WFH_DEPLOY_ROOT"
+install -d -m 0750 "$STATE_DIR"
 exec 9>"$LOCK_FILE"
 flock -n 9 || fail "another WaterfallHunter deployment is already running"
 
-# git merge-base --is-ancestor is the exact-revision ancestry gate.
 git fetch --prune origin main
 git cat-file -e "${WFH_DEPLOY_SHA}^{commit}" || fail "target revision is not available after fetch"
-git merge-base --is-ancestor "$WFH_DEPLOY_SHA" origin/main \
-  || fail "target revision is not contained in origin/main"
+test "$(git rev-parse origin/main)" = "$WFH_DEPLOY_SHA" \
+  || fail "target revision is stale; only the current origin/main tip may deploy"
 
-PREVIOUS_SHA="$(git rev-parse HEAD)"
+PREVIOUS_SHA="$(resolve_previous_revision)" || fail "unable to resolve the certified previous Production revision"
 assert_signal_only_runtime_boundary
 
 git checkout --detach "$WFH_DEPLOY_SHA"
@@ -241,10 +323,12 @@ docker compose run --rm --no-deps waterfall-backend \
   /opt/venv/bin/python -m waterfallhunter.migrate_database \
   --db-path "$DB_PATH" --preflight
 
+# From this point onward the migration command may have changed the database
+# even when a later verification inside that command exits non-zero.
+MIGRATION_MAY_HAVE_MUTATED=1
 docker compose run --rm --no-deps waterfall-backend \
   /opt/venv/bin/python -m waterfallhunter.migrate_database \
   --db-path "$DB_PATH" --apply --source-revision "$WFH_DEPLOY_SHA"
-MIGRATION_APPLIED=1
 
 activate_telegram_for_release
 # TELEGRAM_SIGNAL_DELIVERY_ENABLED and TELEGRAM_SIGNAL_DELIVERY_CUTOVER_AT are release-scoped signal-delivery gates.
@@ -254,6 +338,9 @@ RUNTIME_REPLACED=1
 
 wait_for_backend_endpoint /api/livez 20 3 || fail "backend /api/livez did not become healthy"
 wait_for_backend_endpoint /api/readyz 30 4 || fail "backend /api/readyz did not become ready"
+wait_for_container_healthy waterfall-backend 30 3 || fail "backend container did not become healthy"
+wait_for_container_healthy waterfall-frontend 30 3 || fail "frontend container did not become healthy"
+wait_for_container_healthy waterfall-watchdog 30 3 || fail "watchdog container did not become healthy"
 verify_running_revision "$WFH_DEPLOY_SHA" || fail "running OCI org.opencontainers.image.revision does not match target SHA"
 verify_running_signal_only || fail "running backend violated the SIGNAL_ONLY live-trading boundary"
 
@@ -264,10 +351,12 @@ previous_revision=${PREVIOUS_SHA}
 deployed_at=${DEPLOY_EPOCH}
 backup=${DB_BACKUP}
 backup_sha256=${DB_BACKUP_SHA256}
-telegram_cutover_at=${DEPLOY_EPOCH}
+telegram_cutover_at=${TELEGRAM_CUTOVER_EPOCH}
 live_trading_enabled=false
 product_mode=SIGNAL_ONLY
 EOF
 
-trap - ERR
+prune_database_backups || fail "database backup retention cleanup failed"
+
+trap - ERR TERM HUP INT
 log "deployment certified: revision=${WFH_DEPLOY_SHA} previous=${PREVIOUS_SHA} SIGNAL_ONLY=true"
