@@ -307,6 +307,16 @@ def test_host_deploy_auto_uses_host_owned_compose_topology_override() -> None:
     )
 
 
+def test_host_deploy_reuses_running_compose_project_with_host_override() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    helper = text.split("configure_production_compose_topology() {", maxsplit=1)[1].split(
+        "}\n", maxsplit=1
+    )[0]
+    assert "com.docker.compose.project" in helper
+    assert "COMPOSE_PROJECT_NAME" in helper
+    assert "waterfall-backend" in helper
+
+
 def test_host_deploy_removes_fixed_name_core_containers_before_activation_and_rollback() -> None:
     text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
     assert "remove_fixed_name_core_containers()" in text
