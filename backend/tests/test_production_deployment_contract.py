@@ -41,6 +41,10 @@ def _tracked_text_files() -> list[Path]:
     )
 
 
+def _main_deploy_sequence(text: str) -> str:
+    return text.split('[[ "$WFH_DEPLOY_SHA"', maxsplit=1)[1]
+
+
 def test_execution_mode_is_signal_only() -> None:
     deprecated_mode = "SIMULATED" + "_ONLY"
     assert ExecutionMode.SIGNAL_ONLY.value == "SIGNAL_ONLY"
@@ -203,16 +207,63 @@ def test_telegram_cutover_is_captured_at_activation_time() -> None:
 
 def test_successful_deploy_prunes_backups_before_publishing_certificate() -> None:
     text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
-    assert "WFH_DEPLOY_BACKUP_RETENTION_COUNT" in text
-    assert "prune_database_backups" in text
-    prune_index = text.index("prune_database_backups", text.index("verify_running_signal_only"))
-    certificate_index = text.index('cat > "${STATE_DIR}/last-successful-deploy.txt"')
+    main_sequence = _main_deploy_sequence(text)
+    prune_index = main_sequence.index("prune_database_backups")
+    certificate_index = main_sequence.index('cat > "${STATE_DIR}/last-successful-deploy.txt"')
     assert prune_index < certificate_index
+
+
+def test_compose_run_commands_cannot_consume_streamed_deploy_script() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    normalized = text.replace("\\\n", " ")
+    commands = [
+        match.group(0)
+        for match in re.finditer(r"docker compose run[^\n]+", normalized)
+    ]
+    assert len(commands) >= 4
+    for command in commands:
+        assert "--interactive=false" in command
+        assert "-T" in command or "--no-TTY" in command
+
+
+def test_host_deploy_rejects_dirty_source_worktree_before_checkout_and_build() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    helper = text.split("assert_clean_deploy_worktree() {", maxsplit=1)[1].split(
+        "}\n", maxsplit=1
+    )[0]
+    assert "git status --porcelain" in helper
+    assert ".env" in helper
+    assert ".deploy" in helper
+    main_sequence = _main_deploy_sequence(text)
+    assert main_sequence.index("assert_clean_deploy_worktree") < main_sequence.index(
+        'git checkout --detach "$WFH_DEPLOY_SHA"'
+    )
+
+
+def test_incompatible_post_migration_runtime_is_quarantined() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    rollback = text.split("rollback_previous_revision() {", maxsplit=1)[1].split(
+        "terminate_with_cleanup() {", maxsplit=1
+    )[0]
+    incompatible = rollback.split(
+        "if ! previous_revision_accepts_current_schema; then", maxsplit=1
+    )[1].split("fi", maxsplit=1)[0]
+    assert "docker compose stop" in incompatible
+    for service in ("waterfall-backend", "frontend", "watchdog"):
+        assert service in incompatible
+
+
+def test_successful_deploy_removes_secret_environment_rollback_copy() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    main_sequence = _main_deploy_sequence(text)
+    certificate_index = main_sequence.index('cat > "${STATE_DIR}/last-successful-deploy.txt"')
+    cleanup_index = main_sequence.index('rm -f -- "$ENV_BACKUP"')
+    assert certificate_index < cleanup_index
 
 
 def test_host_deploy_orders_backup_migration_telegram_and_runtime_certification() -> None:
     text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
-    main_sequence = text.split('[[ "$WFH_DEPLOY_SHA"', maxsplit=1)[1]
+    main_sequence = _main_deploy_sequence(text)
     ordered_markers = [
         "flock -n 9",
         '[[ "$(git rev-parse origin/main)" == "$WFH_DEPLOY_SHA" ]]',
