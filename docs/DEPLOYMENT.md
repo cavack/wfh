@@ -6,7 +6,7 @@ Production deploys only from protected `main` after required CI jobs pass. Pull 
 
 `main push -> backend/frontend/dependency/container/repository checks -> production environment -> exact SHA verification -> backup -> migration -> Compose replacement -> health/revision certification`.
 
-The deployment script refuses a stale SHA, dirty checkout, missing host environment, invalid backup, failed migration preflight, unhealthy services, OCI revision mismatch, or `LIVE_TRADING_ENABLED` drift. If `/srv/waterfallhunter/runtime/production-volumes.override.yml` exists, deployment, systemd boot, and bounded recovery all compose it with the repository file; on a fresh host the override is optional.
+The deployment script refuses a stale SHA, dirty checkout, missing host environment, invalid backup, failed migration preflight, unhealthy services, OCI revision mismatch, or `LIVE_TRADING_ENABLED` drift. If `/srv/waterfallhunter/runtime/production-volumes.override.yml` exists, deployment, systemd boot, and bounded recovery all compose it with the repository file; on a fresh host the override is optional. The privileged production verifier accepts only the canonical application, environment, health-state, and runtime-certificate locations; CLI path aliases cannot redirect Compose or its writes to arbitrary host paths.
 
 ## Production secrets
 

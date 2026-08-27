@@ -18,10 +18,40 @@ CORE_CONTAINERS = ("waterfall-backend", "waterfall-frontend", "waterfall-watchdo
 FAILURES_BEFORE_RECOVERY = 3
 RECOVERY_COOLDOWN_SECONDS = 600
 MAX_RECOVERIES_PER_HOUR = 3
+DOCKER_BIN = "/usr/bin/docker"
+CANONICAL_PROJECT_DIR = Path("/srv/waterfallhunter/app")
+CANONICAL_ENV_FILE = Path("/etc/waterfallhunter/waterfallhunter.env")
+CANONICAL_STATE_FILE = Path("/srv/waterfallhunter/runtime/healthcheck-state.json")
+CANONICAL_RUNTIME_DIR = Path("/srv/waterfallhunter/runtime")
+
+
+def _require_canonical_operator_path(value: Path, expected: Path) -> Path:
+    candidate = Path(value)
+    if (
+        not candidate.is_absolute()
+        or candidate.is_symlink()
+        or candidate.resolve(strict=False) != expected
+    ):
+        raise ValueError(f"operator path must be exactly {expected}")
+    return expected
+
+
+def _release_certificate_output(value: Path) -> Path:
+    candidate = Path(value)
+    if not candidate.is_absolute() or candidate.is_symlink():
+        raise ValueError("release certificate path must be absolute and non-symlinked")
+    if candidate.resolve(strict=False) != candidate:
+        raise ValueError("release certificate path aliases/traversal are not allowed")
+    if candidate.parent != CANONICAL_RUNTIME_DIR:
+        raise ValueError("release certificate must be written in the canonical runtime directory")
+    if not candidate.name.endswith(".json") or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" for ch in candidate.name):
+        raise ValueError("release certificate filename is invalid")
+    return CANONICAL_RUNTIME_DIR / candidate.name
 
 
 def _compose_files(project_dir: Path) -> list[str]:
-    files = [str(project_dir / "docker-compose.yml")]
+    project_dir = _require_canonical_operator_path(project_dir, CANONICAL_PROJECT_DIR)
+    files = [str(CANONICAL_PROJECT_DIR / "docker-compose.yml")]
     override = project_dir.parent / "runtime" / "production-volumes.override.yml"
     if override.is_file():
         files.append(str(override))
@@ -29,9 +59,11 @@ def _compose_files(project_dir: Path) -> list[str]:
 
 
 def _compose(project_dir: Path, env_file: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    project_dir = _require_canonical_operator_path(project_dir, CANONICAL_PROJECT_DIR)
+    env_file = _require_canonical_operator_path(env_file, CANONICAL_ENV_FILE)
     cmd = [
-        "/usr/bin/docker", "compose", "--project-name", "waterfallhunter",
-        "--env-file", str(env_file),
+        DOCKER_BIN, "compose", "--project-name", "waterfallhunter",
+        "--env-file", str(CANONICAL_ENV_FILE),
     ]
     for compose_file in _compose_files(project_dir):
         cmd.extend(("-f", compose_file))
@@ -44,8 +76,10 @@ def _service_health(project_dir: Path, env_file: Path, service: str) -> tuple[bo
     container_id = cid.stdout.strip()
     if cid.returncode != 0 or not container_id:
         return False, "missing"
+    if not (12 <= len(container_id) <= 64 and all(ch in "0123456789abcdef" for ch in container_id)):
+        return False, "invalid_container_id"
     inspect = subprocess.run(
-        ["/usr/bin/docker", "inspect", "--format", "{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}", container_id],
+        [DOCKER_BIN, "inspect", "--format", "{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}", container_id],
         text=True, capture_output=True, check=False,
     )
     state = inspect.stdout.strip()
@@ -92,7 +126,7 @@ def _backend_endpoint(project_dir: Path, env_file: Path, path: str) -> bool:
 def _container_revision(container: str) -> str | None:
     result = subprocess.run(
         [
-            "/usr/bin/docker", "inspect", "--format",
+            DOCKER_BIN, "inspect", "--format",
             '{{ index .Config.Labels "org.opencontainers.image.revision" }}',
             container,
         ],
@@ -214,7 +248,8 @@ def build_release_certificate(
 
 
 def _write_release_certificate(path: Path, certificate: dict[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path = _release_certificate_output(path)
+    CANONICAL_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
     if temporary.exists() or temporary.is_symlink():
         temporary.unlink()
@@ -232,6 +267,7 @@ def _write_release_certificate(path: Path, certificate: dict[str, object]) -> No
 
 
 def _load_state(path: Path) -> dict[str, object]:
+    path = _require_canonical_operator_path(path, CANONICAL_STATE_FILE)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(data, dict):
@@ -242,7 +278,8 @@ def _load_state(path: Path) -> dict[str, object]:
 
 
 def _save_state(path: Path, state: dict[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path = _require_canonical_operator_path(path, CANONICAL_STATE_FILE)
+    CANONICAL_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(state, sort_keys=True) + "\n", encoding="utf-8")
     tmp.replace(path)
@@ -292,26 +329,38 @@ def main() -> int:
         help="Write an exact-running-SHA release certificate after deep runtime checks pass.",
     )
     args = parser.parse_args()
-    if not args.project_dir.is_dir() or not args.env_file.is_file():
+    try:
+        project_dir = _require_canonical_operator_path(args.project_dir, CANONICAL_PROJECT_DIR)
+        env_file = _require_canonical_operator_path(args.env_file, CANONICAL_ENV_FILE)
+        state_file = _require_canonical_operator_path(args.state_file, CANONICAL_STATE_FILE)
+        release_certificate = (
+            _release_certificate_output(args.release_certificate)
+            if args.release_certificate is not None
+            else None
+        )
+    except ValueError as exc:
+        print(json.dumps({"healthy": False, "reason": "invalid_operator_path", "detail": str(exc)}))
+        return 2
+    if not project_dir.is_dir() or not env_file.is_file():
         print(json.dumps({"healthy": False, "reason": "missing_project_or_env"}))
         return 2
-    if args.release_certificate is not None and args.recover:
+    if release_certificate is not None and args.recover:
         print(json.dumps({"healthy": False, "reason": "release_certificate_disallows_recovery"}))
         return 2
     snapshot = (
-        release_evidence_snapshot(args.project_dir, args.env_file)
-        if args.release_certificate is not None
-        else health_snapshot(args.project_dir, args.env_file)
+        release_evidence_snapshot(project_dir, env_file)
+        if release_certificate is not None
+        else health_snapshot(project_dir, env_file)
     )
     if args.recover:
-        ok, reason = maybe_recover(args.project_dir, args.env_file, args.state_file, snapshot)
+        ok, reason = maybe_recover(project_dir, env_file, state_file, snapshot)
         snapshot["recovery"] = reason
         snapshot["healthy"] = ok
-    if args.release_certificate is not None:
+    if release_certificate is not None:
         try:
             certificate = build_release_certificate(snapshot, generated_at=int(time.time()))
-            _write_release_certificate(args.release_certificate, certificate)
-            snapshot["release_certificate"] = str(args.release_certificate)
+            _write_release_certificate(release_certificate, certificate)
+            snapshot["release_certificate"] = str(release_certificate)
             snapshot["release_sha"] = certificate["release_sha"]
         except (OSError, ValueError) as exc:
             snapshot["healthy"] = False

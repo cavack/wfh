@@ -187,7 +187,7 @@ Commit: `feat(ops): add canonical systemd and nginx runtime contract`.
 
 **Interfaces:**
 - `audit_host_inventory.py --output FILE.json` emits entries `{path_or_resource,type,size_bytes,mtime,disposition,reason}`.
-- `cleanup_legacy_wfh.py --inventory FILE.json --release-certificate RELEASE.json --db-certificate DB.json --certificate CLEANUP-OUTPUT.json --execute` deletes only entries explicitly marked `DELETE_AFTER_CERTIFICATION`; the release and database certificates authorize execution, while `--certificate` is the optional cleanup-result output.
+- `cleanup_legacy_wfh.py --inventory FILE.json --release-certificate RELEASE.json --db-certificate DB.json --certificate /srv/waterfallhunter/runtime/CLEANUP-OUTPUT.json --execute` deletes only entries explicitly marked `DELETE_AFTER_CERTIFICATION`; the release and database certificates authorize execution, while `--certificate` is an optional cleanup-result output restricted to the canonical runtime directory.
 
 - [ ] **Step 1: Write fail-closed cleanup tests**
 

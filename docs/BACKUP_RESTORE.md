@@ -9,7 +9,7 @@ Use `scripts/certify_sqlite_backup.py` for a certified backup and `scripts/rehea
 
 ## Same-host cutover backup
 
-`scripts/certify_cutover_sqlite_backup.py` is a separate, explicitly non-independent certificate for host-layout migration only. It may be used when the original live Docker volume remains untouched until the new canonical database passes post-cutover certification. Its certificate records `device_separation_enforced=false`, `independent_disaster_recovery=false`, and `source_volume_preserved_until_post_cutover=true`. It never replaces a true off-device/failure-domain backup policy.
+`scripts/certify_cutover_sqlite_backup.py` is a separate, explicitly non-independent certificate for host-layout migration only. It may be used when the original live Docker volume remains untouched until the new canonical database passes post-cutover certification. Its certificate records `device_separation_enforced=false`, `independent_disaster_recovery=false`, and `source_volume_preserved_until_post_cutover=true`. The independently restored verification clone is retained beside the backup/report instead of being deleted, so certification evidence remains inspectable. It never replaces a true off-device/failure-domain backup policy.
 
 ## Restore rule
 

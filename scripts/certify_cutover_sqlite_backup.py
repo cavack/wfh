@@ -63,11 +63,11 @@ def main() -> int:
             "device_separation_enforced": False,
             "independent_disaster_recovery": False,
             "source_volume_preserved_until_post_cutover": True,
+            "restore_target": str(args.restore_target),
             "sqlite_backup_certification": core,
         }
         report = {**body, "certificate_sha256": canonical_sha256(body)}
         _write_report_atomic(args.report, report, allowed_directory=args.backup.parent)
-        args.restore_target.unlink(missing_ok=True)
     except (BackupCertificationError, OSError) as error:
         print(json.dumps({"ok": False, "reason": str(error)}, sort_keys=True))
         return 2

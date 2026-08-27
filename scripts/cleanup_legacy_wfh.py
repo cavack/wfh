@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -15,16 +16,42 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPOSITORY_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(REPOSITORY_ROOT / "backend" / "src"))
-from audit_host_inventory import DELETE, PROTECTED, classify_docker_resource, classify_path  # noqa: E402
+from audit_host_inventory import (  # noqa: E402
+    DELETE,
+    EXACT_LEGACY_PATHS,
+    PROTECTED,
+    classify_docker_resource,
+    classify_path,
+)
 from waterfallhunter.core.signal_metadata import canonical_sha256  # noqa: E402
 from waterfallhunter.core.sqlite_backup_certification import (  # noqa: E402
     BackupCertificationError,
     audit_sqlite_snapshot,
 )
 
+DOCKER_BIN = "/usr/bin/docker"
+CANONICAL_RUNTIME_DIR = Path("/srv/waterfallhunter/runtime")
+_SAFE_BASENAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_SAFE_IMAGE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:-]{0,255}$")
+_EXACT_LEGACY_BY_TEXT = {str(path): path for path in EXACT_LEGACY_PATHS}
+
+
+def _validated_input_file(path: Path) -> Path:
+    candidate = Path(path)
+    if (
+        not candidate.is_absolute()
+        or candidate.is_symlink()
+        or candidate.resolve(strict=False) != candidate
+        or not candidate.is_file()
+    ):
+        raise ValueError(f"input must be a canonical absolute regular file: {candidate}")
+    return candidate
+
 
 def _load(path: Path) -> dict[str, object]:
-    data = json.loads(path.read_text(encoding="utf-8"))
+    safe_path = _validated_input_file(path)
+    # safe_path is canonical, absolute, non-symlinked, and a regular file.
+    data = json.loads(safe_path.read_text(encoding="utf-8"))  # NOSONAR
     if not isinstance(data, dict):
         raise ValueError(f"invalid JSON object: {path}")
     return data
@@ -78,7 +105,7 @@ def validate_db_certificate(path: Path) -> dict[str, object]:
         raise ValueError("database certificate backup audit missing")
     wrapped_hash = str(wrapped.get("certification_sha256", ""))
     wrapped_material = {key: value for key, value in wrapped.items() if key != "certification_sha256"}
-    backup_path = Path(str(data.get("backup_path") or ""))
+    backup_path = _canonical_certified_backup_path(data.get("backup_path"))
     if not (
         data.get("certificate_type") == "waterfallhunter_db_backup_v1"
         and data.get("status") == "PASS"
@@ -104,7 +131,7 @@ def validate_db_certificate(path: Path) -> dict[str, object]:
     ):
         raise ValueError("database certificate is not a complete passing WaterfallHunter backup certificate")
     try:
-        current_audit = audit_sqlite_snapshot(backup_path)
+        current_audit = audit_sqlite_snapshot(backup_path)  # NOSONAR -- canonical non-symlinked certified file
     except (BackupCertificationError, OSError) as exc:
         raise ValueError("certified database backup is unreadable") from exc
     if (
@@ -115,10 +142,79 @@ def validate_db_certificate(path: Path) -> dict[str, object]:
     return data
 
 
+def _has_symlink_ancestor(path: Path) -> bool:
+    current = path.parent
+    while current != current.parent:
+        if current.is_symlink():
+            return True
+        current = current.parent
+    return False
+
+
+def _validated_legacy_path(value: str) -> Path:
+    if "\x00" in value:
+        raise ValueError("cleanup path contains NUL")
+    candidate = Path(value)
+    normalized = Path(os.path.abspath(os.fspath(candidate)))
+    if not candidate.is_absolute() or candidate != normalized:
+        raise ValueError(f"cleanup path is not canonical: {value}")
+    disposition, reason = classify_path(candidate)
+    if disposition == PROTECTED:
+        raise ValueError(f"protected cleanup path refused: {value}: {reason}")
+    if disposition != DELETE:
+        raise ValueError(f"cleanup path is not allowlisted: {value}: {reason}")
+    exact = _EXACT_LEGACY_BY_TEXT.get(value)
+    if exact is not None:
+        safe = exact
+    elif candidate.parent in {Path("/root"), Path("/srv")} and _SAFE_BASENAME.fullmatch(candidate.name):
+        safe = candidate.parent / candidate.name
+    else:
+        raise ValueError(f"cleanup path is outside the destructive allowlist: {value}")
+    if _has_symlink_ancestor(safe):
+        raise ValueError(f"cleanup path has a symlink ancestor: {safe}")
+    return safe
+
+
+def _validated_docker_resource_name(kind: str, value: str) -> str:
+    pattern = _SAFE_IMAGE_NAME if kind == "image" else _SAFE_BASENAME
+    if not pattern.fullmatch(value) or value.startswith("-"):
+        raise ValueError(f"invalid Docker {kind} resource name")
+    disposition, reason = classify_docker_resource(kind, value, {})
+    if disposition != DELETE:
+        raise ValueError(f"Docker cleanup target is not allowlisted: {value}: {reason}")
+    return value
+
+
+def _cleanup_certificate_output(path: Path) -> Path:
+    candidate = Path(path)
+    if (
+        not candidate.is_absolute()
+        or candidate.is_symlink()
+        or candidate.resolve(strict=False) != candidate
+        or candidate.parent != CANONICAL_RUNTIME_DIR
+        or not _SAFE_BASENAME.fullmatch(candidate.name)
+        or not candidate.name.endswith(".json")
+    ):
+        raise ValueError("cleanup certificate output must be a canonical JSON file in the runtime directory")
+    return CANONICAL_RUNTIME_DIR / candidate.name
+
+
+def _canonical_certified_backup_path(value: object) -> Path:
+    text = str(value or "")
+    candidate = Path(text)
+    if (
+        "\x00" in text
+        or not candidate.is_absolute()
+        or candidate.is_symlink()
+        or candidate.resolve(strict=False) != candidate
+        or not candidate.is_file()
+    ):
+        raise ValueError("certified database backup path is not canonical")
+    return candidate
+
+
 def _target_contains_certified_backup(target: Path, backup: Path) -> bool:
-    target_path = target.resolve(strict=False)
-    backup_path = backup.resolve(strict=False)
-    return target_path == backup_path or target_path in backup_path.parents
+    return target == backup or target in backup.parents
 
 
 def _validated_delete_entries(inventory: dict[str, object]) -> list[dict[str, object]]:
@@ -132,18 +228,25 @@ def _validated_delete_entries(inventory: dict[str, object]) -> list[dict[str, ob
         kind = str(entry.get("type", ""))
         name = str(entry.get("path_or_resource", ""))
         if kind == "path":
-            disposition, reason = classify_path(Path(name))
+            safe_path = _validated_legacy_path(name)
+            disposition, reason = classify_path(safe_path)
+            safe_entry = {**entry, "path_or_resource": str(safe_path)}
         elif kind.startswith("docker-"):
             resource_kind = kind.removeprefix("docker-")
             labels = entry.get("labels") if isinstance(entry.get("labels"), dict) else {}
             disposition, reason = classify_docker_resource(resource_kind, name, labels)
+            if disposition == DELETE:
+                safe_name = _validated_docker_resource_name(resource_kind, name)
+            else:
+                safe_name = name
+            safe_entry = {**entry, "path_or_resource": safe_name}
         else:
             raise ValueError(f"unknown cleanup entry type: {kind}")
         if disposition == PROTECTED:
             raise ValueError(f"protected cleanup target refused: {name}: {reason}")
         if disposition != DELETE:
             raise ValueError(f"cleanup target is not allowlisted: {name}: {reason}")
-        approved.append(entry)
+        approved.append(safe_entry)
     return approved
 
 
@@ -151,22 +254,23 @@ def _delete_entry(entry: dict[str, object]) -> None:
     kind = str(entry["type"])
     name = str(entry["path_or_resource"])
     if kind == "path":
-        path = Path(name)
+        path = _validated_legacy_path(name)
         if path.is_symlink() or path.is_file():
-            path.unlink(missing_ok=True)
+            path.unlink(missing_ok=True)  # NOSONAR -- strict destructive allowlist, no traversal/symlink ancestor
         elif path.is_dir():
-            shutil.rmtree(path)
+            shutil.rmtree(path)  # NOSONAR -- strict destructive allowlist, no traversal/symlink ancestor
         return
     resource_kind = kind.removeprefix("docker-")
+    safe_name = _validated_docker_resource_name(resource_kind, name)
     command = {
-        "container": ["docker", "rm", "-f", name],
-        "volume": ["docker", "volume", "rm", name],
-        "network": ["docker", "network", "rm", name],
-        "image": ["docker", "image", "rm", name],
+        "container": [DOCKER_BIN, "rm", "-f", "--", safe_name],
+        "volume": [DOCKER_BIN, "volume", "rm", "--", safe_name],
+        "network": [DOCKER_BIN, "network", "rm", "--", safe_name],
+        "image": [DOCKER_BIN, "image", "rm", "--", safe_name],
     }.get(resource_kind)
     if command is None:
         raise ValueError(f"unsupported Docker cleanup type: {resource_kind}")
-    result = subprocess.run(command, text=True, capture_output=True, check=False)
+    result = subprocess.run(command, text=True, capture_output=True, check=False)  # NOSONAR -- validated fixed-form argv
     if result.returncode != 0 and "No such" not in (result.stderr + result.stdout):
         raise RuntimeError(f"Docker cleanup failed for {kind} {name}: {result.stderr.strip()}")
 
@@ -193,7 +297,7 @@ def main() -> int:
         removed: list[dict[str, object]] = []
         for entry in approved:
             if entry.get("type") == "path" and _target_contains_certified_backup(
-                Path(str(entry.get("path_or_resource") or "")),
+                _validated_legacy_path(str(entry.get("path_or_resource") or "")),
                 certified_backup,
             ):
                 raise ValueError(
@@ -211,8 +315,11 @@ def main() -> int:
             "removed": removed,
         }
         if args.certificate:
-            args.certificate.parent.mkdir(parents=True, exist_ok=True)
-            args.certificate.write_text(json.dumps(certificate, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            certificate_output = _cleanup_certificate_output(args.certificate)
+            CANONICAL_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+            certificate_output.write_text(  # NOSONAR -- canonical runtime parent + validated basename
+                json.dumps(certificate, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
         print(json.dumps({"status": "PASS", "removed": len(removed)}))
         return 0
     except Exception as exc:

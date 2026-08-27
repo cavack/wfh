@@ -139,3 +139,20 @@ def test_release_certificate_builder_rejects_core_container_revision_mismatch() 
         pass
     else:
         raise AssertionError("all core runtime OCI revisions must match the certified checkout")
+
+
+def test_production_verifier_rejects_noncanonical_operator_paths() -> None:
+    import importlib.util
+    script = ROOT / "scripts/verify_production_cutover.py"
+    spec = importlib.util.spec_from_file_location("verify_operator_path_test", script)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        module._require_canonical_operator_path(
+            Path("/tmp/not-production"), module.CANONICAL_PROJECT_DIR
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Production verifier must reject alternate project paths")

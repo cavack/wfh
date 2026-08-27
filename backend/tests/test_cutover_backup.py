@@ -39,7 +39,7 @@ def test_local_cutover_certificate_is_explicitly_non_independent(tmp_path: Path)
     assert certificate["integrity_check"] == "ok"
     assert len(certificate["sha256"]) == 64
     assert backup.exists()
-    assert not restore.exists()
+    assert restore.exists()
 
 
 def test_migration_rehearsal_accepts_cutover_wrapper(tmp_path: Path) -> None:

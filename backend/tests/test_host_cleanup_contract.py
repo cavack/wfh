@@ -127,3 +127,38 @@ def test_generated_release_certificate_is_accepted_by_cleanup_validator(tmp_path
     accepted = cleanup.validate_release_certificate(path)
     assert accepted["release_sha"] == sha
     assert accepted["certificate_sha256"] == certificate["certificate_sha256"]
+
+
+def test_cleanup_path_validation_rejects_traversal_alias() -> None:
+    cleanup = _load_module(CLEANUP_PATH, "cleanup_path_validation")
+    inventory = {"entries": [{
+        "type": "path",
+        "path_or_resource": "/srv/wfh-worktrees/../waterfallhunter/app",
+        "disposition": "DELETE_AFTER_CERTIFICATION",
+    }]}
+    try:
+        cleanup._validated_delete_entries(inventory)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("cleanup traversal aliases must be rejected")
+
+
+def test_cleanup_docker_name_validation_rejects_option_injection() -> None:
+    cleanup = _load_module(CLEANUP_PATH, "cleanup_docker_name_validation")
+    try:
+        cleanup._validated_docker_resource_name("container", "--force")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("option-like Docker resource names must be rejected")
+
+
+def test_cleanup_certificate_output_is_canonical_runtime_only() -> None:
+    cleanup = _load_module(CLEANUP_PATH, "cleanup_output_validation")
+    try:
+        cleanup._cleanup_certificate_output(Path("/tmp/cleanup.json"))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("cleanup certificate output must be runtime-scoped")
