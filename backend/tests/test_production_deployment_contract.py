@@ -136,9 +136,10 @@ def test_privileged_deploy_does_not_use_workflow_run_head_code() -> None:
 def test_deployment_rejects_stale_main_revisions_at_both_boundaries() -> None:
     workflow_text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
     script_text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
-    equality_gate = 'test "$(git rev-parse origin/main)" = "$WFH_DEPLOY_SHA"'
-    assert equality_gate in workflow_text
-    assert equality_gate in script_text
+    workflow_equality_gate = 'test "$(git rev-parse origin/main)" = "$WFH_DEPLOY_SHA"'
+    script_equality_gate = '[[ "$(git rev-parse origin/main)" == "$WFH_DEPLOY_SHA" ]]'
+    assert workflow_equality_gate in workflow_text
+    assert script_equality_gate in script_text
 
 
 def test_production_deploy_workflow_pins_ssh_host_identity() -> None:
@@ -172,6 +173,8 @@ def test_host_deploy_failure_and_signal_paths_are_rollback_aware() -> None:
     assert "trap 'on_signal TERM' TERM" in text
     assert "trap 'on_signal HUP' HUP" in text
     assert "trap 'on_signal INT' INT" in text
+    signal_case = text.split('case "$signal" in', maxsplit=1)[1].split("esac", maxsplit=1)[0]
+    assert "*) status=1 ;;" in signal_case
     assert "MIGRATION_MAY_HAVE_MUTATED" in text
     assert "RUNTIME_REPLACED" in text
 
@@ -213,7 +216,7 @@ def test_host_deploy_orders_backup_migration_telegram_and_runtime_certification(
     main_sequence = text.split('[[ "$WFH_DEPLOY_SHA"', maxsplit=1)[1]
     ordered_markers = [
         "flock -n 9",
-        'test "$(git rev-parse origin/main)" = "$WFH_DEPLOY_SHA"',
+        '[[ "$(git rev-parse origin/main)" == "$WFH_DEPLOY_SHA" ]]',
         "assert_signal_only_runtime_boundary",
         "docker compose build",
         "backup_database",
