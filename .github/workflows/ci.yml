@@ -87,6 +87,8 @@ jobs:
             --build-arg BUILD_DATE="$BUILD_DATE" \
             --build-arg VERSION="$GITHUB_REF_NAME" \
             waterfall-backend frontend watchdog
+      - name: Materialize tracked-source manifest for artifact tests
+        run: git ls-files > .wfh-source-manifest
       - name: Test the exact backend artifact family
         run: |
           docker run --rm --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev,size=512m \

@@ -74,6 +74,14 @@ def test_ci_runs_canonical_repository_hygiene_verifier() -> None:
     assert "python scripts/verify_repository_hygiene.py --root ." in ci
 
 
+def test_ci_materializes_source_manifest_before_container_artifact_tests() -> None:
+    ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    manifest = "git ls-files > .wfh-source-manifest"
+    test_step = "Test the exact backend artifact family"
+    assert manifest in ci
+    assert ci.index(manifest) < ci.index(test_step)
+
+
 def test_pull_request_template_guards_canonical_decision_contract() -> None:
     template = (ROOT / ".github/pull_request_template.md").read_text(encoding="utf-8")
     assert "Only canonical `ENTRY_READY`" in template
