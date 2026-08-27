@@ -1,4 +1,5 @@
 import asyncio
+import threading
 
 from fastapi import (
     APIRouter,
@@ -51,6 +52,73 @@ def build_execution_suitability_router(
         )
     )
 
+    inflight_reports: dict[
+        tuple[
+            asyncio.AbstractEventLoop,
+            int,
+        ],
+        asyncio.Task,
+    ] = {}
+    inflight_lock = threading.Lock()
+
+    async def build_report_singleflight(
+        *,
+        examples_per_status: int,
+    ) -> dict:
+        loop = asyncio.get_running_loop()
+        key = (
+            loop,
+            examples_per_status,
+        )
+
+        with inflight_lock:
+            task = inflight_reports.get(
+                key
+            )
+
+            if (
+                task is None
+                or task.done()
+            ):
+                task = asyncio.create_task(
+                    asyncio.to_thread(
+                        report_builder.build_report,
+                        examples_per_status=(
+                            examples_per_status
+                        ),
+                    )
+                )
+                inflight_reports[key] = task
+
+                def cleanup(
+                    completed: asyncio.Task,
+                    *,
+                    cleanup_key=key,
+                    cleanup_task=task,
+                ) -> None:
+                    if not completed.cancelled():
+                        completed.exception()
+
+                    with inflight_lock:
+                        if (
+                            inflight_reports.get(
+                                cleanup_key
+                            )
+                            is cleanup_task
+                        ):
+                            inflight_reports.pop(
+                                cleanup_key,
+                                None,
+                            )
+
+                task.add_done_callback(
+                    cleanup
+                )
+
+        return await asyncio.shield(
+            task
+        )
+
     @router.get(
         "/api/execution-suitability"
     )
@@ -85,8 +153,7 @@ def build_execution_suitability_router(
                 },
             )
 
-        return await asyncio.to_thread(
-            report_builder.build_report,
+        return await build_report_singleflight(
             examples_per_status=(
                 examples_per_status
             ),
