@@ -148,6 +148,69 @@ def test_polling_snapshot_normalizes_non_finite_numbers_to_unavailable(monkeypat
 
     assert snapshot.candidates["TEST"]["metrics"]["spread_pct"] is None
 
+
 def test_production_dashboard_replay_window_is_memory_bounded() -> None:
     assert getattr(main, "_DASHBOARD_REPLAY_EVENT_LIMIT", None) == 8
     assert main._dashboard_event_buffer._events.maxlen == 8
+
+
+def test_periodic_dashboard_broadcast_ignores_derived_age_only_changes(monkeypatch) -> None:
+    """Derived display ages must not make an unchanged business snapshot look new."""
+    buffer = DashboardEventBuffer()
+    monkeypatch.setattr(main, "_dashboard_event_buffer", buffer)
+    payloads = [
+        {
+            "total": 1,
+            "candidates": {
+                "TEST": {
+                    "status": "WATCH",
+                    "age_seconds": 1.0,
+                    "analysis_age_seconds": 1.0,
+                    "reference_age_seconds": 2.0,
+                }
+            },
+            "final_ranking": {"version": "test"},
+            "signal_funnel": {"version": "test"},
+        },
+        {
+            "total": 1,
+            "candidates": {
+                "TEST": {
+                    "status": "WATCH",
+                    "age_seconds": 2.0,
+                    "analysis_age_seconds": 2.0,
+                    "reference_age_seconds": 3.0,
+                }
+            },
+            "final_ranking": {"version": "test"},
+            "signal_funnel": {"version": "test"},
+        },
+    ]
+    monkeypatch.setattr(main, "get_formatted_candidates", lambda **_: payloads.pop(0))
+
+    first = main._publish_dashboard_snapshot(full_snapshot=False, only_if_changed=True)
+    second = main._publish_dashboard_snapshot(full_snapshot=False, only_if_changed=True)
+
+    assert first is not None
+    assert second is None
+    assert buffer.snapshot_version == 1
+
+
+def test_sse_client_queue_is_bounded_and_latest_event_wins(monkeypatch) -> None:
+    """A slow SSE client must retain only a tiny rolling set of full snapshots."""
+    queue = main._new_dashboard_client_queue()
+    assert queue.maxsize == 2
+
+    buffer = DashboardEventBuffer()
+    first = buffer.publish_heartbeat(generated_at=10.0)
+    second = buffer.publish_heartbeat(generated_at=11.0)
+    latest = buffer.publish_heartbeat(generated_at=12.0)
+    queue.put_nowait(first)
+    queue.put_nowait(second)
+    monkeypatch.setattr(main, "_sse_clients", {queue})
+
+    main._broadcast_dashboard_event(latest)
+
+    assert queue.get_nowait() is second
+    assert queue.get_nowait() is latest
+    assert queue.empty()
