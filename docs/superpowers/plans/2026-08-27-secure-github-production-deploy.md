@@ -1,203 +1,62 @@
 # Automatic Signal-Only Production Deployment Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
-**Goal:** Automatically deploy each CI-certified `main` revision to Ubuntu with database backup/migration and Telegram signal delivery activation while keeping WaterfallHunter strictly `SIGNAL_ONLY` and `LIVE_TRADING_ENABLED=false`.
-
-**Architecture:** `CI` remains the exact-artifact validation gate. A `workflow_run` Production workflow binds to the successful `main` CI run's immutable SHA and invokes a host-side locked deployment script over pinned-host-key SSH. The script performs backup-before-migration, managed migration preflight/apply/postflight, release-scoped Telegram cutover, Compose build/update, readiness/revision certification, and bounded rollback behavior.
-
-**Tech Stack:** GitHub Actions, Bash, OpenSSH, Git, Docker Compose, SQLite backup/migration CLI, FastAPI health endpoints.
-
-**Spec:** `docs/superpowers/specs/2026-08-27-secure-github-production-deploy-design.md`
-
-## Global Constraints
-- Product/runtime boundary is `SIGNAL_ONLY`.
-- `LIVE_TRADING_ENABLED=false` is mandatory; no order execution path is enabled.
-- Production deploy triggers only from successful `CI` `workflow_run` events for `main`.
-- No `workflow_dispatch` or dry-run path.
-- Database backup must complete before migration apply.
-- Telegram delivery is enabled with a release timestamp cutover; credentials remain host-owned.
-- SSH uses pinned known-host verification; `StrictHostKeyChecking=no` is forbidden.
-- Persistent volumes are never deleted/recreated by deploy.
-
----
-
-### Task 1: Lock canonical SIGNAL_ONLY terminology
-
-**Files:**
-- Modify: `backend/src/waterfallhunter/core/contracts.py`
-- Modify: product/runtime consumers and tests that reference `ExecutionMode.SIGNAL_ONLY`
-- Modify: user-facing frontend/config/docs copy containing `SIGNAL_ONLY`, `signal-only`, or `signal-only operation`
-- Create: `backend/tests/test_signal_only_terminology.py`
-
-**Interfaces:**
-- Produces: `ExecutionMode.SIGNAL_ONLY = "SIGNAL_ONLY"` and no product/runtime API response emits `SIGNAL_ONLY`.
-
-- [ ] **Step 1: Add failing contract/terminology tests**
-
-Assert `ExecutionMode.SIGNAL_ONLY.value == "SIGNAL_ONLY"`, SignalDecision defaults to `SIGNAL_ONLY`, and repository product/runtime source contains none of the deprecated terms (`SIGNAL_ONLY`, `signal-only`, `signal-only operation`) outside explicitly grandfathered historical quotation fixtures if any are unavoidable.
-
-- [ ] **Step 2: Run RED**
-
-Run focused canonical-contract/config/backtest/deployment-certification tests and verify failure on the old `SIGNAL_ONLY` contract.
-
-- [ ] **Step 3: Implement minimal terminology migration**
-
-Rename the enum/default/literals and update affected runtime consumers, frontend labels, Compose/config comments, runbooks, and current design/plan text. Keep `LIVE_TRADING_ENABLED=false` and no order placement behavior unchanged.
-
-- [ ] **Step 4: Run GREEN**
-
-Run the focused suites plus repository terminology scan.
-
-### Task 2: Deployment contract tests — RED
-
-**Files:**
-- Create: `backend/tests/test_production_deployment_contract.py`
-
-**Interfaces:**
-- Tests future files `.github/workflows/deploy-production.yml` and `scripts/deploy_production.sh` before they exist.
-
-- [ ] **Step 1: Assert automatic workflow contract**
-
-Test that the workflow uses `workflow_run` for workflow `CI`, filters branch `main`, has a success conclusion guard, has no `workflow_dispatch`, uses `environment: production`, and passes `${{ github.event.workflow_run.head_sha }}` as the only deployment SHA.
-
-- [ ] **Step 2: Assert SSH and mutation safety**
-
-Require pinned `known_hosts`, `StrictHostKeyChecking=yes`, no runtime `ssh-keyscan`, no `docker compose down -v`, no plaintext secret values, and no `LIVE_TRADING_ENABLED=true`.
-
-- [ ] **Step 3: Assert deploy-script ordering contract**
-
-Require lock → exact SHA ancestry → Compose/live-trading invariant → image build → SQLite backup → migration preflight → migration apply → Telegram cutover update → Compose up → `/livez` → `/readyz` → OCI revision verification.
-
-- [ ] **Step 4: Verify RED in CI**
-
-Open/update the PR with test-only commit and confirm focused/backend CI fails because production workflow/script are missing.
-
-### Task 3: Host automatic deployment implementation — GREEN
-
-**Files:**
-- Create: `scripts/deploy_production.sh`
-- Modify: `backend/tests/test_production_deployment_contract.py`
-
-**Interfaces:**
-- Consumes: `WFH_DEPLOY_SHA`, `WFH_DEPLOY_ROOT=/srv/waterfallhunter/app` and existing host `.env`.
-- Produces: certified deployment or non-zero exit; never enables live trading.
-
-- [ ] **Step 1: Implement strict boundary and locking**
-
-Use `set -Eeuo pipefail`; validate 40-hex SHA; acquire exclusive `flock`; fetch origin and require `git merge-base --is-ancestor "$WFH_DEPLOY_SHA" origin/main`; require `.env`; reject any effective `LIVE_TRADING_ENABLED` value other than false.
-
-- [ ] **Step 2: Build target artifacts before database mutation**
-
-Checkout detached target SHA and build backend/frontend/watchdog with `VCS_REF=$WFH_DEPLOY_SHA` and bounded build failure behavior.
-
-- [ ] **Step 3: Backup Production SQLite before migration**
-
-Use the target backend image with the persistent `waterfall_data` volume mounted and Python/SQLite backup API (or repository backup tooling) to create a timestamped backup outside the live DB file, verify integrity/checksum, and abort if backup certification fails.
-
-- [ ] **Step 4: Run managed migration**
-
-Against `/app/data/waterfall_registry.db`, execute target artifact `python -m waterfallhunter.migrate_database --preflight`, then `--apply --source-revision "$WFH_DEPLOY_SHA"`; require JSON success and postflight managed schema verification.
-
-- [ ] **Step 5: Enable Telegram signal delivery with current release cutover**
-
-Require existing non-empty `TELEGRAM_TOKEN` and `TELEGRAM_CHAT_ID`; update only `TELEGRAM_SIGNAL_DELIVERY_ENABLED=true` and `TELEGRAM_SIGNAL_DELIVERY_CUTOVER_AT=<deployment_epoch>` in `.env`, preserving a pre-deploy `.env` backup for rollback.
-
-- [ ] **Step 6: Start and certify runtime**
-
-Run `docker compose up -d --remove-orphans`; poll `/api/livez` and `/api/readyz` with bounded retries; inspect backend/frontend/watchdog OCI revision labels and require the exact target SHA; verify `LIVE_TRADING_ENABLED=false` inside effective runtime config.
-
-- [ ] **Step 7: Rollback rules**
-
-On failure, restore previous Telegram settings. If migration was not applied, checkout/rebuild previous SHA. If migration was applied, only source/container rollback when previous runtime schema compatibility is positively verified; otherwise stop and preserve backup/evidence rather than guessing.
-
-- [ ] **Step 8: Run GREEN**
-
-Run deployment contract tests and `bash -n scripts/deploy_production.sh`.
-
-### Task 4: Automatic GitHub Actions workflow — GREEN
-
-**Files:**
-- Create: `.github/workflows/deploy-production.yml`
-- Modify: `backend/tests/test_production_deployment_contract.py`
-
-**Interfaces:**
-- Consumes: successful `CI` `workflow_run` on `main` and Production environment SSH secrets.
-- Produces: one deployment of exactly `workflow_run.head_sha`.
-
-- [ ] **Step 1: Add workflow trigger and guards**
-
-Use `on.workflow_run.workflows: [CI]`, `types: [completed]`, branch `main`, and job condition `github.event.workflow_run.conclusion == 'success'`.
-
-- [ ] **Step 2: Configure least privilege and concurrency**
-
-Set `permissions: contents: read`; `environment: production`; Production concurrency with `cancel-in-progress: false` so deployments serialize rather than interrupt each other.
-
-- [ ] **Step 3: Configure pinned SSH**
-
-Write private key mode 600 and exact `WFH_PROD_KNOWN_HOSTS`; use `StrictHostKeyChecking=yes` and `UserKnownHostsFile=...`; never use runtime `ssh-keyscan`.
-
-- [ ] **Step 4: Execute exact target script**
-
-Checkout the exact `workflow_run.head_sha` locally and stream that revision's `scripts/deploy_production.sh` over SSH with `WFH_DEPLOY_SHA` fixed to the same SHA. Do not deploy `HEAD`, branch names, or caller input.
-
-- [ ] **Step 5: Run GREEN**
-
-Focused tests must pass and workflow syntax must be valid.
-
-### Task 5: Deployment/notification runbook
-
-**Files:**
-- Create: `docs/operations/automatic-production-deployment.md`
-- Modify: `.env.example`
-- Modify: `docker-compose.yml` comments/copy as needed
-
-**Interfaces:**
-- Produces: setup/recovery instructions and canonical SIGNAL_ONLY wording.
-
-- [ ] **Step 1: Document Production environment setup**
-
-Document the five GitHub SSH secrets, deploy-user permissions, canonical application path, Docker volume assumptions, host-owned Telegram credentials, and known-host fingerprint verification.
-
-- [ ] **Step 2: Document automatic migration and rollback boundaries**
-
-Describe backup-before-migration, migration CLI, incompatible-schema stop condition, backup location/verification, and manual recovery procedure.
-
-- [ ] **Step 3: Document Telegram cutover**
-
-Explain automatic `TELEGRAM_SIGNAL_DELIVERY_ENABLED=true` and release timestamp cutover, with explicit statement that Telegram sends signals only and never authorizes orders.
-
-- [ ] **Step 4: Normalize SIGNAL_ONLY copy**
-
-Update current product/runtime docs/config/UI references from signal-only boundary language to signal-only language without claiming that historical simulation/backtest mechanics are live execution.
-
-### Task 6: Full validation and review
-
-**Files:** review fixes only.
-
-- [ ] **Step 1: Run backend suite and runtime parity**
-
-Require full backend GREEN with `LIVE_TRADING_ENABLED=false`.
-
-- [ ] **Step 2: Run frontend typecheck/build/tests**
-
-Require all available frontend gates GREEN.
-
-- [ ] **Step 3: Run container/dependency/hygiene gates**
-
-Match `.github/workflows/ci.yml`, including exact artifact family validation and credential-pattern scan.
-
-- [ ] **Step 4: Review automatic-deploy attack/failure paths**
-
-Confirm no arbitrary revision input, no PR-triggered Production deploy, no host-key bypass, no destructive volume command, no credentials in source, no live-trading enablement, and no Telegram backlog release before the deployment cutover.
-
-- [ ] **Step 5: CodeRabbit/review closure**
-
-Resolve actionable findings with RED→GREEN changes and rerun exact-head checks.
-
-### Task 7: Merge and automatic activation
-
-- [ ] Merge only after all required CI/review gates are green and Production environment secrets/host deploy account are provisioned.
-- [ ] The merge-to-main CI run must complete successfully.
-- [ ] Confirm `deploy-production` starts automatically from that successful CI run without manual dispatch.
-- [ ] Verify deployment evidence: exact SHA, DB backup/checksum, migration result, Telegram cutover, `/livez`, `/readyz`, OCI labels, `LIVE_TRADING_ENABLED=false`, and `SIGNAL_ONLY` runtime/product boundary.
+**Goal:** Automatically deploy each fully validated `main` revision to the Ubuntu WaterfallHunter runtime, including controlled SQLite migration and Telegram signal delivery, while preserving the hard product boundary `SIGNAL_ONLY` and `LIVE_TRADING_ENABLED=false`.
+
+**Canonical contract:** `ExecutionMode.SIGNAL_ONLY = "SIGNAL_ONLY"`. Historical replay may model execution economics, but runtime/product behavior never places, changes, or cancels exchange orders.
+
+## Implemented architecture
+
+- `.github/workflows/ci.yml` is the validation and orchestration workflow.
+- The `deploy-production` job depends on backend, frontend, dependency audit, container validation, and repository-hygiene jobs.
+- The deploy job runs only for `push` events on `refs/heads/main`; pull requests never enter the Production environment.
+- `.github/workflows/deploy-production.yml` is a reusable `workflow_call` child workflow, not an independently privileged `workflow_run` consumer.
+- The deployment SHA is `github.sha`; both GitHub Actions and the host require that SHA to equal the current `origin/main` tip before mutation begins.
+- Production SSH uses pinned `WFH_PROD_KNOWN_HOSTS`, `StrictHostKeyChecking=yes`, least-privilege `contents: read`, and the `production` GitHub Environment.
+- There is no manual Production dispatch and no dry-run branch.
+
+## Host deployment sequence
+
+1. Validate the exact 40-character target SHA, Production `.env`, backup-retention configuration, and required commands.
+2. Create the deployment-owned state directory and acquire its exclusive `flock`.
+3. Fetch `origin/main` and require exact equality between `WFH_DEPLOY_SHA` and the current main tip.
+4. Resolve the previous certified/running revision for bounded rollback provenance.
+5. Assert `LIVE_TRADING_ENABLED=false` before changing runtime state.
+6. Checkout the exact target revision and validate Compose configuration.
+7. Build revision-labelled backend, frontend, and watchdog images.
+8. Create and checksum an SQLite backup before migration.
+9. Run migration preflight; mark migration as potentially mutable before `--apply` so partial failures remain rollback-aware.
+10. Activate Telegram signal delivery only after prerequisites pass and capture a fresh release cutover timestamp.
+11. Start/update the Compose stack without deleting persistent volumes.
+12. Require backend `/api/livez` and `/api/readyz`, plus healthy backend, frontend, and watchdog containers.
+13. Require all running OCI revision labels to equal the exact target SHA and verify effective runtime configuration still has live trading disabled.
+14. Persist the successful deployment certificate, then enforce bounded database-backup retention.
+
+## Failure semantics
+
+- Explicit failures and `ERR`, `TERM`, `HUP`, and `INT` paths enter the same bounded cleanup path.
+- Before mutable Production steps, failure restores the prior workspace/environment state where necessary.
+- After a migration may have mutated data, rollback to the previous revision is allowed only when that revision passes managed-schema compatibility preflight.
+- After runtime replacement, rollback must restore the previous environment, rebuild/start the previous revision, and re-certify backend readiness, all container health, OCI revision identity, and the signal-only boundary.
+- If rollback cannot be certified, the deployment fails loudly and preserves backup/evidence for operator recovery.
+
+## Telegram semantics
+
+- `TELEGRAM_TOKEN` and `TELEGRAM_CHAT_ID` remain host-owned secrets.
+- Deployment sets only release delivery controls, including `TELEGRAM_SIGNAL_DELIVERY_ENABLED=true` and the release-time `TELEGRAM_SIGNAL_DELIVERY_CUTOVER_AT`.
+- Pre-cutover queued events remain suppressed.
+- Telegram delivery sends signals only and never authorizes exchange order execution.
+
+## Verification gates
+
+- [x] TDD contract tests for SIGNAL_ONLY terminology and deploy boundaries.
+- [x] Exact-main-tip deployment gate at GitHub and host layers.
+- [x] Pinned SSH host identity and least privilege.
+- [x] Backup-before-migration ordering and migration-aware rollback state.
+- [x] Release-time Telegram cutover.
+- [x] Health certification for backend, frontend, and watchdog.
+- [x] Signal-aware interruption cleanup.
+- [x] Bounded backup retention.
+- [x] Full backend tests, runtime parity, frontend typecheck/build, dependency audit, repository hygiene, and exact production-image validation run in CI.
+- [ ] Final review-thread closure and exact-head re-review.
+- [ ] Merge only after explicit owner approval and all required gates are green.
+- [ ] After merge, verify the `main` CI run invokes `deploy-production` automatically and inspect the resulting Production deployment certificate.
