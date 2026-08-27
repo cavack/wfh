@@ -1,0 +1,176 @@
+name: Production Deploy (paper-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: "Exact 40-character SHA currently at origin/main"
+        required: true
+        type: string
+      confirm:
+        description: "Type DEPLOY_PAPER_ONLY to authorize this deployment run"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: waterfallhunter-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify deploy authority and CI evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TARGET_SHA_INPUT: ${{ inputs.target_sha }}
+      CONFIRM_INPUT: ${{ inputs.confirm }}
+    outputs:
+      target_sha: ${{ steps.verify.outputs.target_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - id: verify
+        name: Require exact main SHA and successful CI push
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "Production deploy workflow must be dispatched from main." >&2
+            exit 1
+          fi
+
+          if [[ "$CONFIRM_INPUT" != "DEPLOY_PAPER_ONLY" ]]; then
+            echo "Confirmation token is invalid." >&2
+            exit 1
+          fi
+
+          TARGET_SHA="$(printf '%s' "$TARGET_SHA_INPUT" | tr '[:upper:]' '[:lower:]')"
+          if ! [[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "target_sha must be an exact 40-character Git SHA." >&2
+            exit 1
+          fi
+
+          git fetch --no-tags --prune origin main
+          MAIN_SHA="$(git rev-parse origin/main)"
+          if [[ "$TARGET_SHA" != "$MAIN_SHA" ]]; then
+            echo "target_sha is not the current origin/main revision." >&2
+            exit 1
+          fi
+
+          CI_COUNT="$(
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${TARGET_SHA}&status=success&per_page=20" \
+              --jq '[.workflow_runs[] | select(.event == "push" and .head_branch == "main" and .conclusion == "success")] | length'
+          )"
+          if ! [[ "$CI_COUNT" =~ ^[0-9]+$ ]] || (( CI_COUNT < 1 )); then
+            echo "No successful CI push run exists for target_sha." >&2
+            exit 1
+          fi
+
+          echo "target_sha=$TARGET_SHA" >> "$GITHUB_OUTPUT"
+          echo "Verified current main revision and successful CI evidence: $TARGET_SHA"
+
+  deploy:
+    name: Deploy exact revision to Ubuntu
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production
+    env:
+      TARGET_SHA: ${{ needs.verify.outputs.target_sha }}
+      WFH_DEPLOY_HOST: ${{ secrets.WFH_DEPLOY_HOST }}
+      WFH_DEPLOY_USER: ${{ secrets.WFH_DEPLOY_USER }}
+      WFH_DEPLOY_PORT: ${{ secrets.WFH_DEPLOY_PORT }}
+      WFH_DEPLOY_PATH: ${{ secrets.WFH_DEPLOY_PATH }}
+      WFH_DEPLOY_SSH_KEY: ${{ secrets.WFH_DEPLOY_SSH_KEY }}
+      WFH_DEPLOY_KNOWN_HOSTS: ${{ secrets.WFH_DEPLOY_KNOWN_HOSTS }}
+    steps:
+      - name: Validate remote deployment configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          : "${WFH_DEPLOY_HOST:?WFH_DEPLOY_HOST is required}"
+          : "${WFH_DEPLOY_USER:?WFH_DEPLOY_USER is required}"
+          : "${WFH_DEPLOY_PATH:?WFH_DEPLOY_PATH is required}"
+          : "${WFH_DEPLOY_SSH_KEY:?WFH_DEPLOY_SSH_KEY is required}"
+          : "${WFH_DEPLOY_KNOWN_HOSTS:?WFH_DEPLOY_KNOWN_HOSTS is required}"
+
+          if ! [[ "$WFH_DEPLOY_HOST" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "WFH_DEPLOY_HOST contains unsupported characters." >&2
+            exit 1
+          fi
+          if ! [[ "$WFH_DEPLOY_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]; then
+            echo "WFH_DEPLOY_USER contains unsupported characters." >&2
+            exit 1
+          fi
+          if ! [[ "$WFH_DEPLOY_PATH" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+            echo "WFH_DEPLOY_PATH must be a simple absolute path." >&2
+            exit 1
+          fi
+
+          if [[ -z "$WFH_DEPLOY_PORT" ]]; then
+            WFH_DEPLOY_PORT=22
+          fi
+          if ! [[ "$WFH_DEPLOY_PORT" =~ ^[0-9]{1,5}$ ]] || (( WFH_DEPLOY_PORT < 1 || WFH_DEPLOY_PORT > 65535 )); then
+            echo "WFH_DEPLOY_PORT is invalid." >&2
+            exit 1
+          fi
+          echo "WFH_DEPLOY_PORT=$WFH_DEPLOY_PORT" >> "$GITHUB_ENV"
+
+      - name: Install pinned SSH identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$WFH_DEPLOY_SSH_KEY" > "$HOME/.ssh/wfh_deploy_key"
+          printf '%s\n' "$WFH_DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/wfh_deploy_key"
+          chmod 600 "$HOME/.ssh/known_hosts"
+          ssh-keygen -y -f "$HOME/.ssh/wfh_deploy_key" >/dev/null
+
+      - name: Run first-party rollback-safe deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REMOTE="${WFH_DEPLOY_USER}@${WFH_DEPLOY_HOST}"
+          ssh \
+            -i "$HOME/.ssh/wfh_deploy_key" \
+            -p "$WFH_DEPLOY_PORT" \
+            -o BatchMode=yes \
+            -o ConnectTimeout=10 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            "$REMOTE" \
+            bash -s -- "$TARGET_SHA" "$WFH_DEPLOY_PATH" <<'REMOTE_SCRIPT'
+          set -euo pipefail
+          TARGET_SHA="$1"
+          DEPLOY_PATH="$2"
+
+          cd "$DEPLOY_PATH"
+          git fetch --no-tags --prune origin main
+
+          TMP_SCRIPT="$(mktemp /tmp/wfh-deploy.XXXXXX.py)"
+          trap 'rm -f "$TMP_SCRIPT"' EXIT
+          git show "${TARGET_SHA}:scripts/deploy_production.py" > "$TMP_SCRIPT"
+          chmod 700 "$TMP_SCRIPT"
+
+          python3 "$TMP_SCRIPT" \
+            --target-sha "$TARGET_SHA" \
+            --repo-dir "$DEPLOY_PATH" \
+            --health-timeout-seconds 120
+          REMOTE_SCRIPT
