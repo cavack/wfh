@@ -8,7 +8,8 @@ DEPLOY_STATE_DIR="${WFH_DEPLOY_ROOT}/.deploy"
 BACKUP_DIR="${DEPLOY_STATE_DIR}/backups"
 STATE_DIR="${DEPLOY_STATE_DIR}/state"
 LOCK_FILE="${WFH_DEPLOY_LOCK_FILE:-${STATE_DIR}/deploy.lock}"
-WFH_DEPLOY_BACKUP_RETENTION_COUNT="${WFH_DEPLOY_BACKUP_RETENTION_COUNT:-10}"
+WFH_DEPLOY_BACKUP_RETENTION_COUNT="${WFH_DEPLOY_BACKUP_RETENTION_COUNT:-2}"
+PRODUCTION_COMPOSE_OVERRIDE="${STATE_DIR}/production-volumes.override.yml"
 DB_PATH="/app/data/waterfall_registry.db"
 DEPLOY_EPOCH="$(date -u +%s)"
 TELEGRAM_CUTOVER_EPOCH=""
@@ -60,6 +61,28 @@ assert_clean_deploy_worktree() {
       . ':(exclude).env' ':(exclude).deploy/**'
   )"
   [[ -z "$dirty" ]]
+}
+
+configure_production_compose_topology() {
+  local running_project
+  [[ -f "$PRODUCTION_COMPOSE_OVERRIDE" ]] || return 0
+
+  export COMPOSE_FILE="${WFH_DEPLOY_ROOT}/docker-compose.yml:${PRODUCTION_COMPOSE_OVERRIDE}"
+  if [[ -z "${COMPOSE_PROJECT_NAME:-}" ]]; then
+    running_project="$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' waterfall-backend 2>/dev/null || true)"
+    [[ -z "$running_project" ]] || export COMPOSE_PROJECT_NAME="$running_project"
+  fi
+  log "using host-owned Production Compose topology override: ${PRODUCTION_COMPOSE_OVERRIDE}"
+}
+
+remove_fixed_name_core_containers() {
+  local container
+  for container in waterfall-backend waterfall-frontend waterfall-watchdog; do
+    if docker inspect "$container" >/dev/null 2>&1; then
+      log "removing fixed-name container before Compose handoff: ${container}"
+      docker rm -f "$container" >/dev/null || return 1
+    fi
+  done
 }
 
 wait_for_backend_endpoint() {
@@ -240,6 +263,7 @@ rollback_previous_revision() {
     restore_previous_workspace || return 1
   fi
 
+  remove_fixed_name_core_containers || return 1
   docker compose up -d --remove-orphans || return 1
   wait_for_backend_endpoint /livez 20 3 || return 1
   wait_for_backend_endpoint /readyz 30 4 || return 1
@@ -267,6 +291,8 @@ terminate_with_cleanup() {
     restore_previous_workspace \
       || log "pre-mutation workspace restoration could not be certified"
   fi
+  prune_database_backups \
+    || log "database backup retention cleanup failed during failure handling"
   exit "$status"
 }
 
@@ -309,6 +335,7 @@ cd "$WFH_DEPLOY_ROOT"
 install -d -m 0750 "$STATE_DIR"
 exec 9>"$LOCK_FILE"
 flock -n 9 || fail "another WaterfallHunter deployment is already running"
+configure_production_compose_topology
 
 git fetch --prune origin main
 git cat-file -e "${WFH_DEPLOY_SHA}^{commit}" || fail "target revision is not available after fetch"
@@ -349,8 +376,9 @@ docker compose run --rm --no-deps --interactive=false -T waterfall-backend \
 activate_telegram_for_release
 # TELEGRAM_SIGNAL_DELIVERY_ENABLED and TELEGRAM_SIGNAL_DELIVERY_CUTOVER_AT are release-scoped signal-delivery gates.
 
-docker compose up -d --remove-orphans
 RUNTIME_REPLACED=1
+remove_fixed_name_core_containers
+docker compose up -d --remove-orphans
 
 wait_for_backend_endpoint /livez 20 3 || fail "backend /livez did not become healthy"
 wait_for_backend_endpoint /readyz 30 4 || fail "backend /readyz did not become ready"
