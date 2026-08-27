@@ -289,6 +289,7 @@ _sse_clients = set()
 # contiguous SSE replay window; older reconnects already fail closed to a
 # freshly generated full snapshot.
 _DASHBOARD_REPLAY_EVENT_LIMIT = 8
+_DASHBOARD_CLIENT_QUEUE_LIMIT = 2
 _dashboard_event_buffer = DashboardEventBuffer(
     replay_limit=_DASHBOARD_REPLAY_EVENT_LIMIT
 )
@@ -1476,6 +1477,11 @@ def _publish_dashboard_snapshot(
         generated_at=generated_at,
         full_snapshot=full_snapshot,
     )
+
+
+def _new_dashboard_client_queue() -> asyncio.Queue:
+    \"\"\"Return the bounded latest-wins queue used by one SSE client.\"\"\"
+    return asyncio.Queue(maxsize=_DASHBOARD_CLIENT_QUEUE_LIMIT)
 
 
 def _broadcast_dashboard_event(event: DashboardStreamEvent) -> None:
@@ -2984,9 +2990,7 @@ async def stream_candidates(
         Header(alias="Last-Event-ID"),
     ] = None,
 ):
-    q = asyncio.Queue(
-        maxsize=100
-    )
+    q = _new_dashboard_client_queue()
 
     _sse_clients.add(
         q
