@@ -156,3 +156,18 @@ def test_production_verifier_rejects_noncanonical_operator_paths() -> None:
         pass
     else:
         raise AssertionError("Production verifier must reject alternate project paths")
+
+
+def test_recovery_state_io_uses_configured_canonical_state_path(tmp_path: Path) -> None:
+    import importlib.util
+    script = ROOT / "scripts/verify_production_cutover.py"
+    spec = importlib.util.spec_from_file_location("verify_state_path_test", script)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.CANONICAL_RUNTIME_DIR = tmp_path
+    module.CANONICAL_STATE_FILE = tmp_path / "healthcheck-state.json"
+    state = {"consecutive_failures": 2, "recoveries": [], "last_recovery_at": 0.0}
+    module._save_state(state)
+    assert module.CANONICAL_STATE_FILE.exists()
+    assert module._load_state() == state

@@ -118,6 +118,7 @@ def test_generated_cutover_db_certificate_is_accepted_by_cleanup_validator(tmp_p
     assert spec and spec.loader
     cleanup = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(cleanup)
+    cleanup.CERTIFIED_BACKUP_ROOTS = (tmp_path,)
     accepted = cleanup.validate_db_certificate(report)
     assert accepted["status"] == "PASS"
     assert accepted["sha256"] == json.loads(report.read_text())["sha256"]

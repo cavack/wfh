@@ -266,8 +266,8 @@ def _write_release_certificate(path: Path, certificate: dict[str, object]) -> No
         raise
 
 
-def _load_state(path: Path) -> dict[str, object]:
-    path = _require_canonical_operator_path(path, CANONICAL_STATE_FILE)
+def _load_state() -> dict[str, object]:
+    path = CANONICAL_STATE_FILE
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(data, dict):
@@ -277,41 +277,41 @@ def _load_state(path: Path) -> dict[str, object]:
     return {"consecutive_failures": 0, "recoveries": [], "last_recovery_at": 0.0}
 
 
-def _save_state(path: Path, state: dict[str, object]) -> None:
-    path = _require_canonical_operator_path(path, CANONICAL_STATE_FILE)
+def _save_state(state: dict[str, object]) -> None:
+    path = CANONICAL_STATE_FILE
     CANONICAL_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp = CANONICAL_RUNTIME_DIR / "healthcheck-state.json.tmp"
     tmp.write_text(json.dumps(state, sort_keys=True) + "\n", encoding="utf-8")
     tmp.replace(path)
 
 
-def maybe_recover(project_dir: Path, env_file: Path, state_file: Path, snapshot: dict[str, object]) -> tuple[bool, str]:
+def maybe_recover(project_dir: Path, env_file: Path, snapshot: dict[str, object]) -> tuple[bool, str]:
     now = time.time()
-    state = _load_state(state_file)
+    state = _load_state()
     recoveries = [float(x) for x in state.get("recoveries", []) if now - float(x) < 3600]
     if bool(snapshot["healthy"]):
         state.update(consecutive_failures=0, recoveries=recoveries)
-        _save_state(state_file, state)
+        _save_state(state)
         return True, "healthy"
     failures = int(state.get("consecutive_failures", 0)) + 1
     last = float(state.get("last_recovery_at", 0.0))
     state.update(consecutive_failures=failures, recoveries=recoveries)
     if failures < FAILURES_BEFORE_RECOVERY:
-        _save_state(state_file, state)
+        _save_state(state)
         return False, f"failure_{failures}_of_{FAILURES_BEFORE_RECOVERY}"
     if now - last < RECOVERY_COOLDOWN_SECONDS:
-        _save_state(state_file, state)
+        _save_state(state)
         return False, "cooldown"
     if len(recoveries) >= MAX_RECOVERIES_PER_HOUR:
-        _save_state(state_file, state)
+        _save_state(state)
         return False, "recovery_budget_exhausted"
     result = _compose(project_dir, env_file, "up", "-d", "--remove-orphans")
     if result.returncode != 0:
-        _save_state(state_file, state)
+        _save_state(state)
         return False, "recovery_command_failed"
     recoveries.append(now)
     state.update(consecutive_failures=0, recoveries=recoveries, last_recovery_at=now)
-    _save_state(state_file, state)
+    _save_state(state)
     time.sleep(5)
     recovered = health_snapshot(project_dir, env_file)
     return bool(recovered["healthy"]), "recovered" if recovered["healthy"] else "recovery_unhealthy"
@@ -332,7 +332,7 @@ def main() -> int:
     try:
         project_dir = _require_canonical_operator_path(args.project_dir, CANONICAL_PROJECT_DIR)
         env_file = _require_canonical_operator_path(args.env_file, CANONICAL_ENV_FILE)
-        state_file = _require_canonical_operator_path(args.state_file, CANONICAL_STATE_FILE)
+        _require_canonical_operator_path(args.state_file, CANONICAL_STATE_FILE)
         release_certificate = (
             _release_certificate_output(args.release_certificate)
             if args.release_certificate is not None
@@ -353,7 +353,7 @@ def main() -> int:
         else health_snapshot(project_dir, env_file)
     )
     if args.recover:
-        ok, reason = maybe_recover(project_dir, env_file, state_file, snapshot)
+        ok, reason = maybe_recover(project_dir, env_file, snapshot)
         snapshot["recovery"] = reason
         snapshot["healthy"] = ok
     if release_certificate is not None:

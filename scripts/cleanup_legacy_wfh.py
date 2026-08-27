@@ -31,6 +31,10 @@ from waterfallhunter.core.sqlite_backup_certification import (  # noqa: E402
 
 DOCKER_BIN = "/usr/bin/docker"
 CANONICAL_RUNTIME_DIR = Path("/srv/waterfallhunter/runtime")
+CERTIFIED_BACKUP_ROOTS = (
+    Path("/srv/waterfallhunter/backups"),
+    Path("/srv/wfh-release-backups"),
+)
 _SAFE_BASENAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SAFE_IMAGE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:-]{0,255}$")
 _EXACT_LEGACY_BY_TEXT = {str(path): path for path in EXACT_LEGACY_PATHS}
@@ -205,12 +209,23 @@ def _canonical_certified_backup_path(value: object) -> Path:
     if (
         "\x00" in text
         or not candidate.is_absolute()
-        or candidate.is_symlink()
-        or candidate.resolve(strict=False) != candidate
-        or not candidate.is_file()
+        or str(candidate) != text
+        or any(part in {".", ".."} for part in candidate.parts)
     ):
         raise ValueError("certified database backup path is not canonical")
-    return candidate
+    allowed_root = next(
+        (root for root in CERTIFIED_BACKUP_ROOTS if candidate != root and root in candidate.parents),
+        None,
+    )
+    if allowed_root is None:
+        raise ValueError("certified database backup path is outside configured backup roots")
+    relative_parts = candidate.relative_to(allowed_root).parts
+    if not relative_parts or any(not _SAFE_BASENAME.fullmatch(part) for part in relative_parts):
+        raise ValueError("certified database backup path contains an invalid component")
+    safe_candidate = allowed_root.joinpath(*relative_parts)
+    if safe_candidate.is_symlink() or _has_symlink_ancestor(safe_candidate):  # NOSONAR -- fixed roots + sanitized components
+        raise ValueError("certified database backup path must not traverse symlinks")
+    return safe_candidate
 
 
 def _target_contains_certified_backup(target: Path, backup: Path) -> bool:

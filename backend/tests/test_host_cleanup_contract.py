@@ -162,3 +162,15 @@ def test_cleanup_certificate_output_is_canonical_runtime_only() -> None:
         pass
     else:
         raise AssertionError("cleanup certificate output must be runtime-scoped")
+
+
+def test_certified_backup_path_is_restricted_to_configured_roots(tmp_path: Path) -> None:
+    cleanup = _load_module(CLEANUP_PATH, "cleanup_certified_backup_root")
+    outside = tmp_path / "outside.db"
+    outside.write_bytes(b"not-used")
+    try:
+        cleanup._canonical_certified_backup_path(outside)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("certified backup paths outside configured roots must be rejected")
