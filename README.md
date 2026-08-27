@@ -14,6 +14,18 @@ WaterfallHunter is a SIGNAL_ONLY USDT perpetual-futures waterfall detector. It n
 - `docs/` — evidence, replay, and operational-design documentation.
 - `research/` — curated research notes only; generated datasets and backtest outputs are intentionally excluded.
 
+## Canonical documentation
+
+- [Project handoff](docs/PROJECT_HANDOFF.md) — cold-start briefing for a new developer or AI session.
+- [Architecture](docs/ARCHITECTURE.md) — runtime topology and data flow.
+- [Model](docs/MODEL.md) — fixed market rules and evidence families.
+- [Decision engine](docs/DECISION_ENGINE.md) — canonical entry states and readiness semantics.
+- [Dashboard](docs/DASHBOARD.md) — Decision Terminal information architecture.
+- [Data and database](docs/DATA_AND_DATABASE.md) — SQLite ownership and schema lineage.
+- [Operations](docs/OPERATIONS.md) / [Deployment](docs/DEPLOYMENT.md) / [Backup & restore](docs/BACKUP_RESTORE.md).
+- [Telegram](docs/TELEGRAM.md) and [AI advisory](docs/AI_ADVISORY.md).
+- [Developer onboarding](docs/DEVELOPER_ONBOARDING.md) and [Troubleshooting](docs/TROUBLESHOOTING.md).
+
 ## Current operational boundaries
 
 - SIGNAL_ONLY: no order placement or cancellation.
@@ -52,7 +64,15 @@ For a release-candidate commit, run the isolated clean-install validator. It rej
 ./scripts/validate_clean_install.sh
 ```
 
-Backend:
+Stable developer commands:
+
+```bash
+make help
+make validate
+make clean-install-check   # release-candidate only; requires a clean committed SHA
+```
+
+Backend directly:
 
 ```bash
 python -m pip install --require-hashes -r backend/requirements.lock
