@@ -181,6 +181,12 @@ def test_host_deploy_certifies_all_release_containers_healthy() -> None:
     assert text.count("wait_for_container_healthy waterfall-backend") >= 2
     assert text.count("wait_for_container_healthy waterfall-frontend") >= 2
     assert text.count("wait_for_container_healthy waterfall-watchdog") >= 2
+    helper = text.split("wait_for_container_healthy() {", maxsplit=1)[1].split(
+        "}\n", maxsplit=1
+    )[0]
+    assert "{{else}}running{{end}}" not in helper
+    assert '[[ "$state" == "healthy" ]]' in helper
+    assert '|| "$state" == "running"' not in helper
 
 
 def test_telegram_cutover_is_captured_at_activation_time() -> None:
