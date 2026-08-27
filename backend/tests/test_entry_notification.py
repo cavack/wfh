@@ -14,7 +14,7 @@ from waterfallhunter.core.notification_delivery import (
     DeliveryResult,
     DurableNotificationWorker,
 )
-from waterfallhunter.core.notifier import TelegramSignalTransport
+from waterfallhunter.core.notifier import TelegramNotifier, TelegramSignalTransport
 
 
 def entry_packet(decision: str = "ENTRY_READY") -> dict:
@@ -212,3 +212,14 @@ def test_telegram_probe_requires_valid_bot_and_chat() -> None:
     assert failed["bot_reachable"] is True
     assert failed["chat_reachable"] is False
     assert len(failed_seen) == 2
+
+
+def test_entry_ready_message_includes_lifecycle_state() -> None:
+    payload = {
+        "contract_version": "entry_ready_notification_v1",
+        "symbol": "SXT/USDT:USDT",
+        "decision_packet": entry_packet(),
+    }
+    message = TelegramNotifier.build_entry_ready_message(payload)
+    assert "Lifecycle" in message
+    assert "PRE-TRIGGER" in message

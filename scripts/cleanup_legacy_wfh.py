@@ -20,6 +20,7 @@ from audit_host_inventory import (  # noqa: E402
     DELETE,
     EXACT_LEGACY_PATHS,
     PROTECTED,
+    _production_compose_resource_names,
     classify_docker_resource,
     classify_path,
 )
@@ -179,11 +180,19 @@ def _validated_legacy_path(value: str) -> Path:
     return safe
 
 
-def _validated_docker_resource_name(kind: str, value: str) -> str:
+def _validated_docker_resource_name(
+    kind: str, value: str, *,
+    protected_volume_names: set[str] | None = None,
+    protected_network_names: set[str] | None = None,
+) -> str:
     pattern = _SAFE_IMAGE_NAME if kind == "image" else _SAFE_BASENAME
     if not pattern.fullmatch(value) or value.startswith("-"):
         raise ValueError(f"invalid Docker {kind} resource name")
-    disposition, reason = classify_docker_resource(kind, value, {})
+    disposition, reason = classify_docker_resource(
+        kind, value, {},
+        protected_volume_names=protected_volume_names,
+        protected_network_names=protected_network_names,
+    )
     if disposition != DELETE:
         raise ValueError(f"Docker cleanup target is not allowlisted: {value}: {reason}")
     return value
@@ -232,8 +241,16 @@ def _target_contains_certified_backup(target: Path, backup: Path) -> bool:
     return target == backup or target in backup.parents
 
 
-def _validated_delete_entries(inventory: dict[str, object]) -> list[dict[str, object]]:
+def _validated_delete_entries(
+    inventory: dict[str, object], *,
+    protected_volume_names: set[str] | None = None,
+    protected_network_names: set[str] | None = None,
+) -> list[dict[str, object]]:
     entries = inventory.get("entries")
+    if protected_volume_names is None or protected_network_names is None:
+        protected = _production_compose_resource_names()
+        protected_volume_names = protected["volume"]
+        protected_network_names = protected["network"]
     if not isinstance(entries, list):
         raise ValueError("inventory entries missing")
     approved: list[dict[str, object]] = []
@@ -249,9 +266,17 @@ def _validated_delete_entries(inventory: dict[str, object]) -> list[dict[str, ob
         elif kind.startswith("docker-"):
             resource_kind = kind.removeprefix("docker-")
             labels = entry.get("labels") if isinstance(entry.get("labels"), dict) else {}
-            disposition, reason = classify_docker_resource(resource_kind, name, labels)
+            disposition, reason = classify_docker_resource(
+                resource_kind, name, labels,
+                protected_volume_names=protected_volume_names,
+                protected_network_names=protected_network_names,
+            )
             if disposition == DELETE:
-                safe_name = _validated_docker_resource_name(resource_kind, name)
+                safe_name = _validated_docker_resource_name(
+                    resource_kind, name,
+                    protected_volume_names=protected_volume_names,
+                    protected_network_names=protected_network_names,
+                )
             else:
                 safe_name = name
             safe_entry = {**entry, "path_or_resource": safe_name}
@@ -265,7 +290,11 @@ def _validated_delete_entries(inventory: dict[str, object]) -> list[dict[str, ob
     return approved
 
 
-def _delete_entry(entry: dict[str, object]) -> None:
+def _delete_entry(
+    entry: dict[str, object], *,
+    protected_volume_names: set[str] | None = None,
+    protected_network_names: set[str] | None = None,
+) -> None:
     kind = str(entry["type"])
     name = str(entry["path_or_resource"])
     if kind == "path":
@@ -276,7 +305,15 @@ def _delete_entry(entry: dict[str, object]) -> None:
             shutil.rmtree(path)  # NOSONAR -- strict destructive allowlist, no traversal/symlink ancestor
         return
     resource_kind = kind.removeprefix("docker-")
-    safe_name = _validated_docker_resource_name(resource_kind, name)
+    if protected_volume_names is None or protected_network_names is None:
+        protected = _production_compose_resource_names()
+        protected_volume_names = protected["volume"]
+        protected_network_names = protected["network"]
+    safe_name = _validated_docker_resource_name(
+        resource_kind, name,
+        protected_volume_names=protected_volume_names,
+        protected_network_names=protected_network_names,
+    )
     command = {
         "container": [DOCKER_BIN, "rm", "-f", "--", safe_name],
         "volume": [DOCKER_BIN, "volume", "rm", "--", safe_name],
@@ -300,7 +337,12 @@ def main() -> int:
     args = parser.parse_args()
     try:
         inventory = _load(args.inventory)
-        approved = _validated_delete_entries(inventory)
+        protected = _production_compose_resource_names()
+        approved = _validated_delete_entries(
+            inventory,
+            protected_volume_names=protected["volume"],
+            protected_network_names=protected["network"],
+        )
         if not args.execute:
             print(json.dumps({"mode": "dry-run", "delete_count": len(approved), "targets": [e["path_or_resource"] for e in approved]}, indent=2))
             return 0
@@ -318,7 +360,11 @@ def main() -> int:
                 raise ValueError(
                     f"cleanup target contains certified database backup: {entry.get('path_or_resource')}"
                 )
-            _delete_entry(entry)
+            _delete_entry(
+                entry,
+                protected_volume_names=protected["volume"],
+                protected_network_names=protected["network"],
+            )
             removed.append({"type": entry["type"], "path_or_resource": entry["path_or_resource"]})
         certificate = {
             "certificate_type": "waterfallhunter_cleanup_v1",

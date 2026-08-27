@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -23,6 +24,7 @@ CANONICAL_PROJECT_DIR = Path("/srv/waterfallhunter/app")
 CANONICAL_ENV_FILE = Path("/etc/waterfallhunter/waterfallhunter.env")
 CANONICAL_STATE_FILE = Path("/srv/waterfallhunter/runtime/healthcheck-state.json")
 CANONICAL_RUNTIME_DIR = Path("/srv/waterfallhunter/runtime")
+CANONICAL_DEPLOY_LOCK_FILE = CANONICAL_RUNTIME_DIR / "deploy.lock"
 
 
 def _require_canonical_operator_path(value: Path, expected: Path) -> Path:
@@ -68,7 +70,11 @@ def _compose(project_dir: Path, env_file: Path, *args: str) -> subprocess.Comple
     for compose_file in _compose_files(project_dir):
         cmd.extend(("-f", compose_file))
     cmd.extend(args)
-    return subprocess.run(cmd, cwd=project_dir, text=True, capture_output=True, check=False)
+    environment = os.environ.copy()
+    environment["WFH_ENV_FILE"] = str(env_file)
+    return subprocess.run(
+        cmd, cwd=project_dir, text=True, capture_output=True, check=False, env=environment
+    )
 
 
 def _service_health(project_dir: Path, env_file: Path, service: str) -> tuple[bool, str]:
@@ -285,6 +291,25 @@ def _save_state(state: dict[str, object]) -> None:
     tmp.replace(path)
 
 
+def _try_acquire_deploy_guard() -> int | None:
+    """Acquire the deployment lock non-blockingly for bounded recovery."""
+    CANONICAL_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(CANONICAL_DEPLOY_LOCK_FILE, os.O_CREAT | os.O_RDWR, 0o640)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(descriptor)
+        return None
+    return descriptor
+
+
+def _release_deploy_guard(descriptor: int) -> None:
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
+
+
 def maybe_recover(project_dir: Path, env_file: Path, snapshot: dict[str, object]) -> tuple[bool, str]:
     now = time.time()
     state = _load_state()
@@ -305,16 +330,26 @@ def maybe_recover(project_dir: Path, env_file: Path, snapshot: dict[str, object]
     if len(recoveries) >= MAX_RECOVERIES_PER_HOUR:
         _save_state(state)
         return False, "recovery_budget_exhausted"
-    result = _compose(project_dir, env_file, "up", "-d", "--remove-orphans")
-    if result.returncode != 0:
+    deploy_guard = _try_acquire_deploy_guard()
+    if deploy_guard is None:
         _save_state(state)
-        return False, "recovery_command_failed"
-    recoveries.append(now)
-    state.update(consecutive_failures=0, recoveries=recoveries, last_recovery_at=now)
-    _save_state(state)
-    time.sleep(5)
-    recovered = health_snapshot(project_dir, env_file)
-    return bool(recovered["healthy"]), "recovered" if recovered["healthy"] else "recovery_unhealthy"
+        return False, "deployment_in_progress"
+    try:
+        result = _compose(project_dir, env_file, "up", "-d", "--remove-orphans")
+        if result.returncode != 0:
+            _save_state(state)
+            return False, "recovery_command_failed"
+        recoveries.append(now)
+        state.update(consecutive_failures=0, recoveries=recoveries, last_recovery_at=now)
+        _save_state(state)
+        time.sleep(5)
+        recovered = health_snapshot(project_dir, env_file)
+        return (
+            bool(recovered["healthy"]),
+            "recovered" if recovered["healthy"] else "recovery_unhealthy",
+        )
+    finally:
+        _release_deploy_guard(deploy_guard)
 
 
 def main() -> int:

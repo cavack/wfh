@@ -257,3 +257,54 @@ def test_runtime_does_not_invalidate_actionable_symbol_still_active(tmp_path, mo
         evaluated_at=150,
     ) == 0
     assert store.latest_for_symbol("STAYUSDT")["decision"] == "ENTRY_READY"
+
+
+def test_stable_entry_ready_projection_keeps_persisted_trade_plan_levels() -> None:
+    persisted = {
+        "decision": "ENTRY_READY",
+        "event_id": 7,
+        "trade_plan": {
+            "entry_price": 1.0,
+            "stop_loss": 1.05,
+            "take_profit_1": 0.95,
+            "take_profit_2": 0.90,
+        },
+    }
+    current = {
+        "decision": "ENTRY_READY",
+        "evaluated_at": 200,
+        "trade_plan": {
+            "entry_price": 1.01,
+            "stop_loss": 1.06,
+            "take_profit_1": 0.96,
+            "take_profit_2": 0.91,
+        },
+    }
+    metrics: dict = {}
+
+    main._restore_persisted_decision_projection(current, metrics, persisted)
+
+    assert current["event_id"] == 7
+    assert current["trade_plan"] == persisted["trade_plan"]
+
+
+def test_canonical_advisory_rejects_invalid_gemini_enum_and_confidence(monkeypatch) -> None:
+    engine = AIVetoEngine()
+
+    async def malformed(*args, **kwargs):
+        return {
+            "advice": "SHORT_NOW",
+            "confidence": 140,
+            "reasoning": "invalid provider response",
+            "provider": "gemini",
+        }
+
+    monkeypatch.setattr(engine, "_request_canonical_advisory", malformed)
+    advisory = asyncio.run(
+        engine.advisory_for_decision("SXTUSDT", canonical_metrics(), decision_packet())
+    )
+
+    assert advisory["ai_status"] == "UNAVAILABLE"
+    assert advisory["ai_provider"] == "none"
+    assert advisory["ai_advice"] == "UNAVAILABLE"
+    assert advisory["ai_confidence"] == 0

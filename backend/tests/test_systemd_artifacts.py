@@ -171,3 +171,110 @@ def test_recovery_state_io_uses_configured_canonical_state_path(tmp_path: Path) 
     module._save_state(state)
     assert module.CANONICAL_STATE_FILE.exists()
     assert module._load_state() == state
+
+
+def test_recovery_guard_refuses_lock_held_by_deployment(tmp_path: Path) -> None:
+    import fcntl
+    import importlib.util
+    import os
+    script = ROOT / "scripts/verify_production_cutover.py"
+    spec = importlib.util.spec_from_file_location("verify_recovery_lock_test", script)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.CANONICAL_RUNTIME_DIR = tmp_path
+    module.CANONICAL_DEPLOY_LOCK_FILE = tmp_path / "deploy.lock"
+    fd = os.open(module.CANONICAL_DEPLOY_LOCK_FILE, os.O_CREAT | os.O_RDWR, 0o640)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert module._try_acquire_deploy_guard() is None
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def test_health_compose_exports_canonical_wfh_env_file(monkeypatch) -> None:
+    import importlib.util
+    script = ROOT / "scripts/verify_production_cutover.py"
+    spec = importlib.util.spec_from_file_location("verify_compose_env_test", script)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["env"] = kwargs.get("env")
+        class Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return Result()
+
+    monkeypatch.setattr(module, "_compose_files", lambda project_dir: [str(project_dir / "docker-compose.yml")])
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    env_file = Path("/etc/waterfallhunter/waterfallhunter.env")
+    module._compose(Path("/srv/waterfallhunter/app"), env_file, "ps")
+
+    assert captured["env"]["WFH_ENV_FILE"] == str(env_file)
+
+
+def test_recovery_path_skips_compose_while_deployment_lock_is_busy(tmp_path: Path, monkeypatch) -> None:
+    import importlib.util
+    script = ROOT / "scripts/verify_production_cutover.py"
+    spec = importlib.util.spec_from_file_location("verify_recovery_busy_test", script)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.CANONICAL_RUNTIME_DIR = tmp_path
+    module.CANONICAL_STATE_FILE = tmp_path / "healthcheck-state.json"
+    module._save_state({
+        "consecutive_failures": 2,
+        "recoveries": [],
+        "last_recovery_at": 0.0,
+    })
+    monkeypatch.setattr(module, "_try_acquire_deploy_guard", lambda: None)
+
+    def compose_must_not_run(*args, **kwargs):
+        raise AssertionError("recovery compose must not run during deployment")
+
+    monkeypatch.setattr(module, "_compose", compose_must_not_run)
+    ok, reason = module.maybe_recover(
+        module.CANONICAL_PROJECT_DIR,
+        module.CANONICAL_ENV_FILE,
+        {"healthy": False},
+    )
+    assert ok is False
+    assert reason == "deployment_in_progress"
+
+
+def test_recovery_releases_deploy_guard_after_failed_compose(tmp_path: Path, monkeypatch) -> None:
+    import importlib.util
+    script = ROOT / "scripts/verify_production_cutover.py"
+    spec = importlib.util.spec_from_file_location("verify_recovery_release_test", script)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.CANONICAL_RUNTIME_DIR = tmp_path
+    module.CANONICAL_STATE_FILE = tmp_path / "healthcheck-state.json"
+    module._save_state({
+        "consecutive_failures": 2,
+        "recoveries": [],
+        "last_recovery_at": 0.0,
+    })
+    released = []
+    monkeypatch.setattr(module, "_try_acquire_deploy_guard", lambda: 77)
+    monkeypatch.setattr(module, "_release_deploy_guard", released.append)
+
+    class Result:
+        returncode = 1
+
+    monkeypatch.setattr(module, "_compose", lambda *args, **kwargs: Result())
+    ok, reason = module.maybe_recover(
+        module.CANONICAL_PROJECT_DIR,
+        module.CANONICAL_ENV_FILE,
+        {"healthy": False},
+    )
+    assert ok is False
+    assert reason == "recovery_command_failed"
+    assert released == [77]

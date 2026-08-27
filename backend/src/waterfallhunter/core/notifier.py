@@ -427,6 +427,7 @@ class TelegramNotifier:
         lines = [
             "🌊 <b>WATERFALL SHORT — ENTRY READY</b>",
             f"🪙 <b>#{symbol}</b> · readiness <b>{cls._number(packet.get('entry_readiness'), 1)}/100</b>",
+            f"🧭 Lifecycle: <b>{escape(str(packet.get('lifecycle_state') or 'UNKNOWN'))}</b>",
             f"📦 Evidence coverage: <b>{cls._number(packet.get('evidence_coverage_pct'), 1)}%</b>",
             "",
             f"🎯 Entry: <b>${cls._number(plan.get('entry_price'), 8)}</b>",

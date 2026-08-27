@@ -37,6 +37,24 @@ def _normalize_dashboard_json(value: Any) -> Any:
     return value
 
 
+def _stable_entry_decision_clocks(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_stable_entry_decision_clocks(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    stable: dict[str, Any] = {}
+    for key, item in value.items():
+        if key == "entry_decision" and isinstance(item, dict):
+            stable[key] = {
+                nested_key: _stable_entry_decision_clocks(nested_value)
+                for nested_key, nested_value in item.items()
+                if nested_key != "evaluated_at"
+            }
+        else:
+            stable[key] = _stable_entry_decision_clocks(item)
+    return stable
+
+
 def _snapshot_content_material(payload: dict[str, Any]) -> dict[str, Any]:
     """Return the business-state projection used for SSE change detection.
 
@@ -57,13 +75,13 @@ def _snapshot_content_material(payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(candidate, dict):
             stable_candidates[symbol] = candidate
             continue
-        stable_candidate = {
+        stable_candidate = _stable_entry_decision_clocks({
             key: value
             for key, value in candidate.items()
             if key not in _VOLATILE_CANDIDATE_AGE_KEYS
-        }
+        })
         stable_candidates[symbol] = stable_candidate
-        changed = changed or len(stable_candidate) != len(candidate)
+        changed = changed or stable_candidate != candidate
 
     if not changed:
         return payload

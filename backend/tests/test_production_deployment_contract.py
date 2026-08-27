@@ -367,3 +367,21 @@ def test_deploy_clean_worktree_no_longer_depends_on_runtime_files_inside_git() -
     assert "git status --porcelain" in helper
     assert ":(exclude).env" not in helper
     assert ":(exclude).deploy" not in helper
+
+
+def test_schema_changing_rollback_restores_backup_before_previous_schema_preflight() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    assert "restore_database_backup()" in text
+    rollback = text.split("rollback_previous_revision() {", maxsplit=1)[1].split(
+        "terminate_with_cleanup() {", maxsplit=1
+    )[0]
+    restore_index = rollback.index("restore_database_backup")
+    preflight_index = rollback.index("previous_revision_accepts_current_schema")
+    assert restore_index < preflight_index
+    restore = text.split("restore_database_backup() {", maxsplit=1)[1].split(
+        "prune_database_backups() {", maxsplit=1
+    )[0]
+    assert 'sha256sum "$DB_BACKUP"' in restore
+    assert '${BACKUP_DIR}:/backup:ro' in restore
+    assert "docker compose stop waterfall-backend frontend watchdog" in restore
+    assert "PRAGMA integrity_check" in restore

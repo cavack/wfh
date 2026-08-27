@@ -1,5 +1,7 @@
 import asyncio
+from pathlib import Path
 
+from waterfallhunter import main
 from waterfallhunter.core.ai_veto import AIVetoEngine
 
 
@@ -65,3 +67,23 @@ def test_evaluate_symbol_preserves_the_advisory_provider(monkeypatch):
     assert advisory["ai_advice"] == "NEUTRAL"
     assert advisory["ai_observational_only"] is True
     assert advisory["ai_decision_critical"] is False
+
+
+def test_deterministic_entry_gate_runs_for_armed_candidate(monkeypatch):
+    metrics = {"orderbook": {"bids": [[1.0, 4.0]], "asks": [[1.1, 1.0]]}, "ticker": {"last": 1.0}}
+
+    state, vetoed = main._apply_deterministic_entry_gate("TESTUSDT", "ARMED", metrics)
+
+    assert state == "ARMED"
+    assert vetoed is True
+    assert metrics["ai_advisory"]["deterministic_veto"] is True
+
+
+def test_runtime_applies_deterministic_gate_before_canonical_decision() -> None:
+    source = Path(main.__file__).read_text(encoding="utf-8")
+    body = source.split("async def evaluate_candidate(", maxsplit=1)[1].split(
+        "episode_id =", maxsplit=1
+    )[0]
+    assert body.index("_apply_deterministic_entry_gate(") < body.index(
+        "entry_decision = build_entry_decision("
+    )

@@ -14,6 +14,12 @@ KEEP = "KEEP"
 PROTECTED = "PROTECTED"
 REVIEW = "REVIEW"
 
+DOCKER_BIN = "/usr/bin/docker"
+PRODUCTION_PROJECT_DIR = Path("/srv/waterfallhunter/app")
+PRODUCTION_ENV_FILE = Path("/etc/waterfallhunter/waterfallhunter.env")
+PRODUCTION_OVERRIDE = Path("/srv/waterfallhunter/runtime/production-volumes.override.yml")
+PRODUCTION_COMPOSE_PROJECT = "waterfallhunter"
+
 CANONICAL_PATHS = {
     Path("/srv/waterfallhunter"),
     Path("/srv/waterfallhunter/app"),
@@ -65,8 +71,19 @@ def classify_path(path: Path) -> tuple[str, str]:
     return REVIEW, "not on canonical cleanup allowlist"
 
 
-def classify_docker_resource(kind: str, name: str, labels: dict[str, str] | None = None) -> tuple[str, str]:
+def classify_docker_resource(
+    kind: str,
+    name: str,
+    labels: dict[str, str] | None = None,
+    *,
+    protected_volume_names: set[str] | None = None,
+    protected_network_names: set[str] | None = None,
+) -> tuple[str, str]:
     labels = labels or {}
+    if kind == "volume" and name in (protected_volume_names or set()):
+        return KEEP, "volume referenced by active Production Compose topology"
+    if kind == "network" and name in (protected_network_names or set()):
+        return KEEP, "network referenced by active Production Compose topology"
     project = labels.get("com.docker.compose.project", "")
     canonical_names = {
         "container": {"waterfall-backend", "waterfall-frontend", "waterfall-watchdog", "waterfall-prometheus", "waterfall-grafana"},
@@ -136,6 +153,56 @@ def _path_entries() -> list[dict[str, object]]:
     return entries
 
 
+def _production_compose_resource_names() -> dict[str, set[str]]:
+    """Resolve host-owned volumes/networks from the effective Production Compose model."""
+    base = PRODUCTION_PROJECT_DIR / "docker-compose.yml"
+    if not base.is_file() or not PRODUCTION_ENV_FILE.is_file():
+        return {"volume": set(), "network": set()}
+    command = [
+        DOCKER_BIN, "compose", "--project-name", PRODUCTION_COMPOSE_PROJECT,
+        "--env-file", str(PRODUCTION_ENV_FILE), "-f", str(base),
+    ]
+    if PRODUCTION_OVERRIDE.is_file():
+        command.extend(("-f", str(PRODUCTION_OVERRIDE)))
+    # Do not resolve service env_file contents here. The inventory only needs
+    # topology names, and older deployed revisions may still reference .env.
+    command.extend(("config", "--no-env-resolution", "--format", "json"))
+    environment = os.environ.copy()
+    environment["WFH_ENV_FILE"] = str(PRODUCTION_ENV_FILE)
+    result = subprocess.run(
+        command, cwd=PRODUCTION_PROJECT_DIR, text=True, capture_output=True,
+        check=False, env=environment,
+    )
+    if result.returncode != 0:
+        raise RuntimeError("unable to resolve active Production Compose topology")
+    try:
+        config = json.loads(result.stdout)
+    except ValueError as exc:
+        raise RuntimeError("invalid Production Compose topology output") from exc
+    if not isinstance(config, dict):
+        raise RuntimeError("invalid Production Compose topology object")
+
+    resolved: dict[str, set[str]] = {"volume": set(), "network": set()}
+    for kind, section_name in (("volume", "volumes"), ("network", "networks")):
+        section = config.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        for key, value in section.items():
+            spec = value if isinstance(value, dict) else {}
+            explicit_name = spec.get("name")
+            if isinstance(explicit_name, str) and explicit_name:
+                resolved[kind].add(explicit_name)
+            elif spec.get("external") is True:
+                resolved[kind].add(str(key))
+            else:
+                resolved[kind].add(f"{PRODUCTION_COMPOSE_PROJECT}_{key}")
+    return resolved
+
+
+def _production_compose_volume_names() -> set[str]:
+    return _production_compose_resource_names()["volume"]
+
+
 def _docker_json(command: list[str]) -> list[dict[str, object]]:
     result = subprocess.run(command, text=True, capture_output=True, check=False)
     if result.returncode != 0:
@@ -153,6 +220,9 @@ def _docker_json(command: list[str]) -> list[dict[str, object]]:
 
 def _docker_entries() -> list[dict[str, object]]:
     entries: list[dict[str, object]] = []
+    protected_resources = _production_compose_resource_names()
+    protected_volume_names = protected_resources["volume"]
+    protected_network_names = protected_resources["network"]
     specs = {
         "container": ["docker", "ps", "-a", "--format", "{{json .}}"],
         "volume": ["docker", "volume", "ls", "--format", "{{json .}}"],
@@ -181,7 +251,11 @@ def _docker_entries() -> list[dict[str, object]]:
                     labels = labels or {}
                 except (ValueError, IndexError, TypeError):
                     labels = {}
-            disposition, reason = classify_docker_resource(kind, name, labels)
+            disposition, reason = classify_docker_resource(
+                kind, name, labels,
+                protected_volume_names=protected_volume_names,
+                protected_network_names=protected_network_names,
+            )
             if disposition != REVIEW or "waterfall" in name.lower() or labels.get("com.docker.compose.project"):
                 entries.append({
                     "type": f"docker-{kind}", "path_or_resource": name,

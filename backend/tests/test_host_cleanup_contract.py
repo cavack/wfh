@@ -174,3 +174,71 @@ def test_certified_backup_path_is_restricted_to_configured_roots(tmp_path: Path)
         pass
     else:
         raise AssertionError("certified backup paths outside configured roots must be rejected")
+
+
+def test_adopted_production_volume_is_protected_by_resolved_compose_topology() -> None:
+    audit = _load_module(AUDIT_PATH, "audit_adopted_volume")
+    adopted = f"{'a' * 40}_waterfall_data"
+    labels = {"com.docker.compose.project": "a" * 40}
+    disposition, _ = audit.classify_docker_resource(
+        "volume", adopted, labels, protected_volume_names={adopted}
+    )
+    assert disposition == "KEEP"
+
+
+def test_adopted_production_network_is_protected_by_resolved_compose_topology() -> None:
+    audit = _load_module(AUDIT_PATH, "audit_adopted_network")
+    adopted = f"{'a' * 40}_edge"
+    labels = {"com.docker.compose.project": "a" * 40}
+    disposition, _ = audit.classify_docker_resource(
+        "network", adopted, labels, protected_network_names={adopted}
+    )
+    assert disposition == "KEEP"
+
+
+def test_production_topology_resolver_avoids_service_env_file_resolution(
+    tmp_path: Path, monkeypatch
+) -> None:
+    audit = _load_module(AUDIT_PATH, "audit_topology_resolver")
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "docker-compose.yml").write_text("services: {}\n")
+    env_file = tmp_path / "waterfallhunter.env"
+    env_file.write_text("LIVE_TRADING_ENABLED=false\n")
+    override = tmp_path / "production-volumes.override.yml"
+    override.write_text("volumes: {}\n")
+    monkeypatch.setattr(audit, "PRODUCTION_PROJECT_DIR", app)
+    monkeypatch.setattr(audit, "PRODUCTION_ENV_FILE", env_file)
+    monkeypatch.setattr(audit, "PRODUCTION_OVERRIDE", override)
+    captured = {}
+
+    class Result:
+        returncode = 0
+        stderr = ""
+        stdout = json.dumps({
+            "volumes": {
+                "waterfall_data": {
+                    "external": True,
+                    "name": f"{'a' * 40}_waterfall_data",
+                }
+            },
+            "networks": {
+                "edge": {
+                    "external": True,
+                    "name": f"{'a' * 40}_edge",
+                }
+            },
+        })
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["env"] = kwargs.get("env")
+        return Result()
+
+    monkeypatch.setattr(audit.subprocess, "run", fake_run)
+    protected = audit._production_compose_resource_names()
+
+    assert "--no-env-resolution" in captured["command"]
+    assert captured["env"]["WFH_ENV_FILE"] == str(env_file)
+    assert f"{'a' * 40}_waterfall_data" in protected["volume"]
+    assert f"{'a' * 40}_edge" in protected["network"]

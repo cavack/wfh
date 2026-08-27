@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import math
 import re
 from typing import Any, Dict, Tuple
 
@@ -37,6 +38,31 @@ class AIVetoEngine:
             "confidence": 0,
             "reasoning": reason,
             "provider": "none",
+        }
+
+    @classmethod
+    def _validated_advisory_opinion(cls, opinion: Dict[str, Any]) -> Dict[str, Any]:
+        if str(opinion.get("provider") or "none") != "gemini":
+            return opinion
+        advice = opinion.get("advice")
+        confidence = opinion.get("confidence")
+        reasoning = opinion.get("reasoning")
+        valid_confidence = (
+            isinstance(confidence, (int, float))
+            and not isinstance(confidence, bool)
+            and math.isfinite(float(confidence))
+            and 0.0 <= float(confidence) <= 100.0
+        )
+        if advice not in {"SHORT", "NEUTRAL", "AVOID"} or not valid_confidence:
+            return cls._unavailable_advisory("Invalid Gemini advisory payload.")
+        if not isinstance(reasoning, str) or not reasoning.strip():
+            return cls._unavailable_advisory("Invalid Gemini advisory payload.")
+        normalized_confidence = float(confidence)
+        return {
+            "advice": str(advice),
+            "confidence": int(normalized_confidence) if normalized_confidence.is_integer() else normalized_confidence,
+            "reasoning": reasoning.strip(),
+            "provider": "gemini",
         }
 
     @staticmethod
@@ -98,6 +124,7 @@ class AIVetoEngine:
         prompt = self._canonical_prompt(symbol, metrics, decision)
         try:
             opinion = await asyncio.wait_for(self._request_canonical_advisory(prompt), timeout=8.0)
+            opinion = self._validated_advisory_opinion(opinion)
         except Exception as exc:
             logger.warning("Canonical AI advisory unavailable for %s: %s", symbol, type(exc).__name__)
             opinion = self._unavailable_advisory(f"Gemini unavailable ({type(exc).__name__}).")
@@ -269,7 +296,9 @@ class AIVetoEngine:
     ) -> Dict[str, Any]:
         """Fetch optional Gemini output without granting it veto authority."""
 
-        opinion = await self._get_gemini_opinion(symbol, orderbook, ticker)
+        opinion = self._validated_advisory_opinion(
+            await self._get_gemini_opinion(symbol, orderbook, ticker)
+        )
         advisory = {
             "ai_advice": opinion.get("advice", "UNKNOWN"),
             "ai_confidence": opinion.get("confidence", 0),

@@ -114,3 +114,25 @@ def test_last_event_id_replays_in_order_or_requires_full_snapshot() -> None:
 
     buffer.publish_heartbeat(generated_at=13.0)
     assert buffer.replay_after(first.event_id) is None
+
+
+def test_periodic_snapshot_ignores_nested_entry_decision_evaluation_clock() -> None:
+    buffer = DashboardEventBuffer()
+    first_payload = _payload()
+    first_payload["candidates"]["TEST"]["entry_decision"] = {
+        "decision": "INVALIDATED",
+        "evaluated_at": 100,
+        "block_reasons": ["STALE_ANALYSIS"],
+    }
+    second_payload = _payload()
+    second_payload["candidates"]["TEST"]["entry_decision"] = {
+        "decision": "INVALIDATED",
+        "evaluated_at": 101,
+        "block_reasons": ["STALE_ANALYSIS"],
+    }
+
+    first = buffer.publish_snapshot_if_changed(first_payload, generated_at=100.0)
+    duplicate = buffer.publish_snapshot_if_changed(second_payload, generated_at=101.0)
+
+    assert first is not None
+    assert duplicate is None

@@ -1275,6 +1275,10 @@ def _restore_persisted_decision_projection(
     if isinstance(event_id, int) and not isinstance(event_id, bool) and event_id > 0:
         current_decision["event_id"] = event_id
         current_decision["event_persisted"] = False
+    if current_decision.get("decision") == "ENTRY_READY":
+        persisted_plan = persisted_decision.get("trade_plan")
+        if isinstance(persisted_plan, dict):
+            current_decision["trade_plan"] = dict(persisted_plan)
     advisory = persisted_decision.get("ai_advisory")
     if isinstance(advisory, dict):
         metrics["ai_advisory"] = dict(advisory)
@@ -1768,6 +1772,21 @@ def _build_runtime_lifecycle_v2_evidence(
     )
 
 
+def _apply_deterministic_entry_gate(
+    symbol: str, decision_state: str, metrics: dict[str, Any]
+) -> tuple[str, bool]:
+    """Attach the provider-free hard gate before any potentially actionable decision."""
+    if decision_state not in {"PRE-TRIGGER", "ARMED", "TRIGGERED"}:
+        return decision_state, False
+    vetoed, advisory = ai_veto.evaluate_deterministic(
+        symbol,
+        metrics.get("orderbook", {}),
+        metrics.get("ticker", {}),
+    )
+    metrics["ai_advisory"] = advisory
+    return decision_state, vetoed
+
+
 async def evaluate_candidate(
     symbol: str,
     data: dict,
@@ -2017,18 +2036,9 @@ async def evaluate_candidate(
         else current_state
     )
 
-    deterministic_vetoed = False
-    if decision_state == "TRIGGERED":
-        deterministic_vetoed, deterministic_advisory = ai_veto.evaluate_deterministic(
-            symbol,
-            result_metrics.get("orderbook", {}),
-            result_metrics.get("ticker", {}),
-        )
-        result_metrics["ai_advisory"] = deterministic_advisory
-        if deterministic_vetoed:
-            # The canonical decision is persisted only after this provider-free
-            # market-data hard gate. Gemini remains observational and async.
-            decision_state = "WATCH"
+    decision_state, deterministic_vetoed = _apply_deterministic_entry_gate(
+        symbol, decision_state, result_metrics
+    )
 
     reference_age = (
         max(0.0, decision_now - float(reference_observed_at))

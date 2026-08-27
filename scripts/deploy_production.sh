@@ -195,6 +195,51 @@ print(h.hexdigest())' \
   log "database backup certified: ${DB_BACKUP} sha256=${DB_BACKUP_SHA256}"
 }
 
+restore_database_backup() {
+  local backup_name actual_sha
+  [[ -n "$DB_BACKUP" && -f "$DB_BACKUP" ]] || return 1
+  [[ "$DB_BACKUP" == "${BACKUP_DIR}/"* ]] || return 1
+  [[ "$DB_BACKUP_SHA256" =~ ^[0-9a-f]{64}$ ]] || return 1
+  actual_sha="$(sha256sum "$DB_BACKUP" | awk '{print $1}')" || return 1
+  [[ "$actual_sha" == "$DB_BACKUP_SHA256" ]] || return 1
+
+  docker compose stop waterfall-backend frontend watchdog >/dev/null 2>&1 || true
+  backup_name="$(basename "$DB_BACKUP")"
+  docker compose run --rm --no-deps --interactive=false -T --user 0:0 \
+    -v "${BACKUP_DIR}:/backup:ro" \
+    waterfall-backend \
+    /opt/venv/bin/python -c \
+    'import hashlib, os, pathlib, shutil, sqlite3, sys
+src = pathlib.Path("/backup") / sys.argv[1]
+expected = sys.argv[2]
+dst = pathlib.Path("/app/data/waterfall_registry.db")
+if not src.is_file(): raise SystemExit("rollback backup missing")
+h = hashlib.sha256()
+with src.open("rb") as fh:
+    for chunk in iter(lambda: fh.read(1024 * 1024), b""): h.update(chunk)
+if h.hexdigest() != expected: raise SystemExit("rollback backup checksum mismatch")
+with sqlite3.connect(f"file:{src}?mode=ro", uri=True) as check:
+    row = check.execute("PRAGMA integrity_check").fetchone()
+    if not row or str(row[0]).lower() != "ok": raise SystemExit("rollback backup integrity failure")
+owner = dst.stat() if dst.exists() else dst.parent.stat()
+tmp = dst.with_name(f".{dst.name}.rollback-{os.getpid()}")
+try:
+    tmp.unlink(missing_ok=True)
+    shutil.copyfile(src, tmp)
+    os.chown(tmp, owner.st_uid, owner.st_gid)
+    os.chmod(tmp, (owner.st_mode & 0o777) if dst.exists() else 0o600)
+    pathlib.Path(str(dst) + "-wal").unlink(missing_ok=True)
+    pathlib.Path(str(dst) + "-shm").unlink(missing_ok=True)
+    os.replace(tmp, dst)
+finally:
+    tmp.unlink(missing_ok=True)
+with sqlite3.connect(dst) as check:
+    row = check.execute("PRAGMA integrity_check").fetchone()
+    if not row or str(row[0]).lower() != "ok": raise SystemExit("restored database integrity failure")' \
+    "$backup_name" "$DB_BACKUP_SHA256" || return 1
+  log "database restored from certified pre-migration backup: ${DB_BACKUP}"
+}
+
 prune_database_backups() {
   local keep="$WFH_DEPLOY_BACKUP_RETENTION_COUNT"
   local line path index=0
@@ -248,8 +293,14 @@ rollback_previous_revision() {
   [[ -n "$PREVIOUS_SHA" ]] || return 1
 
   if [[ "$MIGRATION_MAY_HAVE_MUTATED" -eq 1 ]]; then
+    if ! restore_database_backup; then
+      log "rollback stopped: certified pre-migration database restore failed"
+      docker compose stop waterfall-backend frontend watchdog >/dev/null 2>&1 || true
+      git checkout --detach "$WFH_DEPLOY_SHA" >/dev/null 2>&1 || true
+      return 1
+    fi
     if ! previous_revision_accepts_current_schema; then
-      log "rollback stopped: previous revision is not certified against the current schema"
+      log "rollback stopped: previous revision is not certified against the restored schema"
       docker compose stop waterfall-backend frontend watchdog >/dev/null 2>&1 || true
       git checkout --detach "$WFH_DEPLOY_SHA" >/dev/null 2>&1 || true
       return 1
@@ -320,6 +371,7 @@ require_command flock
 require_command awk
 require_command find
 require_command sort
+require_command sha256sum
 
 [[ "$WFH_DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "WFH_DEPLOY_SHA must be an exact 40-character Git SHA"
 [[ -d "$WFH_DEPLOY_ROOT/.git" ]] || fail "deployment root is not a Git checkout: $WFH_DEPLOY_ROOT"
