@@ -138,7 +138,12 @@ def test_failed_report_build_is_not_reused_by_next_request(
     app = _build_test_app(tmp_path)
     calls = 0
 
-    def flaky_build(*, symbol_limit=10_000, examples_per_status=20):
+    def flaky_build(
+        _report,
+        *,
+        symbol_limit=10_000,
+        examples_per_status=20,
+    ):
         nonlocal calls
         del symbol_limit
         calls += 1
