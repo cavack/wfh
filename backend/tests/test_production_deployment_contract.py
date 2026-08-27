@@ -110,6 +110,15 @@ def test_production_deploy_workflow_is_automatic_after_successful_main_ci() -> N
     assert "environment: production" in text
 
 
+def test_privileged_deploy_checks_out_main_before_validating_exact_sha() -> None:
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "ref: ${{ github.event.workflow_run.head_sha }}" not in text
+    assert "ref: main" in text
+    assert 'git checkout --detach "$WFH_DEPLOY_SHA"' in text
+    deploy_job = text.split("jobs:\n  deploy:\n", maxsplit=1)[1]
+    assert "    permissions:\n      contents: read\n" in deploy_job
+
+
 def test_production_deploy_workflow_pins_ssh_host_identity() -> None:
     text = WORKFLOW.read_text(encoding="utf-8")
     assert "WFH_PROD_KNOWN_HOSTS" in text
