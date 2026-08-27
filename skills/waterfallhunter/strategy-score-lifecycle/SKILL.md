@@ -17,6 +17,12 @@ Use for ScoreV2, Watch Score/coverage, FinalRanking, WATCH/FUEL-RICH/PRE-TRIGGER
 
 Classify semantic changes explicitly as `MODEL_AFFECTING` and/or `POLICY_AFFECTING`. Preserve the distinction between unavailable evidence, failed evidence, and directional evidence. Logic review establishes coherence, not profitability.
 
+## Protected Invariants
+
+Unless a separately authorized and validated strategy or policy change explicitly requires otherwise, do not incidentally change ScoreV2 weights or evidence semantics, lifecycle transitions, strict/experimental eligibility boundaries, anti-chase behavior, signal provenance or immutable-ledger semantics, persistence-before-notification ordering, scientific holdout/walk-forward rules, or production execution policy.
+
+Current repository policy is observational and does not place orders. Live order placement is outside this skill system: this skill must not authorize, design, implement, or enable live order placement. Any future execution capability requires a separately reviewed safety design and repository-policy change before ordinary release gates apply.
+
 ## Workflow
 
 1. Resolve current authoritative contracts, score/lifecycle code, tests, and research documentation.
