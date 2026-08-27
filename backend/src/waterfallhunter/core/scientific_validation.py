@@ -215,7 +215,7 @@ def validate_strict_scientific_evidence(
 
     result: dict[str, Any] = {
         "contract_version": "strict_scientific_validation_report_v1",
-        "execution_mode": "PAPER_ONLY",
+        "execution_mode": "SIGNAL_ONLY",
         "cohort": "STRICT",
         "source_dataset_manifest_sha256": packet.source_dataset_manifest_sha256,
         "derived_dataset_manifest": manifest,
@@ -1038,7 +1038,7 @@ def _model_card_unavailable(
     body = {
         "contract_version": "strict_model_card_v1",
         "status": "NOT_TRAINED",
-        "intended_use": "PAPER_ONLY_RESEARCH",
+        "intended_use": "SIGNAL_ONLY_RESEARCH",
         "source_revision": packet.source_revision,
         "dataset_manifest_sha256": manifest["dataset_manifest_sha256"],
         "limitations": sorted(set(reasons)),
@@ -1069,7 +1069,7 @@ def _model_card(
             if not performance_reasons
             else "VALIDATED_DO_NOT_PROMOTE"
         ),
-        "intended_use": "PAPER_ONLY_RESEARCH",
+        "intended_use": "SIGNAL_ONLY_RESEARCH",
         "model_id": champion_id,
         "source_revision": packet.source_revision,
         "source_dataset_manifest_sha256": packet.source_dataset_manifest_sha256,
@@ -1087,7 +1087,7 @@ def _model_card(
         "uncertainty": bootstrap,
         "performance_gate_blockers": performance_reasons,
         "known_limitations": [
-            "PAPER_ONLY_NO_LIVE_EXECUTION",
+            "SIGNAL_ONLY_NO_LIVE_EXECUTION",
             "OWNER_FEATURE_PROMOTION_APPROVAL_REQUIRED",
             "MONITOR_FOR_REGIME_AND_CALIBRATION_DRIFT",
         ],

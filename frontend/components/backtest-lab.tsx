@@ -1,7 +1,7 @@
 "use client";
 
 import { ChangeEvent, useMemo, useRef, useState } from "react";
-import { Download, FileUp, FlaskConical, Play, ShieldAlert } from "lucide-react";
+import { Database, Download, FileUp, FlaskConical, Play, ShieldAlert } from "lucide-react";
 
 type ReplayEvent = {
   event_id?: string;
@@ -36,13 +36,29 @@ type PortfolioReport = {
 
 type BacktestResponse = {
   contract_version: string;
-  execution_mode: "PAPER_ONLY";
+  execution_mode: "SIGNAL_ONLY";
   strategy_equivalent: false;
   claims_allowed: false;
   promotion_allowed: false;
   portfolio_report: PortfolioReport;
   signal_level_report: { row_count?: number; portfolio_realizability_applied?: boolean };
   limitations: string[];
+};
+
+type ProductionBundleResponse = {
+  contract_version: "backtest_production_bundle_v1";
+  execution_mode: "SIGNAL_ONLY";
+  strategy_equivalent: false;
+  portfolio_events_available: false;
+  row_count: number;
+  bundle: {
+    artifact_key_id: "wfh-backtest-hmac-v1";
+    artifact_hmac_sha256: string;
+    dataset_manifest_hash: string;
+    initial_equity: number;
+    events: unknown[];
+    signal_rows: unknown[];
+  };
 };
 
 function number(value: unknown, digits = 2): string {
@@ -107,6 +123,7 @@ export function BacktestLab() {
   const [result, setResult] = useState<BacktestResponse>();
   const [error, setError] = useState<string>();
   const [running, setRunning] = useState(false);
+  const [loadingProduction, setLoadingProduction] = useState(false);
   const inputRevision = useRef(0);
 
   const validHash = /^[0-9a-f]{64}$/.test(manifestHash);
@@ -151,7 +168,7 @@ export function BacktestLab() {
       const payload = await response.json() as BacktestResponse | { detail?: unknown };
       if (!response.ok) throw new Error(`Replay rejected: ${JSON.stringify((payload as { detail?: unknown }).detail ?? payload)}`);
       const safe = payload as BacktestResponse;
-      if (safe.execution_mode !== "PAPER_ONLY" || safe.strategy_equivalent !== false || safe.claims_allowed !== false || safe.promotion_allowed !== false) {
+      if (safe.execution_mode !== "SIGNAL_ONLY" || safe.strategy_equivalent !== false || safe.claims_allowed !== false || safe.promotion_allowed !== false) {
         throw new Error("Unsafe or incompatible replay contract received.");
       }
       if (runRevision === inputRevision.current) setResult(safe);
@@ -162,6 +179,37 @@ export function BacktestLab() {
       }
     } finally {
       setRunning(false);
+    }
+  };
+
+  const loadProductionBundle = async () => {
+    setLoadingProduction(true);
+    setError(undefined);
+    try {
+      const equity = Number(initialEquity);
+      if (!Number.isFinite(equity) || equity <= 0) throw new Error("Positive initial equity is required.");
+      const response = await fetch(`/dashboard/api/backtest-lab/production-bundle?limit=500&initial_equity=${encodeURIComponent(String(equity))}`, { cache: "no-store" });
+      const payload = await response.json() as ProductionBundleResponse | { detail?: unknown };
+      if (!response.ok) throw new Error(`Production bundle unavailable: ${JSON.stringify((payload as { detail?: unknown }).detail ?? payload)}`);
+      const safe = payload as ProductionBundleResponse;
+      if (safe.execution_mode !== "SIGNAL_ONLY" || safe.strategy_equivalent !== false || safe.portfolio_events_available !== false) {
+        throw new Error("Unsafe or incompatible production bundle received.");
+      }
+      const bundle = safe.bundle;
+      if (!Array.isArray(bundle.events) || !Array.isArray(bundle.signal_rows)) throw new Error("Production bundle rows are invalid.");
+      if (!/^[0-9a-f]{64}$/.test(bundle.dataset_manifest_hash) || !/^[0-9a-f]{64}$/.test(bundle.artifact_hmac_sha256)) {
+        throw new Error("Production bundle attestation is invalid.");
+      }
+      invalidateResult();
+      setEventsText(JSON.stringify(bundle.events, null, 2));
+      setSignalsText(JSON.stringify(bundle.signal_rows, null, 2));
+      setManifestHash(bundle.dataset_manifest_hash);
+      setInitialEquity(String(bundle.initial_equity));
+      setArtifactHmac(bundle.artifact_hmac_sha256);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Production bundle load failed.");
+    } finally {
+      setLoadingProduction(false);
     }
   };
 
@@ -198,7 +246,7 @@ export function BacktestLab() {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `wfh-paper-replay-${report?.replay_sha256?.slice(0, 12) ?? "report"}.json`;
+    anchor.download = `wfh-simulated-replay-${report?.replay_sha256?.slice(0, 12) ?? "report"}.json`;
     anchor.click();
     URL.revokeObjectURL(url);
   };
@@ -212,7 +260,9 @@ export function BacktestLab() {
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">Deterministic replay with the canonical risk policy, portfolio capacity, isolated liquidation and explicit cost attribution. Input data is never inferred or repaired.</p>
         </div>
         <div className="flex flex-wrap gap-2">
+
           <span className="status-pill border border-cyan-400/30 bg-cyan-500/10 text-cyan-100">SIGNAL ONLY</span>
+
           <span className="status-pill border border-rose-400/30 bg-rose-500/10 text-rose-100">STRATEGY-EQUIVALENT: FALSE</span>
         </div>
       </div>
@@ -222,7 +272,7 @@ export function BacktestLab() {
           <label className="text-xs font-medium text-slate-300"><span className="block">Dataset manifest SHA-256</span>
             <input value={manifestHash} onChange={(event) => { invalidateAttestation(); setManifestHash(event.target.value.trim()); }} placeholder="64 lowercase hexadecimal characters" spellCheck={false} className={`mt-2 w-full rounded-xl border bg-slate-950 px-3 py-2.5 font-mono text-xs outline-none ${manifestHash && !validHash ? "border-rose-500/60" : "border-slate-700 focus:border-cyan-500"}`} />
           </label>
-          <label className="text-xs font-medium text-slate-300"><span className="block">Initial paper equity</span>
+          <label className="text-xs font-medium text-slate-300"><span className="block">Initial simulated equity</span>
             <input type="number" min="0.01" step="0.01" value={initialEquity} onChange={(event) => { invalidateAttestation(); setInitialEquity(event.target.value); }} className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm outline-none focus:border-cyan-500" />
           </label>
         </div>
@@ -239,6 +289,7 @@ export function BacktestLab() {
         </div>
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <button type="button" disabled={!canRun} onClick={() => void run()} className="inline-flex items-center gap-2 rounded-xl bg-cyan-400 px-4 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"><Play size={16} />{running ? "Running…" : "Run bounded replay"}</button>
+          <button type="button" disabled={loadingProduction || running} onClick={() => void loadProductionBundle()} className="inline-flex items-center gap-2 rounded-xl border border-cyan-500/40 bg-cyan-500/10 px-4 py-2.5 text-sm text-cyan-100 transition hover:border-cyan-400 disabled:cursor-not-allowed disabled:opacity-40"><Database size={16} />{loadingProduction ? "Loading production…" : "Load production signals"}</button>
           <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-slate-700 px-4 py-2.5 text-sm text-slate-200 transition hover:border-slate-500"><FileUp size={16} />Import manifest bundle<input type="file" accept="application/json,.json" onChange={(event) => void importDataset(event)} className="sr-only" /></label>
           <button type="button" disabled={!result} onClick={download} className="inline-flex items-center gap-2 rounded-xl border border-slate-700 px-4 py-2.5 text-sm text-slate-200 transition hover:border-slate-500 disabled:cursor-not-allowed disabled:opacity-40"><Download size={16} />Export hash-bound result</button>
           <span className="ml-auto font-mono text-xs text-slate-500">replay {replayLabel}</span>

@@ -13,7 +13,10 @@ import { ProductionEvidence } from "@/components/production-evidence";
 import { FeatureReplay } from "@/components/feature-replay";
 import { BacktestLab } from "@/components/backtest-lab";
 import { LifecycleShadow } from "@/components/lifecycle-shadow";
+
 import { DecisionTerminal } from "@/components/decision-terminal";
+import { RecentSignals } from "@/components/recent-signals";
+
 import type { DashboardSnapshot } from "@/generated/dashboard-contract";
 import { dashboardSnapshot, dashboardStreamEvent } from "@/lib/dashboard-contract";
 
@@ -197,12 +200,13 @@ export default function Dashboard() {
     [data],
   );
 
-  const groups = useMemo(() => ({
-    strictConfirmed: rows.filter(([, candidate]) => candidate.signal_class === "STRICT" && candidate.status === "TRIGGERED"),
-    strictSetup: rows.filter(([, candidate]) => candidate.signal_class === "STRICT" && ["FUEL-RICH", "PRE-TRIGGER", "ARMED"].includes(String(candidate.status))),
-    experimental: rows.filter(([, candidate]) => candidate.signal_class === "EXPERIMENTAL"),
-    discovery: rows.filter(([, candidate]) => candidate.signal_class !== "EXPERIMENTAL" && !(candidate.signal_class === "STRICT" && ["TRIGGERED", "FUEL-RICH", "PRE-TRIGGER", "ARMED"].includes(String(candidate.status)))),
-  }), [rows]);
+  const groups = useMemo(() => {
+    const strictConfirmed = rows.filter(([, candidate]) => candidate.signal_class === "STRICT" && candidate.status === "TRIGGERED");
+    const experimental = rows.filter(([, candidate]) => candidate.signal_class === "EXPERIMENTAL");
+    const setupPipeline = rows.filter(([, candidate]) => candidate.signal_class !== "EXPERIMENTAL" && ["FUEL-RICH", "PRE-TRIGGER", "ARMED"].includes(String(candidate.status)));
+    const discovery = rows.filter(([, candidate]) => candidate.signal_class !== "EXPERIMENTAL" && candidate.status !== "TRIGGERED" && !["FUEL-RICH", "PRE-TRIGGER", "ARMED"].includes(String(candidate.status)));
+    return { strictConfirmed, experimental, setupPipeline, discovery };
+  }, [rows]);
 
   const renderGroup = (title: string, items: [string, Candidate][], tone: "slate" | "experimental" = "slate") => items.length > 0 && (
     <section className="mb-6">
@@ -231,6 +235,8 @@ export default function Dashboard() {
     );
   }
 
+
+
   return (
     <main className="min-h-dvh pb-14 text-slate-100">
       <header className="sticky top-0 z-40 border-b border-slate-800/80 bg-slate-950/85 backdrop-blur supports-[backdrop-filter]:bg-slate-950/70">
@@ -238,7 +244,9 @@ export default function Dashboard() {
           <Activity className="shrink-0 text-emerald-400" size={24} aria-hidden="true" />
           <div className="min-w-0 leading-tight">
             <h1 className="truncate text-base font-bold tracking-tight sm:text-lg">WaterfallHunter</h1>
+
             <p className="hidden text-xs text-slate-400 sm:block">Canonical waterfall decision terminal · signal only</p>
+
           </div>
           <div className="ml-auto flex items-center gap-2">
             {generatedAt !== null && (
@@ -251,10 +259,12 @@ export default function Dashboard() {
         </div>
         <nav aria-label="Dashboard sections" className="border-t border-slate-800/60">
           <div className="mx-auto flex max-w-7xl gap-1 overflow-x-auto px-3 py-1.5 sm:px-6 lg:px-8">
+
             <a href="#decision-terminal" className="section-nav-link"><LayoutDashboard size={14} />Decision terminal</a>
             <a href="#all-candidates" className="section-nav-link"><Radio size={14} />All candidates</a>
             <a href="#research" className="section-nav-link"><FlaskConical size={14} />Research</a>
-            <span className="ml-auto hidden shrink-0 self-center pr-1 font-mono text-[11px] font-semibold tracking-wider text-emerald-300/90 md:inline">SIGNAL ONLY · NO ORDER EXECUTION</span>
+            <span className="ml-auto hidden shrink-0 self-center pr-1 font-mono text-[11px] font-semibold tracking-wider text-emerald-300/90 md:inline">SIGNAL_ONLY · LIVE TRADING OFF · NO ORDER EXECUTION</span>
+
           </div>
         </nav>
       </header>
@@ -272,6 +282,7 @@ export default function Dashboard() {
           </summary>
           <div className="border-t border-slate-800 px-4 py-5 sm:px-5">
             <OutcomeEvidence />
+            <RecentSignals />
             <HistoricalOutcomes />
             <ProductionEvidence />
             <FeatureReplay />
@@ -283,13 +294,15 @@ export default function Dashboard() {
               <summary className="cursor-pointer text-sm font-semibold text-slate-300">Raw candidate cards</summary>
               <div className="mt-5">
                 {renderGroup("Confirmed STRICT diagnostics", groups.strictConfirmed)}
-                {renderGroup("STRICT setup diagnostics", groups.strictSetup)}
+                {renderGroup("STRICT setup diagnostics", groups.setupPipeline)}
                 {renderGroup("Experimental research", groups.experimental, "experimental")}
                 {renderGroup("Watch and discovery", groups.discovery)}
               </div>
+
             </details>
           </div>
         </details>
+
       </div>
     </main>
   );

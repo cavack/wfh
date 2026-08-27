@@ -86,6 +86,20 @@ def test_active_buying_and_weak_structure_do_not_promote() -> None:
     assert "BUYERS_ACTIVE" in packet["reason_codes"]
 
 
+def test_deterministic_market_data_veto_hard_blocks_strong_setup() -> None:
+    metrics = strong_metrics()
+    metrics["ai_advisory"] = {
+        "deterministic_veto": True,
+        "deterministic_reason": "Bid wall is 4.0x larger than Ask wall.",
+        "ai_observational_only": True,
+        "ai_decision_critical": False,
+    }
+    packet = decide(metrics, status="TRIGGERED")
+    assert packet["decision"] == "NO_TRADE"
+    assert packet["hard_blocked"] is True
+    assert "DETERMINISTIC_MARKET_DATA_VETO" in packet["block_reasons"]
+
+
 def test_triggered_strong_setup_becomes_active_not_a_disappearing_trigger() -> None:
     packet = decide(strong_metrics(), status="TRIGGERED")
     assert packet["decision"] == "ACTIVE"

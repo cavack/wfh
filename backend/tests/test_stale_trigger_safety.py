@@ -67,18 +67,25 @@ def test_stale_trigger_persistence_failure_suppresses_telegram(
     )
     monkeypatch.setattr(
         main.ai_veto,
-        "evaluate_symbol",
-        AsyncMock(
-            return_value=(
-                False,
-                {"ai_advice": "OBSERVE"},
-            )
+        "evaluate_deterministic",
+        lambda *args, **kwargs: (
+            False,
+            {
+                "deterministic_veto": False,
+                "deterministic_reason": "test pass",
+                "ai_advice": "PENDING",
+                "ai_confidence": 0,
+                "ai_reasoning": "observational only",
+                "ai_provider": "none",
+                "ai_observational_only": True,
+                "ai_decision_critical": False,
+            },
         ),
     )
     monkeypatch.setattr(
         main,
-        "get_leverage",
-        lambda requested_symbol: 1,
+        "recommend_signal_leverage",
+        lambda metrics, execution_suitability=None: 4,
     )
     monkeypatch.setattr(
         main.execution_suitability_enricher,

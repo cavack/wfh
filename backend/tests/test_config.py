@@ -3,7 +3,7 @@ from waterfallhunter.config import (
 )
 
 
-def test_settings_exposes_the_paper_only_and_gemini_configuration_fields():
+def test_settings_exposes_the_signal_only_and_gemini_configuration_fields():
     configured = Settings(
         _env_file=None,
         live_trading_enabled=False,

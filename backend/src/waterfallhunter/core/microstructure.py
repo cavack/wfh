@@ -28,6 +28,12 @@ class MicrostructureAnalyzer:
     def _depth(levels: List[List[float]], contract_size: float = 1.0) -> float:
         return sum(float(price) * float(amount) * contract_size for price, amount, *_ in levels)
 
+    @staticmethod
+    def _change_pct(current: float, previous: float) -> float | None:
+        if previous <= 0:
+            return None
+        return (current - previous) / previous * 100.0
+
     async def analyze(self, exchange: Any, symbol: str, first: Dict[str, Any], market: Dict[str, Any]) -> Dict[str, Any]:
         if not first:
             return {"approved": False, "reason": "missing live orderbook"}
@@ -82,9 +88,6 @@ class MicrostructureAnalyzer:
             {
                 "timestamp": snapshot.get("timestamp"),
                 "received_at": snapshot.get("_received_at"),
-                # Preserve every level consumed below. Some exchange adapters
-                # return more rows than the requested limit; truncating the
-                # evidence made production depth/churn impossible to replay.
                 "bids": [list(level[:3]) for level in (snapshot.get("bids") or [])],
                 "asks": [list(level[:3]) for level in (snapshot.get("asks") or [])],
             }
@@ -103,7 +106,12 @@ class MicrostructureAnalyzer:
         sell_vwap = self._vwap(bids, self.executable_notional, contract_size)
         buy_vwap = self._vwap(asks, self.executable_notional, contract_size)
         bid_depth, ask_depth = self._depth(bids, contract_size), self._depth(asks, contract_size)
-        churn = sum(abs(self._depth(item["bids"], contract_size) - self._depth(snapshots[0]["bids"], contract_size)) for item in snapshots[1:]) / max(bid_depth, 1.0)
+        initial_bid_depth = self._depth(snapshots[0]["bids"], contract_size)
+        initial_ask_depth = self._depth(snapshots[0]["asks"], contract_size)
+        churn = sum(
+            abs(self._depth(item["bids"], contract_size) - initial_bid_depth)
+            for item in snapshots[1:]
+        ) / max(bid_depth, 1.0)
         spoofing = churn > 1.5
         sell_flow = sum(float(t.get("amount", 0)) * float(t.get("price", 0)) * contract_size for t in trades if t.get("side") == "sell")
         buy_flow = sum(float(t.get("amount", 0)) * float(t.get("price", 0)) * contract_size for t in trades if t.get("side") == "buy")
@@ -152,38 +160,67 @@ class MicrostructureAnalyzer:
             else "insufficient executable ask depth" if buy_vwap is None
             else None
         )
-        return {"approved": approved, "reason": reason, "observed_at": observed_at,
-                "spread_pct": round(spread_pct, 4),
-                "best_bid": best_bid, "best_ask": best_ask,
-                "sell_vwap": sell_vwap, "buy_vwap": buy_vwap,
-                "slippage_pct": round(entry_slippage_pct, 4) if entry_slippage_pct is not None else None,
-                "entry_slippage_pct": round(entry_slippage_pct, 4) if entry_slippage_pct is not None else None,
-                "exit_slippage_pct": round(exit_slippage_pct, 4) if exit_slippage_pct is not None else None,
-                "round_trip_slippage_pct": round(entry_slippage_pct + exit_slippage_pct, 4)
-                if entry_slippage_pct is not None and exit_slippage_pct is not None else None,
-                "bid_depth_usdt": bid_depth, "ask_depth_usdt": ask_depth,
-                "sell_flow_usdt": sell_flow, "buy_flow_usdt": buy_flow, "churn": round(churn, 4),
-                "sell_flow_ratio": round(sell_flow_ratio, 4) if sell_flow_ratio is not None else None,
-                "footprint": {"available": footprint_available, "trade_count": len(trades),
-                              "sell_delta_usdt": round(sell_flow - buy_flow, 4),
-                              "sell_imbalance_levels": sell_imbalances,
-                              "aggressive_selling": bool(footprint_available and sell_flow > buy_flow and sell_imbalances > 0)},
-                "spoofing_detected": spoofing, "executable_notional": self.executable_notional,
-                "executable": executable, "minimum_notional": minimum_notional, "contracts": contracts,
-                "exchange_filters": {"precision": market.get("precision"), "minimum_amount": min_amount,
-                                     "contract_size": contract_size},
-                "source_capture": {
-                    "fresh_trades": source_trades,
-                    "raw_trades_captured": len(source_trades) >= 20,
-                    "trade_ttl_seconds": self.trade_ttl_seconds,
-                    "orderbook_snapshots": source_orderbook_snapshots,
-                    "orderbook_snapshots_captured": bool(
-                        len(source_orderbook_snapshots) == 3
-                        and all(item.get("bids") and item.get("asks") for item in source_orderbook_snapshots)
-                    ),
-                    "market": source_market,
-                    "market_filters_captured": bool(
-                        source_market.get("contractSize") is not None
-                        and isinstance(source_market.get("limits"), dict)
-                    ),
-                }}
+        bid_change = self._change_pct(bid_depth, initial_bid_depth)
+        ask_change = self._change_pct(ask_depth, initial_ask_depth)
+        return {
+            "approved": approved,
+            "reason": reason,
+            "observed_at": observed_at,
+            "spread_pct": round(spread_pct, 4),
+            "best_bid": best_bid,
+            "best_ask": best_ask,
+            "sell_vwap": sell_vwap,
+            "buy_vwap": buy_vwap,
+            "slippage_pct": round(entry_slippage_pct, 4) if entry_slippage_pct is not None else None,
+            "entry_slippage_pct": round(entry_slippage_pct, 4) if entry_slippage_pct is not None else None,
+            "exit_slippage_pct": round(exit_slippage_pct, 4) if exit_slippage_pct is not None else None,
+            "round_trip_slippage_pct": round(entry_slippage_pct + exit_slippage_pct, 4)
+            if entry_slippage_pct is not None and exit_slippage_pct is not None else None,
+            "bid_depth_usdt": bid_depth,
+            "ask_depth_usdt": ask_depth,
+            "sell_flow_usdt": sell_flow,
+            "buy_flow_usdt": buy_flow,
+            "churn": round(churn, 4),
+            "sell_flow_ratio": round(sell_flow_ratio, 4) if sell_flow_ratio is not None else None,
+            "footprint": {
+                "available": footprint_available,
+                "trade_count": len(trades),
+                "sell_delta_usdt": round(sell_flow - buy_flow, 4),
+                "sell_imbalance_levels": sell_imbalances,
+                "aggressive_selling": bool(footprint_available and sell_flow > buy_flow and sell_imbalances > 0),
+            },
+            "spoofing_detected": spoofing,
+            "executable_notional": self.executable_notional,
+            "executable": executable,
+            "minimum_notional": minimum_notional,
+            "contracts": contracts,
+            "exchange_filters": {
+                "precision": market.get("precision"),
+                "minimum_amount": min_amount,
+                "contract_size": contract_size,
+            },
+            "precrash_observations": {
+                "contract_version": "precrash_orderbook_observation_v1",
+                "observational_only": True,
+                "hard_gating_allowed": False,
+                "promotion_allowed": False,
+                "bid_depth_change_pct": round(bid_change, 4) if bid_change is not None else None,
+                "ask_depth_change_pct": round(ask_change, 4) if ask_change is not None else None,
+                "depth_churn_ratio": round(churn, 4),
+            },
+            "source_capture": {
+                "fresh_trades": source_trades,
+                "raw_trades_captured": len(source_trades) >= 20,
+                "trade_ttl_seconds": self.trade_ttl_seconds,
+                "orderbook_snapshots": source_orderbook_snapshots,
+                "orderbook_snapshots_captured": bool(
+                    len(source_orderbook_snapshots) == 3
+                    and all(item.get("bids") and item.get("asks") for item in source_orderbook_snapshots)
+                ),
+                "market": source_market,
+                "market_filters_captured": bool(
+                    source_market.get("contractSize") is not None
+                    and isinstance(source_market.get("limits"), dict)
+                ),
+            },
+        }

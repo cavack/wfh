@@ -158,9 +158,12 @@ class LBankExecutionObserver:
         for value in (
             ticker.get("mark"),
             ticker.get("markPrice"),
+            ticker.get("markedPrice"),
             ticker_info.get("markPrice"),
+            ticker_info.get("markedPrice"),
             ticker_info.get("mark_price"),
             market_info.get("markPrice"),
+            market_info.get("markedPrice"),
             market_info.get("mark_price"),
         ):
             mark_price = cls._safe_positive(value)
@@ -179,6 +182,18 @@ class LBankExecutionObserver:
             }
         )
 
+    async def _load_swap_markets(self) -> None:
+        exchange = self._exchange
+        fetch_swap_markets = getattr(exchange, "fetch_swap_markets", None)
+        set_markets = getattr(exchange, "set_markets", None)
+
+        if callable(fetch_swap_markets) and callable(set_markets):
+            markets = await fetch_swap_markets()
+            set_markets(markets)
+            return
+
+        await exchange.load_markets()
+
     async def _ensure_exchange(self):
         async with self._exchange_lock:
             if self._exchange is None:
@@ -188,7 +203,7 @@ class LBankExecutionObserver:
                 self._markets_loaded = False
 
             if not self._markets_loaded:
-                await self._exchange.load_markets()
+                await self._load_swap_markets()
                 self._markets_loaded = True
 
             return self._exchange

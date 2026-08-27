@@ -1,6 +1,6 @@
 # Contributing
 
-WaterfallHunter is a signal-only monitoring and research system. Changes must preserve the safety boundary that order execution is disabled.
+WaterfallHunter is a SIGNAL_ONLY monitoring and research system. Changes must preserve the safety boundary that order placement is disabled and `LIVE_TRADING_ENABLED=false` remains mandatory.
 
 ## Development workflow
 

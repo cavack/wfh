@@ -311,6 +311,10 @@ def _evidence_summary(metrics: dict[str, Any]) -> dict[str, Any]:
         },
         "cross_exchange_confirmed": breakdown.get("confirmation_exchange_15m"),
         "anti_chase_extension_atr": _anti_chase_extension(metrics),
+        "deterministic_market_data_veto": {
+            "blocked": _record(metrics.get("ai_advisory")).get("deterministic_veto") is True,
+            "reason": _record(metrics.get("ai_advisory")).get("deterministic_reason"),
+        },
     }
 
 
@@ -337,6 +341,10 @@ def build_entry_decision(
 
     if status == "INVALIDATED":
         block_reasons.append("STRUCTURE_INVALIDATED")
+
+    advisory = _record(metrics.get("ai_advisory"))
+    if advisory.get("deterministic_veto") is True:
+        block_reasons.append("DETERMINISTIC_MARKET_DATA_VETO")
 
     extension = _anti_chase_extension(metrics)
     late = bool(

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a deterministic regime/setup/trigger model and a chronological backtest protocol that increases paper-alert coverage without weakening live execution gates.
+**Goal:** Add a deterministic regime/setup/trigger model and a chronological backtest protocol that increases simulated-alert coverage without weakening live execution gates.
 
 **Architecture:** Keep the existing live validator as the sole owner of state transitions. Add pure, testable structure evaluation to the candle analyzer; have the validator consume its regime/setup/trigger evidence without creating synthetic market data. Extend the research runner with fixed-universe chronological windows, structural stops, bounded parameter grids, and complete provenance artifacts.
 

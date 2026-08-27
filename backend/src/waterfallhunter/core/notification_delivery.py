@@ -207,8 +207,8 @@ class DurableNotificationWorker:
 
     async def dispatch_once(self, *, now: int) -> DispatchOutcome | None:
         timestamp = self._timestamp(now)
-        self.recover_expired_leases(now=timestamp)
-        event = self.claim_next(now=timestamp)
+        await asyncio.to_thread(self.recover_expired_leases, now=timestamp)
+        event = await asyncio.to_thread(self.claim_next, now=timestamp)
         if event is None:
             return None
         try:
@@ -239,7 +239,12 @@ class DurableNotificationWorker:
                 DeliveryDisposition.TRANSIENT_FAILURE,
                 error_code="TRANSPORT_EXCEPTION",
             )
-        return self._complete(event, result=result, now=timestamp)
+        return await asyncio.to_thread(
+            self._complete,
+            event,
+            result=result,
+            now=timestamp,
+        )
 
     def _complete(
         self,

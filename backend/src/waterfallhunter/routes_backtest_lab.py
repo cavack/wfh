@@ -1,4 +1,4 @@
-"""Bounded, read-only API for deterministic paper portfolio research."""
+"""Bounded, read-only API for deterministic portfolio simulation research."""
 
 from __future__ import annotations
 
@@ -6,9 +6,10 @@ import asyncio
 import hashlib
 import hmac
 import json
+import sqlite3
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from waterfallhunter.core.execution_planning import (
@@ -16,6 +17,7 @@ from waterfallhunter.core.execution_planning import (
     RiskPolicy,
 )
 from waterfallhunter.core.canonical_json import canonical_json_bytes
+from waterfallhunter.core.managed_sqlite import ManagedSQLiteError, connect_managed_sqlite
 from waterfallhunter.core.portfolio_replay import (
     PortfolioEvent,
     build_signal_level_research_report,
@@ -67,8 +69,8 @@ class BacktestLabRequest(BaseModel):
 class BacktestLabResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    contract_version: Literal["backtest_lab_response_v1"]
-    execution_mode: Literal["PAPER_ONLY"]
+    contract_version: Literal["backtest_lab_response_v2"]
+    execution_mode: Literal["SIGNAL_ONLY"]
     strategy_equivalent: Literal[False]
     claims_allowed: Literal[False]
     promotion_allowed: Literal[False]
@@ -104,8 +106,8 @@ def _run_replay(payload: BacktestLabRequest) -> BacktestLabResponse:
         dataset_manifest_hash=payload.dataset_manifest_hash,
     )
     return BacktestLabResponse(
-        contract_version="backtest_lab_response_v1",
-        execution_mode="PAPER_ONLY",
+        contract_version="backtest_lab_response_v2",
+        execution_mode="SIGNAL_ONLY",
         strategy_equivalent=False,
         claims_allowed=False,
         promotion_allowed=False,
@@ -122,7 +124,48 @@ def _run_replay(payload: BacktestLabRequest) -> BacktestLabResponse:
     )
 
 
-def build_backtest_lab_router(*, artifact_hmac_key: str | None = None) -> APIRouter:
+def _production_signal_rows(db_path: str, limit: int) -> list[dict[str, Any]]:
+    with connect_managed_sqlite(db_path, timeout=10.0) as conn:
+        rows = conn.execute(
+            """
+            SELECT l.id, l.symbol, l.triggered_at, l.score, l.trigger_metrics_json,
+                   m.signal_class, m.strategy_profile, m.score_version,
+                   (SELECT o.outcome_status FROM lbank_signal_outcomes AS o
+                    WHERE o.signal_id = l.id ORDER BY o.resolved_at DESC, o.id DESC LIMIT 1)
+            FROM lbank_signal_ledger AS l
+            JOIN signal_metadata AS m ON m.signal_id = l.id
+            ORDER BY l.triggered_at DESC, l.id DESC
+            LIMIT ?
+            """,
+            (int(limit),),
+        ).fetchall()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            metrics = json.loads(row[4]) if isinstance(row[4], str) else {}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            metrics = {}
+        if not isinstance(metrics, dict):
+            metrics = {}
+        result.append({
+            "signal_id": str(row[0]),
+            "signal_triggered_at": int(row[2]),
+            "symbol": str(row[1]),
+            "score": float(row[3]),
+            "signal_class": str(row[5]),
+            "strategy_profile": str(row[6]),
+            "score_version": str(row[7]),
+            "applied_leverage": metrics.get("applied_leverage"),
+            "outcome_status": row[8],
+        })
+    return result
+
+
+def build_backtest_lab_router(
+    *,
+    artifact_hmac_key: str | None = None,
+    db_path: str | None = None,
+) -> APIRouter:
     router = APIRouter()
 
     @router.get(
@@ -143,7 +186,7 @@ def build_backtest_lab_router(*, artifact_hmac_key: str | None = None) -> APIRou
         policy = RiskPolicy.v1()
         return {
             "contract_version": "backtest_lab_contract_v1",
-            "execution_mode": "PAPER_ONLY",
+            "execution_mode": "SIGNAL_ONLY",
             "maximum_replay_events": MAX_REPLAY_EVENTS,
             "maximum_signal_rows": MAX_SIGNAL_ROWS,
             "maximum_processing_payload_bytes": MAX_REPLAY_PAYLOAD_BYTES,
@@ -155,6 +198,57 @@ def build_backtest_lab_router(*, artifact_hmac_key: str | None = None) -> APIRou
             "strategy_equivalent": False,
             "claims_allowed": False,
             "promotion_allowed": False,
+            "production_bundle_available": bool(
+                db_path and artifact_hmac_key and len(artifact_hmac_key.encode("utf-8")) >= 32
+            ),
+            "production_bundle_portfolio_events": False,
+        }
+
+    @router.get(
+        "/api/backtest-lab/production-bundle",
+        responses={503: {"description": "Production bundle unavailable"}},
+    )
+    async def backtest_production_bundle(
+        limit: int = Query(250, ge=1, le=1000),
+        initial_equity: float = Query(1000.0, gt=0, le=1_000_000_000),
+    ):
+        if db_path is None:
+            raise HTTPException(status_code=503, detail="production backtest dataset is unavailable")
+        if artifact_hmac_key is None or len(artifact_hmac_key.encode("utf-8")) < 32:
+            raise HTTPException(status_code=503, detail="backtest artifact verification is unavailable")
+        try:
+            rows = await asyncio.to_thread(_production_signal_rows, db_path, limit)
+        except (ManagedSQLiteError, sqlite3.Error) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="production backtest dataset is unavailable",
+            ) from exc
+        manifest_material = {
+            "contract_version": "production_signal_bundle_v1",
+            "source": "lbank_signal_ledger",
+            "signal_rows": rows,
+        }
+        manifest_hash = hashlib.sha256(canonical_json_bytes(manifest_material)).hexdigest()
+        provisional = BacktestLabRequest(
+            artifact_key_id="wfh-backtest-hmac-v1",
+            artifact_hmac_sha256="0" * 64,
+            dataset_manifest_hash=manifest_hash,
+            initial_equity=float(initial_equity),
+            events=(),
+            signal_rows=tuple(SignalResearchRow.model_validate(row) for row in rows),
+        )
+        digest = backtest_attestation_sha256(
+            provisional, artifact_hmac_key=artifact_hmac_key
+        )
+        bundle = provisional.model_copy(update={"artifact_hmac_sha256": digest})
+        return {
+            "contract_version": "backtest_production_bundle_v1",
+            "execution_mode": "SIGNAL_ONLY",
+            "strategy_equivalent": False,
+            "portfolio_events_available": False,
+            "source": "lbank_signal_ledger",
+            "row_count": len(rows),
+            "bundle": bundle.model_dump(mode="json"),
         }
 
     @router.post(

@@ -7,7 +7,7 @@ from waterfallhunter.core.schema_contract import require_managed_schema
 
 
 class StageLifecycleStore:
-    """Persist an ordered, observational strategy-stage lifecycle."""
+    """Persist an ordered strategy-stage lifecycle for the strict gate."""
 
     VERSION = "stage_lifecycle_v1"
     HYPE_TTL_SECONDS = 72 * 60 * 60
@@ -38,8 +38,8 @@ class StageLifecycleStore:
                 "damage": cls.DAMAGE_TTL_SECONDS,
                 "setup": cls.SETUP_TTL_SECONDS,
             },
-            "observational_only": True,
-            "hard_gating_allowed": False,
+            "observational_only": False,
+            "hard_gating_allowed": True,
         }
 
     @classmethod

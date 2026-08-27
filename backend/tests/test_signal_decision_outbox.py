@@ -142,7 +142,7 @@ def test_signal_transaction_persists_decision_and_pending_outbox_exactly_once(
     assert decision[:2] == ("signal:1:decision:1", None)
     assert decision_payload["predictive_evidence_score"] == 91.5
     assert decision_payload["calibrated_probability"] is None
-    assert decision_payload["execution_mode"] == "PAPER_ONLY"
+    assert decision_payload["execution_mode"] == "SIGNAL_ONLY"
     assert decision[3] == canonical_sha256(decision_payload)
 
     assert event is not None

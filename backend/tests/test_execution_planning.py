@@ -195,7 +195,7 @@ def test_risk_first_plan_is_cost_complete_and_33_percent_is_only_a_cap() -> None
     plan = _plan()
 
     assert plan["status"] == "READY"
-    assert plan["execution_mode"] == "PAPER_ONLY"
+    assert plan["execution_mode"] == "SIGNAL_ONLY"
     assert plan["system_leverage"] == 3
     assert plan["isolated_margin"] < 200.0 * 0.33
     assert plan["risk_at_stop_rate"] <= 0.0075

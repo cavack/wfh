@@ -1,0 +1,77 @@
+name: Deploy Production
+
+on:
+  workflow_call:
+
+concurrency:
+  group: waterfallhunter-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 45
+    env:
+      WFH_DEPLOY_SHA: ${{ github.sha }}
+      WFH_PROD_HOST: ${{ secrets.WFH_PROD_HOST || secrets.WFH_DEPLOY_HOST }}
+      WFH_PROD_PORT: ${{ secrets.WFH_PROD_PORT || secrets.WFH_DEPLOY_PORT }}
+      WFH_PROD_USER: ${{ secrets.WFH_PROD_USER || secrets.WFH_DEPLOY_USER }}
+    steps:
+      - name: Checkout exact trusted main revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact trusted main revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$WFH_DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$WFH_DEPLOY_SHA"
+          git fetch --no-tags origin main
+          git cat-file -e "${WFH_DEPLOY_SHA}^{commit}"
+          test "$(git rev-parse origin/main)" = "$WFH_DEPLOY_SHA"
+
+      - name: Validate Production connection contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$WFH_PROD_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]{0,31}$ ]]
+          [[ "$WFH_PROD_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$ ]]
+          port="${WFH_PROD_PORT:-22}"
+          [[ "$port" =~ ^[0-9]{1,5}$ ]]
+          (( port >= 1 && port <= 65535 ))
+
+      - name: Configure pinned SSH identity
+        shell: bash
+        env:
+          WFH_PROD_SSH_KEY: ${{ secrets.WFH_PROD_SSH_KEY || secrets.WFH_DEPLOY_SSH_KEY }}
+          WFH_PROD_KNOWN_HOSTS: ${{ secrets.WFH_PROD_KNOWN_HOSTS || secrets.WFH_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$WFH_PROD_SSH_KEY"
+          test -n "$WFH_PROD_KNOWN_HOSTS"
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$WFH_PROD_SSH_KEY" > "$HOME/.ssh/waterfallhunter-deploy"
+          chmod 600 "$HOME/.ssh/waterfallhunter-deploy"
+          printf '%s\n' "$WFH_PROD_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Deploy exact CI revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          port="${WFH_PROD_PORT:-22}"
+          ssh \
+            -i "$HOME/.ssh/waterfallhunter-deploy" \
+            -p "$port" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            -- "$WFH_PROD_USER@$WFH_PROD_HOST" \
+            "WFH_DEPLOY_SHA='$WFH_DEPLOY_SHA' WFH_DEPLOY_ROOT='/srv/waterfallhunter/app' bash -s" \
+            < scripts/deploy_production.sh

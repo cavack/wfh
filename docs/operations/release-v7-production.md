@@ -2,12 +2,12 @@
 
 Release source: `feat/wave7-deployment-certification`.
 
-This release consolidates the stacked Wave 1C through Wave 7 implementation onto `main`, including the new dashboard, typed/streamed dashboard contracts, Backtest Lab, Lifecycle V2 shadow monitoring, strict scientific validation, risk-first paper execution/replay, and deployment certification tooling.
+This release consolidates the stacked Wave 1C through Wave 7 implementation onto `main`, including the new dashboard, typed/streamed dashboard contracts, Backtest Lab, Lifecycle V2 shadow monitoring, strict scientific validation, risk-first simulated execution/replay, and deployment certification tooling.
 
 Production safety boundary:
 
 - `LIVE_TRADING_ENABLED=false` remains mandatory.
-- This release is signal-only; order execution is disabled.
+- This release is SIGNAL_ONLY; order execution is disabled.
 - No live order path is authorized.
 - Telegram delivery remains separately controlled.
 - Database migration is explicit and must be run before application restart.

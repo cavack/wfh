@@ -1,6 +1,6 @@
 # WaterfallHunter
 
-WaterfallHunter is a signal-only USDT perpetual-futures waterfall detector. It normalizes exchange evidence, builds one canonical decision packet per symbol, separates lifecycle from entry timing, records outcomes/replay evidence, and exposes a decision-first dashboard.
+WaterfallHunter is a SIGNAL_ONLY USDT perpetual-futures waterfall detector. It normalizes exchange evidence, builds one canonical decision packet per symbol, separates lifecycle from entry timing, records outcomes/replay evidence, and exposes a decision-first read-only dashboard.
 
 > **Safety status:** `LIVE_TRADING_ENABLED=false` is the project invariant. WaterfallHunter does not place orders. Only canonical `ENTRY_READY` is an actionable signal state; research rankings, experimental features, historical evidence, replay, and diagnostics cannot create or veto a signal.
 
@@ -16,13 +16,13 @@ WaterfallHunter is a signal-only USDT perpetual-futures waterfall detector. It n
 
 ## Current operational boundaries
 
-- No order placement.
+- SIGNAL_ONLY: no order placement or cancellation.
 - No production-threshold promotion without walk-forward and holdout validation.
 - Historical downloads and the natural live outcome ledger remain separate.
 - Execution suitability cannot replace the volume proxy until promotion criteria pass.
 - Lifecycle persistence and stale-trigger safety must be audited before any hard gate.
-- Canary trading requires separate explicit approval and additional risk controls.
-- AI output is advisory only and cannot veto/downgrade a canonical decision. If Gemini is unavailable, deterministic logic continues unchanged.
+- Any future order-execution capability requires a separate design, approval, implementation, and risk-control boundary; it is outside this runtime.
+- AI output is advisory only and cannot veto or downgrade a canonical decision. Gemini is the only configured AI advisory provider; if it is unavailable, deterministic logic continues without a local-model fallback.
 
 ## Local development
 
@@ -80,7 +80,7 @@ CI runs backend tests, frontend typechecking/build, Python and npm dependency au
 
 ## Deployment
 
-Production secrets and state live outside Git. Copy `.env.example` to `.env`, provide only the optional credentials you need, keep `LIVE_TRADING_ENABLED=false`, and deploy through Docker Compose. The application database is stored in the `waterfall_data` volume and is not part of this repository.
+Production secrets and state live outside Git. The Production runtime remains `SIGNAL_ONLY` with `LIVE_TRADING_ENABLED=false`. After a successful `CI` run on `main`, the Production deployment workflow deploys that exact revision, backs up and migrates the managed SQLite database, activates release-scoped Telegram signal delivery, and certifies health/readiness plus OCI revision identity. The application database is stored in the `waterfall_data` volume and is not part of this repository.
 
 ## Repository governance
 
@@ -88,18 +88,4 @@ Changes should be made on short-lived branches and merged through reviewed pull 
 
 ## Project roadmap
 
-1. Complete natural-outcome and real-execution evidence sufficiency.
-2. L4 — waterfall calibration with walk-forward and holdout validation.
-3. L5 — historical outcome and net EV validation.
-4. Audit lifecycle persistence and stale-trigger safety.
-5. L6 — final ranking and controlled operational promotion.
-6. L7 — dashboard completion.
-7. Canary trading only after separate approval.
-
-## Security
-
-Do not open public issues containing credentials, exchange-account details, production evidence, database files, or server addresses. See [SECURITY.md](SECURITY.md) for reporting guidance.
-
-## License
-
-This repository is publicly viewable but is not open-source licensed. See [LICENSE](LICENSE).
+Current work focuses on improving evidence quality, lifecycle correctness, replay fidelity, operational stability, and scientifically valid signal evaluation without adding an order-execution path.

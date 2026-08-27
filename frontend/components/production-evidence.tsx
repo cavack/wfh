@@ -24,6 +24,7 @@ function percent(value: unknown): string {
 
 export function ProductionEvidence() {
   const [report, setReport] = useState<Report>();
+  const [failed, setFailed] = useState(false);
   useEffect(() => {
     let active = true;
     const load = async () => {
@@ -31,18 +32,19 @@ export function ProductionEvidence() {
         const response = await fetch("/dashboard/api/production-evidence", { cache: "no-store" });
         const payload = await response.json() as Report;
         if (!response.ok || payload.operational !== true || payload.observational_only !== true || payload.hard_gating_allowed !== false) throw new Error("unsafe contract");
-        if (active) setReport(payload);
-      } catch { if (active) setReport(undefined); }
+        if (active) { setReport(payload); setFailed(false); }
+      } catch { if (active) setFailed(true); }
     };
     void load();
     const timer = window.setInterval(load, 60_000);
     return () => { active = false; window.clearInterval(timer); };
   }, []);
 
-  if (!report) return null;
+  if (!report) return <section className="panel mx-auto mb-7 max-w-7xl p-5 sm:p-6"><p className="text-sm text-slate-400">{failed ? "Production evidence unavailable; no values are inferred." : "Loading production evidence…"}</p></section>;
   return (
     <section className="panel mx-auto mb-7 max-w-7xl p-5 sm:p-6" aria-label="Production evidence recorder">
       <div className="flex flex-wrap items-start justify-between gap-4"><div><h2 className="flex items-center gap-2 text-sm font-semibold"><Database size={17} className="text-emerald-300" />Production evidence recorder</h2><p className="mt-1 text-sm text-slate-400">Real decision packets captured from the running evaluator every five minutes.</p></div><span className="status-pill border border-emerald-400/25 bg-emerald-500/10 text-emerald-200">RECORDING</span></div>
+      {failed ? <p className="mt-4 rounded-xl border border-amber-400/25 bg-amber-500/10 p-3 text-xs text-amber-100">Refresh unavailable. The last verified report remains displayed.</p> : null}
       <dl className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <div className="stat"><dt>Snapshots 24h</dt><dd>{count(report.snapshot_count_24h)}</dd></div>
         <div className="stat"><dt>Symbols 24h</dt><dd>{count(report.symbol_count_24h)}</dd></div>

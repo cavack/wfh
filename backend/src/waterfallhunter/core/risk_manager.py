@@ -1,11 +1,105 @@
 import logging
+import math
 from typing import Dict, Any, Tuple
 
 logger = logging.getLogger("WaterfallHunter.RiskManager")
 
 def get_leverage(symbol: str) -> int:
+    """Legacy symbol-only leverage retained for deterministic replay compatibility."""
     base = symbol.split("/")[0].upper()
     return 2 if base in {"BTC", "ETH"} else 3
+
+
+def _finite_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def recommend_signal_leverage(
+    metrics: Dict[str, Any],
+    execution_suitability: Dict[str, Any] | None = None,
+) -> int:
+    """Return an evidence-bound SIGNAL_ONLY leverage recommendation from 4x to 18x.
+
+    The recommendation is the minimum of independent score, structural-stop,
+    volatility, execution-friction, and execution-suitability ceilings.  It is
+    intentionally symbol-agnostic.  If any independent bound requires less
+    than 4x, the signal is rejected instead of being unsafely clamped upward.
+    """
+    if not isinstance(metrics, dict):
+        raise ValueError("signal metrics unavailable for leverage")
+
+    score = _finite_number(metrics.get("score"))
+    position = metrics.get("position_setup") if isinstance(metrics.get("position_setup"), dict) else {}
+    entry = _finite_number(position.get("entry_price"))
+    stop = _finite_number(position.get("stop_loss"))
+    micro = metrics.get("microstructure") if isinstance(metrics.get("microstructure"), dict) else {}
+    spread = _finite_number(micro.get("spread_pct"))
+    slippage = _finite_number(micro.get("slippage_pct"))
+    exit_slippage = _finite_number(micro.get("exit_slippage_pct"))
+
+    if score is None or score < 85.0 or score > 100.0:
+        raise ValueError("strict finite score required for leverage")
+    if entry is None or stop is None or entry <= 0 or stop <= entry:
+        raise ValueError("valid short entry and structural stop required for leverage")
+    if spread is None or slippage is None or spread < 0 or slippage < 0:
+        raise ValueError("finite execution friction required for leverage")
+
+    features = metrics.get("candle_features") if isinstance(metrics.get("candle_features"), dict) else {}
+    atr_values = []
+    for timeframe in ("5m", "15m", "1h"):
+        packet = features.get(timeframe) if isinstance(features.get(timeframe), dict) else {}
+        value = _finite_number(packet.get("atr_pct"))
+        if value is not None and value > 0:
+            atr_values.append(value)
+    if not atr_values:
+        raise ValueError("finite ATR evidence required for leverage")
+
+    stop_distance_pct = (stop - entry) / entry * 100.0
+    atr_pct = max(atr_values)
+    friction_pct = max(spread, slippage, exit_slippage or slippage)
+
+    score_bound = math.floor(4.0 + ((score - 85.0) / 15.0) * 14.0)
+    stop_bound = math.floor(36.0 / stop_distance_pct)
+    volatility_bound = math.floor(18.0 / (1.0 + max(atr_pct - 0.5, 0.0) / 2.5))
+
+    if friction_pct <= 0.05:
+        execution_bound = 18
+    elif friction_pct <= 0.10:
+        execution_bound = 15
+    elif friction_pct <= 0.15:
+        execution_bound = 12
+    elif friction_pct <= 0.22:
+        execution_bound = 9
+    elif friction_pct <= 0.30:
+        execution_bound = 6
+    else:
+        execution_bound = 3
+
+    suitability = execution_suitability if isinstance(execution_suitability, dict) else {}
+    suitability_bound = {
+        "SUITABLE": 18,
+        "MARGINAL": 10,
+        "UNKNOWN": 8,
+        "POOR": 4,
+    }.get(str(suitability.get("status") or "UNKNOWN").upper(), 8)
+
+    constraints = (
+        metrics.get("market_constraints")
+        if isinstance(metrics.get("market_constraints"), dict)
+        else {}
+    )
+    exchange_max = _finite_number(constraints.get("maximum_leverage"))
+    if exchange_max is None:
+        exchange_max = _finite_number(suitability.get("maximum_leverage"))
+    exchange_bound = math.floor(exchange_max) if exchange_max is not None and exchange_max > 0 else 18
+
+    raw = min(18, score_bound, stop_bound, volatility_bound, execution_bound, suitability_bound, exchange_bound)
+    if raw < 4:
+        raise ValueError("independent risk bound requires leverage below 4x")
+    return int(raw)
 
 class LiquidityRiskManager:
     def __init__(self):

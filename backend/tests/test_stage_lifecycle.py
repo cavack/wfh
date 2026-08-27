@@ -74,6 +74,8 @@ def test_stage_chain_accumulates_in_order_across_evaluations(tmp_path):
     assert setup["setup_type"] == "breakdown"
     assert trigger["confirmed"]["trigger"] is True
     assert trigger["confirmed"]["passed"] is True
+    assert trigger["observational_only"] is False
+    assert trigger["hard_gating_allowed"] is True
 
 
 def test_stage_chain_rejects_out_of_order_progress(tmp_path):

@@ -1,4 +1,4 @@
-import { CheckCircle2, CircleAlert, Gauge, Sparkles } from "lucide-react";
+import { CheckCircle2, CircleAlert, Gauge, MinusCircle, Sparkles, XCircle } from "lucide-react";
 
 export type Candidate = Record<string, unknown>;
 type RecordValue = Record<string, unknown>;
@@ -184,7 +184,7 @@ function ScoreSummary({ ready, watchScore, coverage, derivativePressure, takerRa
       </div>
       <div className="shrink-0 text-right">
         <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Leverage</p>
-        <p className="mt-1 font-mono text-lg font-medium text-slate-100">{ready && leverage !== undefined ? `${rawNumberText(leverage)}×` : "—"}</p>
+        <p className="mt-1 font-mono text-lg font-medium text-slate-100">{leverage !== undefined ? `${rawNumberText(leverage)}×` : "—"}</p>
       </div>
     </section>
   );
@@ -218,15 +218,15 @@ function ScoreEvidence({ metrics, strict }: { metrics: RecordValue; strict: bool
   const gates = asRecord(metrics.quality_gates);
   const breakdown = asRecord(metrics.breakdown_confirmation);
   const componentRows = Object.entries(components ?? {}).filter(([, value]) => finiteNumber(value) !== undefined);
+  const evidenceState = (value: unknown): "PASS" | "FAIL" | "UNAVAILABLE" =>
+    value === true ? "PASS" : value === false ? "FAIL" : "UNAVAILABLE";
   const gateRows = Object.entries(gates ?? {})
-    .filter(([name, value]) => name !== "cross_exchange_confirmed" && typeof value === "boolean")
-    .map(([name, value]) => [name, value as boolean] as const);
-  const confirmation = breakdown?.confirmation_exchange_15m;
-  const composite = breakdown?.composite_breakdown_confirmed;
+    .filter(([name]) => name !== "cross_exchange_confirmed")
+    .map(([name, value]) => [name, evidenceState(value)] as const);
   const breakdownRows = [
-    ["confirmation_exchange_15m", confirmation],
-    ["composite_breakdown_confirmed", composite],
-  ].filter((row): row is [string, boolean] => typeof row[1] === "boolean");
+    ["confirmation_exchange_15m", evidenceState(breakdown?.confirmation_exchange_15m)],
+    ["composite_breakdown_confirmed", evidenceState(breakdown?.composite_breakdown_confirmed)],
+  ] as const;
   const unavailable = !strict && Array.isArray(watchScore?.unavailable_components)
     ? watchScore.unavailable_components.filter((value): value is string => typeof value === "string")
     : [];
@@ -243,7 +243,17 @@ function ScoreEvidence({ metrics, strict }: { metrics: RecordValue; strict: bool
       <div>
         <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-400">Quality evidence</p>
         <div className="flex flex-wrap gap-2">
-          {[...breakdownRows, ...gateRows].map(([name, passed]) => <span key={name} className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs ${passed ? "border-emerald-400/25 bg-emerald-500/10 text-emerald-200" : "border-rose-400/25 bg-rose-500/10 text-rose-200"}`}><CheckCircle2 size={12} />{gateLabel(name)}</span>)}
+          {[...breakdownRows, ...gateRows].map(([name, state]) => {
+            const tone = state === "PASS"
+              ? "border-emerald-400/25 bg-emerald-500/10 text-emerald-200"
+              : state === "FAIL"
+                ? "border-rose-400/25 bg-rose-500/10 text-rose-200"
+                : "border-slate-600/40 bg-slate-800/50 text-slate-400";
+            let Icon = MinusCircle;
+            if (state === "PASS") Icon = CheckCircle2;
+            else if (state === "FAIL") Icon = XCircle;
+            return <span key={name} className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs ${tone}`}><Icon size={12} />{state} · {gateLabel(name)}</span>;
+          })}
         </div>
       </div>
     </div>

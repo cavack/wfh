@@ -96,6 +96,11 @@ class LifecycleV2Evidence(BaseModel):
     )
     required_observed_at: tuple[float, ...] = ()
     decision_at: int = Field(ge=0)
+    decision_clock_at: float | None = Field(
+        default=None,
+        ge=0,
+        allow_inf_nan=False,
+    )
     max_required_age_seconds: int = Field(default=60, ge=1)
     evidence_refs: tuple[str, ...]
 
@@ -130,15 +135,34 @@ class LifecycleV2Evidence(BaseModel):
             raise ValueError("ineligible lifecycle evidence must name unavailable fields")
         if set(actually_missing) - set(self.unavailable_fields):
             raise ValueError("every missing lifecycle field must be declared unavailable")
+        decision_clock_at = (
+            float(self.decision_clock_at)
+            if self.decision_clock_at is not None
+            else float(self.decision_at)
+        )
+        if (
+            self.decision_clock_at is not None
+            and self.decision_at != math.ceil(decision_clock_at)
+        ):
+            raise ValueError(
+                "decision_at must equal ceil(decision_clock_at)"
+            )
         if (
             self.oldest_required_observed_at is not None
-            and self.oldest_required_observed_at > self.decision_at
+            and self.oldest_required_observed_at > decision_clock_at
         ):
-            raise ValueError("required evidence cannot be observed after decision_at")
+            raise ValueError(
+                "required evidence cannot be observed after decision clock"
+            )
         if self.eligible_data and not self.required_observed_at:
             raise ValueError("eligible lifecycle evidence must bind source timestamps")
-        if any(timestamp > self.decision_at for timestamp in self.required_observed_at):
-            raise ValueError("required source timestamp cannot be after decision_at")
+        if any(
+            timestamp > decision_clock_at
+            for timestamp in self.required_observed_at
+        ):
+            raise ValueError(
+                "required source timestamp cannot be after decision clock"
+            )
         if (
             self.required_observed_at
             and self.oldest_required_observed_at is not None
@@ -153,8 +177,15 @@ class LifecycleV2Evidence(BaseModel):
     def fresh(self) -> bool:
         if self.oldest_required_observed_at is None:
             return False
+
+        decision_clock_at = (
+            float(self.decision_clock_at)
+            if self.decision_clock_at is not None
+            else float(self.decision_at)
+        )
+
         return (
-            self.decision_at - self.oldest_required_observed_at
+            decision_clock_at - self.oldest_required_observed_at
             <= self.max_required_age_seconds
         )
 
@@ -495,7 +526,7 @@ def _strict_setup_ready(
 def _constraints_fresh(
     observed_at: float | None,
     expires_at: float | None,
-    decision_at: int,
+    decision_at: int | float,
 ) -> bool | None:
     if observed_at is None or expires_at is None:
         return None
@@ -504,7 +535,7 @@ def _constraints_fresh(
 
 def _observation_fresh(
     observed_at: float | None,
-    decision_at: int,
+    decision_at: int | float,
     *,
     maximum_age: int,
 ) -> bool | None:
@@ -528,8 +559,22 @@ def build_lifecycle_v2_evidence_from_metrics(
     decision_at: int,
     analysis_observed_at: int | float | None,
     reference_observed_at: int | float | None,
+    decision_clock_at: int | float | None = None,
 ) -> LifecycleV2Evidence:
     """Map runtime facts into V2 evidence without inventing missing values."""
+
+    effective_decision_clock_at = (
+        float(decision_clock_at)
+        if decision_clock_at is not None
+        else float(decision_at)
+    )
+    if (
+        not math.isfinite(effective_decision_clock_at)
+        or effective_decision_clock_at < 0
+    ):
+        raise ValueError(
+            "decision clock must be a non-negative finite timestamp"
+        )
 
     stage = _packet(metrics, "stage_lifecycle")
     confirmed = _packet(stage, "confirmed")
@@ -565,11 +610,11 @@ def build_lifecycle_v2_evidence_from_metrics(
         "lbank_constraints_fresh": _constraints_fresh(
             constraints_observed_at,
             constraints_expires_at,
-            decision_at,
+            effective_decision_clock_at,
         ),
         "orderbook_fresh": _observation_fresh(
             orderbook_observed_at,
-            decision_at,
+            effective_decision_clock_at,
             maximum_age=5,
         ),
         "levels_constructible": _ready_preview(preview),
@@ -632,6 +677,7 @@ def build_lifecycle_v2_evidence_from_metrics(
             ),
             **values,
             "decision_at": decision_at,
+            "decision_clock_at": effective_decision_clock_at,
             "evidence_refs": refs,
         }
     )
