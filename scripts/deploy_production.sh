@@ -75,8 +75,8 @@ wait_for_container_healthy() {
   local sleep_seconds="${3:-3}"
   local state i
   for ((i = 1; i <= attempts; i++)); do
-    state="$(docker inspect -f '{{if .State.Running}}{{if .State.Health}}{{.State.Health.Status}}{{else}}running{{end}}{{else}}stopped{{end}}' "$container" 2>/dev/null || true)"
-    if [[ "$state" == "healthy" || "$state" == "running" ]]; then
+    state="$(docker inspect -f '{{if .State.Running}}{{if .State.Health}}{{.State.Health.Status}}{{else}}missing-healthcheck{{end}}{{else}}stopped{{end}}' "$container" 2>/dev/null || true)"
+    if [[ "$state" == "healthy" ]]; then
       return 0
     fi
     sleep "$sleep_seconds"
