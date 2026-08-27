@@ -25,7 +25,11 @@ At the start of repository-grounded work:
 - classify material claims as `VERIFIED_FACT`, `REPRODUCED_DEFECT`, `INFERENCE`, `DEBT`, or `PROPOSAL`;
 - declare protected invariants and expected blast radius.
 
-Protected from incidental change: ScoreV2 weights/evidence semantics, lifecycle transitions, strict/experimental eligibility, anti-chase, signal provenance/ledger semantics, persistence-before-notification, scientific holdout/walk-forward rules, and production execution policy.
+## Protected Invariants
+
+Unless a separately authorized and validated strategy or policy change explicitly requires otherwise, do not incidentally change ScoreV2 weights or evidence semantics, lifecycle transitions, strict/experimental eligibility boundaries, anti-chase behavior, signal provenance or immutable-ledger semantics, persistence-before-notification ordering, scientific holdout/walk-forward rules, or production execution policy.
+
+Current repository policy is observational and does not place orders. Live order placement is outside this skill system: this skill must not authorize, design, implement, or enable live order placement. Any future execution capability requires a separately reviewed safety design and repository-policy change before ordinary release gates apply.
 
 ## Workflow
 
