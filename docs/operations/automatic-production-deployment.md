@@ -16,7 +16,7 @@ Create a GitHub Environment named `production` with:
 
 | Secret | Purpose |
 | --- | --- |
-| `WFH_PROD_HOST` | Production SSH hostname or IP address |
+| `WFH_PROD_HOST` | Production SSH DNS hostname or IPv4 address. IPv6 literals are not supported by the current workflow contract. |
 | `WFH_PROD_PORT` | SSH port; defaults to `22` when empty |
 | `WFH_PROD_USER` | Dedicated deployment account |
 | `WFH_PROD_SSH_KEY` | Private key for that account |
@@ -41,6 +41,8 @@ The deployment account needs narrowly scoped access to:
 - create/verify database backups;
 - run the repository-managed migration CLI against the `waterfall_data` volume.
 
+The checkout must not contain local tracked edits or untracked source/build-context files. The deployment script allows only the host-owned `.env` and `.deploy/` state paths outside Git and fails closed on other worktree drift before checkout/build.
+
 The host-owned `.env` must exist before automatic deployment and is never replaced from Git. Required values include:
 
 ```text
@@ -55,7 +57,7 @@ TELEGRAM_CHAT_ID=<host-owned value>
 
 For a validated current `main` tip, `scripts/deploy_production.sh` runs under an exclusive lock below `.deploy/state`:
 
-1. validate the target SHA, Production `.env`, backup-retention value, and required commands;
+1. validate the target SHA, Production `.env`, backup-retention value, required commands, and clean source worktree;
 2. fetch `origin/main` and require exact equality with `WFH_DEPLOY_SHA`;
 3. resolve the previous certified/running revision for rollback provenance;
 4. verify `LIVE_TRADING_ENABLED=false`;
@@ -64,15 +66,16 @@ For a validated current `main` tip, `scripts/deploy_production.sh` runs under an
 7. create a timestamped SQLite backup and verify `PRAGMA integrity_check` plus SHA-256;
 8. run managed migration preflight;
 9. mark migration as potentially mutable before invoking migration apply;
-10. apply migration with `--source-revision <SHA>`;
+10. apply migration with `--source-revision <SHA>` using non-interactive Compose execution;
 11. preserve the pre-release `.env`, capture a fresh Telegram cutover timestamp, and enable signal delivery;
 12. run `docker compose up -d --remove-orphans` without deleting persistent volumes;
-13. require backend `/api/livez` and `/api/readyz`;
+13. require backend `/livez` and `/readyz`;
 14. require healthy backend, frontend, and watchdog containers;
 15. require all three OCI revision labels to equal the target SHA;
 16. verify the running backend still has `live_trading_enabled=False`;
-17. write `.deploy/state/last-successful-deploy.txt`;
-18. enforce bounded certified database-backup retention.
+17. enforce bounded certified database-backup retention;
+18. publish `.deploy/state/last-successful-deploy.txt` only after all preceding certification work succeeds;
+19. remove the temporary pre-release `.env` rollback copy so secret-bearing environment backups do not accumulate.
 
 ## Database backup and migration
 
@@ -101,9 +104,11 @@ python -m waterfallhunter.migrate_database \
   --source-revision <exact-current-main-sha>
 ```
 
+Every `docker compose run` used by the streamed host deployment is explicitly non-interactive so it cannot consume the remaining deployment script from SSH stdin.
+
 The script marks the database as potentially mutated before `--apply`, because a migration process can change state and then fail. Cleanup therefore remains rollback-aware even for partial apply failures.
 
-`WFH_DEPLOY_BACKUP_RETENTION_COUNT` controls bounded backup retention and must be an integer of at least 2. The default is 10.
+`WFH_DEPLOY_BACKUP_RETENTION_COUNT` controls bounded backup retention and must be a positive integer. The default is 10.
 
 ## Telegram signal delivery
 
@@ -116,11 +121,13 @@ TELEGRAM_SIGNAL_DELIVERY_CUTOVER_AT=<activation-unix-timestamp>
 
 The cutover is captured at Telegram activation time, not script startup. Events created before that boundary remain suppressed. Credentials remain host-owned and Telegram activation never changes `LIVE_TRADING_ENABLED=false` or authorizes exchange orders.
 
+A temporary pre-release `.env` copy exists only for rollback during the active deployment. It is removed after successful certification rather than retained as a historical secret archive.
+
 ## Failure, signals, and rollback
 
 Explicit deployment failures and `ERR`, `TERM`, `HUP`, and `INT` converge on the same bounded cleanup path.
 
-Before mutable Production steps, cleanup restores the prior workspace/environment where needed. Once migration may have changed the database, the previous revision is restarted only if its managed-schema preflight proves compatibility with the current schema. If compatibility cannot be certified, automatic source rollback stops and the backup/evidence is preserved for operator recovery.
+Before mutable Production steps, cleanup restores the prior workspace/environment where needed. Once migration may have changed the database, the previous revision is restarted only if its managed-schema preflight proves compatibility with the current schema. If compatibility cannot be certified, automatic source rollback stops, the release containers are stopped to quarantine the incompatible runtime, and the backup/evidence is preserved for operator recovery.
 
 When rollback is allowed, the script restores previous release settings, rebuilds/starts the previous revision, requires backend live/readiness, requires healthy backend/frontend/watchdog containers, verifies the previous OCI revision labels, and rechecks the `SIGNAL_ONLY` safety boundary.
 
@@ -138,7 +145,7 @@ A successful certificate records at least:
 - `live_trading_enabled=false`;
 - `product_mode=SIGNAL_ONLY`.
 
-Do not declare success from a Git checkout alone. Readiness, three-container health, OCI revision identity, database evidence, and the runtime boundary are part of certification.
+The success certificate is not replaced until backup retention and all runtime certification checks have succeeded. Do not declare success from a Git checkout alone. Readiness, three-container health, OCI revision identity, database evidence, and the runtime boundary are part of certification.
 
 ## Recovery checklist
 
@@ -148,6 +155,7 @@ If automatic deployment fails after a mutable Production step:
 2. read `.deploy/state/last-successful-deploy.txt` when present;
 3. preserve the newest database backup and checksum evidence;
 4. never run an older runtime against a newer database without positive schema-compatibility evidence;
-5. keep `LIVE_TRADING_ENABLED=false` throughout recovery;
-6. restore Telegram settings from the saved pre-release `.env` copy if delivery must be disabled;
-7. fix/review the cause and let the normal validated main-push CI path perform the next deployment.
+5. if schema compatibility cannot be certified, keep the application containers quarantined until operator recovery is complete;
+6. keep `LIVE_TRADING_ENABLED=false` throughout recovery;
+7. restore Telegram settings from the active deployment's pre-release `.env` copy when rollback is possible;
+8. fix/review the cause and let the normal validated main-push CI path perform the next deployment.
