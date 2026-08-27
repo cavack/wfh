@@ -32,7 +32,9 @@ def test_production_deploy_scopes_github_permissions_to_verify_job() -> None:
     assert "permissions:\n      contents: read\n      actions: read" in verify_job
     assert "contents: write" not in text
     assert "actions: write" not in text
-    assert "permissions:" not in deploy_job
+    assert "permissions: {}" in deploy_job
+    assert "contents: read" not in deploy_job
+    assert "actions: read" not in deploy_job
     assert "environment: production" in deploy_job
     assert "concurrency:" in workflow_prefix
     assert "cancel-in-progress: false" in workflow_prefix
