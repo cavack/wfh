@@ -1,0 +1,54 @@
+---
+name: repository-architecture-auditor
+description: Use when reviewing WaterfallHunter repository structure, module boundaries, ownership, dependency coupling, stale findings, dead or duplicate code, process-local state, or architectural debt.
+---
+
+# WFH Repository & Architecture Auditor
+
+## Overview
+
+Map the current WaterfallHunter codebase and distinguish architectural debt from demonstrated correctness defects. The output is an evidence-backed repository map and bounded improvement proposal, not a generic refactor wishlist.
+
+## When to Use
+
+Use for deep repository reviews, oversized modules, unclear ownership, duplicate or legacy paths, global/process-local state, dependency tangles, stale issue cleanup, or refactor preparation.
+
+## Scope
+
+Inspect current SHA, relevant recent commits/PRs, repository tree, entry points, lifecycle ownership, background workers, persistence boundaries, frontend/backend contracts, tests, deployment files, and source-of-truth docs relevant to the request.
+
+Classify findings with the shared taxonomy. Complexity, size, and coupling are normally `DEBT` until a concrete failure is reproduced or directly demonstrated.
+
+## Workflow
+
+1. Establish current branch/SHA and whether previous audit claims still apply.
+2. Build a responsibility map: modules, dependencies, state ownership, I/O boundaries, and long-lived processes.
+3. Identify duplicated responsibilities, dead/legacy paths, implicit globals, and unstable interfaces.
+4. For each finding, state evidence, classification, impact, and blast radius.
+5. Reproduce suspected defects when practical; do not promote structural smell to defect by rhetoric.
+6. Propose the smallest boundary changes that improve the requested area; avoid unrelated cleanup.
+7. Hand implementation to the domain owner and verification to `verification-regression`.
+
+## Evidence and Readiness
+
+A repository audit may reach `ANALYSIS_COMPLETE`. It may recommend `CODE_READY` work only after a specific design/change has been implemented and verified by the appropriate specialist. Architecture review alone does not establish production readiness.
+
+## Verification
+
+Re-open the current versions of cited files, verify the audit is based on the intended SHA, check that every defect claim has reproducing/direct evidence, and ensure recommendations do not silently change model or execution semantics.
+
+## Handoffs
+
+- Backend/service/data boundary changes → `backend-data-architecture`.
+- Contract boundaries → `api-contract-schema-guardian`.
+- Runtime resource/race findings → `runtime-reliability-performance`.
+- Frontend architecture → `frontend-dashboard-ux`.
+- Security concerns → `security-supply-chain`.
+
+## Common Mistakes
+
+- Equating a large `main.py` with a proven bug.
+- Recommending a repository-wide rewrite because local boundaries are imperfect.
+- Auditing a stale SHA.
+- Calling unused-looking code dead without checking runtime/import/test references.
+- Mixing strategy simplification into architecture cleanup.
