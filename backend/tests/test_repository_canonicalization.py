@@ -59,3 +59,14 @@ def test_only_maintained_first_party_workflows_are_tracked() -> None:
 def test_required_cold_start_files_are_present() -> None:
     tracked = _tracked_files()
     assert {"README.md", "CHANGELOG.md", "Makefile", ".env.example"} <= tracked
+
+
+def test_ci_runs_canonical_repository_hygiene_verifier() -> None:
+    ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    assert "python scripts/verify_repository_hygiene.py --root ." in ci
+
+
+def test_pull_request_template_guards_canonical_decision_contract() -> None:
+    template = (ROOT / ".github/pull_request_template.md").read_text(encoding="utf-8")
+    assert "Only canonical `ENTRY_READY`" in template
+    assert "PROJECT_HANDOFF.md" in template

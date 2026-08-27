@@ -144,6 +144,8 @@ jobs:
             echo "Potential credential found in tracked content."
             exit 1
           fi
+      - name: Validate canonical repository hygiene
+        run: python scripts/verify_repository_hygiene.py --root .
 
   deploy-production:
     needs:
