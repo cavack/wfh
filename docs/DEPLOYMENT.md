@@ -10,7 +10,7 @@ The deployment script refuses a stale SHA, dirty checkout, missing host environm
 
 ## Production secrets
 
-Secrets are host/GitHub Environment owned and never committed. The canonical host file is `/etc/waterfallhunter/waterfallhunter.env` with restrictive permissions.
+Secrets are host/GitHub Environment owned and never committed. The canonical host file is `/etc/waterfallhunter/waterfallhunter.env` with restrictive permissions. Release state lives under `/srv/waterfallhunter/runtime`; certified DB backups live under `/srv/waterfallhunter/backups`. The Git checkout contains neither secrets nor deployment state.
 
 ## Rollback
 

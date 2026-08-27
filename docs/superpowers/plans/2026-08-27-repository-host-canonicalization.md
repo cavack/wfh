@@ -326,7 +326,7 @@ Any failure stops before cleanup and preserves recovery artifacts.
 - [ ] **Step 2: Verify post-merge `main` CI and production deployment/certificate**
 - [ ] **Step 3: Close superseded open PRs with explicit replacement note; preserve only genuinely current dependency/action work**
 - [ ] **Step 4: Delete stale merged/superseded branches after `git cherry main branch` confirms no unique required change**
-- [ ] **Step 5: Update repository description/topics to current `SIGNAL_ONLY` cascade-short system; remove `paper-trading` topic**
+- [ ] **Step 5: Update repository description/topics to current `SIGNAL_ONLY` cascade-short system; remove the deprecated legacy trading-mode topic**
 - [ ] **Step 6: Set merge policy to linear/squash-compatible standard, auto-delete merged branches, protected `main`, strict required checks, no force push, required conversation resolution; keep auto-merge disabled because main deploys production**
 - [ ] **Step 7: Disable unused wiki/project surfaces if empty, retain Issues for real debt, and resolve/close obsolete cleanup issues**
 - [ ] **Step 8: Audit GitHub Actions list and confirm no temporary/one-shot workflow remains active**

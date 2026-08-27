@@ -226,14 +226,14 @@ def test_compose_run_commands_cannot_consume_streamed_deploy_script() -> None:
         assert "-T" in command or "--no-TTY" in command
 
 
-def test_host_deploy_rejects_dirty_source_worktree_before_checkout_and_build() -> None:
+def test_host_deploy_rejects_any_dirty_source_worktree_before_checkout_and_build() -> None:
     text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
     helper = text.split("assert_clean_deploy_worktree() {", maxsplit=1)[1].split(
         "}\n", maxsplit=1
     )[0]
     assert "git status --porcelain" in helper
-    assert ".env" in helper
-    assert ".deploy" in helper
+    assert ":(exclude).env" not in helper
+    assert ":(exclude).deploy" not in helper
     main_sequence = _main_deploy_sequence(text)
     assert main_sequence.index("assert_clean_deploy_worktree") < main_sequence.index(
         'git checkout --detach "$WFH_DEPLOY_SHA"'
@@ -307,14 +307,14 @@ def test_host_deploy_auto_uses_host_owned_compose_topology_override() -> None:
     )
 
 
-def test_host_deploy_reuses_running_compose_project_with_host_override() -> None:
+def test_host_deploy_uses_one_canonical_compose_project_with_host_override() -> None:
     text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
     helper = text.split("configure_production_compose_topology() {", maxsplit=1)[1].split(
         "}\n", maxsplit=1
     )[0]
-    assert "com.docker.compose.project" in helper
-    assert "COMPOSE_PROJECT_NAME" in helper
-    assert "waterfall-backend" in helper
+    assert 'COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-waterfallhunter}"' in helper
+    assert "com.docker.compose.project" not in helper
+    assert "waterfall-backend" not in helper
 
 
 def test_host_deploy_removes_fixed_name_core_containers_before_activation_and_rollback() -> None:
@@ -349,3 +349,21 @@ def test_failed_deploys_also_enforce_backup_retention() -> None:
 def test_default_database_backup_retention_is_two() -> None:
     text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
     assert 'WFH_DEPLOY_BACKUP_RETENTION_COUNT="${WFH_DEPLOY_BACKUP_RETENTION_COUNT:-2}"' in text
+
+
+def test_host_deploy_uses_canonical_host_owned_env_state_and_backup_paths() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    assert 'WFH_HOST_ROOT="${WFH_HOST_ROOT:-/srv/waterfallhunter}"' in text
+    assert 'ENV_FILE="${WFH_ENV_FILE:-/etc/waterfallhunter/waterfallhunter.env}"' in text
+    assert 'DEPLOY_STATE_DIR="${WFH_HOST_ROOT}/runtime"' in text
+    assert 'BACKUP_DIR="${WFH_HOST_ROOT}/backups"' in text
+    assert 'PRODUCTION_COMPOSE_OVERRIDE="${STATE_DIR}/production-volumes.override.yml"' in text
+    assert 'export WFH_ENV_FILE="$ENV_FILE"' in text
+
+
+def test_deploy_clean_worktree_no_longer_depends_on_runtime_files_inside_git() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    helper = text.split("assert_clean_deploy_worktree() {", maxsplit=1)[1].split("}\n", maxsplit=1)[0]
+    assert "git status --porcelain" in helper
+    assert ":(exclude).env" not in helper
+    assert ":(exclude).deploy" not in helper

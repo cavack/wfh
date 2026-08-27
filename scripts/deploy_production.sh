@@ -2,11 +2,12 @@
 set -Eeuo pipefail
 
 WFH_DEPLOY_ROOT="${WFH_DEPLOY_ROOT:-/srv/waterfallhunter/app}"
+WFH_HOST_ROOT="${WFH_HOST_ROOT:-/srv/waterfallhunter}"
 WFH_DEPLOY_SHA="${WFH_DEPLOY_SHA:-}"
-ENV_FILE="${WFH_DEPLOY_ROOT}/.env"
-DEPLOY_STATE_DIR="${WFH_DEPLOY_ROOT}/.deploy"
-BACKUP_DIR="${DEPLOY_STATE_DIR}/backups"
-STATE_DIR="${DEPLOY_STATE_DIR}/state"
+ENV_FILE="${WFH_ENV_FILE:-/etc/waterfallhunter/waterfallhunter.env}"
+DEPLOY_STATE_DIR="${WFH_HOST_ROOT}/runtime"
+BACKUP_DIR="${WFH_HOST_ROOT}/backups"
+STATE_DIR="${DEPLOY_STATE_DIR}"
 LOCK_FILE="${WFH_DEPLOY_LOCK_FILE:-${STATE_DIR}/deploy.lock}"
 WFH_DEPLOY_BACKUP_RETENTION_COUNT="${WFH_DEPLOY_BACKUP_RETENTION_COUNT:-2}"
 PRODUCTION_COMPOSE_OVERRIDE="${STATE_DIR}/production-volumes.override.yml"
@@ -42,7 +43,8 @@ set_env_value() {
   local key="$1"
   local value="$2"
   local tmp
-  tmp="$(mktemp "${WFH_DEPLOY_ROOT}/.env.deploy.XXXXXX")"
+  install -d -m 0750 "$(dirname "$ENV_FILE")"
+  tmp="$(mktemp "$(dirname "$ENV_FILE")/.waterfallhunter.env.deploy.XXXXXX")"
   awk -v key="$key" 'index($0, key "=") != 1 { print }' "$ENV_FILE" > "$tmp"
   printf '%s=%s\n' "$key" "$value" >> "$tmp"
   chmod --reference="$ENV_FILE" "$tmp" 2>/dev/null || chmod 600 "$tmp"
@@ -56,22 +58,15 @@ assert_signal_only_runtime_boundary() {
 
 assert_clean_deploy_worktree() {
   local dirty
-  dirty="$(
-    git status --porcelain=v1 --untracked-files=all -- \
-      . ':(exclude).env' ':(exclude).deploy/**'
-  )"
+  dirty="$(git status --porcelain=v1 --untracked-files=all -- .)"
   [[ -z "$dirty" ]]
 }
 
 configure_production_compose_topology() {
-  local running_project
   [[ -f "$PRODUCTION_COMPOSE_OVERRIDE" ]] || return 0
 
   export COMPOSE_FILE="${WFH_DEPLOY_ROOT}/docker-compose.yml:${PRODUCTION_COMPOSE_OVERRIDE}"
-  if [[ -z "${COMPOSE_PROJECT_NAME:-}" ]]; then
-    running_project="$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' waterfall-backend 2>/dev/null || true)"
-    [[ -z "$running_project" ]] || export COMPOSE_PROJECT_NAME="$running_project"
-  fi
+  export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-waterfallhunter}"
   log "using host-owned Production Compose topology override: ${PRODUCTION_COMPOSE_OVERRIDE}"
 }
 
@@ -332,7 +327,9 @@ require_command sort
 [[ "$WFH_DEPLOY_BACKUP_RETENTION_COUNT" =~ ^[1-9][0-9]*$ ]] || fail "WFH_DEPLOY_BACKUP_RETENTION_COUNT must be a positive integer"
 
 cd "$WFH_DEPLOY_ROOT"
-install -d -m 0750 "$STATE_DIR"
+export WFH_ENV_FILE="$ENV_FILE"
+export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-waterfallhunter}"
+install -d -m 0750 "$STATE_DIR" "$BACKUP_DIR"
 exec 9>"$LOCK_FILE"
 flock -n 9 || fail "another WaterfallHunter deployment is already running"
 configure_production_compose_topology

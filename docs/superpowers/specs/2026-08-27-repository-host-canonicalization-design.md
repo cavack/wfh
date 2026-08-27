@@ -18,7 +18,7 @@
 
 The audit found multiple active and historical WaterfallHunter copies on the host: `/srv/waterfallhunter`, `/srv/wfh-worktrees`, `/srv/wfh-loq-dev`, `/srv/wfh-releases`, several rollback/rehearsal directories under `/root`, old repository mirrors/checkouts, and numerous legacy Docker volumes/images. The production database currently lives in a project-SHA-prefixed Docker volume and is approximately 4.5 GiB.
 
-GitHub also contains substantial active historical residue: many stale branches, stacked/draft PRs from previous waves, and temporary/one-shot patch workflows that are still registered as active. Repository metadata still describes the project as paper trading, while the current product boundary is `SIGNAL_ONLY`.
+GitHub also contains substantial active historical residue: many stale branches, stacked/draft PRs from previous waves, and temporary/one-shot patch workflows that are still registered as active. Repository metadata still uses deprecated pre-`SIGNAL_ONLY` terminology, while the current product boundary is `SIGNAL_ONLY`.
 
 The host currently relies on Docker `restart: unless-stopped` and `docker.service`; there is no first-party `waterfallhunter.service` systemd unit that asserts the canonical stack after reboot. An exited Ollama container and Ollama volumes remain even though the current canonical AI path is remote advisory and Ollama is not part of the required runtime.
 
@@ -74,7 +74,7 @@ The active documentation set must be small enough to navigate but complete enoug
 Historical design/planning documents that are no longer authoritative are removed from the active tree after their final requirements are represented in the canonical docs. Their history remains retrievable through Git.
 ## 5. GitHub governance and repository presentation
 
-The repository page must describe the current product rather than historical paper-trading terminology. The final description should state that WaterfallHunter is a `SIGNAL_ONLY` USDT perpetual-futures cascade/short-signal system with evidence, replay, validation, monitoring, and no order execution. Topics should reflect the current stack and domain: perpetual futures, liquidation cascade, trading signals, market data, FastAPI, Next.js, observability, and SQLite.
+The repository page must describe the current product rather than deprecated pre-`SIGNAL_ONLY` terminology. The final description should state that WaterfallHunter is a `SIGNAL_ONLY` USDT perpetual-futures cascade/short-signal system with evidence, replay, validation, monitoring, and no order execution. Topics should reflect the current stack and domain: perpetual futures, liquidation cascade, trading signals, market data, FastAPI, Next.js, observability, and SQLite.
 
 Repository settings should converge on a simple production-safe policy:
 
