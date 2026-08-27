@@ -63,6 +63,16 @@ class NotificationDeliveryError(RuntimeError):
     """Raised when durable delivery state cannot be updated safely."""
 
 
+_ALLOWED_OUTBOX_TABLES = frozenset({"domain_outbox_events", "entry_notification_outbox"})
+
+
+def _outbox_table(value: str) -> str:
+    table = str(value or "").strip()
+    if table not in _ALLOWED_OUTBOX_TABLES:
+        raise ValueError("unsupported notification outbox table")
+    return table
+
+
 class DurableNotificationWorker:
     """At-least-once transport with leases and explicit uncertainty."""
 
@@ -78,6 +88,7 @@ class DurableNotificationWorker:
         max_backoff_seconds: int = 900,
         transport_timeout_seconds: float | None = None,
         jitter: Callable[[], float] = random.random,
+        outbox_table: str = "domain_outbox_events",
         verify_schema: bool = True,
     ):
         if not worker_id.strip() or len(worker_id) > 128:
@@ -87,6 +98,7 @@ class DurableNotificationWorker:
         if base_backoff_seconds < 1 or max_backoff_seconds < base_backoff_seconds:
             raise ValueError("invalid delivery backoff bounds")
         self.db_path = str(db_path)
+        self.outbox_table = _outbox_table(outbox_table)
         self.transport = transport
         self.worker_id = worker_id
         self.lease_seconds = lease_seconds
@@ -102,7 +114,7 @@ class DurableNotificationWorker:
         if verify_schema:
             require_managed_schema(
                 self.db_path,
-                required_tables=frozenset({"domain_outbox_events"}),
+                required_tables=frozenset({self.outbox_table}),
             )
 
     def recover_expired_leases(self, *, now: int) -> int:
@@ -110,8 +122,8 @@ class DurableNotificationWorker:
         try:
             with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
                 result = conn.execute(
-                    """
-                    UPDATE domain_outbox_events
+                    f"""
+                    UPDATE {self.outbox_table}
                     SET
                         status = 'DELIVERY_UNCERTAIN',
                         lease_owner = NULL,
@@ -136,12 +148,12 @@ class DurableNotificationWorker:
                 conn.row_factory = sqlite3.Row
                 conn.execute("BEGIN IMMEDIATE")
                 row = conn.execute(
-                    """
+                    f"""
                     SELECT
                         event_id, event_key, event_type,
                         payload_contract_version, payload_json, payload_hash,
                         attempt_count
-                    FROM domain_outbox_events
+                    FROM {self.outbox_table}
                     WHERE
                         status IN ('PENDING', 'RETRY_WAIT')
                         AND available_at <= ?
@@ -155,8 +167,8 @@ class DurableNotificationWorker:
                     conn.commit()
                     return None
                 updated = conn.execute(
-                    """
-                    UPDATE domain_outbox_events
+                    f"""
+                    UPDATE {self.outbox_table}
                     SET
                         status = 'SENDING',
                         attempt_count = attempt_count + 1,
@@ -240,8 +252,8 @@ class DurableNotificationWorker:
         try:
             with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
                 updated = conn.execute(
-                    """
-                    UPDATE domain_outbox_events
+                    f"""
+                    UPDATE {self.outbox_table}
                     SET
                         status = ?,
                         available_at = ?,
@@ -332,8 +344,10 @@ def notification_delivery_health(
     db_path: str | Path,
     *,
     now: int,
+    outbox_table: str = "domain_outbox_events",
 ) -> dict[str, Any]:
     timestamp = DurableNotificationWorker._timestamp(now)
+    table = _outbox_table(outbox_table)
     path = Path(db_path)
     if not path.is_file():
         raise NotificationDeliveryError("DELIVERY_HEALTH_DATABASE_UNAVAILABLE")
@@ -348,8 +362,8 @@ def notification_delivery_health(
             with conn:
                 conn.execute("PRAGMA query_only=ON")
                 rows = conn.execute(
-                    "SELECT status, COUNT(*), MIN(created_at) "
-                    "FROM domain_outbox_events GROUP BY status ORDER BY status"
+                    f"SELECT status, COUNT(*), MIN(created_at) FROM {table} "
+                    "GROUP BY status ORDER BY status"
                 ).fetchall()
     except sqlite3.Error as exc:
         raise NotificationDeliveryError("DELIVERY_HEALTH_QUERY_FAILED") from exc

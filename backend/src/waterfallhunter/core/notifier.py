@@ -2,8 +2,13 @@ import logging
 import httpx
 import asyncio
 import math
+import json
 from html import escape
 from waterfallhunter.config import settings
+from waterfallhunter.core.notification_delivery import (
+    DeliveryDisposition,
+    DeliveryResult,
+)
 
 logger = logging.getLogger("WaterfallHunter.Telegram")
 
@@ -76,6 +81,35 @@ class TelegramNotifier:
         lines.extend(["", "<i>Triggered and logged. No live order is placed.</i>"])
         return "\n".join(lines)
 
+    @classmethod
+    def build_entry_ready_message(cls, payload: dict) -> str:
+        symbol = escape(str(payload.get("symbol") or "UNKNOWN").split("/")[0])
+        packet = payload.get("decision_packet") if isinstance(payload.get("decision_packet"), dict) else {}
+        plan = packet.get("trade_plan") if isinstance(packet.get("trade_plan"), dict) else {}
+        evidence = packet.get("evidence_summary") if isinstance(packet.get("evidence_summary"), dict) else {}
+        derivatives = evidence.get("derivatives") if isinstance(evidence.get("derivatives"), dict) else {}
+        flow = evidence.get("order_flow") if isinstance(evidence.get("order_flow"), dict) else {}
+        cascade = evidence.get("cascade") if isinstance(evidence.get("cascade"), dict) else {}
+        reasons = [escape(str(item)) for item in packet.get("reason_codes", [])][:6]
+        lines = [
+            "🌊 <b>WATERFALL SHORT — ENTRY READY</b>",
+            f"🪙 <b>#{symbol}</b> · readiness <b>{cls._number(packet.get('entry_readiness'), 1)}/100</b>",
+            f"📦 Evidence coverage: <b>{cls._number(packet.get('evidence_coverage_pct'), 1)}%</b>",
+            "",
+            f"🎯 Entry: <b>${cls._number(plan.get('entry_price'), 8)}</b>",
+            f"🛑 SL: <b>${cls._number(plan.get('stop_loss'), 8)}</b>",
+            f"💰 TP1 / TP2 / TP3: <b>${cls._number(plan.get('take_profit_1'), 8)}</b> / <b>${cls._number(plan.get('take_profit_2'), 8)}</b> / <b>${cls._number(plan.get('take_profit_3'), 8)}</b>",
+            f"⚖️ Leverage: <b>{cls._number(plan.get('leverage'), 0)}×</b>",
+            "",
+            f"📉 OI 1h: <b>{cls._number(derivatives.get('oi_change_1h_pct'), 3)}%</b> · Funding: <b>{cls._number(derivatives.get('funding_rate_pct'), 4)}%</b>",
+            f"🔻 Taker B/S: <b>{cls._number(flow.get('taker_buy_sell_ratio'), 3)}</b> · Sell share: <b>{cls._number(flow.get('sell_share_pct'), 1)}%</b>",
+            f"💥 Cascade: <b>{escape(str(cascade.get('status') or 'UNAVAILABLE'))}</b> · {cls._number(cascade.get('readiness_points'), 1)}/10",
+        ]
+        if reasons:
+            lines.append("🧾 " + " · ".join(reasons))
+        lines.extend(["", "<i>Signal only. No live order is placed.</i>"])
+        return "\n".join(lines)
+
     async def start_interactive_bot(self):
         if not self.enabled:
             return
@@ -144,3 +178,52 @@ class TelegramNotifier:
 
         elif cmd == "/ping":
             await self.send_message("🏓 <b>Pong!</b> Connection is stable.")
+
+
+class TelegramSignalTransport:
+    """Durable Telegram transport with explicit HTTP outcome classification."""
+
+    def __init__(self, token: str, chat_id: str, *, http_transport=None):
+        self.token = str(token or "").strip()
+        self.chat_id = str(chat_id or "").strip()
+        if not self.token or not self.chat_id:
+            raise ValueError("Telegram token and chat id are required")
+        self.http_transport = http_transport
+
+    async def deliver(self, event: dict) -> DeliveryResult:
+        try:
+            payload = json.loads(str(event.get("payload_json") or "{}"))
+        except json.JSONDecodeError:
+            return DeliveryResult(DeliveryDisposition.PERMANENT_FAILURE, "INVALID_PAYLOAD_JSON")
+        if payload.get("contract_version") != "entry_ready_notification_v1":
+            return DeliveryResult(DeliveryDisposition.PERMANENT_FAILURE, "UNSUPPORTED_PAYLOAD")
+        text = TelegramNotifier.build_entry_ready_message(payload)
+        url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+        try:
+            async with httpx.AsyncClient(timeout=10.0, transport=self.http_transport) as client:
+                response = await client.post(url, json={"chat_id": self.chat_id, "text": text, "parse_mode": "HTML"})
+        except (httpx.TimeoutException, TimeoutError):
+            return DeliveryResult(DeliveryDisposition.TRANSIENT_FAILURE, "TELEGRAM_TIMEOUT")
+        except httpx.HTTPError:
+            return DeliveryResult(DeliveryDisposition.TRANSIENT_FAILURE, "TELEGRAM_HTTP_ERROR")
+        if 200 <= response.status_code < 300:
+            return DeliveryResult(DeliveryDisposition.DELIVERED)
+        if response.status_code == 429:
+            retry_after = None
+            try:
+                retry_after = int((response.json().get("parameters") or {}).get("retry_after"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                retry_after = None
+            return DeliveryResult(DeliveryDisposition.RATE_LIMITED, "HTTP_429", retry_after)
+        if response.status_code in {400, 401, 403, 404}:
+            return DeliveryResult(DeliveryDisposition.PERMANENT_FAILURE, f"HTTP_{response.status_code}")
+        return DeliveryResult(DeliveryDisposition.TRANSIENT_FAILURE, f"HTTP_{response.status_code}")
+
+    async def probe(self) -> dict:
+        url = f"https://api.telegram.org/bot{self.token}/getMe"
+        try:
+            async with httpx.AsyncClient(timeout=10.0, transport=self.http_transport) as client:
+                response = await client.get(url)
+            return {"configured": True, "reachable": response.status_code == 200, "status_code": response.status_code}
+        except httpx.HTTPError:
+            return {"configured": True, "reachable": False, "status_code": None}

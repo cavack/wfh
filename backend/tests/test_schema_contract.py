@@ -35,6 +35,7 @@ EXPECTED_RUNTIME_TABLES = frozenset(
         "domain_outbox_events",
         "lifecycle_v2_shadow_events",
         "entry_decision_events",
+        "entry_notification_outbox",
     }
 )
 

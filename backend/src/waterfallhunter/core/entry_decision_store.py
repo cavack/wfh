@@ -99,7 +99,38 @@ class EntryDecisionStore:
                     created_at,
                 ),
             )
-            return int(cursor.lastrowid)
+            decision_event_id = int(cursor.lastrowid)
+            if decision == "ENTRY_READY":
+                event_id = f"entry:{decision_event_id}:ready"
+                event_payload = {
+                    "contract_version": "entry_ready_notification_v1",
+                    "event_id": event_id,
+                    "event_type": "ENTRY_READY",
+                    "decision_event_id": decision_event_id,
+                    "symbol": symbol,
+                    "decision_packet": packet,
+                }
+                notification_json, notification_hash = self._encode(event_payload)
+                conn.execute(
+                    "INSERT INTO entry_notification_outbox ("
+                    "event_id,decision_event_id,event_key,event_type,"
+                    "payload_contract_version,payload_json,payload_hash,status,"
+                    "attempt_count,available_at,lease_owner,lease_expires_at,"
+                    "last_error_code,created_at,updated_at"
+                    ") VALUES (?,?,?,'ENTRY_READY','entry_ready_notification_v1',"
+                    "?,?,'PENDING',0,?,NULL,NULL,NULL,?,?)",
+                    (
+                        event_id,
+                        decision_event_id,
+                        event_id,
+                        notification_json,
+                        notification_hash,
+                        event_at,
+                        created_at,
+                        created_at,
+                    ),
+                )
+            return decision_event_id
 
     @staticmethod
     def _row_packet(row: sqlite3.Row | tuple[Any, ...]) -> dict[str, Any]:

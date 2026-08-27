@@ -270,6 +270,50 @@ def _anti_chase_extension(metrics: dict[str, Any]) -> float | None:
     return _finite(cross.get("max_post_break_extension_atr"))
 
 
+def _evidence_summary(metrics: dict[str, Any]) -> dict[str, Any]:
+    derivatives = _record(metrics.get("derivatives"))
+    micro = _record(metrics.get("microstructure"))
+    cascade = _record(metrics.get("cascade_intelligence"))
+    breakdown = _record(metrics.get("breakdown_confirmation"))
+    anti = _record(metrics.get("anti_chase"))
+    sell_flow = _finite(micro.get("sell_flow_usdt"))
+    buy_flow = _finite(micro.get("buy_flow_usdt"))
+    sell_share = None
+    if sell_flow is not None and buy_flow is not None and sell_flow + buy_flow > 0:
+        sell_share = 100.0 * sell_flow / (sell_flow + buy_flow)
+    funding_rate = _finite(derivatives.get("funding_rate"))
+    return {
+        "derivatives": {
+            "funding_rate": funding_rate,
+            "funding_rate_pct": funding_rate * 100.0 if funding_rate is not None else None,
+            "funding_percentile": _finite(derivatives.get("funding_percentile")),
+            "oi_change_1h_pct": _finite(derivatives.get("oi_change_1h_pct")),
+            "top_trader_long_short_ratio": _finite(derivatives.get("top_trader_long_short_ratio")),
+        },
+        "order_flow": {
+            "taker_buy_sell_ratio": _finite(derivatives.get("taker_buy_sell_ratio")),
+            "taker_ratio_change_1h": _finite(derivatives.get("taker_ratio_change_1h")),
+            "sell_flow_usdt": sell_flow,
+            "buy_flow_usdt": buy_flow,
+            "sell_share_pct": round(sell_share, 2) if sell_share is not None else None,
+        },
+        "execution": {
+            "spread_pct": _finite(micro.get("spread_pct")),
+            "slippage_pct": _finite(micro.get("slippage_pct")),
+            "bid_depth_usdt": _finite(micro.get("bid_depth_usdt")),
+            "ask_depth_usdt": _finite(micro.get("ask_depth_usdt")),
+        },
+        "cascade": {
+            "status": cascade.get("status"),
+            "readiness_points": _finite(cascade.get("readiness_points")),
+            "maximum_available": _finite(cascade.get("maximum_available")),
+            "components": cascade.get("components") if isinstance(cascade.get("components"), dict) else {},
+        },
+        "cross_exchange_confirmed": breakdown.get("confirmation_exchange_15m"),
+        "anti_chase_extension_atr": _anti_chase_extension(metrics),
+    }
+
+
 def build_entry_decision(
     metrics: dict[str, Any],
     candidate_status: str,
@@ -392,6 +436,7 @@ def build_entry_decision(
         "block_reasons": sorted(set(block_reasons)),
         "reason_codes": sorted(set(reasons)),
         "components": components,
+        "evidence_summary": _evidence_summary(metrics),
         "trade_plan": trade_plan,
         "policy": asdict(policy),
     }

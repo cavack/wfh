@@ -59,6 +59,7 @@ _LEGACY_OPTIONAL_TABLES = frozenset(
         "domain_outbox_events",
         "lifecycle_v2_shadow_events",
         "entry_decision_events",
+        "entry_notification_outbox",
     }
 )
 
@@ -243,6 +244,7 @@ def _applied_runtime_schema_valid(
                     "domain_outbox_events",
                     "lifecycle_v2_shadow_events",
                     "entry_decision_events",
+        "entry_notification_outbox",
                 }
             ),
             check_user_version=3,
@@ -264,6 +266,7 @@ def _applied_runtime_schema_valid(
                     "domain_outbox_events",
                     "lifecycle_v2_shadow_events",
                     "entry_decision_events",
+        "entry_notification_outbox",
                 }
             ),
             check_user_version=2,

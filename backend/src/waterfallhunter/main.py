@@ -23,8 +23,9 @@ from waterfallhunter.discovery.onchain import OnChainIntelligence
 from waterfallhunter.core.multi_exchange_validator import MultiExchangeValidator
 from waterfallhunter.core.entry_decision import build_entry_decision
 from waterfallhunter.core.entry_decision_store import EntryDecisionStore
-from waterfallhunter.core.notifier import TelegramNotifier
+from waterfallhunter.core.notifier import TelegramNotifier, TelegramSignalTransport
 from waterfallhunter.core.notification_delivery import (
+    DurableNotificationWorker,
     NotificationDeliveryError,
     notification_delivery_health,
 )
@@ -278,6 +279,8 @@ _hunter_last_completed_at: float | None = None
 _hunter_last_progress_at: float | None = None
 _lbank_execution_shadow_worker: LBankExecutionShadowWorker | None = None
 _signal_settlement_worker: LBankSignalSettlementWorker | None = None
+_entry_notification_worker: DurableNotificationWorker | None = None
+_entry_notification_probe: dict | None = None
 _signal_evidence_metrics_last_refresh = 0.0
 _signal_evidence_metrics_lock = asyncio.Lock()
 _sse_clients = set()
@@ -661,6 +664,65 @@ def _build_lbank_execution_shadow_worker(
             .lbank_execution_shadow_failure_recheck_seconds
         ),
     )
+
+
+def _build_entry_notification_worker() -> DurableNotificationWorker | None:
+    if not notifier.enabled:
+        return None
+    transport = TelegramSignalTransport(
+        str(settings.telegram_token),
+        str(settings.telegram_chat_id),
+    )
+    return DurableNotificationWorker(
+        db.db_path,
+        transport,
+        worker_id="canonical-entry-telegram",
+        outbox_table="entry_notification_outbox",
+        transport_timeout_seconds=10.0,
+        verify_schema=False,
+    )
+
+
+async def _entry_notification_loop(interval_seconds: float = 2.0) -> None:
+    while _hunter_running:
+        worker = _entry_notification_worker
+        if worker is None:
+            return
+        try:
+            outcome = await worker.dispatch_once(now=int(time.time()))
+            if outcome is None:
+                await asyncio.sleep(interval_seconds)
+            elif outcome.state != "DELIVERED":
+                logger.warning(
+                    "Canonical Telegram delivery %s for %s (%s)",
+                    outcome.state, outcome.event_id, outcome.error_code,
+                )
+        except NotificationDeliveryError as exc:
+            logger.exception("Canonical Telegram delivery worker failed: %s", exc)
+            await asyncio.sleep(max(interval_seconds, 5.0))
+
+
+async def _refresh_canonical_ai_advisory(
+    symbol: str,
+    decision_event_id: int,
+    metrics_snapshot: dict,
+    decision_snapshot: dict,
+) -> None:
+    advisory = await ai_veto.advisory_for_decision(
+        symbol, metrics_snapshot, decision_snapshot
+    )
+    live = scanner.active_candidates.get(symbol)
+    if not isinstance(live, dict):
+        return
+    current_metrics = live.get("metrics")
+    if not isinstance(current_metrics, dict):
+        return
+    current_decision = current_metrics.get("entry_decision")
+    if not isinstance(current_decision, dict):
+        return
+    if current_decision.get("event_id") != decision_event_id:
+        return
+    current_metrics["ai_advisory"] = advisory
 
 
 def _lbank_shadow_health_snapshot() -> dict:
@@ -1607,6 +1669,12 @@ async def evaluate_candidate(
     entry_decision["event_persisted"] = event_id is not None
     entry_decision["event_id"] = event_id
     result_metrics["entry_decision"] = entry_decision
+    if event_id is not None and entry_decision.get("decision") in {"ENTRY_READY", "FORMING"}:
+        _start_background_task(
+            _refresh_canonical_ai_advisory(
+                symbol, int(event_id), dict(result_metrics), dict(entry_decision)
+            )
+        )
 
     episode_id = f"{symbol}:{int(data.get('lifecycle_id') or 1)}"
 
@@ -2002,52 +2070,8 @@ async def evaluate_candidate(
         return
 
     if new_state == "TRIGGERED":
-        (
-            is_vetoed,
-            advisory,
-        ) = await ai_veto.evaluate_symbol(
-            symbol,
-            metrics.get(
-                "orderbook",
-                {},
-            ),
-            metrics.get(
-                "ticker",
-                {},
-            ),
-        )
-
-        metrics[
-            "ai_advisory"
-        ] = advisory
-
-        if is_vetoed:
-            state_persisted = db.update_candidate_state(
-                symbol,
-                "WATCH",
-            )
-
-            record_final_production_decision(
-                "AI_VETOED",
-                "AI advisory vetoed the validated trigger candidate",
-                state_persisted=bool(state_persisted),
-            )
-            persist_lifecycle_v2_shadow(
-                "WATCH" if state_persisted else str(current_state)
-            )
-
-            validator.ws_manager.unsubscribe(
-                ex_name,
-                mapped_sym,
-            )
-
-            _store_live_metrics(
-                symbol,
-                metrics,
-            )
-
-            return
-
+        # AI is advisory-only. Canonical entry decisions and trigger persistence
+        # must never be vetoed, delayed, or downgraded by model availability.
         try:
             metrics[
                 "applied_leverage"
@@ -2366,6 +2390,8 @@ async def live_reference_loop(
 async def startup_event():
     global _lbank_execution_shadow_worker
     global _signal_settlement_worker
+    global _entry_notification_worker
+    global _entry_notification_probe
 
     if settings.live_trading_enabled:
         raise RuntimeError(
@@ -2412,6 +2438,20 @@ async def startup_event():
     _start_background_task(
         notifier.start_interactive_bot()
     )
+
+    _entry_notification_worker = _build_entry_notification_worker()
+    if _entry_notification_worker is not None:
+        transport = _entry_notification_worker.transport
+        _entry_notification_probe = await transport.probe()
+        if _entry_notification_probe.get("status_code") in {401, 403}:
+            logger.error("Telegram credentials rejected; canonical delivery not started.")
+            _entry_notification_worker = None
+        else:
+            _start_background_task(_entry_notification_loop())
+            logger.info("Canonical ENTRY_READY Telegram delivery enabled.")
+    else:
+        _entry_notification_probe = {"configured": False, "reachable": False, "status_code": None}
+        logger.warning("Canonical Telegram delivery disabled: credentials not configured.")
 
     _lbank_execution_shadow_worker = (
         _build_lbank_execution_shadow_worker()
@@ -2464,6 +2504,7 @@ async def shutdown_event():
     global _hunter_running
     global _lbank_execution_shadow_worker
     global _signal_settlement_worker
+    global _entry_notification_worker
 
     _hunter_running = False
 
@@ -2641,7 +2682,14 @@ async def _notification_delivery_health_snapshot() -> dict:
         notification_delivery_health,
         settings.registry_db_path,
         now=int(time.time()),
+        outbox_table="entry_notification_outbox",
     )
+    report["transport"] = {
+        "provider": "telegram",
+        "configured": bool(notifier.enabled),
+        "worker_running": _entry_notification_worker is not None,
+        "probe": _entry_notification_probe,
+    }
     counts = report["counts"]
     for state in (
         "PENDING",
