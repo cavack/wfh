@@ -135,3 +135,14 @@ jobs:
             echo "Potential credential found in tracked content."
             exit 1
           fi
+
+  deploy-production:
+    needs:
+      - backend
+      - frontend
+      - dependency-audit
+      - container-validation
+      - repository-hygiene
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    uses: ./.github/workflows/deploy-production.yml
+    secrets: inherit
