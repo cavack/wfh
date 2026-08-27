@@ -5,7 +5,6 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from schema_test_support import migrate_test_database
 from waterfallhunter.core.lbank_execution_suitability_report import (
     LBankExecutionSuitabilityReport,
 )
@@ -20,15 +19,19 @@ def _build_test_app(db_path) -> FastAPI:
     return app
 
 
+def _report_payload(*, examples_per_status: int) -> dict:
+    return {
+        "schema_version": "singleflight-test-v1",
+        "examples_per_status": examples_per_status,
+    }
+
+
 def test_concurrent_execution_suitability_requests_share_one_build(
     tmp_path,
     monkeypatch,
 ):
-    db_path = tmp_path / "registry.db"
-    migrate_test_database(db_path)
-    app = _build_test_app(db_path)
+    app = _build_test_app(tmp_path / "unused.db")
 
-    original_build_report = LBankExecutionSuitabilityReport.build_report
     started = threading.Event()
     release = threading.Event()
     calls = 0
@@ -45,10 +48,8 @@ def test_concurrent_execution_suitability_requests_share_one_build(
             calls += 1
         started.set()
         assert release.wait(timeout=5.0)
-        return original_build_report(
-            self,
-            symbol_limit=symbol_limit,
-            examples_per_status=examples_per_status,
+        return _report_payload(
+            examples_per_status=examples_per_status
         )
 
     monkeypatch.setattr(
@@ -82,6 +83,7 @@ def test_concurrent_execution_suitability_requests_share_one_build(
 
     assert first_response.status_code == 200
     assert second_response.status_code == 200
+    assert first_response.json() == second_response.json()
     assert calls == 1
 
 
@@ -89,11 +91,8 @@ def test_cancelled_waiter_does_not_cancel_shared_report_build(
     tmp_path,
     monkeypatch,
 ):
-    db_path = tmp_path / "registry.db"
-    migrate_test_database(db_path)
-    app = _build_test_app(db_path)
+    app = _build_test_app(tmp_path / "unused.db")
 
-    original_build_report = LBankExecutionSuitabilityReport.build_report
     started = threading.Event()
     release = threading.Event()
     calls = 0
@@ -110,10 +109,8 @@ def test_cancelled_waiter_does_not_cancel_shared_report_build(
             calls += 1
         started.set()
         assert release.wait(timeout=5.0)
-        return original_build_report(
-            self,
-            symbol_limit=symbol_limit,
-            examples_per_status=examples_per_status,
+        return _report_payload(
+            examples_per_status=examples_per_status
         )
 
     monkeypatch.setattr(
@@ -149,6 +146,7 @@ def test_cancelled_waiter_does_not_cancel_shared_report_build(
     second_response = asyncio.run(exercise())
 
     assert second_response.status_code == 200
+    assert second_response.json()["examples_per_status"] == 0
     assert calls == 1
 
 
@@ -156,11 +154,8 @@ def test_failed_report_build_is_not_reused_by_next_request(
     tmp_path,
     monkeypatch,
 ):
-    db_path = tmp_path / "registry.db"
-    migrate_test_database(db_path)
-    app = _build_test_app(db_path)
+    app = _build_test_app(tmp_path / "unused.db")
 
-    original_build_report = LBankExecutionSuitabilityReport.build_report
     calls = 0
 
     def flaky_build_report(
@@ -173,10 +168,8 @@ def test_failed_report_build_is_not_reused_by_next_request(
         calls += 1
         if calls == 1:
             raise RuntimeError("synthetic report failure")
-        return original_build_report(
-            self,
-            symbol_limit=symbol_limit,
-            examples_per_status=examples_per_status,
+        return _report_payload(
+            examples_per_status=examples_per_status
         )
 
     monkeypatch.setattr(
@@ -203,6 +196,7 @@ def test_failed_report_build_is_not_reused_by_next_request(
     second_response = asyncio.run(exercise())
 
     assert second_response.status_code == 200
+    assert second_response.json()["examples_per_status"] == 0
     assert calls == 2
 
 
@@ -210,11 +204,8 @@ def test_different_execution_suitability_request_keys_do_not_share_builds(
     tmp_path,
     monkeypatch,
 ):
-    db_path = tmp_path / "registry.db"
-    migrate_test_database(db_path)
-    app = _build_test_app(db_path)
+    app = _build_test_app(tmp_path / "unused.db")
 
-    original_build_report = LBankExecutionSuitabilityReport.build_report
     started = threading.Event()
     release = threading.Event()
     calls = []
@@ -231,10 +222,8 @@ def test_different_execution_suitability_request_keys_do_not_share_builds(
             if len(calls) == 2:
                 started.set()
         assert release.wait(timeout=5.0)
-        return original_build_report(
-            self,
-            symbol_limit=symbol_limit,
-            examples_per_status=examples_per_status,
+        return _report_payload(
+            examples_per_status=examples_per_status
         )
 
     monkeypatch.setattr(
@@ -267,4 +256,6 @@ def test_different_execution_suitability_request_keys_do_not_share_builds(
 
     assert first_response.status_code == 200
     assert second_response.status_code == 200
+    assert first_response.json()["examples_per_status"] == 0
+    assert second_response.json()["examples_per_status"] == 1
     assert sorted(calls) == [0, 1]
