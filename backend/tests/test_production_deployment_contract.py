@@ -247,7 +247,7 @@ def test_incompatible_post_migration_runtime_is_quarantined() -> None:
     )[0]
     incompatible = rollback.split(
         "if ! previous_revision_accepts_current_schema; then", maxsplit=1
-    )[1].split("fi", maxsplit=1)[0]
+    )[1].split("\n    fi", maxsplit=1)[0]
     assert "docker compose stop" in incompatible
     for service in ("waterfall-backend", "frontend", "watchdog"):
         assert service in incompatible
