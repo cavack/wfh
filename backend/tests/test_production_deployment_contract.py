@@ -104,6 +104,8 @@ def test_production_deploy_workflow_is_automatic_after_successful_main_ci() -> N
     assert "types: [completed]" in text
     assert "workflow_dispatch" not in text
     assert "github.event.workflow_run.conclusion == 'success'" in text
+    assert "github.event.workflow_run.event == 'push'" in text
+    assert "github.event.workflow_run.head_branch == 'main'" in text
     assert "github.event.workflow_run.head_sha" in text
     assert "environment: production" in text
 
