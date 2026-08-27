@@ -23,14 +23,19 @@ def test_production_deploy_is_manual_and_explicitly_confirmed() -> None:
     assert "workflow_run:" not in text
 
 
-def test_production_deploy_uses_read_only_github_permissions_and_environment() -> None:
+def test_production_deploy_scopes_github_permissions_to_verify_job() -> None:
     text = _workflow_text()
+    workflow_prefix, jobs = text.split("\njobs:\n", 1)
+    verify_job, deploy_job = jobs.split("\n  deploy:\n", 1)
 
-    assert "contents: read" in text
-    assert "actions: read" in text
-    assert "environment: production" in text
-    assert "concurrency:" in text
-    assert "cancel-in-progress: false" in text
+    assert "\npermissions:\n" not in workflow_prefix
+    assert "permissions:\n      contents: read\n      actions: read" in verify_job
+    assert "contents: write" not in text
+    assert "actions: write" not in text
+    assert "permissions:" not in deploy_job
+    assert "environment: production" in deploy_job
+    assert "concurrency:" in workflow_prefix
+    assert "cancel-in-progress: false" in workflow_prefix
 
 
 def test_production_deploy_requires_exact_main_ci_success() -> None:
