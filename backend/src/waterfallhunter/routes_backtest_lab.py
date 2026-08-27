@@ -69,7 +69,7 @@ class BacktestLabRequest(BaseModel):
 class BacktestLabResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    contract_version: Literal["backtest_lab_response_v1"]
+    contract_version: Literal["backtest_lab_response_v2"]
     execution_mode: Literal["SIGNAL_ONLY"]
     strategy_equivalent: Literal[False]
     claims_allowed: Literal[False]
@@ -106,7 +106,7 @@ def _run_replay(payload: BacktestLabRequest) -> BacktestLabResponse:
         dataset_manifest_hash=payload.dataset_manifest_hash,
     )
     return BacktestLabResponse(
-        contract_version="backtest_lab_response_v1",
+        contract_version="backtest_lab_response_v2",
         execution_mode="SIGNAL_ONLY",
         strategy_equivalent=False,
         claims_allowed=False,
