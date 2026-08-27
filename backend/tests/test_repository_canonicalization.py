@@ -70,3 +70,25 @@ def test_pull_request_template_guards_canonical_decision_contract() -> None:
     template = (ROOT / ".github/pull_request_template.md").read_text(encoding="utf-8")
     assert "Only canonical `ENTRY_READY`" in template
     assert "PROJECT_HANDOFF.md" in template
+
+
+def test_active_production_tree_has_no_ollama_runtime_dependency() -> None:
+    tracked = _tracked_files()
+    active = [
+        path for path in tracked
+        if path in {"docker-compose.yml", ".env.example", "README.md"}
+        or path.startswith("backend/src/")
+        or path.startswith("frontend/")
+        or path.startswith("watchdog/")
+        or path.startswith("deploy/")
+    ]
+    offenders: list[str] = []
+    for rel in active:
+        path = ROOT / rel
+        try:
+            text = path.read_text(encoding="utf-8").lower()
+        except (UnicodeDecodeError, OSError):
+            continue
+        if "ollama" in text:
+            offenders.append(rel)
+    assert offenders == []

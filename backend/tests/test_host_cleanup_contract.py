@@ -76,3 +76,10 @@ def test_docker_image_classification_is_wfh_scoped() -> None:
     assert audit.classify_docker_resource("image", "wfh-rollback-backend:old", {})[0] == "DELETE_AFTER_CERTIFICATION"
     assert audit.classify_docker_resource("image", "waterfallhunter-waterfall-backend:latest", {})[0] == "KEEP"
     assert audit.classify_docker_resource("image", "python:3.13-slim", {})[0] == "REVIEW"
+
+
+def test_wfh_ollama_resources_are_cleanup_scoped_but_generic_image_is_not_blindly_deleted() -> None:
+    audit = _load_module(AUDIT_PATH, "audit_host_inventory_ollama")
+    assert audit.classify_docker_resource("container", "waterfallhunter-ollama-1", {"com.docker.compose.project": "waterfallhunter"})[0] == "DELETE_AFTER_CERTIFICATION"
+    assert audit.classify_docker_resource("volume", "waterfallhunter_ollama_models", {"com.docker.compose.project": "waterfallhunter"})[0] == "DELETE_AFTER_CERTIFICATION"
+    assert audit.classify_docker_resource("image", "ollama/ollama:latest", {})[0] == "REVIEW"
