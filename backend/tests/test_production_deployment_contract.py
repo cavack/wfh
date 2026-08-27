@@ -31,15 +31,8 @@ def _tracked_text_files() -> list[Path]:
             check=True,
             capture_output=True,
         )
-        return [
-            ROOT / raw.decode("utf-8")
-            for raw in result.stdout.split(b"\0")
-            if raw
-        ]
+        return [ROOT / raw.decode("utf-8") for raw in result.stdout.split(b"\0") if raw]
 
-    # The production backend image intentionally omits git. Container
-    # validation mounts a clean checkout read-only at ROOT, so conservatively
-    # scan every visible repository file while excluding generated/VCS trees.
     return sorted(
         path
         for path in ROOT.rglob("*")
@@ -74,16 +67,7 @@ def test_tracked_repository_text_does_not_use_deprecated_product_boundary_terms(
         rf"(?i)(?<![A-Za-z0-9_]){deprecated_word}(?![A-Za-z0-9_])"
     )
     offenders: list[str] = []
-    binary_suffixes = {
-        ".pyc",
-        ".map",
-        ".png",
-        ".jpg",
-        ".jpeg",
-        ".gif",
-        ".ico",
-        ".pdf",
-    }
+    binary_suffixes = {".pyc", ".map", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf"}
     for path in _tracked_text_files():
         if path.suffix in binary_suffixes:
             continue
@@ -120,11 +104,16 @@ def test_production_deploy_is_chained_to_successful_main_push_ci() -> None:
     assert "github.ref == 'refs/heads/main'" in deploy_job
     assert "uses: ./.github/workflows/deploy-production.yml" in deploy_job
 
+    callers = []
+    for workflow in sorted((ROOT / ".github" / "workflows").glob("*.y*ml")):
+        if "uses: ./.github/workflows/deploy-production.yml" in workflow.read_text(encoding="utf-8"):
+            callers.append(workflow.name)
+    assert callers == ["ci.yml"]
+
 
 def test_privileged_deploy_does_not_use_workflow_run_head_code() -> None:
     ci_text = CI_WORKFLOW.read_text(encoding="utf-8")
     deploy_text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
-
     assert "workflow_run" not in deploy_text
     assert "github.event.workflow_run" not in deploy_text
     assert "github.event_name == 'push'" in ci_text
@@ -148,6 +137,14 @@ def test_production_deploy_workflow_pins_ssh_host_identity() -> None:
     assert "StrictHostKeyChecking=yes" in text
     assert "ssh-keyscan" not in text
     assert "StrictHostKeyChecking=no" not in text
+
+
+def test_host_deploy_uses_registered_backend_health_paths() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    assert "wait_for_backend_endpoint /livez" in text
+    assert "wait_for_backend_endpoint /readyz" in text
+    assert "wait_for_backend_endpoint /api/livez" not in text
+    assert "wait_for_backend_endpoint /api/readyz" not in text
 
 
 def test_host_deploy_uses_deploy_owned_lock_and_certified_previous_revision() -> None:
@@ -190,6 +187,8 @@ def test_host_deploy_certifies_all_release_containers_healthy() -> None:
     assert "{{else}}running{{end}}" not in helper
     assert '[[ "$state" == "healthy" ]]' in helper
     assert '|| "$state" == "running"' not in helper
+    assert '[[ "$state" == "running" ]]' not in helper
+    assert helper.count("return 0") == 1
 
 
 def test_telegram_cutover_is_captured_at_activation_time() -> None:
@@ -202,13 +201,13 @@ def test_telegram_cutover_is_captured_at_activation_time() -> None:
     assert "telegram_cutover_at=${TELEGRAM_CUTOVER_EPOCH}" in text
 
 
-def test_successful_deploy_prunes_certified_database_backups() -> None:
+def test_successful_deploy_prunes_backups_before_publishing_certificate() -> None:
     text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
     assert "WFH_DEPLOY_BACKUP_RETENTION_COUNT" in text
     assert "prune_database_backups" in text
+    prune_index = text.index("prune_database_backups", text.index("verify_running_signal_only"))
     certificate_index = text.index('cat > "${STATE_DIR}/last-successful-deploy.txt"')
-    prune_index = text.index("prune_database_backups", certificate_index)
-    assert prune_index > certificate_index
+    assert prune_index < certificate_index
 
 
 def test_host_deploy_orders_backup_migration_telegram_and_runtime_certification() -> None:
@@ -225,8 +224,8 @@ def test_host_deploy_orders_backup_migration_telegram_and_runtime_certification(
         "--apply --source-revision",
         "activate_telegram_for_release",
         "docker compose up -d",
-        "/api/livez",
-        "/api/readyz",
+        "/livez",
+        "/readyz",
         "wait_for_container_healthy waterfall-frontend",
         "wait_for_container_healthy waterfall-watchdog",
         "org.opencontainers.image.revision",
