@@ -27,7 +27,7 @@ from waterfallhunter.core.notification_delivery import (
     notification_delivery_health,
 )
 from waterfallhunter.core.ai_veto import AIVetoEngine
-from waterfallhunter.core.risk_manager import get_leverage
+from waterfallhunter.core.risk_manager import get_leverage, recommend_signal_leverage
 from waterfallhunter.core.dashboard import compact_metrics
 from waterfallhunter.core.dashboard_stream import (
     DashboardEventBuffer,
@@ -90,6 +90,7 @@ from waterfallhunter.routes_lifecycle_v2_shadow import (
     build_lifecycle_v2_shadow_router,
 )
 from waterfallhunter.routes_backtest_lab import build_backtest_lab_router
+from waterfallhunter.routes_recent_signals import build_recent_signals_router
 from waterfallhunter.core.request_body_limit import RequestBodyLimitMiddleware
 from waterfallhunter.core.lbank_execution_outcome_report import (
     LBankExecutionOutcomeReport,
@@ -200,7 +201,12 @@ app.include_router(
 app.include_router(
     build_backtest_lab_router(
         artifact_hmac_key=settings.backtest_artifact_hmac_key,
+        db_path=db.db_path,
     )
+)
+
+app.include_router(
+    build_recent_signals_router(db.db_path)
 )
 
 execution_suitability_enricher = (
@@ -258,6 +264,7 @@ execution_decision_logger = (
 )
 
 validator = MultiExchangeValidator()
+validator.stage_lifecycle_store = stage_lifecycle_store
 
 notifier = TelegramNotifier(
     db_adapter=db,
@@ -269,12 +276,22 @@ ai_veto = AIVetoEngine()
 _hunter_running = False
 _hunter_last_completed_at: float | None = None
 _hunter_last_progress_at: float | None = None
+_hunter_task: asyncio.Task | None = None
+_hunter_stop_event = asyncio.Event()
+_HUNTER_STARTUP_DELAY_SECONDS = 5.0
+_HUNTER_SHUTDOWN_GRACE_SECONDS = 5.0
 _lbank_execution_shadow_worker: LBankExecutionShadowWorker | None = None
 _signal_settlement_worker: LBankSignalSettlementWorker | None = None
 _signal_evidence_metrics_last_refresh = 0.0
 _signal_evidence_metrics_lock = asyncio.Lock()
 _sse_clients = set()
 _dashboard_event_buffer = DashboardEventBuffer(replay_limit=100)
+_dashboard_preview_cache: tuple[
+    DashboardEventBuffer,
+    DashboardSnapshot,
+    float,
+] | None = None
+_DASHBOARD_PREVIEW_CACHE_SECONDS = 1.0
 _background_tasks = set()
 
 if "tracked_candidates" not in globals():
@@ -882,6 +899,7 @@ async def _update_signal_evidence_metrics(
     now = time.monotonic()
     if (
         not force
+        and _signal_evidence_metrics_last_refresh > 0.0
         and now
         - _signal_evidence_metrics_last_refresh
         < 60.0
@@ -892,12 +910,14 @@ async def _update_signal_evidence_metrics(
         now = time.monotonic()
         if (
             not force
+            and _signal_evidence_metrics_last_refresh > 0.0
             and now
             - _signal_evidence_metrics_last_refresh
             < 60.0
         ):
             return
 
+        _signal_evidence_metrics_last_refresh = now
         report = await asyncio.to_thread(
             execution_outcome_report.build_report
         )
@@ -1007,6 +1027,133 @@ def _store_live_metrics(
             normalized
         )
         or {}
+    )
+
+
+async def _refresh_ai_advisory_observational(
+    symbol: str,
+    *,
+    analysis_observed_at: int,
+    orderbook: dict,
+    ticker: dict,
+) -> None:
+    try:
+        advisory = await (
+            ai_veto
+            .get_observational_advisory(
+                symbol,
+                orderbook,
+                ticker,
+            )
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception(
+            "Observational AI advisory failed for %s",
+            symbol,
+        )
+        return
+
+    live = scanner.active_candidates.get(
+        symbol
+    )
+    if not isinstance(
+        live,
+        dict,
+    ):
+        return
+
+    if (
+        live.get(
+            "analysis_observed_at"
+        )
+        != analysis_observed_at
+    ):
+        logger.info(
+            "Discarding stale Gemini advisory for %s",
+            symbol,
+        )
+        return
+
+    current_metrics = live.get(
+        "metrics"
+    )
+    if not isinstance(
+        current_metrics,
+        dict,
+    ):
+        return
+
+    updated_metrics = dict(
+        current_metrics
+    )
+
+    current_advisory = (
+        updated_metrics.get(
+            "ai_advisory"
+        )
+    )
+    merged_advisory = (
+        dict(current_advisory)
+        if isinstance(
+            current_advisory,
+            dict,
+        )
+        else {}
+    )
+    merged_advisory.update(
+        advisory
+    )
+
+    updated_metrics[
+        "ai_advisory"
+    ] = merged_advisory
+
+    live[
+        "metrics"
+    ] = (
+        compact_metrics(
+            updated_metrics
+        )
+        or {}
+    )
+
+
+def _schedule_ai_advisory_observational(
+    symbol: str,
+    *,
+    analysis_observed_at: int,
+    orderbook: dict | None,
+    ticker: dict | None,
+) -> None:
+    if (
+        not isinstance(
+            orderbook,
+            dict,
+        )
+        or not orderbook
+        or not isinstance(
+            ticker,
+            dict,
+        )
+        or not ticker
+    ):
+        return
+
+    _start_background_task(
+        _refresh_ai_advisory_observational(
+            symbol,
+            analysis_observed_at=(
+                analysis_observed_at
+            ),
+            orderbook=dict(
+                orderbook
+            ),
+            ticker=dict(
+                ticker
+            ),
+        )
     )
 
 
@@ -1326,7 +1473,7 @@ def _publish_dashboard_snapshot(
 
 
 def _broadcast_dashboard_event(event: DashboardStreamEvent) -> None:
-    for queue in _sse_clients:
+    for queue in list(_sse_clients):
         try:
             queue.put_nowait(event)
         except asyncio.QueueFull:
@@ -1568,6 +1715,7 @@ async def evaluate_candidate(
             reference_source=(
                 reference_source
             ),
+            lifecycle_id=int(data.get("lifecycle_id") or 1),
         )
     )
     lifecycle_v2_decision_clock_at = time.time()
@@ -1586,13 +1734,14 @@ async def evaluate_candidate(
             "observational_only": True,
             "hard_gating_allowed": False,
         }
-        result_metrics["stage_lifecycle"] = (
-            stage_lifecycle_store.advance(
-                symbol,
-                int(data.get("lifecycle_id") or 1),
-                snapshot_stages,
+        if not isinstance(result_metrics.get("stage_lifecycle"), dict):
+            result_metrics["stage_lifecycle"] = (
+                stage_lifecycle_store.advance(
+                    symbol,
+                    int(data.get("lifecycle_id") or 1),
+                    snapshot_stages,
+                )
             )
-        )
 
     episode_id = f"{symbol}:{int(data.get('lifecycle_id') or 1)}"
 
@@ -1766,6 +1915,10 @@ async def evaluate_candidate(
                 "trade_eligible"
             ] = False
 
+            observation_state_aligned = (
+                current_state == observation_status
+            )
+
             if (
                 current_state
                 != observation_status
@@ -1783,6 +1936,7 @@ async def evaluate_candidate(
                     )
                 else:
                     final_v1_shadow_state = str(observation_status)
+                    observation_state_aligned = True
 
             observation_exchange = (
                 stored_metrics.get(
@@ -1797,7 +1951,8 @@ async def evaluate_candidate(
             )
 
             if (
-                observation_exchange
+                observation_state_aligned
+                and observation_exchange
                 and observation_symbol
             ):
                 validator.ws_manager.unsubscribe(
@@ -1819,6 +1974,8 @@ async def evaluate_candidate(
                 "analysis_status"
             ] = "unavailable"
 
+            watch_state_persisted = False
+
             if current_state in {
                 "FUEL-RICH",
                 "PRE-TRIGGER",
@@ -1831,6 +1988,23 @@ async def evaluate_candidate(
                 )
                 if watch_state_persisted:
                     final_v1_shadow_state = "WATCH"
+
+            if watch_state_persisted:
+                unavailable_exchange = stored_metrics.get(
+                    "exchange"
+                )
+                unavailable_symbol = stored_metrics.get(
+                    "mapped_symbol"
+                )
+
+                if (
+                    unavailable_exchange
+                    and unavailable_symbol
+                ):
+                    validator.ws_manager.unsubscribe(
+                        unavailable_exchange,
+                        unavailable_symbol,
+                    )
 
         if data.get(
             "dex_context"
@@ -1991,7 +2165,7 @@ async def evaluate_candidate(
         (
             is_vetoed,
             advisory,
-        ) = await ai_veto.evaluate_symbol(
+        ) = ai_veto.evaluate_deterministic(
             symbol,
             metrics.get(
                 "orderbook",
@@ -2014,53 +2188,82 @@ async def evaluate_candidate(
             )
 
             record_final_production_decision(
-                "AI_VETOED",
-                "AI advisory vetoed the validated trigger candidate",
+                "DETERMINISTIC_VETOED",
+                (
+                    "deterministic market-data veto rejected "
+                    "the validated trigger candidate"
+                ),
                 state_persisted=bool(state_persisted),
+                veto_source="deterministic_market_data",
+                llm_decision_critical=False,
             )
             persist_lifecycle_v2_shadow(
                 "WATCH" if state_persisted else str(current_state)
             )
 
-            validator.ws_manager.unsubscribe(
-                ex_name,
-                mapped_sym,
-            )
+            if state_persisted:
+                validator.ws_manager.unsubscribe(
+                    ex_name,
+                    mapped_sym,
+                )
 
             _store_live_metrics(
                 symbol,
                 metrics,
             )
 
-            return
-
-        try:
-            metrics[
-                "applied_leverage"
-            ] = get_leverage(
-                symbol
-            )
-
-        except Exception as exc:
-            persist_lifecycle_v2_shadow(str(current_state))
-            record_final_production_decision(
-                "LEVERAGE_REJECTED",
-                "leverage calculation failed",
-                error_type=type(exc).__name__,
-            )
-
-            logger.warning(
-                "Leverage calculation failed "
-                "for %s: %s",
+            _schedule_ai_advisory_observational(
                 symbol,
-                exc,
+                analysis_observed_at=(
+                    analysis_observed_at
+                ),
+                orderbook=metrics.get(
+                    "orderbook"
+                ),
+                ticker=metrics.get(
+                    "ticker"
+                ),
             )
+
             return
 
         execution_suitability = (
             execution_suitability_enricher
             .for_symbol(symbol)
         )
+
+        try:
+            metrics[
+                "applied_leverage"
+            ] = recommend_signal_leverage(
+                metrics,
+                execution_suitability,
+            )
+            metrics["leverage_policy"] = {
+                "version": "adaptive_signal_leverage_v1",
+                "minimum": 4,
+                "maximum": 18,
+                "symbol_agnostic": True,
+                "paper_only": True,
+            }
+
+        except Exception as exc:
+            persist_lifecycle_v2_shadow(str(current_state))
+            record_final_production_decision(
+                "LEVERAGE_REJECTED",
+                "adaptive leverage calculation failed",
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+
+            logger.warning(
+                "Adaptive leverage calculation failed "
+                "for %s: %s",
+                symbol,
+                exc,
+            )
+            return
+
         quote_volume = data.get(
             "quote_volume"
         )
@@ -2190,6 +2393,19 @@ async def evaluate_candidate(
             metrics,
         )
 
+        _schedule_ai_advisory_observational(
+            symbol,
+            analysis_observed_at=(
+                analysis_observed_at
+            ),
+            orderbook=metrics.get(
+                "orderbook"
+            ),
+            ticker=metrics.get(
+                "ticker"
+            ),
+        )
+
         return
 
 
@@ -2203,7 +2419,7 @@ async def hunter_loop(
     _hunter_running = True
 
     await asyncio.sleep(
-        5
+        _HUNTER_STARTUP_DELAY_SECONDS
     )
 
     logger.info(
@@ -2213,10 +2429,6 @@ async def hunter_loop(
 
     while _hunter_running:
         try:
-            _hunter_last_progress_at = (
-                time.time()
-            )
-
             await (
                 scanner
                 .refresh_live_references()
@@ -2245,25 +2457,31 @@ async def hunter_loop(
                     global _hunter_last_progress_at
                     nonlocal evaluations_since_flush
 
-                    async with _semaphore:
-                        try:
-                            if _hunter_running:
-                                await evaluate_candidate(
-                                    symbol,
-                                    data,
-                                )
-                        finally:
-                            _hunter_last_progress_at = (
-                                time.time()
-                            )
-                            evaluations_since_flush += 1
+                    should_flush = False
+                    try:
+                        async with _semaphore:
+                            try:
+                                if _hunter_running:
+                                    await evaluate_candidate(
+                                        symbol,
+                                        data,
+                                    )
+                                    _hunter_last_progress_at = (
+                                        time.time()
+                                    )
+                            finally:
+                                evaluations_since_flush += 1
 
-                            if evaluations_since_flush >= 30:
-                                evaluations_since_flush = 0
-                                await asyncio.to_thread(
-                                    execution_decision_logger
-                                    .flush_evaluations
-                                )
+
+                                if evaluations_since_flush >= 30:
+                                    evaluations_since_flush = 0
+                                    should_flush = True
+                    finally:
+                        if should_flush:
+                            await asyncio.to_thread(
+                                execution_decision_logger
+                                .flush_evaluations
+                            )
 
                 results = await asyncio.gather(
                     *(
@@ -2285,11 +2503,12 @@ async def hunter_loop(
                         logger.warning(
                             "Candidate evaluation failed: %s",
                             result,
+                            exc_info=(
+                                type(result),
+                                result,
+                                result.__traceback__,
+                            ),
                         )
-
-                    _hunter_last_progress_at = (
-                        time.time()
-                    )
 
             await asyncio.to_thread(
                 execution_decision_logger
@@ -2303,13 +2522,23 @@ async def hunter_loop(
 
             validator.ws_manager.prune_stale_cache()
 
+            if not candidates:
+                _hunter_last_progress_at = (
+                    time.time()
+                )
+
             _hunter_last_completed_at = (
                 time.time()
             )
 
-            await asyncio.sleep(
-                interval_seconds
-            )
+            if _hunter_running:
+                try:
+                    await asyncio.wait_for(
+                        _hunter_stop_event.wait(),
+                        timeout=interval_seconds,
+                    )
+                except TimeoutError:
+                    pass
 
         except asyncio.CancelledError:
             break
@@ -2350,8 +2579,12 @@ async def live_reference_loop(
 
 
 async def startup_event():
+    global _hunter_task
+    global _hunter_stop_event
     global _lbank_execution_shadow_worker
     global _signal_settlement_worker
+
+    _hunter_stop_event = asyncio.Event()
 
     if settings.live_trading_enabled:
         raise RuntimeError(
@@ -2375,7 +2608,7 @@ async def startup_event():
         live_reference_loop()
     )
 
-    _start_background_task(
+    _hunter_task = _start_background_task(
         hunter_loop(
             interval_seconds=60
         )
@@ -2448,10 +2681,12 @@ async def startup_event():
 
 async def shutdown_event():
     global _hunter_running
+    global _hunter_task
     global _lbank_execution_shadow_worker
     global _signal_settlement_worker
 
     _hunter_running = False
+    _hunter_stop_event.set()
 
     feature_replay_worker.stop()
 
@@ -2465,6 +2700,22 @@ async def shutdown_event():
 
     if _signal_settlement_worker is not None:
         _signal_settlement_worker.stop()
+
+    hunter_task = _hunter_task
+    if (
+        hunter_task is not None
+        and not hunter_task.done()
+    ):
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(hunter_task),
+                timeout=_HUNTER_SHUTDOWN_GRACE_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning(
+                "Hunter shutdown drain timed out; "
+                "cancelling remaining task"
+            )
 
     tasks = list(
         _background_tasks
@@ -2491,6 +2742,7 @@ async def shutdown_event():
         _lbank_execution_shadow_worker = None
 
     _signal_settlement_worker = None
+    _hunter_task = None
 
     await scanner.close()
     await validator.close_all()
@@ -2666,7 +2918,9 @@ async def notification_delivery_status(response: Response):
     "/metrics"
 )
 async def metrics():
-    active_candidates = db.get_all_active_candidates()
+    active_candidates = await asyncio.to_thread(
+        db.get_all_active_candidates
+    )
     tracked_candidates.set(
         len(active_candidates)
     )
@@ -2700,7 +2954,10 @@ async def metrics():
 
     _update_lbank_shadow_metrics()
     _update_signal_settlement_worker_metrics()
-    await _update_signal_evidence_metrics()
+    try:
+        await _update_signal_evidence_metrics()
+    except Exception:
+        logger.exception("Signal evidence metrics are unavailable")
     try:
         await _notification_delivery_health_snapshot()
     except NotificationDeliveryError:
@@ -2765,6 +3022,50 @@ async def stream_candidates(
     )
 
 
+def _get_dashboard_poll_snapshot() -> DashboardSnapshot:
+    global _dashboard_preview_cache
+
+    latest = _dashboard_event_buffer.latest_snapshot()
+    if latest is not None and (
+        _sse_clients
+        or time.time() - latest.generated_at <= _DASHBOARD_PREVIEW_CACHE_SECONDS
+    ):
+        return latest
+
+    now_monotonic = time.monotonic()
+    cached = _dashboard_preview_cache
+
+    if cached is not None:
+        (
+            cached_buffer,
+            cached_snapshot,
+            cached_at,
+        ) = cached
+
+        if (
+            cached_buffer is _dashboard_event_buffer
+            and now_monotonic - cached_at
+            <= _DASHBOARD_PREVIEW_CACHE_SECONDS
+        ):
+            return cached_snapshot
+
+    generated_at = time.time()
+    snapshot = _dashboard_event_buffer.preview_snapshot(
+        get_formatted_candidates(
+            evaluation_time=generated_at
+        ),
+        generated_at=generated_at,
+    )
+
+    _dashboard_preview_cache = (
+        _dashboard_event_buffer,
+        snapshot,
+        time.monotonic(),
+    )
+
+    return snapshot
+
+
 @app.get(
     "/api/candidates",
     response_model=DashboardSnapshot,
@@ -2772,11 +3073,4 @@ async def stream_candidates(
 )
 async def get_candidates(response: Response):
     response.headers["Cache-Control"] = "no-store"
-    latest = _dashboard_event_buffer.latest_snapshot()
-    if latest is not None:
-        return latest
-    generated_at = time.time()
-    return _dashboard_event_buffer.preview_snapshot(
-        get_formatted_candidates(evaluation_time=generated_at),
-        generated_at=generated_at,
-    )
+    return _get_dashboard_poll_snapshot()
