@@ -82,22 +82,22 @@ def test_production_deploy_workflow_pins_ssh_host_identity() -> None:
 
 def test_host_deploy_orders_backup_migration_telegram_and_runtime_certification() -> None:
     text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    main_sequence = text.split('[[ "$WFH_DEPLOY_SHA"', maxsplit=1)[1]
     ordered_markers = [
-        "flock",
+        "flock -n 9",
         "git merge-base --is-ancestor",
-        "LIVE_TRADING_ENABLED",
+        "assert_signal_only_runtime_boundary",
         "docker compose build",
-        "backup",
-        "migrate_database --preflight",
-        "migrate_database --apply",
-        "TELEGRAM_SIGNAL_DELIVERY_ENABLED",
-        "TELEGRAM_SIGNAL_DELIVERY_CUTOVER_AT",
+        "backup_database",
+        "--preflight",
+        "--apply --source-revision",
+        "activate_telegram_for_release",
         "docker compose up -d",
         "/api/livez",
         "/api/readyz",
         "org.opencontainers.image.revision",
     ]
-    positions = [text.index(marker) for marker in ordered_markers]
+    positions = [main_sequence.index(marker) for marker in ordered_markers]
     assert positions == sorted(positions)
 
 
