@@ -63,6 +63,7 @@ class SignalFunnel:
         reasons = Counter()
         stage_values = {stage: [] for stage in cls.STAGES}
         lifecycle_stage_values = {stage: [] for stage in cls.STAGES}
+        lifecycle_stage_members = {stage: [] for stage in cls.STAGES}
         lifecycle_available: list[Any] = []
         gate_values = {gate: [] for gate in cls.QUALITY_GATES}
         breakdown_values = {
@@ -73,7 +74,7 @@ class SignalFunnel:
         microstructure_values: list[Any] = []
         analysis_available = 0
 
-        for candidate in rows.values():
+        for symbol, candidate in rows.items():
             packet = candidate if isinstance(candidate, dict) else {}
             status = packet.get("status")
             lifecycle[
@@ -121,11 +122,14 @@ class SignalFunnel:
                 else None
             )
             for stage in cls.STAGES:
-                lifecycle_stage_values[stage].append(
+                value = (
                     confirmed_lifecycle.get(stage)
                     if isinstance(confirmed_lifecycle, dict)
                     else None
                 )
+                lifecycle_stage_values[stage].append(value)
+                if value is True:
+                    lifecycle_stage_members[stage].append(str(symbol))
             for gate in cls.QUALITY_GATES:
                 gate_values[gate].append(
                     gates.get(gate) if isinstance(gates, dict) else None
@@ -153,6 +157,10 @@ class SignalFunnel:
         lifecycle_stages_packet = {
             stage: cls._tri_state(values)
             for stage, values in lifecycle_stage_values.items()
+        }
+        lifecycle_members_packet = {
+            stage: sorted(symbols)
+            for stage, symbols in lifecycle_stage_members.items()
         }
         gates_packet = {
             gate: cls._tri_state(values)
@@ -198,6 +206,7 @@ class SignalFunnel:
                 "hard_gating_allowed": False,
                 "availability": cls._tri_state(lifecycle_available),
                 "stages": lifecycle_stages_packet,
+                "members": lifecycle_members_packet,
             },
             "quality_gates": gates_packet,
             "breakdown_evidence": breakdown_packet,
