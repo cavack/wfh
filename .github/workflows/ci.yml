@@ -89,7 +89,7 @@ jobs:
             waterfall-backend frontend watchdog
       - name: Test the exact backend artifact family
         run: |
-          docker run --rm --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m \
+          docker run --rm --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev,size=128m \
             -e LIVE_TRADING_ENABLED=false \
             -e REGISTRY_DB_PATH=/tmp/waterfall_registry.db \
             -e PYTHONPATH=/app/src:/project \
