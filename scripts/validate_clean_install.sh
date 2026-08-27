@@ -46,7 +46,7 @@ for image in "$BACKEND_IMAGE" "$FRONTEND_IMAGE" "$WATCHDOG_IMAGE"; do
   test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$SHA"
 done
 
-docker run --rm --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m \
+docker run --rm --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev,size=512m \
   -e LIVE_TRADING_ENABLED=false -e REGISTRY_DB_PATH=/tmp/test-registry.db \
   -e PYTHONPATH=/app/src:/project -v "$TMP:/project:ro" -w /project \
   "$BACKEND_IMAGE" pytest -q backend/tests
