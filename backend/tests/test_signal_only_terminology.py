@@ -25,6 +25,7 @@ def test_current_deployment_docs_keep_signal_only_as_canonical_contract() -> Non
     spec = DEPLOY_SPEC.read_text(encoding="utf-8")
 
     assert 'ExecutionMode.SIGNAL_ONLY = "SIGNAL_ONLY"' in plan
+    assert "Current runtime/product contracts emit `SIGNAL_ONLY`." in spec
     assert 'and no product/runtime API response emits `SIGNAL_ONLY`' not in plan
     assert 'deprecated terms (`SIGNAL_ONLY`' not in plan
     assert "terminology is replaced by `SIGNAL_ONLY` / `signal-only`" not in spec
