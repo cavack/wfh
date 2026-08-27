@@ -43,7 +43,10 @@ jobs:
           for raw in tracked:
               if not raw:
                   continue
-              path = root / raw.decode("utf-8")
+              relative = raw.decode("utf-8")
+              if relative == ".github/workflows/one-shot-signal-only-terminology.yml":
+                  continue
+              path = root / relative
               try:
                   data = path.read_bytes()
                   data.decode("utf-8")
