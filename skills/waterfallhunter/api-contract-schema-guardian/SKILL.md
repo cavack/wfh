@@ -17,6 +17,12 @@ Use for request/response/event changes, nested dashboard fields, Pydantic models
 
 Own canonical API and event semantics, nested typing for core product data, compatibility analysis, versioning decisions, generated consumer types, and transport parity. Do not let `Record<string, unknown>` become a permanent excuse for schema drift.
 
+## Protected Invariants
+
+Unless a separately authorized and validated strategy or policy change explicitly requires otherwise, do not incidentally change ScoreV2 weights or evidence semantics, lifecycle transitions, strict/experimental eligibility boundaries, anti-chase behavior, signal provenance or immutable-ledger semantics, persistence-before-notification ordering, scientific holdout/walk-forward rules, or production execution policy.
+
+Current repository policy is observational and does not place orders. Live order placement is outside this skill system: this skill must not authorize, design, implement, or enable live order placement. Any future execution capability requires a separately reviewed safety design and repository-policy change before ordinary release gates apply.
+
 ## Workflow
 
 1. Identify the canonical producer and every consumer of the field/event being changed.
