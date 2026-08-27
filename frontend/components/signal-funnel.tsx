@@ -1,4 +1,4 @@
-import { AlertTriangle, GitBranch, ShieldCheck } from "lucide-react";
+import { AlertTriangle, GitBranch, ShieldCheck, Zap } from "lucide-react";
 
 type TriState = {
   passed?: number;
@@ -19,6 +19,7 @@ export type SignalFunnelData = {
     hard_gating_allowed?: boolean;
     availability?: TriState;
     stages?: Record<string, TriState>;
+    members?: Record<string, string[]>;
   };
   quality_gates?: Record<string, TriState>;
   breakdown_evidence?: Record<string, TriState>;
@@ -69,6 +70,14 @@ export function SignalFunnel({ funnel }: { funnel?: SignalFunnelData }) {
   const systemicZero = funnel.attention?.cross_exchange_systemic_zero === true;
   const lifecycleSafe = funnel.stage_lifecycle?.observational_only === true
     && funnel.stage_lifecycle?.hard_gating_allowed === false;
+  const currentTriggerCount = lifecycleSafe
+    ? funnel.stage_lifecycle?.stages?.trigger?.passed
+    : undefined;
+  const currentTriggerSymbols = lifecycleSafe
+    ? (funnel.stage_lifecycle?.members?.trigger ?? []).filter(
+        (symbol): symbol is string => typeof symbol === "string" && symbol.length > 0,
+      )
+    : [];
 
   return (
     <section className="panel mx-auto mb-7 max-w-7xl p-5 sm:p-6" aria-label="Signal funnel diagnostics">
@@ -99,14 +108,45 @@ export function SignalFunnel({ funnel }: { funnel?: SignalFunnelData }) {
         </div>
         <dl className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-5">
           {lifecycleStages.map(([key, label]) => (
-            <div key={key} className="stat">
+            <div
+              key={key}
+              className={key === "trigger" ? "stat border-amber-400/25 bg-amber-500/5" : "stat"}
+            >
               <dt>{label}</dt>
-              <dd className="text-violet-200">
+              <dd className={key === "trigger" ? "text-amber-200" : "text-violet-200"}>
                 {lifecycleSafe ? count(funnel.stage_lifecycle?.stages?.[key]?.passed) : "—"}
               </dd>
             </div>
           ))}
         </dl>
+
+        {typeof currentTriggerCount === "number" && currentTriggerCount > 0 ? (
+          <div className="mt-4 rounded-xl border border-amber-400/25 bg-amber-500/10 p-3.5" aria-label="Current trigger symbols">
+            <div className="flex items-start gap-2.5">
+              <Zap size={16} className="mt-0.5 shrink-0 text-amber-300" aria-hidden="true" />
+              <div>
+                <h4 className="text-xs font-semibold text-amber-100">Current trigger symbols</h4>
+                <p className="mt-1 text-xs leading-5 text-amber-100/70">
+                  These are the symbols behind Current trigger = {count(currentTriggerCount)} in this snapshot.
+                </p>
+              </div>
+            </div>
+            {currentTriggerSymbols.length > 0 ? (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {currentTriggerSymbols.map((symbol) => (
+                  <span
+                    key={symbol}
+                    className="rounded-lg border border-amber-300/25 bg-slate-950/45 px-2.5 py-1.5 font-mono text-xs font-semibold text-amber-100"
+                  >
+                    {symbol}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-3 text-xs text-amber-100/70">Symbol details are unavailable in this snapshot.</p>
+            )}
+          </div>
+        ) : null}
       </div>
 
       <div className="mt-5 border-t border-slate-800 pt-4">
