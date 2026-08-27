@@ -147,3 +147,7 @@ def test_polling_snapshot_normalizes_non_finite_numbers_to_unavailable(monkeypat
     snapshot = asyncio.run(main.get_candidates(response))
 
     assert snapshot.candidates["TEST"]["metrics"]["spread_pct"] is None
+
+def test_production_dashboard_replay_window_is_memory_bounded() -> None:
+    assert getattr(main, "_DASHBOARD_REPLAY_EVENT_LIMIT", None) == 8
+    assert main._dashboard_event_buffer._events.maxlen == 8

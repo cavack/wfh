@@ -285,7 +285,13 @@ _signal_settlement_worker: LBankSignalSettlementWorker | None = None
 _signal_evidence_metrics_last_refresh = 0.0
 _signal_evidence_metrics_lock = asyncio.Lock()
 _sse_clients = set()
-_dashboard_event_buffer = DashboardEventBuffer(replay_limit=100)
+# Full dashboard snapshots are multi-megabyte objects. Keep only a short
+# contiguous SSE replay window; older reconnects already fail closed to a
+# freshly generated full snapshot.
+_DASHBOARD_REPLAY_EVENT_LIMIT = 8
+_dashboard_event_buffer = DashboardEventBuffer(
+    replay_limit=_DASHBOARD_REPLAY_EVENT_LIMIT
+)
 _dashboard_preview_cache: tuple[
     DashboardEventBuffer,
     DashboardSnapshot,
