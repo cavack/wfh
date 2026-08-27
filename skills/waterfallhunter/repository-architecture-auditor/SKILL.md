@@ -19,6 +19,12 @@ Inspect current SHA, relevant recent commits/PRs, repository tree, entry points,
 
 Classify findings with the shared taxonomy. Complexity, size, and coupling are normally `DEBT` until a concrete failure is reproduced or directly demonstrated.
 
+## Protected Invariants
+
+Unless a separately authorized and validated strategy or policy change explicitly requires otherwise, do not incidentally change ScoreV2 weights or evidence semantics, lifecycle transitions, strict/experimental eligibility boundaries, anti-chase behavior, signal provenance or immutable-ledger semantics, persistence-before-notification ordering, scientific holdout/walk-forward rules, or production execution policy.
+
+Current repository policy is observational and does not place orders. Live order placement is outside this skill system: this skill must not authorize, design, implement, or enable live order placement. Any future execution capability requires a separately reviewed safety design and repository-policy change before ordinary release gates apply.
+
 ## Workflow
 
 1. Establish current branch/SHA and whether previous audit claims still apply.
