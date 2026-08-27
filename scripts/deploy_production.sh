@@ -272,6 +272,7 @@ on_signal() {
     HUP) status=129 ;;
     INT) status=130 ;;
     TERM) status=143 ;;
+    *) status=1 ;;
   esac
   log "received ${signal}; initiating bounded cleanup"
   terminate_with_cleanup "$status"
@@ -301,7 +302,7 @@ flock -n 9 || fail "another WaterfallHunter deployment is already running"
 
 git fetch --prune origin main
 git cat-file -e "${WFH_DEPLOY_SHA}^{commit}" || fail "target revision is not available after fetch"
-test "$(git rev-parse origin/main)" = "$WFH_DEPLOY_SHA" \
+[[ "$(git rev-parse origin/main)" == "$WFH_DEPLOY_SHA" ]] \
   || fail "target revision is stale; only the current origin/main tip may deploy"
 
 PREVIOUS_SHA="$(resolve_previous_revision)" || fail "unable to resolve the certified previous Production revision"
