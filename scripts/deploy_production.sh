@@ -53,6 +53,15 @@ assert_signal_only_runtime_boundary() {
     || fail "LIVE_TRADING_ENABLED must remain false for SIGNAL_ONLY Production"
 }
 
+assert_clean_deploy_worktree() {
+  local dirty
+  dirty="$(
+    git status --porcelain=v1 --untracked-files=all -- \
+      . ':(exclude).env' ':(exclude).deploy/**'
+  )"
+  [[ -z "$dirty" ]]
+}
+
 wait_for_backend_endpoint() {
   local endpoint="$1"
   local attempts="${2:-30}"
@@ -141,7 +150,7 @@ backup_database() {
   DB_BACKUP="${BACKUP_DIR}/${backup_name}"
   install -d -m 0750 "$BACKUP_DIR"
 
-  docker compose run --rm --no-deps --user 0:0 \
+  docker compose run --rm --no-deps --interactive=false -T --user 0:0 \
     -v "${BACKUP_DIR}:/backup" \
     waterfall-backend \
     /opt/venv/bin/python -c \
@@ -209,7 +218,7 @@ previous_revision_accepts_current_schema() {
   [[ -n "$PREVIOUS_SHA" ]] || return 1
   git checkout --detach "$PREVIOUS_SHA" >/dev/null 2>&1 || return 1
   build_revision "$PREVIOUS_SHA" >/dev/null 2>&1 || return 1
-  docker compose run --rm --no-deps waterfall-backend \
+  docker compose run --rm --no-deps --interactive=false -T waterfall-backend \
     /opt/venv/bin/python -m waterfallhunter.migrate_database \
     --db-path "$DB_PATH" --preflight >/dev/null 2>&1
 }
@@ -223,6 +232,7 @@ rollback_previous_revision() {
   if [[ "$MIGRATION_MAY_HAVE_MUTATED" -eq 1 ]]; then
     if ! previous_revision_accepts_current_schema; then
       log "rollback stopped: previous revision is not certified against the current schema"
+      docker compose stop waterfall-backend frontend watchdog >/dev/null 2>&1 || true
       git checkout --detach "$WFH_DEPLOY_SHA" >/dev/null 2>&1 || true
       return 1
     fi
@@ -305,6 +315,11 @@ git cat-file -e "${WFH_DEPLOY_SHA}^{commit}" || fail "target revision is not ava
 [[ "$(git rev-parse origin/main)" == "$WFH_DEPLOY_SHA" ]] \
   || fail "target revision is stale; only the current origin/main tip may deploy"
 
+if ! assert_clean_deploy_worktree; then
+  log "ERROR: deployment worktree contains tracked or untracked source changes"
+  exit 1
+fi
+
 PREVIOUS_SHA="$(resolve_previous_revision)" || fail "unable to resolve the certified previous Production revision"
 assert_signal_only_runtime_boundary
 
@@ -320,14 +335,14 @@ docker compose build \
 
 backup_database
 
-docker compose run --rm --no-deps waterfall-backend \
+docker compose run --rm --no-deps --interactive=false -T waterfall-backend \
   /opt/venv/bin/python -m waterfallhunter.migrate_database \
   --db-path "$DB_PATH" --preflight
 
 # From this point onward the migration command may have changed the database
 # even when a later verification inside that command exits non-zero.
 MIGRATION_MAY_HAVE_MUTATED=1
-docker compose run --rm --no-deps waterfall-backend \
+docker compose run --rm --no-deps --interactive=false -T waterfall-backend \
   /opt/venv/bin/python -m waterfallhunter.migrate_database \
   --db-path "$DB_PATH" --apply --source-revision "$WFH_DEPLOY_SHA"
 
@@ -345,6 +360,8 @@ wait_for_container_healthy waterfall-watchdog 30 3 || fail "watchdog container d
 verify_running_revision "$WFH_DEPLOY_SHA" || fail "running OCI org.opencontainers.image.revision does not match target SHA"
 verify_running_signal_only || fail "running backend violated the SIGNAL_ONLY live-trading boundary"
 
+prune_database_backups || fail "database backup retention cleanup failed"
+
 install -d -m 0750 "$STATE_DIR"
 cat > "${STATE_DIR}/last-successful-deploy.txt" <<EOF
 revision=${WFH_DEPLOY_SHA}
@@ -357,7 +374,10 @@ live_trading_enabled=false
 product_mode=SIGNAL_ONLY
 EOF
 
-prune_database_backups || fail "database backup retention cleanup failed"
+if [[ -n "$ENV_BACKUP" ]]; then
+  rm -f -- "$ENV_BACKUP"
+  ENV_BACKUP=""
+fi
 
 trap - ERR TERM HUP INT
 log "deployment certified: revision=${WFH_DEPLOY_SHA} previous=${PREVIOUS_SHA} SIGNAL_ONLY=true"
