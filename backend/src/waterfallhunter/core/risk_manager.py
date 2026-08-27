@@ -21,7 +21,7 @@ def recommend_signal_leverage(
     metrics: Dict[str, Any],
     execution_suitability: Dict[str, Any] | None = None,
 ) -> int:
-    """Return an evidence-bound PAPER_ONLY leverage recommendation from 4x to 18x.
+    """Return an evidence-bound SIGNAL_ONLY leverage recommendation from 4x to 18x.
 
     The recommendation is the minimum of independent score, structural-stop,
     volatility, execution-friction, and execution-suitability ceilings.  It is
