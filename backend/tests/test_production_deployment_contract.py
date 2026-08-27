@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -10,20 +11,40 @@ from waterfallhunter.core.contracts import ExecutionMode, SignalDecisionPacket
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "deploy-production.yml"
 DEPLOY_SCRIPT = ROOT / "scripts" / "deploy_production.sh"
+SCAN_EXCLUDED_PARTS = {
+    ".git",
+    ".next",
+    ".pytest_cache",
+    ".venv",
+    "__pycache__",
+    "node_modules",
+}
 
 
 def _tracked_text_files() -> list[Path]:
-    result = subprocess.run(
-        ["git", "ls-files", "-z"],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
+    git = shutil.which("git")
+    if git is not None:
+        result = subprocess.run(
+            [git, "ls-files", "-z"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+        )
+        return [
+            ROOT / raw.decode("utf-8")
+            for raw in result.stdout.split(b"\0")
+            if raw
+        ]
+
+    # The production backend image intentionally omits git. Container
+    # validation mounts a clean checkout read-only at ROOT, so conservatively
+    # scan every visible repository file while excluding generated/VCS trees.
+    return sorted(
+        path
+        for path in ROOT.rglob("*")
+        if path.is_file()
+        and not any(part in SCAN_EXCLUDED_PARTS for part in path.parts)
     )
-    return [
-        ROOT / raw.decode("utf-8")
-        for raw in result.stdout.split(b"\0")
-        if raw
-    ]
 
 
 def test_execution_mode_is_signal_only() -> None:
