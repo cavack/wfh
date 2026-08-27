@@ -133,6 +133,14 @@ def test_privileged_deploy_does_not_use_workflow_run_head_code() -> None:
     assert "    permissions:\n      contents: read\n" in deploy_job
 
 
+def test_deployment_rejects_stale_main_revisions_at_both_boundaries() -> None:
+    workflow_text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+    script_text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    equality_gate = 'test "$(git rev-parse origin/main)" = "$WFH_DEPLOY_SHA"'
+    assert equality_gate in workflow_text
+    assert equality_gate in script_text
+
+
 def test_production_deploy_workflow_pins_ssh_host_identity() -> None:
     text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
     assert "WFH_PROD_KNOWN_HOSTS" in text
@@ -141,21 +149,77 @@ def test_production_deploy_workflow_pins_ssh_host_identity() -> None:
     assert "StrictHostKeyChecking=no" not in text
 
 
+def test_host_deploy_uses_deploy_owned_lock_and_certified_previous_revision() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    assert 'LOCK_FILE="${WFH_DEPLOY_LOCK_FILE:-${STATE_DIR}/deploy.lock}"' in text
+    assert "resolve_previous_revision" in text
+    assert "restore_previous_workspace" in text
+    assert 'PREVIOUS_SHA="$(resolve_previous_revision)"' in text
+
+
+def test_host_deploy_tracks_possible_migration_mutation_before_apply() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    apply_index = text.index("--apply --source-revision")
+    marker_index = text.rfind("MIGRATION_MAY_HAVE_MUTATED=1", 0, apply_index)
+    assert marker_index >= 0
+
+
+def test_host_deploy_failure_and_signal_paths_are_rollback_aware() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    fail_body = text.split("fail() {", maxsplit=1)[1].split("}\n", maxsplit=1)[0]
+    assert "terminate_with_cleanup 1" in fail_body
+    assert "trap on_error ERR" in text
+    assert "trap 'on_signal TERM' TERM" in text
+    assert "trap 'on_signal HUP' HUP" in text
+    assert "trap 'on_signal INT' INT" in text
+    assert "MIGRATION_MAY_HAVE_MUTATED" in text
+    assert "RUNTIME_REPLACED" in text
+
+
+def test_host_deploy_certifies_all_release_containers_healthy() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    assert text.count("wait_for_container_healthy waterfall-backend") >= 2
+    assert text.count("wait_for_container_healthy waterfall-frontend") >= 2
+    assert text.count("wait_for_container_healthy waterfall-watchdog") >= 2
+
+
+def test_telegram_cutover_is_captured_at_activation_time() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    activation = text.split("activate_telegram_for_release() {", maxsplit=1)[1].split(
+        "}\n", maxsplit=1
+    )[0]
+    assert 'TELEGRAM_CUTOVER_EPOCH="$(date -u +%s)"' in activation
+    assert 'set_env_value TELEGRAM_SIGNAL_DELIVERY_CUTOVER_AT "$TELEGRAM_CUTOVER_EPOCH"' in activation
+    assert "telegram_cutover_at=${TELEGRAM_CUTOVER_EPOCH}" in text
+
+
+def test_successful_deploy_prunes_certified_database_backups() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    assert "WFH_DEPLOY_BACKUP_RETENTION_COUNT" in text
+    assert "prune_database_backups" in text
+    certificate_index = text.index('cat > "${STATE_DIR}/last-successful-deploy.txt"')
+    prune_index = text.index("prune_database_backups", certificate_index)
+    assert prune_index > certificate_index
+
+
 def test_host_deploy_orders_backup_migration_telegram_and_runtime_certification() -> None:
     text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
     main_sequence = text.split('[[ "$WFH_DEPLOY_SHA"', maxsplit=1)[1]
     ordered_markers = [
         "flock -n 9",
-        "git merge-base --is-ancestor",
+        'test "$(git rev-parse origin/main)" = "$WFH_DEPLOY_SHA"',
         "assert_signal_only_runtime_boundary",
         "docker compose build",
         "backup_database",
         "--preflight",
+        "MIGRATION_MAY_HAVE_MUTATED=1",
         "--apply --source-revision",
         "activate_telegram_for_release",
         "docker compose up -d",
         "/api/livez",
         "/api/readyz",
+        "wait_for_container_healthy waterfall-frontend",
+        "wait_for_container_healthy waterfall-watchdog",
         "org.opencontainers.image.revision",
     ]
     positions = [main_sequence.index(marker) for marker in ordered_markers]
