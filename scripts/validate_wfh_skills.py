@@ -182,6 +182,29 @@ def _validate_shared_readme(path: Path) -> list[str]:
     return errors
 
 
+def _expected_adapter_body(expected_name: str) -> str:
+    canonical = f"../../../skills/waterfallhunter/{expected_name}/SKILL.md"
+    return "\n".join(
+        [
+            "# WaterfallHunter discovery adapter",
+            "",
+            "Before acting:",
+            "1. Read `../../../skills/waterfallhunter/README.md`.",
+            f"2. Read `{canonical}`.",
+            "3. Treat the canonical file as authoritative; this adapter contains no independent workflow.",
+            "4. If either file cannot be loaded, stop and report the missing repository context.",
+        ]
+    )
+
+
+def _adapter_body(text: str, path: Path) -> str | None:
+    lines = text.splitlines()
+    closing, _ = _frontmatter_bounds(lines, path)
+    if closing is None:
+        return None
+    return "\n".join(lines[closing + 1 :]).strip()
+
+
 def _validate_adapter(path: Path, expected_name: str) -> list[str]:
     text, errors = _read_text(path)
     if text is None:
@@ -191,10 +214,11 @@ def _validate_adapter(path: Path, expected_name: str) -> list[str]:
     errors.extend(_validate_name(path, expected_name, frontmatter.get("name")))
     errors.extend(_validate_description(path, frontmatter.get("description")))
 
-    canonical = f"../../../skills/waterfallhunter/{expected_name}/SKILL.md"
-    for marker in ("../../../skills/waterfallhunter/README.md", canonical, ADAPTER_MARKER):
-        if marker not in text:
-            errors.append(f"{path}: missing discovery adapter marker {marker!r}")
+    body = _adapter_body(text, path)
+    if body is not None and body != _expected_adapter_body(expected_name):
+        errors.append(
+            f"{path}: discovery adapter body must match canonical delegation template exactly"
+        )
     return errors
 
 
