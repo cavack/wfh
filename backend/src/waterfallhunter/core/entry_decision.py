@@ -373,7 +373,7 @@ def build_entry_decision(
         and cross_ok
         and trade_plan_ok
     ):
-        decision = "ENTRY_READY"
+        decision = "ACTIVE" if status == "TRIGGERED" else "ENTRY_READY"
         reasons.append("ENTRY_GATES_PASS")
     elif readiness >= policy.forming_minimum:
         decision = "FORMING"

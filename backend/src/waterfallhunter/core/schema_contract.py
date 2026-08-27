@@ -14,7 +14,7 @@ from waterfallhunter.core.schema_unique_constraints import (
 )
 
 
-CURRENT_RUNTIME_SCHEMA_VERSION = 5
+CURRENT_RUNTIME_SCHEMA_VERSION = 6
 NON_NEGATIVE_INTEGER_CREATED_AT_CHECK = (
     "check(typeof(created_at) = 'integer' and created_at >= 0)"
 )
@@ -756,6 +756,40 @@ _RUNTIME_SCHEMA: dict[str, ManagedTableSpec] = {
                 "DELETE",
                 "domain outbox events cannot be deleted",
             ),
+        ),
+    ),
+    "entry_decision_events": ManagedTableSpec(
+        name="entry_decision_events",
+        columns=(
+            _c("id", "INTEGER", pk=1, autoincrement=True),
+            _c("symbol", "TEXT", not_null=True),
+            _c("event_at", "INTEGER", not_null=True),
+            _c("decision", "TEXT", not_null=True),
+            _c("lifecycle_state", "TEXT", not_null=True),
+            _c("entry_readiness", "REAL", not_null=True),
+            _c("evidence_coverage_pct", "REAL", not_null=True),
+            _c("policy_version", "TEXT", not_null=True),
+            _c("packet_json", "TEXT", not_null=True),
+            _c("packet_hash", "TEXT", not_null=True),
+            _c("created_at", "INTEGER", not_null=True),
+        ),
+        indexes=(
+            IndexSpec("idx_entry_decision_symbol_event", ("symbol", "event_at", "id")),
+            IndexSpec("idx_entry_decision_decision_event", ("decision", "event_at")),
+        ),
+        check_fragments=(
+            "check(typeof(symbol) = 'text' and length(symbol) > 0)",
+            "check(typeof(event_at) = 'integer' and event_at >= 0)",
+            "check(decision in ('NO_TRADE','FORMING','ENTRY_READY','ACTIVE','LATE','INVALIDATED','EXPIRED'))",
+            "check(typeof(entry_readiness) in ('integer','real') and entry_readiness >= 0 and entry_readiness <= 100)",
+            "check(typeof(evidence_coverage_pct) in ('integer','real') and evidence_coverage_pct >= 0 and evidence_coverage_pct <= 100)",
+            "check(json_valid(packet_json))",
+            "check(length(packet_hash) = 64 and packet_hash not glob '*[^0-9a-f]*')",
+            NON_NEGATIVE_INTEGER_CREATED_AT_CHECK,
+        ),
+        triggers=_immutable(
+            "entry_decision_events",
+            message="entry decision events are immutable",
         ),
     ),
     "lifecycle_v2_shadow_events": ManagedTableSpec(

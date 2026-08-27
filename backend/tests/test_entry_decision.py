@@ -84,3 +84,9 @@ def test_active_buying_and_weak_structure_do_not_promote() -> None:
     assert packet["decision"] == "NO_TRADE"
     assert packet["entry_readiness"] < EntryDecisionPolicy().forming_minimum
     assert "BUYERS_ACTIVE" in packet["reason_codes"]
+
+
+def test_triggered_strong_setup_becomes_active_not_a_disappearing_trigger() -> None:
+    packet = decide(strong_metrics(), status="TRIGGERED")
+    assert packet["decision"] == "ACTIVE"
+    assert packet["hard_blocked"] is False

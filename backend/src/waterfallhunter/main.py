@@ -21,6 +21,8 @@ from waterfallhunter.discovery.lbank_scanner import LBankCatalogScanner
 from waterfallhunter.discovery.dexscreener import DexScreenerClient
 from waterfallhunter.discovery.onchain import OnChainIntelligence
 from waterfallhunter.core.multi_exchange_validator import MultiExchangeValidator
+from waterfallhunter.core.entry_decision import build_entry_decision
+from waterfallhunter.core.entry_decision_store import EntryDecisionStore
 from waterfallhunter.core.notifier import TelegramNotifier
 from waterfallhunter.core.notification_delivery import (
     NotificationDeliveryError,
@@ -131,6 +133,11 @@ db = DBAdapter(
 )
 
 stage_lifecycle_store = StageLifecycleStore(
+    db_path=db.db_path,
+    verify_schema=False,
+)
+
+entry_decision_store = EntryDecisionStore(
     db_path=db.db_path,
     verify_schema=False,
 )
@@ -1569,6 +1576,37 @@ async def evaluate_candidate(
                 snapshot_stages,
             )
         )
+
+    decision_now = int(time.time())
+    try:
+        result_metrics.setdefault("applied_leverage", get_leverage(symbol))
+    except Exception:
+        result_metrics.setdefault("applied_leverage", None)
+
+    decision_state = str(
+        result.get("suggested_status")
+        if result.get("suggested_status") in {"WATCH", "FUEL-RICH", "PRE-TRIGGER", "ARMED", "TRIGGERED", "EXHAUSTED", "INVALIDATED"}
+        else result.get("observation_status")
+        if result.get("observation_status") in {"WATCH", "FUEL-RICH", "PRE-TRIGGER", "ARMED"}
+        else current_state
+    )
+    reference_age = (
+        max(0.0, decision_now - float(reference_observed_at))
+        if isinstance(reference_observed_at, (int, float))
+        and not isinstance(reference_observed_at, bool)
+        else None
+    )
+    entry_decision = build_entry_decision(
+        result_metrics,
+        decision_state,
+        evaluated_at=decision_now,
+        analysis_age_seconds=max(0.0, decision_now - analysis_observed_at),
+        reference_age_seconds=reference_age,
+    )
+    event_id = entry_decision_store.append_if_changed(symbol, entry_decision)
+    entry_decision["event_persisted"] = event_id is not None
+    entry_decision["event_id"] = event_id
+    result_metrics["entry_decision"] = entry_decision
 
     episode_id = f"{symbol}:{int(data.get('lifecycle_id') or 1)}"
 

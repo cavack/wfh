@@ -40,6 +40,8 @@ def compact_metrics(
         "breakdown_confirmation",
         "benchmark_context",
         "relative_weakness_features",
+        "cascade_intelligence",
+        "entry_decision",
     )
 
     result = {

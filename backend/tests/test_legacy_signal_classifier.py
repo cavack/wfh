@@ -330,7 +330,7 @@ def test_apply_rolls_back_all_new_rows_when_existing_metadata_conflicts(tmp_path
 def test_classifier_rejects_an_unsupported_future_schema_version(tmp_path) -> None:
     db_path = migrate_test_database(tmp_path / "future.db")
     with sqlite3.connect(db_path) as conn:
-        conn.execute("PRAGMA user_version=6")
+        conn.execute("PRAGMA user_version=7")
 
     with pytest.raises(LegacyClassificationError, match="FUTURE_SCHEMA_UNSUPPORTED"):
         preview_legacy_classification(db_path)
