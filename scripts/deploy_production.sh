@@ -231,8 +231,8 @@ rollback_previous_revision() {
   fi
 
   docker compose up -d --remove-orphans || return 1
-  wait_for_backend_endpoint /api/livez 20 3 || return 1
-  wait_for_backend_endpoint /api/readyz 30 4 || return 1
+  wait_for_backend_endpoint /livez 20 3 || return 1
+  wait_for_backend_endpoint /readyz 30 4 || return 1
   wait_for_container_healthy waterfall-backend 30 3 || return 1
   wait_for_container_healthy waterfall-frontend 30 3 || return 1
   wait_for_container_healthy waterfall-watchdog 30 3 || return 1
@@ -337,8 +337,8 @@ activate_telegram_for_release
 docker compose up -d --remove-orphans
 RUNTIME_REPLACED=1
 
-wait_for_backend_endpoint /api/livez 20 3 || fail "backend /api/livez did not become healthy"
-wait_for_backend_endpoint /api/readyz 30 4 || fail "backend /api/readyz did not become ready"
+wait_for_backend_endpoint /livez 20 3 || fail "backend /livez did not become healthy"
+wait_for_backend_endpoint /readyz 30 4 || fail "backend /readyz did not become ready"
 wait_for_container_healthy waterfall-backend 30 3 || fail "backend container did not become healthy"
 wait_for_container_healthy waterfall-frontend 30 3 || fail "frontend container did not become healthy"
 wait_for_container_healthy waterfall-watchdog 30 3 || fail "watchdog container did not become healthy"
