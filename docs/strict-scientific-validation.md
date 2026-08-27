@@ -66,14 +66,14 @@ Insufficient evidence produces a hash-bound report and model card with
 approval. Both always retain:
 
 ```text
-execution_mode=PAPER_ONLY
+execution_mode=SIGNAL_ONLY
 promotion_allowed=false
 probability_display_allowed=false
 live_execution_allowed=false
 ```
 
 Only a separate explicit `FEATURE_PROMOTION_APPROVAL` may authorize a later
-paper-product change. Live trading remains outside the system contract.
+simulated-product change. Live trading remains outside the system contract.
 
 Example invocation:
 

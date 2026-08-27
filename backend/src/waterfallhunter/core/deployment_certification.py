@@ -115,7 +115,7 @@ class ShadowSoakEvidence(BaseModel):
         if self.ended_at <= self.started_at:
             raise ValueError("shadow soak end must follow start")
         if self.paper_only is not True:
-            raise ValueError("shadow soak must remain paper-only")
+            raise ValueError("shadow soak must remain signal-only")
         if any(character not in "0123456789abcdef" for character in self.source_revision):
             raise ValueError("shadow soak revision must be lowercase hexadecimal")
         return self

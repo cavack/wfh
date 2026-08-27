@@ -250,7 +250,7 @@ export default function Dashboard() {
           <Activity className="shrink-0 text-emerald-400" size={24} aria-hidden="true" />
           <div className="min-w-0 leading-tight">
             <h1 className="truncate text-base font-bold tracking-tight sm:text-lg">WaterfallHunter</h1>
-            <p className="hidden text-xs text-slate-400 sm:block">Evidence-first paper research terminal · no live orders</p>
+            <p className="hidden text-xs text-slate-400 sm:block">Evidence-first simulated research terminal · no live orders</p>
           </div>
           <div className="ml-auto flex items-center gap-2">
             {generatedAt !== null && (
@@ -270,7 +270,7 @@ export default function Dashboard() {
             <a href="#lifecycle-shadow" className="section-nav-link"><GitBranch size={14} />Lifecycle shadow</a>
             <a href="#backtest-lab" className="section-nav-link"><FlaskConical size={14} />Backtest Lab</a>
             <a href="#live-candidates" className="section-nav-link"><Radio size={14} />Candidates</a>
-            <span className="ml-auto hidden shrink-0 self-center pr-1 font-mono text-[11px] font-semibold tracking-wider text-emerald-300/90 md:inline" title="Project invariant: this system never places orders">PAPER ONLY · LIVE TRADING OFF</span>
+            <span className="ml-auto hidden shrink-0 self-center pr-1 font-mono text-[11px] font-semibold tracking-wider text-emerald-300/90 md:inline" title="Project invariant: this system never places orders">SIGNAL_ONLY · LIVE TRADING OFF</span>
           </div>
         </nav>
       </header>

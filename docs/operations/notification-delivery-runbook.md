@@ -1,6 +1,6 @@
 # Notification delivery runbook
 
-This runbook covers the paper-only durable outbox. A signal transaction creates
+This runbook covers the signal-only durable outbox. A signal transaction creates
 the internal event exactly once. External delivery is at-least-once and is never
 allowed to roll back or mutate the signal decision.
 

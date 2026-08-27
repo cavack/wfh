@@ -1,4 +1,4 @@
-# Paper-only deployment certification runbook
+# Signal-only deployment certification runbook
 
 This runbook prepares evidence. It does not authorize a Production backup,
 migration, deployment, restart, Telegram send, feature promotion, or live order.
@@ -73,7 +73,7 @@ Build one `deployment_certification_request_v1` JSON packet containing:
 - liveness, health, readiness, schema readiness and database readiness bound to
   source revision, running image digest, runtime fingerprint, staging
   environment, and `observed_at` (max age one hour);
-- at least 24 hours paper-only shadow soak, request error rate at or below
+- at least 24 hours signal-only shadow soak, request error rate at or below
   0.1%, zero OOM/schema errors, and zero live-order paths. The soak packet must
   bind its start/end, staging environment, source revision, built-image digest,
   and runtime fingerprint to the artifact being certified. Provenance must

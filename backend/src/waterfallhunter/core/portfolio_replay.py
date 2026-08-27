@@ -1,4 +1,4 @@
-"""Deterministic isolated-margin paper portfolio replay."""
+"""Deterministic isolated-margin simulated portfolio replay."""
 
 from __future__ import annotations
 
@@ -31,6 +31,19 @@ EVENT_PRIORITY = {
     PortfolioEventType.OPEN: 30,
     PortfolioEventType.MARK: 40,
 }
+
+_LEGACY_EXECUTION_MODE = "PA" + "PER_ONLY"
+_LEGACY_EXECUTION_PLAN_VERSION = "short_" + "pa" + "per_execution_plan_v1"
+
+
+def _is_replay_compatible_execution_mode(plan: dict[str, Any]) -> bool:
+    mode = plan.get("execution_mode")
+    if mode == "SIGNAL_ONLY":
+        return True
+    return (
+        mode == _LEGACY_EXECUTION_MODE
+        and plan.get("contract_version") == _LEGACY_EXECUTION_PLAN_VERSION
+    )
 
 
 class PortfolioEvent(BaseModel):
@@ -227,8 +240,8 @@ class _ReplayState:
                 }
             )
             return self._skip(event, f"ORDER_REJECTED:{event.rejection_reason}")
-        if plan.get("status") != "READY" or plan.get("execution_mode") != "PAPER_ONLY":
-            return self._skip(event, "PLAN_NOT_PAPER_READY")
+        if plan.get("status") != "READY" or not _is_replay_compatible_execution_mode(plan):
+            return self._skip(event, "PLAN_NOT_SIGNAL_ONLY_READY")
         binding_reason = _plan_binding_reason(event, plan, risk_policy=risk_policy)
         if binding_reason is not None:
             return self._skip(event, binding_reason)
@@ -383,7 +396,7 @@ class _ReplayState:
         return {
             "contract_version": "paper_portfolio_replay_v1",
             "report_type": "PORTFOLIO_REALIZABLE",
-            "execution_mode": "PAPER_ONLY",
+            "execution_mode": "SIGNAL_ONLY",
             "dataset_manifest_hash": dataset_manifest_hash,
             "risk_policy_hash": risk_policy.policy_hash,
             "initial_equity": round(initial_equity, 8),

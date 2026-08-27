@@ -1,12 +1,12 @@
 # Backtest Lab contract
 
 Backtest Lab is a bounded, deterministic research surface over the canonical
-paper portfolio replay. It is not a signal generator, a probability model, a
+simulated portfolio replay. It is not a signal generator, a probability model, a
 promotion gate, or an order path.
 
 ## Safety invariants
 
-- `execution_mode` is always `PAPER_ONLY`.
+- `execution_mode` is always `SIGNAL_ONLY`.
 - `RiskPolicy.v1()` is selected by the server. The request has no risk-policy
   field and unknown fields are rejected.
 - `strategy_equivalent`, `claims_allowed`, and `promotion_allowed` are always
@@ -17,7 +17,7 @@ promotion gate, or an order path.
 - Replay performs no database write and does not update lifecycle, ranking,
   alerts, notifications, or execution state.
 - Missing execution evidence is not synthesized. An `OPEN` event must carry a
-  complete, hash-bound paper execution plan produced by the canonical planner.
+  complete, hash-bound simulated execution plan produced by the canonical planner.
 - The dataset manifest is a 64-character lowercase SHA-256 identity. The API
   validates its shape; the operator remains responsible for independently
   proving the dataset contents and provenance represented by that identity.
@@ -46,7 +46,7 @@ the fixed safety flags. Query parameters are rejected.
 Portfolio event order is deterministic: timestamp, canonical event-type
 priority, then event ID. Event IDs must be unique. `MARK` and `CLOSE` require an
 explicit modeled exit cost; `FUNDING` requires a signed amount; `OPEN` requires
-signal/cluster identity and a paper-ready execution plan.
+signal/cluster identity and a simulated-ready execution plan.
 
 The response contains two deliberately separate reports:
 
