@@ -18,6 +18,8 @@ def test_runtime_alert_and_dashboard_status_use_signal_only_wording() -> None:
     assert "WATERFALL SIGNAL — SIMULATED ALERT" not in notifier
     assert "SIGNAL_ONLY · LIVE TRADING OFF" in dashboard
     assert "SIMULATED ONLY · LIVE TRADING OFF" not in dashboard
+    assert "Evidence-first signal-only research terminal · no live orders" in dashboard
+    assert "Evidence-first simulated research terminal · no live orders" not in dashboard
 
 
 def test_current_deployment_docs_keep_signal_only_as_canonical_contract() -> None:
