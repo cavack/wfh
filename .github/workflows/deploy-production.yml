@@ -12,10 +12,6 @@ on:
         required: true
         type: string
 
-permissions:
-  contents: read
-  actions: read
-
 concurrency:
   group: waterfallhunter-production-deploy
   cancel-in-progress: false
@@ -25,6 +21,9 @@ jobs:
     name: Verify deploy authority and CI evidence
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
     env:
       GH_TOKEN: ${{ github.token }}
       TARGET_SHA_INPUT: ${{ inputs.target_sha }}
@@ -86,6 +85,7 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions: {}
     environment: production
     env:
       TARGET_SHA: ${{ needs.verify.outputs.target_sha }}
