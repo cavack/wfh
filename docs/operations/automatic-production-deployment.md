@@ -55,20 +55,21 @@ TELEGRAM_CHAT_ID=<host-owned value>
 
 ## Deployment sequence
 
-For a validated current `main` tip, `scripts/deploy_production.sh` runs under an exclusive lock below `.deploy/state`:
+For a validated current `main` tip, `scripts/deploy_production.sh` runs under an exclusive lock below `.deploy/state`. If `.deploy/state/production-volumes.override.yml` exists, the host automatically composes it with the repository `docker-compose.yml` and reuses the running backend's Compose project identity. This keeps host-owned external volumes and networks stable across release checkouts.
+
 
 1. validate the target SHA, Production `.env`, backup-retention value, required commands, and clean source worktree;
 2. fetch `origin/main` and require exact equality with `WFH_DEPLOY_SHA`;
 3. resolve the previous certified/running revision for rollback provenance;
 4. verify `LIVE_TRADING_ENABLED=false`;
-5. checkout the exact target revision and validate Compose;
+5. load any host-owned Production topology override, checkout the exact target revision, and validate Compose;
 6. build revision-labelled backend, frontend, and watchdog images;
 7. create a timestamped SQLite backup and verify `PRAGMA integrity_check` plus SHA-256;
 8. run managed migration preflight;
 9. mark migration as potentially mutable before invoking migration apply;
 10. apply migration with `--source-revision <SHA>` using non-interactive Compose execution;
 11. preserve the pre-release `.env`, capture a fresh Telegram cutover timestamp, and enable signal delivery;
-12. run `docker compose up -d --remove-orphans` without deleting persistent volumes;
+12. mark runtime replacement active, remove the three fixed-name core containers, then run `docker compose up -d --remove-orphans` without deleting persistent volumes;
 13. require backend `/livez` and `/readyz`;
 14. require healthy backend, frontend, and watchdog containers;
 15. require all three OCI revision labels to equal the target SHA;
@@ -108,7 +109,7 @@ Every `docker compose run` used by the streamed host deployment is explicitly no
 
 The script marks the database as potentially mutated before `--apply`, because a migration process can change state and then fail. Cleanup therefore remains rollback-aware even for partial apply failures.
 
-`WFH_DEPLOY_BACKUP_RETENTION_COUNT` controls bounded backup retention and must be a positive integer. The default is 10.
+`WFH_DEPLOY_BACKUP_RETENTION_COUNT` controls bounded backup retention and must be a positive integer. The default is 2. Retention is enforced after successful certification and during failure cleanup so repeated failed deployments cannot accumulate full-size database copies indefinitely.
 
 ## Telegram signal delivery
 
@@ -129,9 +130,9 @@ Explicit deployment failures and `ERR`, `TERM`, `HUP`, and `INT` converge on the
 
 Before mutable Production steps, cleanup restores the prior workspace/environment where needed. Once migration may have changed the database, the previous revision is restarted only if its managed-schema preflight proves compatibility with the current schema. If compatibility cannot be certified, automatic source rollback stops, the release containers are stopped to quarantine the incompatible runtime, and the backup/evidence is preserved for operator recovery.
 
-When rollback is allowed, the script restores previous release settings, rebuilds/starts the previous revision, requires backend live/readiness, requires healthy backend/frontend/watchdog containers, verifies the previous OCI revision labels, and rechecks the `SIGNAL_ONLY` safety boundary.
+When rollback is allowed, the script restores previous release settings, rebuilds the previous revision, removes any existing fixed-name core containers to avoid Docker name collisions, starts the previous revision, requires backend live/readiness, requires healthy backend/frontend/watchdog containers, verifies the previous OCI revision labels, and rechecks the `SIGNAL_ONLY` safety boundary.
 
-The script never runs `docker compose down -v` and never deletes the `waterfall_data` volume.
+The script never runs `docker compose down -v` and never deletes the `waterfall_data` volume. Fixed-name container removal affects only replaceable runtime containers; persistent database and monitoring state remain on host-owned volumes.
 
 ## Deployment evidence
 
