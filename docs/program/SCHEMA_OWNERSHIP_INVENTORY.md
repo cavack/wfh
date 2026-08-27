@@ -39,7 +39,7 @@ The previous broad-search inventory incorrectly flagged these files. Direct insp
 | Source file | Direct-file result | B2 treatment |
 | --- | --- | --- |
 | `backend/src/waterfallhunter/core/ws_streamer.py` | no SQLite import or DDL | Remove from schema-owner list; no B2 schema edit. |
-| `backend/src/waterfallhunter/core/lbank_execution.py` | read-only exchange observer; no SQLite schema mutation | Remove from schema-owner list; preserve PAPER_ONLY/read-only execution boundary. |
+| `backend/src/waterfallhunter/core/lbank_execution.py` | read-only exchange observer; no SQLite schema mutation | Remove from schema-owner list; preserve SIGNAL_ONLY/read-only execution boundary. |
 | `backend/src/waterfallhunter/main.py` | no direct DDL | Not a schema owner. B2 changes only runtime schema-gate/construction ordering; migration must never run automatically here. |
 
 ## Script/test-only schema

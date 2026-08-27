@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make signal lineage first-class and fail-closed so STRICT and EXPERIMENTAL signals cannot silently mix, while preserving all ScoreV2, lifecycle, ranking, execution, and paper-only behavior.
+**Goal:** Make signal lineage first-class and fail-closed so STRICT and EXPERIMENTAL signals cannot silently mix, while preserving all ScoreV2, lifecycle, ranking, execution, and signal-only behavior.
 
 **Architecture:** Introduce schema version 3 with immutable `signal_metadata` and an explicit `canonical_signal_view`, then require future signal persistence to atomically commit catalogue CAS + ledger + metadata. Legacy classification is deterministic and append-only; incomplete/conflicting rows remain unresolved and non-canonical. Consumers move to canonical reads with explicit cohort policy, and startup adds a read-only metadata-completeness gate before workers start.
 

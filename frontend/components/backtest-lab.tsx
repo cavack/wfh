@@ -36,7 +36,7 @@ type PortfolioReport = {
 
 type BacktestResponse = {
   contract_version: string;
-  execution_mode: "PAPER_ONLY";
+  execution_mode: "SIGNAL_ONLY";
   strategy_equivalent: false;
   claims_allowed: false;
   promotion_allowed: false;
@@ -47,7 +47,7 @@ type BacktestResponse = {
 
 type ProductionBundleResponse = {
   contract_version: "backtest_production_bundle_v1";
-  execution_mode: "PAPER_ONLY";
+  execution_mode: "SIGNAL_ONLY";
   strategy_equivalent: false;
   portfolio_events_available: false;
   row_count: number;
@@ -168,7 +168,7 @@ export function BacktestLab() {
       const payload = await response.json() as BacktestResponse | { detail?: unknown };
       if (!response.ok) throw new Error(`Replay rejected: ${JSON.stringify((payload as { detail?: unknown }).detail ?? payload)}`);
       const safe = payload as BacktestResponse;
-      if (safe.execution_mode !== "PAPER_ONLY" || safe.strategy_equivalent !== false || safe.claims_allowed !== false || safe.promotion_allowed !== false) {
+      if (safe.execution_mode !== "SIGNAL_ONLY" || safe.strategy_equivalent !== false || safe.claims_allowed !== false || safe.promotion_allowed !== false) {
         throw new Error("Unsafe or incompatible replay contract received.");
       }
       if (runRevision === inputRevision.current) setResult(safe);
@@ -192,7 +192,7 @@ export function BacktestLab() {
       const payload = await response.json() as ProductionBundleResponse | { detail?: unknown };
       if (!response.ok) throw new Error(`Production bundle unavailable: ${JSON.stringify((payload as { detail?: unknown }).detail ?? payload)}`);
       const safe = payload as ProductionBundleResponse;
-      if (safe.execution_mode !== "PAPER_ONLY" || safe.strategy_equivalent !== false || safe.portfolio_events_available !== false) {
+      if (safe.execution_mode !== "SIGNAL_ONLY" || safe.strategy_equivalent !== false || safe.portfolio_events_available !== false) {
         throw new Error("Unsafe or incompatible production bundle received.");
       }
       const bundle = safe.bundle;

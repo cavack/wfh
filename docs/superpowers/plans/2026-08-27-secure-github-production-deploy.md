@@ -26,20 +26,20 @@
 
 **Files:**
 - Modify: `backend/src/waterfallhunter/core/contracts.py`
-- Modify: product/runtime consumers and tests that reference `ExecutionMode.PAPER_ONLY`
-- Modify: user-facing frontend/config/docs copy containing `PAPER_ONLY`, `paper-only`, or `paper trading`
+- Modify: product/runtime consumers and tests that reference `ExecutionMode.SIGNAL_ONLY`
+- Modify: user-facing frontend/config/docs copy containing `SIGNAL_ONLY`, `signal-only`, or `signal-only operation`
 - Create: `backend/tests/test_signal_only_terminology.py`
 
 **Interfaces:**
-- Produces: `ExecutionMode.SIGNAL_ONLY = "SIGNAL_ONLY"` and no product/runtime API response emits `PAPER_ONLY`.
+- Produces: `ExecutionMode.SIGNAL_ONLY = "SIGNAL_ONLY"` and no product/runtime API response emits `SIGNAL_ONLY`.
 
 - [ ] **Step 1: Add failing contract/terminology tests**
 
-Assert `ExecutionMode.SIGNAL_ONLY.value == "SIGNAL_ONLY"`, SignalDecision defaults to `SIGNAL_ONLY`, and repository product/runtime source contains none of the deprecated terms (`PAPER_ONLY`, `paper-only`, `paper trading`) outside explicitly grandfathered historical quotation fixtures if any are unavoidable.
+Assert `ExecutionMode.SIGNAL_ONLY.value == "SIGNAL_ONLY"`, SignalDecision defaults to `SIGNAL_ONLY`, and repository product/runtime source contains none of the deprecated terms (`SIGNAL_ONLY`, `signal-only`, `signal-only operation`) outside explicitly grandfathered historical quotation fixtures if any are unavoidable.
 
 - [ ] **Step 2: Run RED**
 
-Run focused canonical-contract/config/backtest/deployment-certification tests and verify failure on the old `PAPER_ONLY` contract.
+Run focused canonical-contract/config/backtest/deployment-certification tests and verify failure on the old `SIGNAL_ONLY` contract.
 
 - [ ] **Step 3: Implement minimal terminology migration**
 
@@ -169,7 +169,7 @@ Explain automatic `TELEGRAM_SIGNAL_DELIVERY_ENABLED=true` and release timestamp 
 
 - [ ] **Step 4: Normalize SIGNAL_ONLY copy**
 
-Update current product/runtime docs/config/UI references from paper-trading boundary language to signal-only language without claiming that historical simulation/backtest mechanics are live execution.
+Update current product/runtime docs/config/UI references from signal-only boundary language to signal-only language without claiming that historical simulation/backtest mechanics are live execution.
 
 ### Task 6: Full validation and review
 

@@ -227,7 +227,7 @@ class _ReplayState:
                 }
             )
             return self._skip(event, f"ORDER_REJECTED:{event.rejection_reason}")
-        if plan.get("status") != "READY" or plan.get("execution_mode") != "PAPER_ONLY":
+        if plan.get("status") != "READY" or plan.get("execution_mode") != "SIGNAL_ONLY":
             return self._skip(event, "PLAN_NOT_PAPER_READY")
         binding_reason = _plan_binding_reason(event, plan, risk_policy=risk_policy)
         if binding_reason is not None:
@@ -383,7 +383,7 @@ class _ReplayState:
         return {
             "contract_version": "paper_portfolio_replay_v1",
             "report_type": "PORTFOLIO_REALIZABLE",
-            "execution_mode": "PAPER_ONLY",
+            "execution_mode": "SIGNAL_ONLY",
             "dataset_manifest_hash": dataset_manifest_hash,
             "risk_policy_hash": risk_policy.policy_hash,
             "initial_equity": round(initial_equity, 8),

@@ -7,7 +7,7 @@ This release consolidates the stacked Wave 1C through Wave 7 implementation onto
 Production safety boundary:
 
 - `LIVE_TRADING_ENABLED=false` remains mandatory.
-- This release is paper-only.
+- This release is signal-only.
 - No live order path is authorized.
 - Telegram delivery remains separately controlled.
 - Database migration is explicit and must be run before application restart.

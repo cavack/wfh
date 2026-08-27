@@ -6,7 +6,7 @@ promotion gate, or an order path.
 
 ## Safety invariants
 
-- `execution_mode` is always `PAPER_ONLY`.
+- `execution_mode` is always `SIGNAL_ONLY`.
 - `RiskPolicy.v1()` is selected by the server. The request has no risk-policy
   field and unknown fields are rejected.
 - `strategy_equivalent`, `claims_allowed`, and `promotion_allowed` are always

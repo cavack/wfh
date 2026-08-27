@@ -22,7 +22,7 @@ The strategy is split into three deterministic stages:
 
 ## Risk and Outcome Definition
 
-- Keep paper-only operation and `LIVE_TRADING_ENABLED=false`.
+- Keep signal-only operation and `LIVE_TRADING_ENABLED=false`.
 - Use the structural stop, constrained by a minimum and maximum percent distance. The backtest must use the next candle open, conservative two-sided fee/slippage, and stop-first resolution for intrabar ambiguity.
 - A target must be at least 1R net of cost. Win-rate optimization by shrinking TP below 1R is rejected.
 - A timeout at 24 hours is reported separately and not counted as a win.

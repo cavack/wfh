@@ -8,8 +8,8 @@ WaterfallHunter is `SIGNAL_ONLY`.
 
 - `LIVE_TRADING_ENABLED=false` is mandatory before, during, and after deployment.
 - No order placement, order cancellation, automatic position execution, or exchange-account trading action is introduced.
-- Product/runtime/user-facing `PAPER_ONLY`, `paper-only`, and `paper trading` terminology is replaced by `SIGNAL_ONLY` / `signal-only`.
-- Historical/research replay may still simulate execution economics, but it must not describe the product runtime as paper trading.
+- Product/runtime/user-facing `SIGNAL_ONLY`, `signal-only`, and `signal-only operation` terminology is replaced by `SIGNAL_ONLY` / `signal-only`.
+- Historical/research replay may still simulate execution economics, but it must not describe the product runtime as signal-only operation.
 
 ## Architecture
 GitHub Actions is the deployment control plane. CI remains the validation workflow for `main`. A second workflow runs only after the `CI` workflow completes successfully for `main`, resolves the exact certified SHA from `workflow_run.head_sha`, and deploys that immutable revision to Production over pinned-host-key SSH.
@@ -75,7 +75,7 @@ Telegram delivery is part of the automatic release path, but only for signal not
 ## Terminology migration
 The canonical runtime/product execution mode becomes `SIGNAL_ONLY`.
 
-Any API/contract field currently emitting `PAPER_ONLY` must emit `SIGNAL_ONLY`; corresponding backend tests, frontend copy, docs, configuration comments, and deployment certification vocabulary must be updated. A repository hygiene regression test prevents reintroduction of the deprecated product-boundary terms.
+Any API/contract field currently emitting `SIGNAL_ONLY` must emit `SIGNAL_ONLY`; corresponding backend tests, frontend copy, docs, configuration comments, and deployment certification vocabulary must be updated. A repository hygiene regression test prevents reintroduction of the deprecated product-boundary terms.
 
 ## Verification
 The PR must demonstrate RED→GREEN tests for:

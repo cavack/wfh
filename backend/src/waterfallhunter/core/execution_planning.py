@@ -787,7 +787,7 @@ def build_short_paper_execution_plan(
         )
     return _with_execution_plan_hash({
         "contract_version": "short_paper_execution_plan_v1",
-        "execution_mode": "PAPER_ONLY",
+        "execution_mode": "SIGNAL_ONLY",
         "status": "READY",
         "reason_codes": [],
         "signal_id": signal_id,
@@ -920,7 +920,7 @@ def _blocked_plan(
 ) -> dict[str, Any]:
     return _with_execution_plan_hash({
         "contract_version": "short_paper_execution_plan_v1",
-        "execution_mode": "PAPER_ONLY",
+        "execution_mode": "SIGNAL_ONLY",
         "status": "BLOCKED",
         "reason_codes": list(reason_codes),
         "signal_id": signal_id,
