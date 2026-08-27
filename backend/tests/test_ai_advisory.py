@@ -184,3 +184,76 @@ def test_runtime_expiry_reconciliation_persists_explicit_expiry(tmp_path, monkey
     assert latest["decision"] == "EXPIRED"
     assert latest["trade_plan"]["expires_at"] == 150
     assert main.scanner.active_candidates["SXTUSDT"]["metrics"]["entry_decision"]["decision"] == "EXPIRED"
+
+
+def test_runtime_reconciles_actionable_decision_when_symbol_leaves_active_candidates(tmp_path, monkeypatch) -> None:
+    db_path = migrate_test_database(tmp_path / "inactive-candidate.db")
+    store = EntryDecisionStore(db_path)
+    decision = {
+        "contract_version": "entry_decision_v1",
+        "policy_version": "entry_policy_v1",
+        "evaluated_at": 100,
+        "decision": "ENTRY_READY",
+        "lifecycle_state": "ARMED",
+        "entry_readiness": 84.0,
+        "evidence_coverage_pct": 82.0,
+        "hard_blocked": False,
+        "block_reasons": [],
+        "reason_codes": ["ENTRY_GATES_PASS"],
+        "components": {},
+        "evidence_summary": {},
+        "trade_plan": {
+            "entry_price": 0.1,
+            "stop_loss": 0.103,
+            "take_profit_1": 0.097,
+            "take_profit_2": 0.094,
+        },
+        "policy": {},
+    }
+    event_id = store.append_if_changed("GONEUSDT", decision)
+    assert event_id is not None
+    monkeypatch.setattr(main, "entry_decision_store", store)
+
+    assert main._reconcile_inactive_actionable_decisions(
+        active_symbols={"OTHERUSDT"},
+        evaluated_at=150,
+    ) == 1
+    latest = store.latest_for_symbol("GONEUSDT")
+    assert latest is not None
+    assert latest["decision"] == "INVALIDATED"
+    assert latest["block_reasons"] == ["CANDIDATE_NO_LONGER_ACTIVE"]
+
+    assert main._reconcile_inactive_actionable_decisions(
+        active_symbols={"OTHERUSDT"},
+        evaluated_at=151,
+    ) == 0
+
+
+def test_runtime_does_not_invalidate_actionable_symbol_still_active(tmp_path, monkeypatch) -> None:
+    db_path = migrate_test_database(tmp_path / "active-candidate.db")
+    store = EntryDecisionStore(db_path)
+    decision = {
+        "contract_version": "entry_decision_v1",
+        "policy_version": "entry_policy_v1",
+        "evaluated_at": 100,
+        "decision": "ENTRY_READY",
+        "lifecycle_state": "ARMED",
+        "entry_readiness": 84.0,
+        "evidence_coverage_pct": 82.0,
+        "hard_blocked": False,
+        "block_reasons": [],
+        "reason_codes": ["ENTRY_GATES_PASS"],
+        "components": {},
+        "evidence_summary": {},
+        "trade_plan": None,
+        "policy": {},
+    }
+    event_id = store.append_if_changed("STAYUSDT", decision)
+    assert event_id is not None
+    monkeypatch.setattr(main, "entry_decision_store", store)
+
+    assert main._reconcile_inactive_actionable_decisions(
+        active_symbols={"STAYUSDT"},
+        evaluated_at=150,
+    ) == 0
+    assert store.latest_for_symbol("STAYUSDT")["decision"] == "ENTRY_READY"

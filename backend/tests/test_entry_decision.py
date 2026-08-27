@@ -2,6 +2,7 @@ from waterfallhunter.core.entry_decision import (
     EntryDecisionPolicy,
     build_entry_decision,
     build_expired_entry_decision,
+    build_invalidated_entry_decision,
 )
 
 
@@ -182,6 +183,35 @@ def test_expiry_reconciler_requires_and_preserves_explicit_trade_plan_expiry() -
 
     no_expiry = decide(strong_metrics())
     assert build_expired_entry_decision(no_expiry, evaluated_at=1_788_999_999) is None
+
+
+def test_actionable_decision_can_be_invalidated_when_candidate_leaves_active_universe() -> None:
+    previous = decide(strong_metrics())
+    packet = build_invalidated_entry_decision(
+        previous,
+        evaluated_at=1_788_000_050,
+        block_reason="CANDIDATE_NO_LONGER_ACTIVE",
+    )
+    assert packet is not None
+    assert packet["decision"] == "INVALIDATED"
+    assert packet["hard_blocked"] is True
+    assert packet["block_reasons"] == ["CANDIDATE_NO_LONGER_ACTIVE"]
+    assert packet["trade_plan"] == previous["trade_plan"]
+
+
+def test_non_actionable_decision_is_not_reinvalidated_when_candidate_is_inactive() -> None:
+    previous = decide(strong_metrics())
+    expired = build_invalidated_entry_decision(
+        previous,
+        evaluated_at=1_788_000_050,
+        block_reason="CANDIDATE_NO_LONGER_ACTIVE",
+    )
+    assert expired is not None
+    assert build_invalidated_entry_decision(
+        expired,
+        evaluated_at=1_788_000_060,
+        block_reason="CANDIDATE_NO_LONGER_ACTIVE",
+    ) is None
 
 
 def test_current_trade_plan_expiry_cannot_emit_entry_ready() -> None:

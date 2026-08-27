@@ -26,6 +26,7 @@ from waterfallhunter.core.entry_decision import (
     EntryDecisionPolicy,
     build_entry_decision,
     build_expired_entry_decision,
+    build_invalidated_entry_decision,
 )
 from waterfallhunter.core.entry_decision_store import EntryDecisionStore
 from waterfallhunter.core.notifier import TelegramNotifier, TelegramSignalTransport
@@ -1296,6 +1297,30 @@ def _reconcile_explicit_entry_expirations(*, evaluated_at: int) -> int:
             metrics = live.get("metrics")
             if isinstance(metrics, dict):
                 metrics["entry_decision"] = expired
+        reconciled += 1
+    return reconciled
+
+
+def _reconcile_inactive_actionable_decisions(
+    *,
+    active_symbols: set[str],
+    evaluated_at: int,
+) -> int:
+    """Invalidate actionable decisions after a symbol leaves the active universe."""
+    reconciled = 0
+    for symbol, previous in entry_decision_store.latest_map().items():
+        if symbol in active_symbols:
+            continue
+        invalidated = build_invalidated_entry_decision(
+            previous,
+            evaluated_at=evaluated_at,
+            block_reason="CANDIDATE_NO_LONGER_ACTIVE",
+        )
+        if invalidated is None:
+            continue
+        event_id = entry_decision_store.append_if_changed(symbol, invalidated)
+        if event_id is None:
+            continue
         reconciled += 1
     return reconciled
 
@@ -2716,6 +2741,17 @@ async def hunter_loop(
             candidates = (
                 db.get_all_active_candidates()
             )
+
+            inactive_count = await asyncio.to_thread(
+                _reconcile_inactive_actionable_decisions,
+                active_symbols=set(candidates),
+                evaluated_at=int(time.time()),
+            )
+            if inactive_count:
+                logger.info(
+                    "Invalidated %s canonical entries outside the active universe",
+                    inactive_count,
+                )
 
             if candidates:
                 semaphore = (

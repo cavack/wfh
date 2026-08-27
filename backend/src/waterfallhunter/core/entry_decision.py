@@ -428,6 +428,42 @@ def build_expired_entry_decision(
     return packet
 
 
+def build_invalidated_entry_decision(
+    previous_decision: dict[str, Any],
+    *,
+    evaluated_at: int,
+    block_reason: str,
+) -> dict[str, Any] | None:
+    """Return a durable INVALIDATED transition for a prior actionable decision."""
+    if isinstance(evaluated_at, bool) or not isinstance(evaluated_at, int) or evaluated_at < 0:
+        raise ValueError("evaluated_at must be a non-negative integer")
+    reason = str(block_reason or "").strip()
+    if not reason:
+        raise ValueError("block_reason must be non-empty")
+    previous = _record(previous_decision)
+    if str(previous.get("decision") or "") not in {"ENTRY_READY", "ACTIVE"}:
+        return None
+
+    packet = dict(previous)
+    for transient in (
+        "event_id",
+        "event_at",
+        "symbol",
+        "previous_decision",
+        "ai_advisory",
+        "event_persisted",
+    ):
+        packet.pop(transient, None)
+    packet["evaluated_at"] = evaluated_at
+    packet["decision"] = "INVALIDATED"
+    packet["hard_blocked"] = True
+    packet["block_reasons"] = [reason]
+    packet["reason_codes"] = sorted(
+        set([*list(packet.get("reason_codes") or []), reason])
+    )
+    return packet
+
+
 def _initial_block_reasons(
     metrics: dict[str, Any],
     status: str,
