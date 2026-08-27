@@ -1,5 +1,6 @@
 import asyncio
 import threading
+from collections.abc import Awaitable, Callable
 
 import httpx
 import pytest
@@ -13,190 +14,148 @@ from waterfallhunter.routes_execution_suitability import (
 )
 
 
-def _build_test_app(db_path) -> FastAPI:
-    app = FastAPI()
-    app.include_router(build_execution_suitability_router(str(db_path)))
-    return app
+class _BlockingBuild:
+    def __init__(self, *, starts_before_ready: int = 1) -> None:
+        self.calls: list[int] = []
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self._starts_before_ready = starts_before_ready
+        self._lock = threading.Lock()
+
+    def __call__(
+        self,
+        *,
+        symbol_limit: int = 10_000,
+        examples_per_status: int = 20,
+    ) -> dict:
+        del symbol_limit
+        with self._lock:
+            self.calls.append(examples_per_status)
+            if len(self.calls) >= self._starts_before_ready:
+                self.started.set()
+        assert self.release.wait(timeout=5.0)
+        return _report_payload(examples_per_status)
 
 
-def _report_payload(*, examples_per_status: int) -> dict:
+def _report_payload(examples_per_status: int) -> dict:
     return {
         "schema_version": "singleflight-test-v1",
         "examples_per_status": examples_per_status,
     }
 
 
+def _build_test_app(tmp_path) -> FastAPI:
+    app = FastAPI()
+    app.include_router(
+        build_execution_suitability_router(str(tmp_path / "unused.db"))
+    )
+    return app
+
+
+def _install_build(monkeypatch, replacement) -> None:
+    monkeypatch.setattr(
+        LBankExecutionSuitabilityReport,
+        "build_report",
+        replacement,
+    )
+
+
+async def _get(client: httpx.AsyncClient, examples_per_status: int):
+    return await client.get(
+        "/api/execution-suitability",
+        params={"examples_per_status": examples_per_status},
+    )
+
+
+async def _with_client(
+    app: FastAPI,
+    scenario: Callable[[httpx.AsyncClient], Awaitable[object]],
+):
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+    ) as client:
+        return await scenario(client)
+
+
+def _assert_response(response: httpx.Response, examples_per_status: int) -> None:
+    assert response.status_code == 200
+    assert response.json()["examples_per_status"] == examples_per_status
+
+
 def test_concurrent_execution_suitability_requests_share_one_build(
     tmp_path,
     monkeypatch,
 ):
-    app = _build_test_app(tmp_path / "unused.db")
+    app = _build_test_app(tmp_path)
+    build = _BlockingBuild()
+    _install_build(monkeypatch, build)
 
-    started = threading.Event()
-    release = threading.Event()
-    calls = 0
-    calls_lock = threading.Lock()
+    async def scenario(client):
+        first = asyncio.create_task(_get(client, 0))
+        assert await asyncio.to_thread(build.started.wait, 2.0)
+        second = asyncio.create_task(_get(client, 0))
+        await asyncio.sleep(0.1)
+        build.release.set()
+        return await asyncio.gather(first, second)
 
-    def slow_build_report(
-        self,
-        *,
-        symbol_limit=10_000,
-        examples_per_status=20,
-    ):
-        nonlocal calls
-        with calls_lock:
-            calls += 1
-        started.set()
-        assert release.wait(timeout=5.0)
-        return _report_payload(
-            examples_per_status=examples_per_status
-        )
-
-    monkeypatch.setattr(
-        LBankExecutionSuitabilityReport,
-        "build_report",
-        slow_build_report,
-    )
-
-    async def exercise():
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(
-            transport=transport,
-            base_url="http://test",
-        ) as client:
-            first = asyncio.create_task(
-                client.get(
-                    "/api/execution-suitability?examples_per_status=0"
-                )
-            )
-            assert await asyncio.to_thread(started.wait, 2.0)
-            second = asyncio.create_task(
-                client.get(
-                    "/api/execution-suitability?examples_per_status=0"
-                )
-            )
-            await asyncio.sleep(0.1)
-            release.set()
-            return await asyncio.gather(first, second)
-
-    first_response, second_response = asyncio.run(exercise())
-
-    assert first_response.status_code == 200
-    assert second_response.status_code == 200
-    assert first_response.json() == second_response.json()
-    assert calls == 1
+    first, second = asyncio.run(_with_client(app, scenario))
+    _assert_response(first, 0)
+    _assert_response(second, 0)
+    assert first.json() == second.json()
+    assert build.calls == [0]
 
 
 def test_cancelled_waiter_does_not_cancel_shared_report_build(
     tmp_path,
     monkeypatch,
 ):
-    app = _build_test_app(tmp_path / "unused.db")
+    app = _build_test_app(tmp_path)
+    build = _BlockingBuild()
+    _install_build(monkeypatch, build)
 
-    started = threading.Event()
-    release = threading.Event()
-    calls = 0
-    calls_lock = threading.Lock()
+    async def scenario(client):
+        cancelled = asyncio.create_task(_get(client, 0))
+        assert await asyncio.to_thread(build.started.wait, 2.0)
+        survivor = asyncio.create_task(_get(client, 0))
+        await asyncio.sleep(0.1)
+        cancelled.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cancelled
+        build.release.set()
+        return await survivor
 
-    def slow_build_report(
-        self,
-        *,
-        symbol_limit=10_000,
-        examples_per_status=20,
-    ):
-        nonlocal calls
-        with calls_lock:
-            calls += 1
-        started.set()
-        assert release.wait(timeout=5.0)
-        return _report_payload(
-            examples_per_status=examples_per_status
-        )
-
-    monkeypatch.setattr(
-        LBankExecutionSuitabilityReport,
-        "build_report",
-        slow_build_report,
-    )
-
-    async def exercise():
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(
-            transport=transport,
-            base_url="http://test",
-        ) as client:
-            first = asyncio.create_task(
-                client.get(
-                    "/api/execution-suitability?examples_per_status=0"
-                )
-            )
-            assert await asyncio.to_thread(started.wait, 2.0)
-            second = asyncio.create_task(
-                client.get(
-                    "/api/execution-suitability?examples_per_status=0"
-                )
-            )
-            await asyncio.sleep(0.1)
-            first.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await first
-            release.set()
-            return await second
-
-    second_response = asyncio.run(exercise())
-
-    assert second_response.status_code == 200
-    assert second_response.json()["examples_per_status"] == 0
-    assert calls == 1
+    response = asyncio.run(_with_client(app, scenario))
+    _assert_response(response, 0)
+    assert build.calls == [0]
 
 
 def test_failed_report_build_is_not_reused_by_next_request(
     tmp_path,
     monkeypatch,
 ):
-    app = _build_test_app(tmp_path / "unused.db")
-
+    app = _build_test_app(tmp_path)
     calls = 0
 
-    def flaky_build_report(
-        self,
-        *,
-        symbol_limit=10_000,
-        examples_per_status=20,
-    ):
+    def flaky_build(*, symbol_limit=10_000, examples_per_status=20):
         nonlocal calls
+        del symbol_limit
         calls += 1
         if calls == 1:
             raise RuntimeError("synthetic report failure")
-        return _report_payload(
-            examples_per_status=examples_per_status
-        )
+        return _report_payload(examples_per_status)
 
-    monkeypatch.setattr(
-        LBankExecutionSuitabilityReport,
-        "build_report",
-        flaky_build_report,
-    )
+    _install_build(monkeypatch, flaky_build)
 
-    async def exercise():
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(
-            transport=transport,
-            base_url="http://test",
-        ) as client:
-            with pytest.raises(RuntimeError, match="synthetic report failure"):
-                await client.get(
-                    "/api/execution-suitability?examples_per_status=0"
-                )
-            await asyncio.sleep(0)
-            return await client.get(
-                "/api/execution-suitability?examples_per_status=0"
-            )
+    async def scenario(client):
+        with pytest.raises(RuntimeError, match="synthetic report failure"):
+            await _get(client, 0)
+        await asyncio.sleep(0)
+        return await _get(client, 0)
 
-    second_response = asyncio.run(exercise())
-
-    assert second_response.status_code == 200
-    assert second_response.json()["examples_per_status"] == 0
+    response = asyncio.run(_with_client(app, scenario))
+    _assert_response(response, 0)
     assert calls == 2
 
 
@@ -204,58 +163,20 @@ def test_different_execution_suitability_request_keys_do_not_share_builds(
     tmp_path,
     monkeypatch,
 ):
-    app = _build_test_app(tmp_path / "unused.db")
+    app = _build_test_app(tmp_path)
+    build = _BlockingBuild(starts_before_ready=2)
+    _install_build(monkeypatch, build)
 
-    started = threading.Event()
-    release = threading.Event()
-    calls = []
-    calls_lock = threading.Lock()
+    async def scenario(client):
+        requests = [
+            asyncio.create_task(_get(client, examples))
+            for examples in (0, 1)
+        ]
+        assert await asyncio.to_thread(build.started.wait, 2.0)
+        build.release.set()
+        return await asyncio.gather(*requests)
 
-    def slow_build_report(
-        self,
-        *,
-        symbol_limit=10_000,
-        examples_per_status=20,
-    ):
-        with calls_lock:
-            calls.append(examples_per_status)
-            if len(calls) == 2:
-                started.set()
-        assert release.wait(timeout=5.0)
-        return _report_payload(
-            examples_per_status=examples_per_status
-        )
-
-    monkeypatch.setattr(
-        LBankExecutionSuitabilityReport,
-        "build_report",
-        slow_build_report,
-    )
-
-    async def exercise():
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(
-            transport=transport,
-            base_url="http://test",
-        ) as client:
-            first = asyncio.create_task(
-                client.get(
-                    "/api/execution-suitability?examples_per_status=0"
-                )
-            )
-            second = asyncio.create_task(
-                client.get(
-                    "/api/execution-suitability?examples_per_status=1"
-                )
-            )
-            assert await asyncio.to_thread(started.wait, 2.0)
-            release.set()
-            return await asyncio.gather(first, second)
-
-    first_response, second_response = asyncio.run(exercise())
-
-    assert first_response.status_code == 200
-    assert second_response.status_code == 200
-    assert first_response.json()["examples_per_status"] == 0
-    assert second_response.json()["examples_per_status"] == 1
-    assert sorted(calls) == [0, 1]
+    first, second = asyncio.run(_with_client(app, scenario))
+    _assert_response(first, 0)
+    _assert_response(second, 1)
+    assert sorted(build.calls) == [0, 1]
