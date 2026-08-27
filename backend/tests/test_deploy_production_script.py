@@ -122,18 +122,20 @@ def _index(calls: list[tuple[str, ...]], prefix: tuple[str, ...]) -> int:
 
 def test_invalid_target_sha_fails_before_any_command(tmp_path: Path) -> None:
     runner = FakeRunner()
+    repo = _repo(tmp_path)
 
     with pytest.raises(DeploymentError, match="target SHA"):
-        deploy(target_sha="not-a-sha", repo_dir=_repo(tmp_path), runner=runner)
+        deploy(target_sha="not-a-sha", repo_dir=repo, runner=runner)
 
     assert runner.calls == []
 
 
 def test_dirty_worktree_fails_before_checkout_or_build(tmp_path: Path) -> None:
     runner = FakeRunner(dirty=True)
+    repo = _repo(tmp_path)
 
     with pytest.raises(DeploymentError, match="worktree"):
-        deploy(target_sha=TARGET_SHA, repo_dir=_repo(tmp_path), runner=runner)
+        deploy(target_sha=TARGET_SHA, repo_dir=repo, runner=runner)
 
     assert not any(call[:3] == ("git", "checkout", "--detach") for call in runner.calls)
     assert not any(call[:3] == ("docker", "compose", "build") for call in runner.calls)
@@ -141,9 +143,10 @@ def test_dirty_worktree_fails_before_checkout_or_build(tmp_path: Path) -> None:
 
 def test_target_must_equal_current_origin_main(tmp_path: Path) -> None:
     runner = FakeRunner(target_sha="c" * 40)
+    repo = _repo(tmp_path)
 
     with pytest.raises(DeploymentError, match="origin/main"):
-        deploy(target_sha=TARGET_SHA, repo_dir=_repo(tmp_path), runner=runner)
+        deploy(target_sha=TARGET_SHA, repo_dir=repo, runner=runner)
 
     assert not any(call[:3] == ("git", "checkout", "--detach") for call in runner.calls)
 
@@ -162,9 +165,10 @@ def test_unsafe_or_ambiguous_live_trading_env_fails_closed(
     env_text: str,
 ) -> None:
     runner = FakeRunner()
+    repo = _repo(tmp_path, env_text)
 
     with pytest.raises(DeploymentError, match="LIVE_TRADING_ENABLED"):
-        deploy(target_sha=TARGET_SHA, repo_dir=_repo(tmp_path, env_text), runner=runner)
+        deploy(target_sha=TARGET_SHA, repo_dir=repo, runner=runner)
 
     assert not any(call[:3] == ("docker", "compose", "build") for call in runner.calls)
 
@@ -188,9 +192,10 @@ def test_schema_preflight_failure_restores_tags_and_revision_without_cutover(
     tmp_path: Path,
 ) -> None:
     runner = FakeRunner(preflight_ok=False)
+    repo = _repo(tmp_path)
 
     with pytest.raises(DeploymentError, match="preflight"):
-        deploy(target_sha=TARGET_SHA, repo_dir=_repo(tmp_path), runner=runner)
+        deploy(target_sha=TARGET_SHA, repo_dir=repo, runner=runner)
 
     assert runner.rollback_seen is True
     assert not any(call[:4] == ("docker", "compose", "up", "-d") for call in runner.calls)
@@ -199,11 +204,12 @@ def test_schema_preflight_failure_restores_tags_and_revision_without_cutover(
 
 def test_post_cutover_health_failure_restores_previous_application(tmp_path: Path) -> None:
     runner = FakeRunner(target_health_ok=False)
+    repo = _repo(tmp_path)
 
     with pytest.raises(DeploymentError, match="health"):
         deploy(
             target_sha=TARGET_SHA,
-            repo_dir=_repo(tmp_path),
+            repo_dir=repo,
             runner=runner,
             health_timeout_seconds=0,
         )
