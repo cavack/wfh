@@ -21,3 +21,5 @@ Permanent runtime requirements:
 - Post-deploy health and dashboard smoke checks must pass.
 
 Rollback: retain the previous application images and a certified database backup before migration/cutover.
+
+For the guarded manual GitHub Actions transport from a CI-green `main` revision to the Ubuntu Docker Compose host, including SSH host-key pinning, read-only schema preflight, bounded health verification, and application rollback, follow `docs/operations/github-production-deployment.md`. The GitHub deployment workflow does not apply Production migrations; migration remains the separately certified path in `docs/operations/deployment-certification-runbook.md`.
