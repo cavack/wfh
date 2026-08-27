@@ -9,7 +9,8 @@ from waterfallhunter.core.contracts import ExecutionMode, SignalDecisionPacket
 
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW = ROOT / ".github" / "workflows" / "deploy-production.yml"
+CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+DEPLOY_WORKFLOW = ROOT / ".github" / "workflows" / "deploy-production.yml"
 DEPLOY_SCRIPT = ROOT / "scripts" / "deploy_production.sh"
 SCAN_EXCLUDED_PARTS = {
     ".git",
@@ -96,31 +97,44 @@ def test_tracked_repository_text_does_not_use_deprecated_product_boundary_terms(
     assert offenders == []
 
 
-def test_production_deploy_workflow_is_automatic_after_successful_main_ci() -> None:
-    text = WORKFLOW.read_text(encoding="utf-8")
-    assert "workflow_run:" in text
-    assert "workflows: [CI]" in text or 'workflows: ["CI"]' in text
-    assert "branches: [main]" in text
-    assert "types: [completed]" in text
-    assert "workflow_dispatch" not in text
-    assert "github.event.workflow_run.conclusion == 'success'" in text
-    assert "github.event.workflow_run.event == 'push'" in text
-    assert "github.event.workflow_run.head_branch == 'main'" in text
-    assert "github.event.workflow_run.head_sha" in text
-    assert "environment: production" in text
+def test_production_deploy_is_chained_to_successful_main_push_ci() -> None:
+    ci_text = CI_WORKFLOW.read_text(encoding="utf-8")
+    deploy_text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "workflow_call:" in deploy_text
+    assert "workflow_run:" not in deploy_text
+    assert "workflow_dispatch" not in deploy_text
+    assert "environment: production" in deploy_text
+    assert "WFH_DEPLOY_SHA: ${{ github.sha }}" in deploy_text
+
+    deploy_job = ci_text.split("\n  deploy-production:\n", maxsplit=1)[1]
+    for dependency in (
+        "backend",
+        "frontend",
+        "dependency-audit",
+        "container-validation",
+        "repository-hygiene",
+    ):
+        assert f"      - {dependency}\n" in deploy_job
+    assert "github.event_name == 'push'" in deploy_job
+    assert "github.ref == 'refs/heads/main'" in deploy_job
+    assert "uses: ./.github/workflows/deploy-production.yml" in deploy_job
 
 
-def test_privileged_deploy_checks_out_main_before_validating_exact_sha() -> None:
-    text = WORKFLOW.read_text(encoding="utf-8")
-    assert "ref: ${{ github.event.workflow_run.head_sha }}" not in text
-    assert "ref: main" in text
-    assert 'git checkout --detach "$WFH_DEPLOY_SHA"' in text
-    deploy_job = text.split("jobs:\n  deploy:\n", maxsplit=1)[1]
+def test_privileged_deploy_does_not_use_workflow_run_head_code() -> None:
+    ci_text = CI_WORKFLOW.read_text(encoding="utf-8")
+    deploy_text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "workflow_run" not in deploy_text
+    assert "github.event.workflow_run" not in deploy_text
+    assert "github.event_name == 'push'" in ci_text
+    assert "github.ref == 'refs/heads/main'" in ci_text
+    deploy_job = deploy_text.split("jobs:\n  deploy:\n", maxsplit=1)[1]
     assert "    permissions:\n      contents: read\n" in deploy_job
 
 
 def test_production_deploy_workflow_pins_ssh_host_identity() -> None:
-    text = WORKFLOW.read_text(encoding="utf-8")
+    text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
     assert "WFH_PROD_KNOWN_HOSTS" in text
     assert "StrictHostKeyChecking=yes" in text
     assert "ssh-keyscan" not in text
