@@ -2,6 +2,19 @@ name: Deploy Production
 
 on:
   workflow_call:
+    inputs:
+      tested_backend_image_digest:
+        required: true
+        type: string
+      tested_frontend_image_digest:
+        required: true
+        type: string
+      tested_watchdog_image_digest:
+        required: true
+        type: string
+      tested_image_bundle_sha256:
+        required: true
+        type: string
 
 concurrency:
   group: waterfallhunter-production
@@ -19,6 +32,10 @@ jobs:
       WFH_PROD_HOST: ${{ secrets.WFH_PROD_HOST || secrets.WFH_DEPLOY_HOST }}
       WFH_PROD_PORT: ${{ secrets.WFH_PROD_PORT || secrets.WFH_DEPLOY_PORT }}
       WFH_PROD_USER: ${{ secrets.WFH_PROD_USER || secrets.WFH_DEPLOY_USER }}
+      WFH_TESTED_BACKEND_IMAGE_DIGEST: ${{ inputs.tested_backend_image_digest }}
+      WFH_TESTED_FRONTEND_IMAGE_DIGEST: ${{ inputs.tested_frontend_image_digest }}
+      WFH_TESTED_WATCHDOG_IMAGE_DIGEST: ${{ inputs.tested_watchdog_image_digest }}
+      WFH_TESTED_IMAGE_BUNDLE_SHA256: ${{ inputs.tested_image_bundle_sha256 }}
     steps:
       - name: Checkout exact trusted main revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -35,6 +52,29 @@ jobs:
           git fetch --no-tags origin main
           git cat-file -e "${WFH_DEPLOY_SHA}^{commit}"
           test "$(git rev-parse origin/main)" = "$WFH_DEPLOY_SHA"
+          [[ "$WFH_TESTED_BACKEND_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$WFH_TESTED_FRONTEND_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$WFH_TESTED_WATCHDOG_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$WFH_TESTED_IMAGE_BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+
+      - name: Download exact CI-tested image bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: wfh-tested-images-${{ github.sha }}
+          path: .deploy-artifact
+
+      - name: Verify exact CI-tested image bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f .deploy-artifact/wfh-tested-images.tar
+          test -f .deploy-artifact/wfh-tested-images.tar.sha256
+          test -f .deploy-artifact/image-digests.txt
+          test "$(sha256sum .deploy-artifact/wfh-tested-images.tar | awk '{print $1}')" = "$WFH_TESTED_IMAGE_BUNDLE_SHA256"
+          grep -Fx "backend=$WFH_TESTED_BACKEND_IMAGE_DIGEST" .deploy-artifact/image-digests.txt
+          grep -Fx "frontend=$WFH_TESTED_FRONTEND_IMAGE_DIGEST" .deploy-artifact/image-digests.txt
+          grep -Fx "watchdog=$WFH_TESTED_WATCHDOG_IMAGE_DIGEST" .deploy-artifact/image-digests.txt
+          grep -Fx "revision=$WFH_DEPLOY_SHA" .deploy-artifact/image-digests.txt
 
       - name: Validate Production connection contract
         shell: bash
@@ -61,11 +101,12 @@ jobs:
           printf '%s\n' "$WFH_PROD_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/known_hosts"
 
-      - name: Deploy exact CI revision
+      - name: Stage exact CI-tested image bundle on Production host
         shell: bash
         run: |
           set -euo pipefail
           port="${WFH_PROD_PORT:-22}"
+          remote_dir="/srv/waterfallhunter/runtime/incoming/$WFH_DEPLOY_SHA"
           ssh \
             -i "$HOME/.ssh/waterfallhunter-deploy" \
             -p "$port" \
@@ -73,5 +114,28 @@ jobs:
             -o StrictHostKeyChecking=yes \
             -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
             -- "$WFH_PROD_USER@$WFH_PROD_HOST" \
-            "WFH_DEPLOY_SHA='$WFH_DEPLOY_SHA' WFH_DEPLOY_ROOT='/srv/waterfallhunter/app' bash -s" \
+            "install -d -m 0750 '$remote_dir'"
+          scp \
+            -i "$HOME/.ssh/waterfallhunter-deploy" \
+            -P "$port" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            -- .deploy-artifact/wfh-tested-images.tar \
+            "$WFH_PROD_USER@$WFH_PROD_HOST:$remote_dir/wfh-tested-images.tar"
+
+      - name: Deploy exact CI revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          port="${WFH_PROD_PORT:-22}"
+          remote_bundle="/srv/waterfallhunter/runtime/incoming/$WFH_DEPLOY_SHA/wfh-tested-images.tar"
+          ssh \
+            -i "$HOME/.ssh/waterfallhunter-deploy" \
+            -p "$port" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            -- "$WFH_PROD_USER@$WFH_PROD_HOST" \
+            "WFH_DEPLOY_SHA='$WFH_DEPLOY_SHA' WFH_DEPLOY_ROOT='/srv/waterfallhunter/app' WFH_TESTED_IMAGE_BUNDLE='$remote_bundle' WFH_TESTED_IMAGE_BUNDLE_SHA256='$WFH_TESTED_IMAGE_BUNDLE_SHA256' WFH_TESTED_BACKEND_IMAGE_DIGEST='$WFH_TESTED_BACKEND_IMAGE_DIGEST' WFH_TESTED_FRONTEND_IMAGE_DIGEST='$WFH_TESTED_FRONTEND_IMAGE_DIGEST' WFH_TESTED_WATCHDOG_IMAGE_DIGEST='$WFH_TESTED_WATCHDOG_IMAGE_DIGEST' bash -s" \
             < scripts/deploy_production.sh

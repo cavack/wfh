@@ -715,6 +715,8 @@ def _build_entry_notification_worker() -> DurableNotificationWorker | None:
         str(settings.telegram_token),
         str(settings.telegram_chat_id),
         cutover_at=notifier.signal_delivery_cutover_at,
+        decision_db_path=db.db_path,
+        max_entry_age_seconds=int(EntryDecisionPolicy().max_analysis_age_seconds),
     )
     return DurableNotificationWorker(
         db.db_path,
@@ -1368,6 +1370,12 @@ def _project_actionable_decision_freshness(
         analysis_age_seconds=analysis_age,
         reference_age_seconds=reference_age,
         policy=policy,
+        lifecycle_id=(
+            int(stored["lifecycle_id"])
+            if isinstance(stored.get("lifecycle_id"), int)
+            and not isinstance(stored.get("lifecycle_id"), bool)
+            else None
+        ),
         previous_decision=stored,
     )
     if "event_id" in stored:
@@ -1908,6 +1916,7 @@ async def evaluate_candidate(
                     evaluated_at=decision_now,
                     analysis_age_seconds=max(0.0, decision_now - analysis_observed_at),
                     reference_age_seconds=None,
+                    lifecycle_id=int(data.get("lifecycle_id") or 1),
                     previous_decision=previous_entry_decision,
                 )
                 decision_event_id = entry_decision_store.append_if_changed(
@@ -2053,6 +2062,7 @@ async def evaluate_candidate(
         evaluated_at=decision_now,
         analysis_age_seconds=max(0.0, decision_now - analysis_observed_at),
         reference_age_seconds=reference_age,
+        lifecycle_id=int(data.get("lifecycle_id") or 1),
         previous_decision=previous_entry_decision,
     )
     event_id = entry_decision_store.append_if_changed(symbol, entry_decision)

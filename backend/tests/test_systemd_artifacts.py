@@ -77,6 +77,18 @@ def test_release_certificate_builder_is_exact_sha_and_signal_only() -> None:
         "checkout_revision": "a" * 40,
         "live_trading_enabled": False,
         "backend_endpoints": {"/livez": True, "/readyz": True, "/healthz": True},
+        "notification_delivery_ready": True,
+        "notification_delivery": {
+            "transport": {
+                "configured": True,
+                "worker_running": True,
+                "probe": {
+                    "reachable": True,
+                    "bot_reachable": True,
+                    "chat_reachable": True,
+                },
+            }
+        },
     }
     certificate = module.build_release_certificate(snapshot, generated_at=123)
     assert certificate["certificate_type"] == "waterfallhunter_release_v1"
@@ -278,3 +290,64 @@ def test_recovery_releases_deploy_guard_after_failed_compose(tmp_path: Path, mon
     assert ok is False
     assert reason == "recovery_command_failed"
     assert released == [77]
+
+
+def test_required_service_without_healthcheck_is_unhealthy(monkeypatch) -> None:
+    import importlib.util
+    script = ROOT / "scripts/verify_production_cutover.py"
+    spec = importlib.util.spec_from_file_location("verify_missing_healthcheck_test", script)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    class ComposeResult:
+        returncode = 0
+        stdout = "abc123def456\n"
+        stderr = ""
+
+    class InspectResult:
+        returncode = 0
+        stdout = "running|none\n"
+        stderr = ""
+
+    monkeypatch.setattr(module, "_compose", lambda *args, **kwargs: ComposeResult())
+    monkeypatch.setattr(module.subprocess, "run", lambda *args, **kwargs: InspectResult())
+    ok, status = module._service_health(
+        module.CANONICAL_PROJECT_DIR,
+        module.CANONICAL_ENV_FILE,
+        "waterfall-backend",
+    )
+    assert ok is False
+    assert status == "missing_healthcheck"
+
+
+def test_release_evidence_requires_notification_delivery_health(monkeypatch) -> None:
+    import importlib.util
+    script = ROOT / "scripts/verify_production_cutover.py"
+    spec = importlib.util.spec_from_file_location("verify_notification_release_test", script)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    sha = "a" * 40
+    monkeypatch.setattr(module, "health_snapshot", lambda *args: {"healthy": True})
+    monkeypatch.setattr(module, "_backend_endpoint", lambda *args: True)
+    monkeypatch.setattr(module, "_running_revisions", lambda: {name: sha for name in module.CORE_CONTAINERS})
+    monkeypatch.setattr(module, "_checkout_revision", lambda *args: sha)
+    monkeypatch.setattr(module, "_live_trading_enabled", lambda *args: False)
+    monkeypatch.setattr(
+        module,
+        "_notification_delivery_snapshot",
+        lambda *args: {
+            "transport": {
+                "configured": True,
+                "worker_running": False,
+                "probe": {"reachable": False, "bot_reachable": True, "chat_reachable": False},
+            }
+        },
+    )
+    snapshot = module.release_evidence_snapshot(
+        module.CANONICAL_PROJECT_DIR,
+        module.CANONICAL_ENV_FILE,
+    )
+    assert snapshot["healthy"] is False
+    assert snapshot["notification_delivery_ready"] is False

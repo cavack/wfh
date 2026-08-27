@@ -94,7 +94,9 @@ def _service_health(project_dir: Path, env_file: Path, service: str) -> tuple[bo
     runtime, _, health = state.partition("|")
     if runtime != "running":
         return False, runtime or "not_running"
-    if health not in {"healthy", "none"}:
+    if health == "none":
+        return False, "missing_healthcheck"
+    if health != "healthy":
         return False, health
     return True, health
 
@@ -127,6 +129,53 @@ def _backend_endpoint(project_dir: Path, env_file: Path, path: str) -> bool:
         "/opt/venv/bin/python", "-c", code,
     )
     return result.returncode == 0 and result.stdout.strip().endswith("OK")
+
+
+def _backend_json_endpoint(
+    project_dir: Path, env_file: Path, path: str
+) -> dict[str, object] | None:
+    code = (
+        "import json,urllib.request; "
+        f"data=urllib.request.urlopen('http://127.0.0.1:8000{path}', timeout=5).read(); "
+        "value=json.loads(data.decode('utf-8')); "
+        "print(json.dumps(value,sort_keys=True,separators=(',',':')))"
+    )
+    result = _compose(
+        project_dir, env_file, "exec", "-T", "waterfall-backend",
+        "/opt/venv/bin/python", "-c", code,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        value = json.loads(result.stdout.strip())
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _notification_delivery_snapshot(
+    project_dir: Path, env_file: Path
+) -> dict[str, object] | None:
+    return _backend_json_endpoint(
+        project_dir, env_file, "/api/notification-delivery"
+    )
+
+
+def _notification_delivery_ready(snapshot: object) -> bool:
+    if not isinstance(snapshot, dict):
+        return False
+    transport = snapshot.get("transport")
+    if not isinstance(transport, dict):
+        return False
+    probe = transport.get("probe")
+    return bool(
+        transport.get("configured") is True
+        and transport.get("worker_running") is True
+        and isinstance(probe, dict)
+        and probe.get("reachable") is True
+        and probe.get("bot_reachable") is True
+        and probe.get("chat_reachable") is True
+    )
 
 
 def _container_revision(container: str) -> str | None:
@@ -197,12 +246,16 @@ def release_evidence_snapshot(project_dir: Path, env_file: Path) -> dict[str, ob
     running_revision = core_revisions.get("waterfall-backend")
     checkout_revision = _checkout_revision(project_dir)
     live_trading_enabled = _live_trading_enabled(project_dir, env_file)
+    notification_delivery = _notification_delivery_snapshot(project_dir, env_file)
+    notification_delivery_ready = _notification_delivery_ready(notification_delivery)
     snapshot.update(
         backend_endpoints=endpoints,
         running_revision=running_revision,
         core_revisions=core_revisions,
         checkout_revision=checkout_revision,
         live_trading_enabled=live_trading_enabled,
+        notification_delivery=notification_delivery,
+        notification_delivery_ready=notification_delivery_ready,
     )
     snapshot["healthy"] = bool(
         snapshot.get("healthy") is True
@@ -210,6 +263,7 @@ def release_evidence_snapshot(project_dir: Path, env_file: Path) -> dict[str, ob
         and checkout_revision is not None
         and all(revision == checkout_revision for revision in core_revisions.values())
         and live_trading_enabled is False
+        and notification_delivery_ready
     )
     return snapshot
 
@@ -239,6 +293,8 @@ def build_release_certificate(
         and core_revisions_ok
         and snapshot.get("live_trading_enabled") is False
         and endpoints_ok
+        and snapshot.get("notification_delivery_ready") is True
+        and _notification_delivery_ready(snapshot.get("notification_delivery"))
     ):
         raise ValueError("release evidence is incomplete or inconsistent")
     body: dict[str, object] = {

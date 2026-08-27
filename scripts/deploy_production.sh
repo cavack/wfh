@@ -10,6 +10,11 @@ BACKUP_DIR="${WFH_HOST_ROOT}/backups"
 STATE_DIR="${DEPLOY_STATE_DIR}"
 LOCK_FILE="${WFH_DEPLOY_LOCK_FILE:-${STATE_DIR}/deploy.lock}"
 WFH_DEPLOY_BACKUP_RETENTION_COUNT="${WFH_DEPLOY_BACKUP_RETENTION_COUNT:-2}"
+WFH_TESTED_IMAGE_BUNDLE="${WFH_TESTED_IMAGE_BUNDLE:-}"
+WFH_TESTED_IMAGE_BUNDLE_SHA256="${WFH_TESTED_IMAGE_BUNDLE_SHA256:-}"
+WFH_TESTED_BACKEND_IMAGE_DIGEST="${WFH_TESTED_BACKEND_IMAGE_DIGEST:-}"
+WFH_TESTED_FRONTEND_IMAGE_DIGEST="${WFH_TESTED_FRONTEND_IMAGE_DIGEST:-}"
+WFH_TESTED_WATCHDOG_IMAGE_DIGEST="${WFH_TESTED_WATCHDOG_IMAGE_DIGEST:-}"
 PRODUCTION_COMPOSE_OVERRIDE="${STATE_DIR}/production-volumes.override.yml"
 DB_PATH="/app/data/waterfall_registry.db"
 DEPLOY_EPOCH="$(date -u +%s)"
@@ -68,6 +73,47 @@ configure_production_compose_topology() {
   export COMPOSE_FILE="${WFH_DEPLOY_ROOT}/docker-compose.yml:${PRODUCTION_COMPOSE_OVERRIDE}"
   export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-waterfallhunter}"
   log "using host-owned Production Compose topology override: ${PRODUCTION_COMPOSE_OVERRIDE}"
+}
+
+verify_tested_image() {
+  local image_name="$1" expected_digest="$2" actual_digest actual_revision
+  actual_digest="$(docker image inspect "$image_name" --format '{{.Id}}' 2>/dev/null || true)"
+  [[ "$actual_digest" == "$expected_digest" ]] || return 1
+  actual_revision="$(docker image inspect "$image_name" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' 2>/dev/null || true)"
+  [[ "$actual_revision" == "$WFH_DEPLOY_SHA" ]]
+}
+
+load_tested_release_artifacts() {
+  local expected_bundle actual_bundle_sha
+  expected_bundle="${STATE_DIR}/incoming/${WFH_DEPLOY_SHA}/wfh-tested-images.tar"
+  [[ "$WFH_TESTED_IMAGE_BUNDLE" == "$expected_bundle" ]] || fail "tested image bundle path is not canonical"
+  [[ -f "$WFH_TESTED_IMAGE_BUNDLE" && ! -L "$WFH_TESTED_IMAGE_BUNDLE" ]] || fail "tested image bundle missing or symlinked"
+  [[ "$WFH_TESTED_IMAGE_BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]] || fail "tested image bundle SHA256 invalid"
+  for digest in "$WFH_TESTED_BACKEND_IMAGE_DIGEST" "$WFH_TESTED_FRONTEND_IMAGE_DIGEST" "$WFH_TESTED_WATCHDOG_IMAGE_DIGEST"; do
+    [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "tested image digest invalid"
+  done
+  actual_bundle_sha="$(sha256sum "$WFH_TESTED_IMAGE_BUNDLE" | awk '{print $1}')"
+  [[ "$actual_bundle_sha" == "$WFH_TESTED_IMAGE_BUNDLE_SHA256" ]] || fail "tested image bundle checksum mismatch"
+  docker load -i "$WFH_TESTED_IMAGE_BUNDLE" >/dev/null || fail "unable to load CI-tested image bundle"
+  verify_tested_image waterfallhunter-waterfall-backend "$WFH_TESTED_BACKEND_IMAGE_DIGEST" \
+    || fail "loaded backend image does not match CI-tested digest/revision"
+  verify_tested_image waterfallhunter-frontend "$WFH_TESTED_FRONTEND_IMAGE_DIGEST" \
+    || fail "loaded frontend image does not match CI-tested digest/revision"
+  verify_tested_image waterfallhunter-watchdog "$WFH_TESTED_WATCHDOG_IMAGE_DIGEST" \
+    || fail "loaded watchdog image does not match CI-tested digest/revision"
+  log "loaded exact CI-tested release images for ${WFH_DEPLOY_SHA}"
+}
+
+install_systemd_units() {
+  local source_dir="${WFH_DEPLOY_ROOT}/deploy/systemd"
+  [[ -f "$source_dir/waterfallhunter.service" ]] || fail "canonical systemd service missing"
+  [[ -f "$source_dir/waterfallhunter-healthcheck.service" ]] || fail "canonical healthcheck service missing"
+  [[ -f "$source_dir/waterfallhunter-healthcheck.timer" ]] || fail "canonical healthcheck timer missing"
+  install -m 0644 "$source_dir/waterfallhunter.service" /etc/systemd/system/waterfallhunter.service
+  install -m 0644 "$source_dir/waterfallhunter-healthcheck.service" /etc/systemd/system/waterfallhunter-healthcheck.service
+  install -m 0644 "$source_dir/waterfallhunter-healthcheck.timer" /etc/systemd/system/waterfallhunter-healthcheck.timer
+  systemctl daemon-reload
+  systemctl enable waterfallhunter.service waterfallhunter-healthcheck.timer >/dev/null
 }
 
 remove_fixed_name_core_containers() {
@@ -372,8 +418,14 @@ require_command awk
 require_command find
 require_command sort
 require_command sha256sum
+require_command install
+require_command systemctl
 
 [[ "$WFH_DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "WFH_DEPLOY_SHA must be an exact 40-character Git SHA"
+[[ "$WFH_TESTED_IMAGE_BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]] || fail "WFH_TESTED_IMAGE_BUNDLE_SHA256 must be a SHA256"
+[[ "$WFH_TESTED_BACKEND_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "WFH_TESTED_BACKEND_IMAGE_DIGEST invalid"
+[[ "$WFH_TESTED_FRONTEND_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "WFH_TESTED_FRONTEND_IMAGE_DIGEST invalid"
+[[ "$WFH_TESTED_WATCHDOG_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "WFH_TESTED_WATCHDOG_IMAGE_DIGEST invalid"
 [[ -d "$WFH_DEPLOY_ROOT/.git" ]] || fail "deployment root is not a Git checkout: $WFH_DEPLOY_ROOT"
 [[ -f "$ENV_FILE" ]] || fail "Production .env is missing"
 [[ "$WFH_DEPLOY_BACKUP_RETENTION_COUNT" =~ ^[1-9][0-9]*$ ]] || fail "WFH_DEPLOY_BACKUP_RETENTION_COUNT must be a positive integer"
@@ -403,11 +455,8 @@ git checkout --detach "$WFH_DEPLOY_SHA"
 docker compose config --quiet
 assert_signal_only_runtime_boundary
 
-docker compose build \
-  --build-arg VCS_REF="$WFH_DEPLOY_SHA" \
-  --build-arg BUILD_DATE="$BUILD_DATE" \
-  --build-arg VERSION="$WFH_DEPLOY_SHA" \
-  waterfall-backend frontend watchdog
+load_tested_release_artifacts
+install_systemd_units
 
 backup_database
 
@@ -427,7 +476,7 @@ activate_telegram_for_release
 
 RUNTIME_REPLACED=1
 remove_fixed_name_core_containers
-docker compose up -d --remove-orphans
+docker compose up -d --remove-orphans --no-build
 
 wait_for_backend_endpoint /livez 20 3 || fail "backend /livez did not become healthy"
 wait_for_backend_endpoint /readyz 30 4 || fail "backend /readyz did not become ready"
@@ -446,6 +495,10 @@ previous_revision=${PREVIOUS_SHA}
 deployed_at=${DEPLOY_EPOCH}
 backup=${DB_BACKUP}
 backup_sha256=${DB_BACKUP_SHA256}
+tested_backend_image_digest=${WFH_TESTED_BACKEND_IMAGE_DIGEST}
+tested_frontend_image_digest=${WFH_TESTED_FRONTEND_IMAGE_DIGEST}
+tested_watchdog_image_digest=${WFH_TESTED_WATCHDOG_IMAGE_DIGEST}
+tested_image_bundle_sha256=${WFH_TESTED_IMAGE_BUNDLE_SHA256}
 telegram_cutover_at=${TELEGRAM_CUTOVER_EPOCH}
 live_trading_enabled=false
 product_mode=SIGNAL_ONLY

@@ -206,7 +206,8 @@ def _production_compose_volume_names() -> set[str]:
 def _docker_json(command: list[str]) -> list[dict[str, object]]:
     result = subprocess.run(command, text=True, capture_output=True, check=False)
     if result.returncode != 0:
-        return []
+        detail = (result.stderr or result.stdout or "unknown Docker error").strip()[:500]
+        raise RuntimeError(f"Docker inventory enumeration failed: {detail}")
     rows: list[dict[str, object]] = []
     for line in result.stdout.splitlines():
         try:

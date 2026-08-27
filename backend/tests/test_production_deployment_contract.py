@@ -268,7 +268,8 @@ def test_host_deploy_orders_backup_migration_telegram_and_runtime_certification(
         "flock -n 9",
         '[[ "$(git rev-parse origin/main)" == "$WFH_DEPLOY_SHA" ]]',
         "assert_signal_only_runtime_boundary",
-        "docker compose build",
+        "load_tested_release_artifacts",
+        "install_systemd_units",
         "backup_database",
         "--preflight",
         "MIGRATION_MAY_HAVE_MUTATED=1",
@@ -385,3 +386,63 @@ def test_schema_changing_rollback_restores_backup_before_previous_schema_preflig
     assert '${BACKUP_DIR}:/backup:ro' in restore
     assert "docker compose stop waterfall-backend frontend watchdog" in restore
     assert "PRAGMA integrity_check" in restore
+
+
+def test_deploy_installs_and_enables_canonical_systemd_units_before_activation() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    assert "install_systemd_units()" in text
+    helper = text.split("install_systemd_units() {", maxsplit=1)[1].split("}\n", maxsplit=1)[0]
+    for unit in (
+        "waterfallhunter.service",
+        "waterfallhunter-healthcheck.service",
+        "waterfallhunter-healthcheck.timer",
+    ):
+        assert unit in helper
+    assert "systemctl daemon-reload" in helper
+    assert "systemctl enable waterfallhunter.service waterfallhunter-healthcheck.timer" in helper
+    main_sequence = _main_deploy_sequence(text)
+    assert main_sequence.index("install_systemd_units") < main_sequence.index("docker compose up -d")
+
+
+def test_main_deploy_loads_ci_tested_images_instead_of_rebuilding_target() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    main_sequence = _main_deploy_sequence(text)
+    assert "load_tested_release_artifacts" in main_sequence
+    load_index = main_sequence.index("load_tested_release_artifacts")
+    backup_index = main_sequence.index("backup_database")
+    assert load_index < backup_index
+    target_prefix = main_sequence[:backup_index]
+    assert "docker compose build" not in target_prefix
+    helper = text.split("load_tested_release_artifacts() {", maxsplit=1)[1].split("}\n", maxsplit=1)[0]
+    assert 'docker load -i "$WFH_TESTED_IMAGE_BUNDLE"' in helper
+    assert "WFH_TESTED_BACKEND_IMAGE_DIGEST" in helper
+    assert "WFH_TESTED_FRONTEND_IMAGE_DIGEST" in helper
+    assert "WFH_TESTED_WATCHDOG_IMAGE_DIGEST" in helper
+    assert "WFH_TESTED_IMAGE_BUNDLE_SHA256" in helper
+
+
+def test_ci_exports_and_uploads_exact_tested_image_bundle_to_deploy_job() -> None:
+    ci_text = CI_WORKFLOW.read_text(encoding="utf-8")
+    deploy_text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+    container_job = ci_text.split("\n  container-validation:\n", maxsplit=1)[1].split(
+        "\n  repository-hygiene:\n", maxsplit=1
+    )[0]
+    assert "outputs:" in container_job
+    assert "tested_backend_image_digest" in container_job
+    assert "tested_frontend_image_digest" in container_job
+    assert "tested_watchdog_image_digest" in container_job
+    assert "tested_image_bundle_sha256" in container_job
+    assert "docker save" in container_job
+    assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in container_job
+
+    deploy_job = ci_text.split("\n  deploy-production:\n", maxsplit=1)[1]
+    assert "tested_backend_image_digest: ${{ needs.container-validation.outputs.tested_backend_image_digest }}" in deploy_job
+    assert "tested_frontend_image_digest: ${{ needs.container-validation.outputs.tested_frontend_image_digest }}" in deploy_job
+    assert "tested_watchdog_image_digest: ${{ needs.container-validation.outputs.tested_watchdog_image_digest }}" in deploy_job
+    assert "tested_image_bundle_sha256: ${{ needs.container-validation.outputs.tested_image_bundle_sha256 }}" in deploy_job
+
+    assert "workflow_call:" in deploy_text
+    assert "tested_backend_image_digest:" in deploy_text
+    assert "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093" in deploy_text
+    assert "WFH_TESTED_IMAGE_BUNDLE_SHA256" in deploy_text
+    assert "WFH_TESTED_BACKEND_IMAGE_DIGEST" in deploy_text

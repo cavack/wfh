@@ -581,6 +581,8 @@ class TelegramSignalTransport:
         chat_id: str,
         *,
         cutover_at: int | None = None,
+        decision_db_path: str | Path | None = None,
+        max_entry_age_seconds: int = 180,
         http_transport=None,
     ):
         self.token = str(token or "").strip()
@@ -596,7 +598,71 @@ class TelegramSignalTransport:
             )
             else None
         )
+        self.decision_db_path = (
+            str(Path(decision_db_path)) if decision_db_path is not None else None
+        )
+        if (
+            isinstance(max_entry_age_seconds, bool)
+            or not isinstance(max_entry_age_seconds, int)
+            or max_entry_age_seconds < 1
+        ):
+            raise ValueError("max_entry_age_seconds must be a positive integer")
+        self.max_entry_age_seconds = max_entry_age_seconds
         self.http_transport = http_transport
+
+    def _current_entry_ready_is_deliverable(
+        self, payload: dict[str, Any], *, now: int
+    ) -> tuple[bool, str | None]:
+        packet = payload.get("decision_packet")
+        if not isinstance(packet, dict):
+            return False, "INVALID_DECISION_PACKET"
+        event_at = packet.get("evaluated_at")
+        if isinstance(event_at, bool) or not isinstance(event_at, int) or event_at < 0:
+            return False, "INVALID_EVENT_TIMESTAMP"
+        if event_at > now:
+            return False, "FUTURE_DATED_ENTRY_READY"
+        expires_at = (
+            packet.get("trade_plan", {}).get("expires_at")
+            if isinstance(packet.get("trade_plan"), dict)
+            else None
+        )
+        if (
+            isinstance(expires_at, int)
+            and not isinstance(expires_at, bool)
+            and expires_at >= 0
+            and now >= expires_at
+        ):
+            return False, "ENTRY_READY_EXPIRED"
+        if now - event_at > self.max_entry_age_seconds:
+            return False, "ENTRY_READY_STALE"
+        if self.decision_db_path is None:
+            return True, None
+        decision_event_id = payload.get("decision_event_id")
+        symbol = str(payload.get("symbol") or "").strip()
+        if (
+            isinstance(decision_event_id, bool)
+            or not isinstance(decision_event_id, int)
+            or decision_event_id <= 0
+            or not symbol
+        ):
+            return False, "INVALID_DECISION_IDENTITY"
+        try:
+            db_path = Path(self.decision_db_path).resolve()
+            with closing(
+                sqlite3.connect(
+                    f"{db_path.as_uri()}?mode=ro", uri=True, timeout=5.0
+                )
+            ) as conn:
+                row = conn.execute(
+                    "SELECT id, decision FROM entry_decision_events "
+                    "WHERE symbol=? ORDER BY id DESC LIMIT 1",
+                    (symbol,),
+                ).fetchone()
+        except (OSError, sqlite3.Error):
+            return False, "DECISION_STATE_UNAVAILABLE"
+        if row is None or int(row[0]) != decision_event_id or str(row[1]) != "ENTRY_READY":
+            return False, "ENTRY_READY_SUPERSEDED"
+        return True, None
 
     async def deliver(self, event: dict) -> DeliveryResult:
         try:
@@ -606,27 +672,29 @@ class TelegramSignalTransport:
         if payload.get("contract_version") != "entry_ready_notification_v1":
             return DeliveryResult(DeliveryDisposition.PERMANENT_FAILURE, "UNSUPPORTED_PAYLOAD")
 
-        if self.cutover_at is not None:
-            packet = payload.get("decision_packet")
-            event_at = packet.get("evaluated_at") if isinstance(packet, dict) else None
-            if (
-                isinstance(event_at, bool)
-                or not isinstance(event_at, int)
-                or event_at < 0
-            ):
+        packet = payload.get("decision_packet")
+        event_at = packet.get("evaluated_at") if isinstance(packet, dict) else None
+        now = int(time.time())
+        deliverable, suppression_reason = self._current_entry_ready_is_deliverable(
+            payload, now=now
+        )
+        if not deliverable:
+            if suppression_reason == "DECISION_STATE_UNAVAILABLE":
                 return DeliveryResult(
-                    DeliveryDisposition.PERMANENT_FAILURE,
-                    "INVALID_EVENT_TIMESTAMP",
+                    DeliveryDisposition.TRANSIENT_FAILURE, suppression_reason
                 )
-            if event_at < self.cutover_at:
-                logger.info(
-                    "Suppressing pre-cutover ENTRY_READY event %s "
-                    "(evaluated_at=%s cutover_at=%s)",
-                    event.get("event_id"),
-                    event_at,
-                    self.cutover_at,
-                )
-                return DeliveryResult(DeliveryDisposition.DELIVERED)
+            logger.info(
+                "Suppressing ENTRY_READY event %s: %s",
+                event.get("event_id"), suppression_reason,
+            )
+            return DeliveryResult(DeliveryDisposition.DELIVERED)
+        if self.cutover_at is not None and event_at < self.cutover_at:
+            logger.info(
+                "Suppressing pre-cutover ENTRY_READY event %s "
+                "(evaluated_at=%s cutover_at=%s)",
+                event.get("event_id"), event_at, self.cutover_at,
+            )
+            return DeliveryResult(DeliveryDisposition.DELIVERED)
 
         text = TelegramNotifier.build_entry_ready_message(payload)
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"

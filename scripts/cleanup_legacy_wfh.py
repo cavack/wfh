@@ -180,8 +180,47 @@ def _validated_legacy_path(value: str) -> Path:
     return safe
 
 
+def _current_docker_labels(kind: str, name: str) -> dict[str, str] | None:
+    resource_kind = str(kind or "").strip()
+    safe_name = str(name or "").strip()
+    if resource_kind not in {"container", "volume", "network", "image"}:
+        raise ValueError("unsupported Docker resource kind")
+    if not safe_name or safe_name.startswith("-"):
+        raise ValueError("invalid Docker resource name")
+    if resource_kind == "container":
+        command = [DOCKER_BIN, "inspect", safe_name]
+    elif resource_kind == "image":
+        command = [DOCKER_BIN, "image", "inspect", safe_name]
+    else:
+        command = [DOCKER_BIN, resource_kind, "inspect", safe_name]
+    result = subprocess.run(command, text=True, capture_output=True, check=False)
+    if result.returncode != 0:
+        combined = result.stderr + result.stdout
+        if "No such" in combined or "not found" in combined.lower():
+            return None
+        raise RuntimeError(f"Docker inspect failed for {resource_kind} {safe_name}")
+    try:
+        obj = json.loads(result.stdout)[0]
+    except (ValueError, IndexError, TypeError) as exc:
+        raise RuntimeError("Docker inspect returned invalid JSON") from exc
+    labels = (
+        obj.get("Config", {}).get("Labels", {})
+        if resource_kind in {"container", "image"}
+        else obj.get("Labels", {})
+    )
+    if labels is None:
+        return {}
+    if not isinstance(labels, dict) or any(
+        not isinstance(key, str) or not isinstance(value, str)
+        for key, value in labels.items()
+    ):
+        raise RuntimeError("Docker labels are invalid")
+    return dict(labels)
+
+
 def _validated_docker_resource_name(
     kind: str, value: str, *,
+    labels: dict[str, str] | None = None,
     protected_volume_names: set[str] | None = None,
     protected_network_names: set[str] | None = None,
 ) -> str:
@@ -189,7 +228,7 @@ def _validated_docker_resource_name(
     if not pattern.fullmatch(value) or value.startswith("-"):
         raise ValueError(f"invalid Docker {kind} resource name")
     disposition, reason = classify_docker_resource(
-        kind, value, {},
+        kind, value, labels or {},
         protected_volume_names=protected_volume_names,
         protected_network_names=protected_network_names,
     )
@@ -273,7 +312,7 @@ def _validated_delete_entries(
             )
             if disposition == DELETE:
                 safe_name = _validated_docker_resource_name(
-                    resource_kind, name,
+                    resource_kind, name, labels=labels,
                     protected_volume_names=protected_volume_names,
                     protected_network_names=protected_network_names,
                 )
@@ -309,8 +348,11 @@ def _delete_entry(
         protected = _production_compose_resource_names()
         protected_volume_names = protected["volume"]
         protected_network_names = protected["network"]
+    current_labels = _current_docker_labels(resource_kind, name)
+    if current_labels is None:
+        return
     safe_name = _validated_docker_resource_name(
-        resource_kind, name,
+        resource_kind, name, labels=current_labels,
         protected_volume_names=protected_volume_names,
         protected_network_names=protected_network_names,
     )

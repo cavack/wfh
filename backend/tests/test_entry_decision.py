@@ -244,7 +244,7 @@ def test_expired_plan_does_not_reemit_entry_ready_after_expired_transition() -> 
         reference_age_seconds=3.0,
         previous_decision=expired,
     )
-    assert repeated["decision"] == "NO_TRADE"
+    assert repeated["decision"] == "EXPIRED"
     assert "TRADE_PLAN_EXPIRED" in repeated["block_reasons"]
 
 
@@ -266,3 +266,68 @@ def test_entry_ready_expires_only_at_explicit_trade_plan_expiry() -> None:
 
     assert packet["decision"] == "EXPIRED"
     assert packet["block_reasons"] == ["TRADE_PLAN_EXPIRED"]
+
+
+def test_terminal_decision_stays_terminal_within_same_lifecycle() -> None:
+    ready = build_entry_decision(
+        strong_metrics(),
+        "ARMED",
+        evaluated_at=1_788_000_000,
+        analysis_age_seconds=10.0,
+        reference_age_seconds=3.0,
+        lifecycle_id=7,
+    )
+    assert ready["decision"] == "ENTRY_READY"
+    invalidated = build_entry_decision(
+        strong_metrics(),
+        "ARMED",
+        evaluated_at=1_788_000_200,
+        analysis_age_seconds=181.0,
+        reference_age_seconds=3.0,
+        lifecycle_id=7,
+        previous_decision=ready,
+    )
+    assert invalidated["decision"] == "INVALIDATED"
+
+    recovered = build_entry_decision(
+        strong_metrics(),
+        "ARMED",
+        evaluated_at=1_788_000_201,
+        analysis_age_seconds=10.0,
+        reference_age_seconds=3.0,
+        lifecycle_id=7,
+        previous_decision=invalidated,
+    )
+    assert recovered["decision"] == "INVALIDATED"
+    assert recovered["lifecycle_id"] == 7
+
+
+def test_terminal_decision_can_reset_on_distinct_lifecycle() -> None:
+    ready = build_entry_decision(
+        strong_metrics(),
+        "ARMED",
+        evaluated_at=1_788_000_000,
+        analysis_age_seconds=10.0,
+        reference_age_seconds=3.0,
+        lifecycle_id=7,
+    )
+    invalidated = build_entry_decision(
+        strong_metrics(),
+        "ARMED",
+        evaluated_at=1_788_000_200,
+        analysis_age_seconds=181.0,
+        reference_age_seconds=3.0,
+        lifecycle_id=7,
+        previous_decision=ready,
+    )
+    fresh_episode = build_entry_decision(
+        strong_metrics(),
+        "ARMED",
+        evaluated_at=1_788_000_201,
+        analysis_age_seconds=10.0,
+        reference_age_seconds=3.0,
+        lifecycle_id=8,
+        previous_decision=invalidated,
+    )
+    assert fresh_episode["decision"] == "ENTRY_READY"
+    assert fresh_episode["lifecycle_id"] == 8

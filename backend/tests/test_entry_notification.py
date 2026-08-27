@@ -98,6 +98,7 @@ def test_telegram_transport_classifies_success_and_errors() -> None:
         transport = TelegramSignalTransport(
             "token",
             "123",
+            max_entry_age_seconds=10_000_000_000,
             http_transport=httpx.MockTransport(handler),
         )
         event = {
@@ -128,6 +129,7 @@ def test_pre_cutover_entry_ready_is_acknowledged_without_send() -> None:
         "token",
         "123",
         cutover_at=200,
+        max_entry_age_seconds=10_000_000_000,
         http_transport=httpx.MockTransport(handler),
     )
     event = {
@@ -159,6 +161,7 @@ def test_telegram_transport_requires_ok_true_on_http_200() -> None:
         transport = TelegramSignalTransport(
             "token",
             "123",
+            max_entry_age_seconds=10_000_000_000,
             http_transport=httpx.MockTransport(handler),
         )
         event = {
@@ -190,6 +193,7 @@ def test_telegram_probe_requires_valid_bot_and_chat() -> None:
         transport = TelegramSignalTransport(
             "token",
             "123",
+            max_entry_age_seconds=10_000_000_000,
             http_transport=httpx.MockTransport(handler),
         )
         return await transport.probe(), seen
@@ -223,3 +227,115 @@ def test_entry_ready_message_includes_lifecycle_state() -> None:
     message = TelegramNotifier.build_entry_ready_message(payload)
     assert "Lifecycle" in message
     assert "PRE-TRIGGER" in message
+
+
+def test_telegram_transport_suppresses_overage_entry_ready_before_send(tmp_path, monkeypatch) -> None:
+    import waterfallhunter.core.notifier as notifier_module
+
+    db_path = migrate_test_database(tmp_path / "stale-entry-delivery.db")
+    store = EntryDecisionStore(db_path)
+    packet = entry_packet()
+    packet["evaluated_at"] = 100
+    decision_event_id = store.append_if_changed("SXT/USDT:USDT", packet)
+    assert decision_event_id == 1
+    calls = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    monkeypatch.setattr(notifier_module.time, "time", lambda: 281.0)
+    transport = TelegramSignalTransport(
+        "token",
+        "123",
+        decision_db_path=db_path,
+        max_entry_age_seconds=180,
+        http_transport=httpx.MockTransport(handler),
+    )
+    event = {
+        "event_id": "entry:1:ready",
+        "payload_json": json.dumps({
+            "contract_version": "entry_ready_notification_v1",
+            "event_id": "entry:1:ready",
+            "event_type": "ENTRY_READY",
+            "decision_event_id": 1,
+            "symbol": "SXT/USDT:USDT",
+            "decision_packet": packet,
+        }),
+    }
+
+    result = asyncio.run(transport.deliver(event))
+    assert result.disposition is DeliveryDisposition.DELIVERED
+    assert calls == []
+
+
+def test_telegram_transport_suppresses_future_dated_entry_ready(monkeypatch) -> None:
+    import waterfallhunter.core.notifier as notifier_module
+
+    calls = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    packet = entry_packet()
+    packet["evaluated_at"] = 301
+    monkeypatch.setattr(notifier_module.time, "time", lambda: 300.0)
+    transport = TelegramSignalTransport(
+        "token", "123", max_entry_age_seconds=180,
+        http_transport=httpx.MockTransport(handler),
+    )
+    event = {
+        "event_id": "entry:1:ready",
+        "payload_json": json.dumps({
+            "contract_version": "entry_ready_notification_v1",
+            "event_id": "entry:1:ready",
+            "event_type": "ENTRY_READY",
+            "decision_event_id": 1,
+            "symbol": "SXT/USDT:USDT",
+            "decision_packet": packet,
+        }),
+    }
+
+    result = asyncio.run(transport.deliver(event))
+    assert result.disposition is DeliveryDisposition.DELIVERED
+    assert calls == []
+
+
+def test_telegram_transport_suppresses_superseded_entry_ready_before_send(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "superseded-entry-delivery.db")
+    store = EntryDecisionStore(db_path)
+    packet = entry_packet()
+    packet["evaluated_at"] = int(time.time())
+    decision_event_id = store.append_if_changed("SXT/USDT:USDT", packet)
+    assert decision_event_id == 1
+    invalidated = {**packet, "decision": "INVALIDATED", "evaluated_at": packet["evaluated_at"] + 1}
+    assert store.append_if_changed("SXT/USDT:USDT", invalidated) == 2
+    calls = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    transport = TelegramSignalTransport(
+        "token",
+        "123",
+        decision_db_path=db_path,
+        max_entry_age_seconds=180,
+        http_transport=httpx.MockTransport(handler),
+    )
+    event = {
+        "event_id": "entry:1:ready",
+        "payload_json": json.dumps({
+            "contract_version": "entry_ready_notification_v1",
+            "event_id": "entry:1:ready",
+            "event_type": "ENTRY_READY",
+            "decision_event_id": 1,
+            "symbol": "SXT/USDT:USDT",
+            "decision_packet": packet,
+        }),
+    }
+
+    result = asyncio.run(transport.deliver(event))
+    assert result.disposition is DeliveryDisposition.DELIVERED
+    assert calls == []

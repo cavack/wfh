@@ -120,6 +120,18 @@ def test_generated_release_certificate_is_accepted_by_cleanup_validator(tmp_path
         "checkout_revision": sha,
         "live_trading_enabled": False,
         "backend_endpoints": {"/livez": True, "/readyz": True, "/healthz": True},
+        "notification_delivery_ready": True,
+        "notification_delivery": {
+            "transport": {
+                "configured": True,
+                "worker_running": True,
+                "probe": {
+                    "reachable": True,
+                    "bot_reachable": True,
+                    "chat_reachable": True,
+                },
+            }
+        },
     }
     certificate = verify.build_release_certificate(snapshot, generated_at=123)
     path = tmp_path / "release.json"
@@ -242,3 +254,39 @@ def test_production_topology_resolver_avoids_service_env_file_resolution(
     assert captured["env"]["WFH_ENV_FILE"] == str(env_file)
     assert f"{'a' * 40}_waterfall_data" in protected["volume"]
     assert f"{'a' * 40}_edge" in protected["network"]
+
+
+def test_docker_enumeration_failure_is_not_treated_as_empty(monkeypatch) -> None:
+    audit = _load_module(AUDIT_PATH, "audit_docker_failure")
+
+    class Result:
+        returncode = 1
+        stdout = ""
+        stderr = "daemon unavailable"
+
+    monkeypatch.setattr(audit.subprocess, "run", lambda *args, **kwargs: Result())
+    try:
+        audit._docker_json(["docker", "ps", "-a", "--format", "{{json .}}"])
+    except RuntimeError as exc:
+        assert "Docker inventory" in str(exc)
+    else:
+        raise AssertionError("Docker enumeration failures must fail the inventory")
+
+
+def test_cleanup_revalidates_current_compose_labels_for_sha_project_resource(monkeypatch) -> None:
+    cleanup = _load_module(CLEANUP_PATH, "cleanup_current_labels")
+    name = "legacy-frontend-1"
+    labels = {"com.docker.compose.project": "a" * 40}
+    monkeypatch.setattr(cleanup, "_current_docker_labels", lambda kind, value: labels)
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(cleanup.subprocess, "run", lambda *args, **kwargs: Result())
+    cleanup._delete_entry(
+        {"type": "docker-container", "path_or_resource": name},
+        protected_volume_names=set(),
+        protected_network_names=set(),
+    )

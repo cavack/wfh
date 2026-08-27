@@ -9,7 +9,7 @@ Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/srv/waterfallhunter/app
 Environment=WFH_ENV_FILE=/etc/waterfallhunter/waterfallhunter.env
-ExecStart=/srv/waterfallhunter/app/scripts/production_compose.sh up -d --remove-orphans
+ExecStart=/srv/waterfallhunter/app/scripts/production_compose.sh up -d --remove-orphans --no-build
 ExecStop=/srv/waterfallhunter/app/scripts/production_compose.sh stop --timeout 30
 TimeoutStartSec=180
 TimeoutStopSec=60

@@ -579,9 +579,24 @@ def _apply_previous_transition(
     evaluated_at: int,
     decision: str,
     block_reasons: list[str],
+    lifecycle_id: int | None,
 ) -> tuple[str, list[str]]:
     previous = _record(previous_decision)
     previous_state = str(previous.get("decision") or "")
+    previous_lifecycle_id = previous.get("lifecycle_id")
+    distinct_lifecycle = bool(
+        isinstance(previous_lifecycle_id, int)
+        and not isinstance(previous_lifecycle_id, bool)
+        and isinstance(lifecycle_id, int)
+        and not isinstance(lifecycle_id, bool)
+        and previous_lifecycle_id != lifecycle_id
+    )
+    if previous_state in {"LATE", "INVALIDATED", "EXPIRED"} and not distinct_lifecycle:
+        previous_reasons = previous.get("block_reasons")
+        return (
+            previous_state,
+            list(previous_reasons) if isinstance(previous_reasons, list) else block_reasons,
+        )
     if previous_state not in {"ENTRY_READY", "ACTIVE"}:
         return decision, block_reasons
     previous_expiry = _record(previous.get("trade_plan")).get("expires_at")
@@ -609,9 +624,16 @@ def build_entry_decision(
     analysis_age_seconds: float | None,
     reference_age_seconds: float | None,
     policy: EntryDecisionPolicy | None = None,
+    lifecycle_id: int | None = None,
     previous_decision: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     policy = policy or EntryDecisionPolicy()
+    if lifecycle_id is not None and (
+        isinstance(lifecycle_id, bool)
+        or not isinstance(lifecycle_id, int)
+        or lifecycle_id < 1
+    ):
+        raise ValueError("lifecycle_id must be a positive integer when provided")
     status = str(candidate_status or "WATCH").upper()
     block_reasons, late = _initial_block_reasons(
         metrics, status, analysis_age_seconds=analysis_age_seconds,
@@ -652,9 +674,10 @@ def build_entry_decision(
     if decision in {"ENTRY_READY", "ACTIVE"} and not block_reasons:
         reasons.append("ENTRY_GATES_PASS")
     decision, block_reasons = _apply_previous_transition(
-        previous_decision, evaluated_at=evaluated_at, decision=decision, block_reasons=block_reasons,
+        previous_decision, evaluated_at=evaluated_at, decision=decision,
+        block_reasons=block_reasons, lifecycle_id=lifecycle_id,
     )
-    return {
+    packet = {
         "contract_version": "entry_decision_v1",
         "policy_version": policy.version,
         "evaluated_at": int(evaluated_at),
@@ -670,3 +693,6 @@ def build_entry_decision(
         "trade_plan": trade_plan,
         "policy": asdict(policy),
     }
+    if lifecycle_id is not None:
+        packet["lifecycle_id"] = lifecycle_id
+    return packet
