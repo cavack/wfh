@@ -2,14 +2,12 @@ import logging
 import math
 import sqlite3
 import time
-from typing import Any
+from collections import defaultdict
+from typing import Any, Iterable, Mapping
 
 from waterfallhunter.core.managed_sqlite import connect_managed_sqlite
 
-logger = logging.getLogger(
-    "WaterfallHunter.LBankExecutionStats"
-)
-
+logger = logging.getLogger("WaterfallHunter.LBankExecutionStats")
 
 EXECUTION_HISTORY_METRICS = (
     "spread_pct",
@@ -22,7 +20,6 @@ EXECUTION_HISTORY_METRICS = (
     "depth_100bps_min_usdt",
 )
 
-
 EVIDENCE_NO_EVIDENCE = "NO_EVIDENCE"
 EVIDENCE_INSUFFICIENT = "INSUFFICIENT"
 EVIDENCE_SUFFICIENT = "SUFFICIENT"
@@ -30,174 +27,55 @@ EVIDENCE_SUFFICIENT = "SUFFICIENT"
 DEFAULT_MIN_OBSERVED_SAMPLES = 5
 DEFAULT_MIN_SPAN_HOURS = 2.0
 
+_HISTORY_COLUMNS = (
+    "id",
+    "symbol",
+    "observation_status",
+    "observed_at",
+    *EXECUTION_HISTORY_METRICS,
+)
+_HISTORY_SELECT = ",\n                            ".join(_HISTORY_COLUMNS)
+_COVERAGE_THRESHOLDS = (1, 2, 3, 5, 10, 20, 30)
+
 
 class LBankExecutionStats:
-    """
-    Read-only statistics, coverage telemetry, and evidence-sufficiency
-    assessment over append-only LBank execution history.
+    """Read-only statistics over append-only LBank execution history."""
 
-    This layer intentionally does NOT:
-    - classify execution as suitable / unsuitable
-    - define trading thresholds
-    - mutate scan_eligible
-    - mutate hunter states
-    - mutate scores
-    - send alerts
-    - place orders
-
-    SUFFICIENT means only that a minimum amount of repeated,
-    temporally-diverse evidence exists for statistical use.
-
-    It does NOT mean:
-    - execution is good
-    - execution is cheap
-    - the symbol is tradeable
-    - the symbol should pass admission
-    """
-
-    def __init__(
-        self,
-        db_path: str = "/app/data/waterfall_registry.db",
-    ):
+    def __init__(self, db_path: str = "/app/data/waterfall_registry.db"):
         self.db_path = db_path
 
-    def _connect(
-        self,
-        timeout: float = 10.0,
-    ):
-        return connect_managed_sqlite(
-            self.db_path,
-            timeout=timeout,
-        )
+    def _connect(self, timeout: float = 10.0):
+        return connect_managed_sqlite(self.db_path, timeout=timeout)
 
     @staticmethod
-    def _finite(
-        value: Any,
-    ) -> float | None:
-        if isinstance(
-            value,
-            bool,
-        ):
+    def _finite(value: Any) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None
-
-        if not isinstance(
-            value,
-            (int, float),
-        ):
-            return None
-
-        number = float(
-            value
-        )
-
-        if not math.isfinite(
-            number
-        ):
-            return None
-
-        return number
+        number = float(value)
+        return number if math.isfinite(number) else None
 
     @classmethod
-    def percentile(
-        cls,
-        values,
-        percentile_value: float,
-    ) -> float | None:
-        cleaned = []
-
-        for value in values:
-            number = cls._finite(
-                value
-            )
-
-            if number is not None:
-                cleaned.append(
-                    number
-                )
-
+    def percentile(cls, values, percentile_value: float) -> float | None:
+        cleaned = [number for value in values if (number := cls._finite(value)) is not None]
         if not cleaned:
             return None
-
         cleaned.sort()
-
-        p = max(
-            0.0,
-            min(
-                100.0,
-                float(
-                    percentile_value
-                ),
-            ),
-        )
-
+        p = max(0.0, min(100.0, float(percentile_value)))
         if len(cleaned) == 1:
             return cleaned[0]
-
-        position = (
-            (len(cleaned) - 1)
-            * p
-            / 100.0
-        )
-
-        lower_index = int(
-            math.floor(
-                position
-            )
-        )
-
-        upper_index = int(
-            math.ceil(
-                position
-            )
-        )
-
-        if (
-            lower_index
-            == upper_index
-        ):
-            return cleaned[
-                lower_index
-            ]
-
-        fraction = (
-            position
-            - lower_index
-        )
-
-        lower_value = cleaned[
-            lower_index
-        ]
-
-        upper_value = cleaned[
-            upper_index
-        ]
-
-        return (
-            lower_value
-            + (
-                upper_value
-                - lower_value
-            )
-            * fraction
-        )
+        position = (len(cleaned) - 1) * p / 100.0
+        lower_index = int(math.floor(position))
+        upper_index = int(math.ceil(position))
+        if lower_index == upper_index:
+            return cleaned[lower_index]
+        fraction = position - lower_index
+        lower_value = cleaned[lower_index]
+        upper_value = cleaned[upper_index]
+        return lower_value + (upper_value - lower_value) * fraction
 
     @classmethod
-    def _metric_summary(
-        cls,
-        values,
-    ) -> dict:
-        cleaned = []
-
-        for value in values:
-            number = cls._finite(
-                value
-            )
-
-            if number is not None:
-                cleaned.append(
-                    number
-                )
-
+    def _metric_summary(cls, values) -> dict:
+        cleaned = [number for value in values if (number := cls._finite(value)) is not None]
         if not cleaned:
             return {
                 "count": 0,
@@ -210,85 +88,26 @@ class LBankExecutionStats:
                 "p90_minus_p50": None,
                 "p90_to_p50_ratio": None,
             }
-
-        mean = (
-            sum(cleaned)
-            / len(cleaned)
-        )
-
-        p10 = cls.percentile(
-            cleaned,
-            10.0,
-        )
-
-        p50 = cls.percentile(
-            cleaned,
-            50.0,
-        )
-
-        p90 = cls.percentile(
-            cleaned,
-            90.0,
-        )
-
-        p90_minus_p50 = (
-            None
-            if (
-                p90 is None
-                or p50 is None
-            )
-            else (
-                p90
-                - p50
-            )
-        )
-
-        p90_to_p50_ratio = None
-
-        if (
-            p90 is not None
-            and p50 is not None
-            and p50 > 0
-        ):
-            p90_to_p50_ratio = (
-                p90
-                / p50
-            )
-
+        p10 = cls.percentile(cleaned, 10.0)
+        p50 = cls.percentile(cleaned, 50.0)
+        p90 = cls.percentile(cleaned, 90.0)
         return {
-            "count": len(
-                cleaned
-            ),
-            "min": min(
-                cleaned
-            ),
-            "max": max(
-                cleaned
-            ),
-            "mean": mean,
+            "count": len(cleaned),
+            "min": min(cleaned),
+            "max": max(cleaned),
+            "mean": sum(cleaned) / len(cleaned),
             "p10": p10,
             "p50": p50,
             "p90": p90,
-            "p90_minus_p50": (
-                p90_minus_p50
-            ),
-            "p90_to_p50_ratio": (
-                p90_to_p50_ratio
-            ),
+            "p90_minus_p50": None if p90 is None or p50 is None else p90 - p50,
+            "p90_to_p50_ratio": None
+            if p90 is None or p50 is None or p50 <= 0
+            else p90 / p50,
         }
 
     @staticmethod
-    def _coverage_from_times(
-        observed_times,
-        *,
-        now: float,
-    ) -> dict:
-        cleaned = [
-            float(value)
-            for value in observed_times
-            if value is not None
-        ]
-
+    def _coverage_from_times(observed_times, *, now: float) -> dict:
+        cleaned = [float(value) for value in observed_times if value is not None]
         if not cleaned:
             return {
                 "first_observed_at": None,
@@ -298,47 +117,17 @@ class LBankExecutionStats:
                 "last_observation_age_seconds": None,
                 "last_observation_age_minutes": None,
             }
-
-        first_observed_at = min(
-            cleaned
-        )
-
-        last_observed_at = max(
-            cleaned
-        )
-
-        span_seconds = (
-            last_observed_at
-            - first_observed_at
-        )
-
-        age_seconds = max(
-            0.0,
-            now
-            - last_observed_at,
-        )
-
+        first_observed_at = min(cleaned)
+        last_observed_at = max(cleaned)
+        span_seconds = last_observed_at - first_observed_at
+        age_seconds = max(0.0, now - last_observed_at)
         return {
-            "first_observed_at": (
-                first_observed_at
-            ),
-            "last_observed_at": (
-                last_observed_at
-            ),
-            "observation_span_seconds": (
-                span_seconds
-            ),
-            "observation_span_hours": (
-                span_seconds
-                / 3600.0
-            ),
-            "last_observation_age_seconds": (
-                age_seconds
-            ),
-            "last_observation_age_minutes": (
-                age_seconds
-                / 60.0
-            ),
+            "first_observed_at": first_observed_at,
+            "last_observed_at": last_observed_at,
+            "observation_span_seconds": span_seconds,
+            "observation_span_hours": span_seconds / 3600.0,
+            "last_observation_age_seconds": age_seconds,
+            "last_observation_age_minutes": age_seconds / 60.0,
         }
 
     @staticmethod
@@ -346,159 +135,57 @@ class LBankExecutionStats:
         *,
         observed_count: int,
         observation_span_hours: float | None,
-        minimum_observed_samples: int = (
-            DEFAULT_MIN_OBSERVED_SAMPLES
-        ),
-        minimum_span_hours: float = (
-            DEFAULT_MIN_SPAN_HOURS
-        ),
+        minimum_observed_samples: int = DEFAULT_MIN_OBSERVED_SAMPLES,
+        minimum_span_hours: float = DEFAULT_MIN_SPAN_HOURS,
     ) -> dict:
-        """
-        Assess whether enough repeated evidence exists for statistics.
-
-        This is NOT an execution-quality or trading decision.
-
-        SUFFICIENT means only:
-        - enough successful OBSERVED samples exist
-        - those samples span enough elapsed time
-
-        It does not inspect spread, cost, depth, score, price, state,
-        or strategy eligibility.
-        """
-        required_samples = max(
-            1,
-            int(
-                minimum_observed_samples
-            ),
-        )
-
-        required_span_hours = max(
-            0.0,
-            float(
-                minimum_span_hours
-            ),
-        )
-
-        sample_count = max(
-            0,
-            int(
-                observed_count
-                or 0
-            ),
-        )
-
+        required_samples = max(1, int(minimum_observed_samples))
+        required_span_hours = max(0.0, float(minimum_span_hours))
+        sample_count = max(0, int(observed_count or 0))
         span_hours = (
             None
-            if observation_span_hours
-            is None
-            else max(
-                0.0,
-                float(
-                    observation_span_hours
-                ),
-            )
+            if observation_span_hours is None
+            else max(0.0, float(observation_span_hours))
         )
-
         if sample_count == 0:
             return {
                 "status": EVIDENCE_NO_EVIDENCE,
                 "observed_samples": 0,
-                "observation_span_hours": (
-                    span_hours
-                ),
-                "minimum_observed_samples": (
-                    required_samples
-                ),
-                "minimum_span_hours": (
-                    required_span_hours
-                ),
+                "observation_span_hours": span_hours,
+                "minimum_observed_samples": required_samples,
+                "minimum_span_hours": required_span_hours,
                 "samples_requirement_met": False,
                 "span_requirement_met": False,
-                "missing_observed_samples": (
-                    required_samples
-                ),
-                "missing_span_hours": (
-                    required_span_hours
-                ),
-                "reasons": [
-                    "no successful execution observations"
-                ],
+                "missing_observed_samples": required_samples,
+                "missing_span_hours": required_span_hours,
+                "reasons": ["no successful execution observations"],
             }
 
-        samples_requirement_met = (
-            sample_count
-            >= required_samples
-        )
-
+        samples_requirement_met = sample_count >= required_samples
         span_requirement_met = (
-            span_hours is not None
-            and span_hours
-            >= required_span_hours
+            span_hours is not None and span_hours >= required_span_hours
         )
-
         reasons = []
-
         if not samples_requirement_met:
-            reasons.append(
-                "minimum observed sample count not reached"
-            )
-
+            reasons.append("minimum observed sample count not reached")
         if not span_requirement_met:
-            reasons.append(
-                "minimum temporal span not reached"
-            )
-
-        missing_observed_samples = max(
-            0,
-            required_samples
-            - sample_count,
-        )
-
+            reasons.append("minimum temporal span not reached")
+        missing_observed_samples = max(0, required_samples - sample_count)
         missing_span_hours = (
             required_span_hours
             if span_hours is None
-            else max(
-                0.0,
-                required_span_hours
-                - span_hours,
-            )
+            else max(0.0, required_span_hours - span_hours)
         )
-
-        sufficient = (
-            samples_requirement_met
-            and span_requirement_met
-        )
-
+        sufficient = samples_requirement_met and span_requirement_met
         return {
-            "status": (
-                EVIDENCE_SUFFICIENT
-                if sufficient
-                else EVIDENCE_INSUFFICIENT
-            ),
-            "observed_samples": (
-                sample_count
-            ),
-            "observation_span_hours": (
-                span_hours
-            ),
-            "minimum_observed_samples": (
-                required_samples
-            ),
-            "minimum_span_hours": (
-                required_span_hours
-            ),
-            "samples_requirement_met": (
-                samples_requirement_met
-            ),
-            "span_requirement_met": (
-                span_requirement_met
-            ),
-            "missing_observed_samples": (
-                missing_observed_samples
-            ),
-            "missing_span_hours": (
-                missing_span_hours
-            ),
+            "status": EVIDENCE_SUFFICIENT if sufficient else EVIDENCE_INSUFFICIENT,
+            "observed_samples": sample_count,
+            "observation_span_hours": span_hours,
+            "minimum_observed_samples": required_samples,
+            "minimum_span_hours": required_span_hours,
+            "samples_requirement_met": samples_requirement_met,
+            "span_requirement_met": span_requirement_met,
+            "missing_observed_samples": missing_observed_samples,
+            "missing_span_hours": missing_span_hours,
             "reasons": reasons,
         }
 
@@ -507,14 +194,9 @@ class LBankExecutionStats:
         symbol: str,
         *,
         since: float | None,
+        generated_at: float | None = None,
     ) -> dict:
-        now = time.time()
-
-        evidence = self.evidence_sufficiency(
-            observed_count=0,
-            observation_span_hours=None,
-        )
-
+        now = time.time() if generated_at is None else float(generated_at)
         return {
             "symbol": symbol,
             "since": since,
@@ -529,16 +211,82 @@ class LBankExecutionStats:
             "observation_span_hours": None,
             "last_observation_age_seconds": None,
             "last_observation_age_minutes": None,
-            "evidence": evidence,
+            "evidence": self.evidence_sufficiency(
+                observed_count=0,
+                observation_span_hours=None,
+            ),
             "metrics": {
-                metric: (
-                    self._metric_summary(
-                        []
-                    )
-                )
-                for metric
-                in EXECUTION_HISTORY_METRICS
+                metric: self._metric_summary([]) for metric in EXECUTION_HISTORY_METRICS
             },
+        }
+
+    @staticmethod
+    def _row_value(row: Mapping[str, Any] | sqlite3.Row, key: str) -> Any:
+        return row[key]
+
+    def _summary_from_rows(
+        self,
+        symbol: str,
+        rows: Iterable[Mapping[str, Any] | sqlite3.Row],
+        *,
+        since: float | None,
+        generated_at: float,
+    ) -> dict:
+        materialized = list(rows)
+        if not materialized:
+            return self._empty_summary(
+                symbol,
+                since=since,
+                generated_at=generated_at,
+            )
+
+        observed_rows = [
+            row
+            for row in materialized
+            if self._row_value(row, "observation_status") == "OBSERVED"
+        ]
+        observation_count = len(materialized)
+        observed_count = len(observed_rows)
+        unavailable_count = sum(
+            1
+            for row in materialized
+            if self._row_value(row, "observation_status") == "UNAVAILABLE"
+        )
+        successful_observed_times = [
+            number
+            for row in observed_rows
+            if (
+                number := self._finite(self._row_value(row, "observed_at"))
+            )
+            is not None
+        ]
+        coverage = self._coverage_from_times(
+            successful_observed_times,
+            now=generated_at,
+        )
+        metrics = {
+            metric: self._metric_summary(
+                [self._row_value(row, metric) for row in observed_rows]
+            )
+            for metric in EXECUTION_HISTORY_METRICS
+        }
+        evidence = self.evidence_sufficiency(
+            observed_count=observed_count,
+            observation_span_hours=coverage["observation_span_hours"],
+        )
+        return {
+            "symbol": symbol,
+            "since": since,
+            "generated_at": generated_at,
+            "observation_count": observation_count,
+            "observed_count": observed_count,
+            "unavailable_count": unavailable_count,
+            "availability_rate": (
+                observed_count / observation_count if observation_count else None
+            ),
+            **coverage,
+            "evidence": evidence,
+            "metrics": metrics,
         }
 
     def summarize_symbol(
@@ -549,287 +297,194 @@ class LBankExecutionStats:
         limit: int = 10_000,
     ) -> dict:
         if not symbol:
-            return self._empty_summary(
-                "",
-                since=since,
-            )
-
-        row_limit = max(
-            1,
-            min(
-                int(
-                    limit
-                ),
-                100_000,
-            ),
-        )
-
+            return self._empty_summary("", since=since)
+        row_limit = max(1, min(int(limit), 100_000))
         try:
             with self._connect() as conn:
-                conn.row_factory = (
-                    sqlite3.Row
-                )
-
+                conn.row_factory = sqlite3.Row
                 if since is None:
                     rows = conn.execute(
-                        """
+                        f"""
                         SELECT
-                            id,
-                            symbol,
-                            observation_status,
-                            observed_at,
-                            spread_pct,
-                            cost_25_pct,
-                            cost_50_pct,
-                            cost_100_pct,
-                            depth_10bps_min_usdt,
-                            depth_25bps_min_usdt,
-                            depth_50bps_min_usdt,
-                            depth_100bps_min_usdt
-                        FROM
-                            lbank_execution_observation_history
-                        WHERE
-                            symbol = ?
-                        ORDER BY
-                            observed_at DESC,
-                            id DESC
+                            {_HISTORY_SELECT}
+                        FROM lbank_execution_observation_history
+                        WHERE symbol = ?
+                        ORDER BY observed_at DESC, id DESC
                         LIMIT ?
                         """,
-                        (
-                            symbol,
-                            row_limit,
-                        ),
+                        (symbol, row_limit),
                     ).fetchall()
-
                 else:
                     rows = conn.execute(
-                        """
+                        f"""
                         SELECT
-                            id,
-                            symbol,
-                            observation_status,
-                            observed_at,
-                            spread_pct,
-                            cost_25_pct,
-                            cost_50_pct,
-                            cost_100_pct,
-                            depth_10bps_min_usdt,
-                            depth_25bps_min_usdt,
-                            depth_50bps_min_usdt,
-                            depth_100bps_min_usdt
-                        FROM
-                            lbank_execution_observation_history
-                        WHERE
-                            symbol = ?
-                            AND observed_at >= ?
-                        ORDER BY
-                            observed_at DESC,
-                            id DESC
+                            {_HISTORY_SELECT}
+                        FROM lbank_execution_observation_history
+                        WHERE symbol = ? AND observed_at >= ?
+                        ORDER BY observed_at DESC, id DESC
                         LIMIT ?
                         """,
-                        (
-                            symbol,
-                            float(
-                                since
-                            ),
-                            row_limit,
-                        ),
+                        (symbol, float(since), row_limit),
                     ).fetchall()
-
         except Exception as exc:
             logger.error(
                 "Failed reading LBank execution statistics for %s: %s",
                 symbol,
                 exc,
             )
+            return self._empty_summary(symbol, since=since)
 
-            return self._empty_summary(
-                symbol,
-                since=since,
-            )
-
-        if not rows:
-            return self._empty_summary(
-                symbol,
-                since=since,
-            )
-
-        generated_at = time.time()
-
-        observation_count = len(
-            rows
+        return self._summary_from_rows(
+            symbol,
+            rows,
+            since=since,
+            generated_at=time.time(),
         )
 
-        observed_rows = [
-            row
-            for row in rows
-            if (
-                row[
-                    "observation_status"
-                ]
-                == "OBSERVED"
-            )
-        ]
-
-        observed_count = len(
-            observed_rows
-        )
-
-        unavailable_count = sum(
-            1
-            for row in rows
-            if (
-                row[
-                    "observation_status"
-                ]
-                == "UNAVAILABLE"
-            )
-        )
-
-        availability_rate = (
-            observed_count
-            / observation_count
-            if observation_count
-            else None
-        )
-
-        successful_observed_times = [
-            value
-            for value in (
-                self._finite(
-                    row[
-                        "observed_at"
-                    ]
-                )
-                for row in observed_rows
-            )
-            if value is not None
-        ]
-
-        coverage = (
-            self._coverage_from_times(
-                successful_observed_times,
-                now=generated_at,
-            )
-        )
-
-        metrics = {}
-
-        for metric in (
-            EXECUTION_HISTORY_METRICS
-        ):
-            metrics[
-                metric
-            ] = self._metric_summary(
-                [
-                    row[
-                        metric
-                    ]
-                    for row in observed_rows
-                ]
-            )
-
-        evidence = self.evidence_sufficiency(
-            observed_count=(
-                observed_count
-            ),
-            observation_span_hours=(
-                coverage[
-                    "observation_span_hours"
-                ]
-            ),
-        )
-
-        return {
-            "symbol": symbol,
-            "since": since,
-            "generated_at": generated_at,
-            "observation_count": (
-                observation_count
-            ),
-            "observed_count": (
-                observed_count
-            ),
-            "unavailable_count": (
-                unavailable_count
-            ),
-            "availability_rate": (
-                availability_rate
-            ),
-            **coverage,
-            "evidence": evidence,
-            "metrics": metrics,
-        }
-
-    def list_symbols(
+    def summarize_universe(
         self,
         *,
-        limit: int = 10_000,
-    ) -> list[str]:
-        symbol_limit = max(
-            1,
-            min(
-                int(
-                    limit
-                ),
-                100_000,
-            ),
-        )
+        symbol_limit: int = 10_000,
+        per_symbol_limit: int = 10_000,
+    ) -> list[dict]:
+        """Return per-symbol summaries from one set-based history snapshot."""
+        bounded_symbol_limit = max(1, min(int(symbol_limit), 100_000))
+        bounded_row_limit = max(1, min(int(per_symbol_limit), 100_000))
+        generated_at = time.time()
 
+        try:
+            with self._connect() as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    f"""
+                    WITH symbol_recency AS (
+                        SELECT
+                            symbol,
+                            MAX(observed_at) AS latest_observed_at
+                        FROM lbank_execution_observation_history
+                        GROUP BY symbol
+                    ),
+                    selected_symbols AS (
+                        SELECT
+                            symbol,
+                            ROW_NUMBER() OVER (
+                                ORDER BY latest_observed_at DESC, symbol ASC
+                            ) AS symbol_rank
+                        FROM symbol_recency
+                    ),
+                    ranked_history AS (
+                        SELECT
+                            selected_symbols.symbol_rank,
+                            history.{', history.'.join(_HISTORY_COLUMNS)},
+                            ROW_NUMBER() OVER (
+                                PARTITION BY history.symbol
+                                ORDER BY history.observed_at DESC, history.id DESC
+                            ) AS row_rank
+                        FROM selected_symbols
+                        JOIN lbank_execution_observation_history AS history
+                            ON history.symbol = selected_symbols.symbol
+                        WHERE selected_symbols.symbol_rank <= ?
+                    )
+                    SELECT
+                        symbol_rank,
+                        {_HISTORY_SELECT},
+                        row_rank
+                    FROM ranked_history
+                    WHERE row_rank <= ?
+                    ORDER BY symbol_rank ASC, row_rank ASC
+                    """,
+                    (bounded_symbol_limit, bounded_row_limit),
+                ).fetchall()
+        except Exception as exc:
+            logger.error("Failed reading bulk LBank execution statistics: %s", exc)
+            return []
+
+        grouped: dict[str, list[sqlite3.Row]] = defaultdict(list)
+        symbol_order: list[str] = []
+        for row in rows:
+            symbol = str(row["symbol"] or "")
+            if not symbol:
+                continue
+            if symbol not in grouped:
+                symbol_order.append(symbol)
+            grouped[symbol].append(row)
+
+        return [
+            self._summary_from_rows(
+                symbol,
+                grouped[symbol],
+                since=None,
+                generated_at=generated_at,
+            )
+            for symbol in symbol_order
+        ]
+
+    def list_symbols(self, *, limit: int = 10_000) -> list[str]:
+        symbol_limit = max(1, min(int(limit), 100_000))
         try:
             with self._connect() as conn:
                 rows = conn.execute(
                     """
-                    SELECT
-                        symbol
-                    FROM
-                        lbank_execution_observation_history
-                    GROUP BY
-                        symbol
-                    ORDER BY
-                        MAX(observed_at) DESC,
-                        symbol ASC
+                    SELECT symbol
+                    FROM lbank_execution_observation_history
+                    GROUP BY symbol
+                    ORDER BY MAX(observed_at) DESC, symbol ASC
                     LIMIT ?
                     """,
-                    (
-                        symbol_limit,
-                    ),
+                    (symbol_limit,),
                 ).fetchall()
-
-                return [
-                    str(
-                        row[0]
-                    )
-                    for row in rows
-                    if (
-                        row
-                        and row[0]
-                    )
-                ]
-
+            return [str(row[0]) for row in rows if row and row[0]]
         except Exception as exc:
-            logger.error(
-                "Failed listing LBank execution history symbols: %s",
-                exc,
-            )
+            logger.error("Failed listing LBank execution history symbols: %s", exc)
             return []
 
-    def coverage_summary(
+    @staticmethod
+    def _median(values) -> float | None:
+        if not values:
+            return None
+        ordered = sorted(values)
+        midpoint = len(ordered) // 2
+        if len(ordered) % 2:
+            return float(ordered[midpoint])
+        return (ordered[midpoint - 1] + ordered[midpoint]) / 2.0
+
+    def _empty_coverage_summary(
         self,
+        generated_at: float,
         *,
-        now: float | None = None,
+        include_thresholds: bool,
     ) -> dict:
-        """
-        Read-only global sampling coverage telemetry.
+        return {
+            "generated_at": generated_at,
+            "history_rows": 0,
+            "unique_symbols": 0,
+            "observed_rows": 0,
+            "unavailable_rows": 0,
+            "availability_rate": None,
+            "observation_count_distribution": {},
+            "observed_count_distribution": {},
+            "coverage_thresholds": (
+                {str(value): 0 for value in _COVERAGE_THRESHOLDS}
+                if include_thresholds
+                else {}
+            ),
+            "evidence_status_counts": {
+                EVIDENCE_NO_EVIDENCE: 0,
+                EVIDENCE_INSUFFICIENT: 0,
+                EVIDENCE_SUFFICIENT: 0,
+            },
+            "max_observations_per_symbol": 0,
+            "max_observed_samples_per_symbol": 0,
+            "median_observations_per_symbol": None,
+            "median_observed_samples_per_symbol": None,
+            "max_span_hours": None,
+            "median_span_hours": None,
+            "latest_observation_at": None,
+            "latest_observation_age_seconds": None,
+        }
 
-        No trading or execution-quality threshold is applied.
-        """
-        generated_at = float(
-            now
-            if now is not None
-            else time.time()
-        )
-
+    def coverage_summary(self, *, now: float | None = None) -> dict:
+        generated_at = float(now if now is not None else time.time())
         try:
             with self._connect() as conn:
                 rows = conn.execute(
@@ -837,253 +492,55 @@ class LBankExecutionStats:
                     SELECT
                         symbol,
                         COUNT(*) AS observation_count,
-
-                        SUM(
-                            CASE
-                                WHEN observation_status = 'OBSERVED'
-                                THEN 1
-                                ELSE 0
-                            END
-                        ) AS observed_count,
-
-                        SUM(
-                            CASE
-                                WHEN observation_status = 'UNAVAILABLE'
-                                THEN 1
-                                ELSE 0
-                            END
-                        ) AS unavailable_count,
-
-                        MIN(
-                            CASE
-                                WHEN observation_status = 'OBSERVED'
-                                THEN observed_at
-                                ELSE NULL
-                            END
-                        ) AS first_successful_observed_at,
-
-                        MAX(
-                            CASE
-                                WHEN observation_status = 'OBSERVED'
-                                THEN observed_at
-                                ELSE NULL
-                            END
-                        ) AS last_successful_observed_at
-
-                    FROM
-                        lbank_execution_observation_history
-
-                    GROUP BY
-                        symbol
+                        SUM(CASE WHEN observation_status = 'OBSERVED' THEN 1 ELSE 0 END)
+                            AS observed_count,
+                        SUM(CASE WHEN observation_status = 'UNAVAILABLE' THEN 1 ELSE 0 END)
+                            AS unavailable_count,
+                        MIN(CASE WHEN observation_status = 'OBSERVED' THEN observed_at END)
+                            AS first_successful_observed_at,
+                        MAX(CASE WHEN observation_status = 'OBSERVED' THEN observed_at END)
+                            AS last_successful_observed_at
+                    FROM lbank_execution_observation_history
+                    GROUP BY symbol
                     """
                 ).fetchall()
-
         except Exception as exc:
-            logger.error(
-                "Failed reading LBank execution coverage summary: %s",
-                exc,
+            logger.error("Failed reading LBank execution coverage summary: %s", exc)
+            return self._empty_coverage_summary(
+                generated_at,
+                include_thresholds=False,
             )
-
-            return {
-                "generated_at": generated_at,
-                "history_rows": 0,
-                "unique_symbols": 0,
-                "observed_rows": 0,
-                "unavailable_rows": 0,
-                "availability_rate": None,
-                "observation_count_distribution": {},
-                "observed_count_distribution": {},
-                "coverage_thresholds": {},
-                "evidence_status_counts": {
-                    EVIDENCE_NO_EVIDENCE: 0,
-                    EVIDENCE_INSUFFICIENT: 0,
-                    EVIDENCE_SUFFICIENT: 0,
-                },
-                "max_observations_per_symbol": 0,
-                "max_observed_samples_per_symbol": 0,
-                "median_observations_per_symbol": None,
-                "median_observed_samples_per_symbol": None,
-                "max_span_hours": None,
-                "median_span_hours": None,
-                "latest_observation_at": None,
-                "latest_observation_age_seconds": None,
-            }
 
         if not rows:
-            return {
-                "generated_at": generated_at,
-                "history_rows": 0,
-                "unique_symbols": 0,
-                "observed_rows": 0,
-                "unavailable_rows": 0,
-                "availability_rate": None,
-                "observation_count_distribution": {},
-                "observed_count_distribution": {},
-                "coverage_thresholds": {
-                    str(value): 0
-                    for value in (
-                        1,
-                        2,
-                        3,
-                        5,
-                        10,
-                        20,
-                        30,
-                    )
-                },
-                "evidence_status_counts": {
-                    EVIDENCE_NO_EVIDENCE: 0,
-                    EVIDENCE_INSUFFICIENT: 0,
-                    EVIDENCE_SUFFICIENT: 0,
-                },
-                "max_observations_per_symbol": 0,
-                "max_observed_samples_per_symbol": 0,
-                "median_observations_per_symbol": None,
-                "median_observed_samples_per_symbol": None,
-                "max_span_hours": None,
-                "median_span_hours": None,
-                "latest_observation_at": None,
-                "latest_observation_age_seconds": None,
-            }
-
-        attempt_counts = [
-            int(
-                row[1]
-                or 0
+            return self._empty_coverage_summary(
+                generated_at,
+                include_thresholds=True,
             )
-            for row in rows
-        ]
 
-        observed_counts = [
-            int(
-                row[2]
-                or 0
-            )
-            for row in rows
-        ]
+        attempt_counts = [int(row[1] or 0) for row in rows]
+        observed_counts = [int(row[2] or 0) for row in rows]
+        observed_rows = sum(observed_counts)
+        unavailable_rows = sum(int(row[3] or 0) for row in rows)
+        history_rows = observed_rows + unavailable_rows
 
-        observed_rows = sum(
-            observed_counts
-        )
-
-        unavailable_rows = sum(
-            int(
-                row[3]
-                or 0
-            )
-            for row in rows
-        )
-
-        history_rows = (
-            observed_rows
-            + unavailable_rows
-        )
-
-        availability_rate = (
-            observed_rows
-            / history_rows
-            if history_rows
-            else None
-        )
-
-        observation_count_distribution = {}
-
+        observation_count_distribution: dict[str, int] = {}
         for count in attempt_counts:
-            key = str(
-                count
+            key = str(count)
+            observation_count_distribution[key] = (
+                observation_count_distribution.get(key, 0) + 1
             )
 
-            observation_count_distribution[
-                key
-            ] = (
-                observation_count_distribution.get(
-                    key,
-                    0,
-                )
-                + 1
-            )
-
-        observed_count_distribution = {}
-
+        observed_count_distribution: dict[str, int] = {}
         for count in observed_counts:
-            key = str(
-                count
-            )
+            key = str(count)
+            observed_count_distribution[key] = observed_count_distribution.get(key, 0) + 1
 
-            observed_count_distribution[
-                key
-            ] = (
-                observed_count_distribution.get(
-                    key,
-                    0,
-                )
-                + 1
-            )
-
-        coverage_thresholds = {}
-
-        for threshold in (
-            1,
-            2,
-            3,
-            5,
-            10,
-            20,
-            30,
-        ):
-            coverage_thresholds[
-                str(
-                    threshold
-                )
-            ] = sum(
-                1
-                for count in observed_counts
-                if count
-                >= threshold
-            )
-
-        def median(
-            values,
-        ):
-            if not values:
-                return None
-
-            ordered = sorted(
-                values
-            )
-
-            midpoint = (
-                len(
-                    ordered
-                )
-                // 2
-            )
-
-            if (
-                len(
-                    ordered
-                )
-                % 2
-            ):
-                return float(
-                    ordered[
-                        midpoint
-                    ]
-                )
-
-            return (
-                ordered[
-                    midpoint - 1
-                ]
-                + ordered[
-                    midpoint
-                ]
-            ) / 2.0
-
-        spans_hours = []
-
-        latest_observation_at = None
-
+        coverage_thresholds = {
+            str(threshold): sum(1 for count in observed_counts if count >= threshold)
+            for threshold in _COVERAGE_THRESHOLDS
+        }
+        spans_hours: list[float] = []
+        latest_observation_at: float | None = None
         evidence_status_counts = {
             EVIDENCE_NO_EVIDENCE: 0,
             EVIDENCE_INSUFFICIENT: 0,
@@ -1091,136 +548,46 @@ class LBankExecutionStats:
         }
 
         for row in rows:
-            observed_count = int(
-                row[2]
-                or 0
-            )
-
-            first_observed_at = (
-                self._finite(
-                    row[4]
-                )
-            )
-
-            last_observed_at = (
-                self._finite(
-                    row[5]
-                )
-            )
-
+            observed_count = int(row[2] or 0)
+            first_observed_at = self._finite(row[4])
+            last_observed_at = self._finite(row[5])
             span_hours = None
-
-            if (
-                first_observed_at
-                is not None
-                and last_observed_at
-                is not None
+            if first_observed_at is not None and last_observed_at is not None:
+                span_hours = max(0.0, last_observed_at - first_observed_at) / 3600.0
+                spans_hours.append(span_hours)
+            if last_observed_at is not None and (
+                latest_observation_at is None
+                or last_observed_at > latest_observation_at
             ):
-                span_hours = (
-                    max(
-                        0.0,
-                        last_observed_at
-                        - first_observed_at,
-                    )
-                    / 3600.0
-                )
-
-                spans_hours.append(
-                    span_hours
-                )
-
-            if (
-                last_observed_at
-                is not None
-            ):
-                if (
-                    latest_observation_at
-                    is None
-                    or last_observed_at
-                    > latest_observation_at
-                ):
-                    latest_observation_at = (
-                        last_observed_at
-                    )
-
-            evidence = (
-                self.evidence_sufficiency(
-                    observed_count=(
-                        observed_count
-                    ),
-                    observation_span_hours=(
-                        span_hours
-                    ),
-                )
+                latest_observation_at = last_observed_at
+            evidence = self.evidence_sufficiency(
+                observed_count=observed_count,
+                observation_span_hours=span_hours,
             )
+            evidence_status_counts[evidence["status"]] += 1
 
-            evidence_status_counts[
-                evidence[
-                    "status"
-                ]
-            ] += 1
-
-        latest_observation_age_seconds = None
-
-        if (
-            latest_observation_at
-            is not None
-        ):
-            latest_observation_age_seconds = max(
-                0.0,
-                generated_at
-                - latest_observation_at,
-            )
-
+        latest_observation_age_seconds = (
+            None
+            if latest_observation_at is None
+            else max(0.0, generated_at - latest_observation_at)
+        )
         return {
             "generated_at": generated_at,
             "history_rows": history_rows,
-            "unique_symbols": len(
-                rows
-            ),
+            "unique_symbols": len(rows),
             "observed_rows": observed_rows,
             "unavailable_rows": unavailable_rows,
-            "availability_rate": (
-                availability_rate
-            ),
-            "observation_count_distribution": (
-                observation_count_distribution
-            ),
-            "observed_count_distribution": (
-                observed_count_distribution
-            ),
-            "coverage_thresholds": (
-                coverage_thresholds
-            ),
-            "evidence_status_counts": (
-                evidence_status_counts
-            ),
-            "max_observations_per_symbol": max(
-                attempt_counts
-            ),
-            "max_observed_samples_per_symbol": max(
-                observed_counts
-            ),
-            "median_observations_per_symbol": median(
-                attempt_counts
-            ),
-            "median_observed_samples_per_symbol": median(
-                observed_counts
-            ),
-            "max_span_hours": (
-                max(
-                    spans_hours
-                )
-                if spans_hours
-                else None
-            ),
-            "median_span_hours": median(
-                spans_hours
-            ),
-            "latest_observation_at": (
-                latest_observation_at
-            ),
-            "latest_observation_age_seconds": (
-                latest_observation_age_seconds
-            ),
+            "availability_rate": observed_rows / history_rows if history_rows else None,
+            "observation_count_distribution": observation_count_distribution,
+            "observed_count_distribution": observed_count_distribution,
+            "coverage_thresholds": coverage_thresholds,
+            "evidence_status_counts": evidence_status_counts,
+            "max_observations_per_symbol": max(attempt_counts),
+            "max_observed_samples_per_symbol": max(observed_counts),
+            "median_observations_per_symbol": self._median(attempt_counts),
+            "median_observed_samples_per_symbol": self._median(observed_counts),
+            "max_span_hours": max(spans_hours) if spans_hours else None,
+            "median_span_hours": self._median(spans_hours),
+            "latest_observation_at": latest_observation_at,
+            "latest_observation_age_seconds": latest_observation_age_seconds,
         }
