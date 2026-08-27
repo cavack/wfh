@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 from waterfallhunter.core.contracts import ExecutionMode, SignalDecisionPacket
@@ -10,9 +11,24 @@ WORKFLOW = ROOT / ".github" / "workflows" / "deploy-production.yml"
 DEPLOY_SCRIPT = ROOT / "scripts" / "deploy_production.sh"
 
 
+def _tracked_text_files() -> list[Path]:
+    result = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    )
+    return [
+        ROOT / raw.decode("utf-8")
+        for raw in result.stdout.split(b"\0")
+        if raw
+    ]
+
+
 def test_execution_mode_is_signal_only() -> None:
+    deprecated_mode = "PAPER" + "_ONLY"
     assert ExecutionMode.SIGNAL_ONLY.value == "SIGNAL_ONLY"
-    assert "PAPER_ONLY" not in {member.value for member in ExecutionMode}
+    assert deprecated_mode not in {member.value for member in ExecutionMode}
 
 
 def test_signal_decision_defaults_to_signal_only() -> None:
@@ -20,27 +36,19 @@ def test_signal_decision_defaults_to_signal_only() -> None:
     assert field.default is ExecutionMode.SIGNAL_ONLY
 
 
-def test_current_product_surfaces_do_not_use_deprecated_paper_boundary_terms() -> None:
-    roots = [
-        ROOT / "backend" / "src",
-        ROOT / "frontend",
-        ROOT / "docs" / "operations",
-    ]
-    files = [
-        ROOT / ".env.example",
-        ROOT / "docker-compose.yml",
-        ROOT / "README.md",
-        ROOT / "SECURITY.md",
-        ROOT / "CONTRIBUTING.md",
-    ]
-    for root in roots:
-        if root.exists():
-            files.extend(path for path in root.rglob("*") if path.is_file())
-
-    forbidden = ("PAPER_ONLY", "paper-only", "paper trading", "paper-trading")
+def test_tracked_repository_text_does_not_use_deprecated_product_boundary_terms() -> None:
+    forbidden = (
+        "PAPER" + "_ONLY",
+        "paper" + "-only",
+        "Paper" + "-only",
+        "paper" + " trading",
+        "Paper" + " trading",
+        "paper" + "-trading",
+        "Paper" + "-trading",
+    )
     offenders: list[str] = []
-    for path in files:
-        if path.suffix in {".pyc", ".map"}:
+    for path in _tracked_text_files():
+        if path.suffix in {".pyc", ".map", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf"}:
             continue
         try:
             text = path.read_text(encoding="utf-8")
