@@ -232,7 +232,9 @@ def _applied_runtime_schema_valid(
     if applied == (1, 2, 3, 4, 5):
         return _verified_schema_result(
             conn,
-            allow_missing_tables=frozenset({"entry_decision_events"}),
+            allow_missing_tables=frozenset(
+                {"entry_decision_events", "entry_notification_outbox"}
+            ),
             check_user_version=5,
         )
     if applied == (1, 2, 3):
