@@ -44,6 +44,19 @@ def _prepare_invalid_evaluation(monkeypatch, *, symbol: str, result: dict, persi
         "update_candidate_state",
         lambda *args, **kwargs: persist_state,
     )
+    # Synthetic symbols in this unit test do not exist in lbank_catalog.
+    # Bypass the independent canonical lifecycle CAS so this fixture continues
+    # to isolate websocket unsubscribe behavior.
+    monkeypatch.setattr(
+        main.entry_decision_store,
+        "latest_for_symbol",
+        lambda _symbol: None,
+    )
+    monkeypatch.setattr(
+        main.entry_decision_store,
+        "append_if_changed",
+        lambda *_args, **_kwargs: None,
+    )
 
     unsubscribed: list[tuple[str, str]] = []
     monkeypatch.setattr(

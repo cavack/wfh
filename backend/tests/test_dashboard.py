@@ -624,3 +624,62 @@ def test_dashboard_projects_stale_entry_ready_to_invalidated(monkeypatch):
     assert projected["decision"] == "INVALIDATED"
     assert "STALE_ANALYSIS" in projected["block_reasons"]
     assert projected["event_id"] == 123
+
+
+def test_dashboard_preserves_canonical_invalidation_when_reference_is_unavailable(monkeypatch):
+    import waterfallhunter.main as main
+
+    symbol = "NOREFUI/USDT:USDT"
+    invalidated = {
+        "contract_version": "entry_decision_v1",
+        "policy_version": "entry_policy_v1",
+        "evaluated_at": 1_700_000_100,
+        "decision": "INVALIDATED",
+        "lifecycle_state": "WATCH",
+        "entry_readiness": 40.0,
+        "evidence_coverage_pct": 80.0,
+        "hard_blocked": True,
+        "block_reasons": ["STALE_REFERENCE", "ENTRY_CONDITIONS_LOST"],
+        "reason_codes": ["STALE_REFERENCE"],
+        "components": {},
+        "evidence_summary": {},
+        "trade_plan": None,
+        "policy": {},
+        "event_id": 777,
+    }
+    monkeypatch.setattr(
+        main.db,
+        "get_all_active_candidates",
+        lambda: {symbol: {"symbol": symbol, "status": "WATCH"}},
+    )
+    monkeypatch.setattr(
+        main.scanner,
+        "active_candidates",
+        {
+            symbol: {
+                "score": None,
+                "quote_volume": 2_000_000.0,
+                "analysis_observed_at": 1_700_000_100,
+                "metrics": {
+                    "error": "no fresh reference price in exchange waterfall",
+                    "entry_decision": invalidated,
+                    "derivatives": {"available": True, "funding_rate": 0.123},
+                },
+            }
+        },
+    )
+    monkeypatch.setattr(main.scanner, "get_live_reference", lambda _symbol: (None, None))
+    monkeypatch.setattr(main.historical_outcome_store, "symbol_summaries", lambda: {})
+    monkeypatch.setattr(
+        main.execution_suitability_enricher,
+        "for_symbol",
+        lambda _symbol: {"status": "UNKNOWN", "observational_only": True},
+    )
+    monkeypatch.setattr(main.entry_decision_store, "recent_changes", lambda limit=10: [])
+
+    payload = main.get_formatted_candidates(evaluation_time=1_700_000_120)
+    candidate = payload["candidates"][symbol]
+    assert candidate["data_status"] == "unavailable"
+    assert candidate["metrics"]["entry_decision"]["decision"] == "INVALIDATED"
+    assert candidate["metrics"]["entry_decision"]["event_id"] == 777
+    assert "derivatives" not in candidate["metrics"]

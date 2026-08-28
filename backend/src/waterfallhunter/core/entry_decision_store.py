@@ -24,6 +24,10 @@ _ALLOWED = {
 }
 
 
+class StaleCandidateLifecycleError(RuntimeError):
+    """Raised when an in-flight candidate no longer owns the catalogue lifecycle."""
+
+
 class EntryDecisionStore:
     def __init__(self, db_path: str | Path, *, verify_schema: bool = True):
         self.db_path = str(db_path)
@@ -65,16 +69,42 @@ class EntryDecisionStore:
         )
         return payload, canonical_sha256(packet)
 
-    def append_if_changed(self, symbol: str, packet: dict[str, Any]) -> int | None:
+    def append_if_changed(
+        self,
+        symbol: str,
+        packet: dict[str, Any],
+        *,
+        expected_lifecycle_id: int | None = None,
+    ) -> int | None:
         symbol = str(symbol or "").strip()
         if not symbol:
             raise ValueError("symbol missing")
+        if expected_lifecycle_id is not None and (
+            isinstance(expected_lifecycle_id, bool)
+            or not isinstance(expected_lifecycle_id, int)
+            or expected_lifecycle_id < 1
+        ):
+            raise ValueError("expected_lifecycle_id must be a positive integer")
         decision, event_at, readiness, coverage, policy_version = self._validate_packet(packet)
         payload, payload_hash = self._encode(packet)
         lifecycle_state = str(packet.get("lifecycle_state") or "WATCH")
         created_at = int(time.time())
         with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
             conn.execute("BEGIN IMMEDIATE")
+            if expected_lifecycle_id is not None:
+                catalog = conn.execute(
+                    "SELECT lifecycle_id,scan_eligible,status FROM lbank_catalog WHERE symbol=?",
+                    (symbol,),
+                ).fetchone()
+                if (
+                    catalog is None
+                    or int(catalog[0] or 0) != expected_lifecycle_id
+                    or not bool(catalog[1])
+                    or str(catalog[2] or "") == "REMOVED"
+                ):
+                    raise StaleCandidateLifecycleError(
+                        "candidate lifecycle is no longer current"
+                    )
             row = conn.execute(
                 "SELECT decision FROM entry_decision_events "
                 "WHERE symbol=? ORDER BY id DESC LIMIT 1",
@@ -134,20 +164,35 @@ class EntryDecisionStore:
             return decision_event_id
 
     @staticmethod
-    def _row_packet(row: sqlite3.Row | tuple[Any, ...]) -> dict[str, Any]:
-        packet = json.loads(str(row[6]))
+    def _verified_record(raw_json: Any, expected_hash: Any, *, label: str) -> dict[str, Any]:
+        try:
+            decoded = json.loads(str(raw_json))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError(f"{label} JSON invalid") from exc
+        if not isinstance(decoded, dict):
+            raise ValueError(f"{label} must be a JSON object")
+        if canonical_sha256(decoded) != str(expected_hash or ""):
+            raise ValueError(f"{label} hash mismatch")
+        return decoded
+
+    @classmethod
+    def _row_packet(cls, row: sqlite3.Row | tuple[Any, ...]) -> dict[str, Any]:
+        if len(row) < 8:
+            raise ValueError("entry decision row missing packet hash")
+        packet = cls._verified_record(row[6], row[7], label="packet")
         packet["event_id"] = int(row[0])
         packet["symbol"] = str(row[1])
         packet["event_at"] = int(row[2])
         packet["decision"] = str(row[3])
         packet["entry_readiness"] = float(row[4])
         packet["evidence_coverage_pct"] = float(row[5])
-        if len(row) > 7 and row[7] is not None:
-            advisory = json.loads(str(row[7]))
-            if isinstance(advisory, dict):
-                packet["ai_advisory"] = advisory
-        if len(row) > 8:
-            packet["previous_decision"] = None if row[8] is None else str(row[8])
+        if len(row) > 8 and row[8] is not None:
+            if len(row) < 10:
+                raise ValueError("entry decision advisory row missing advisory hash")
+            advisory = cls._verified_record(row[8], row[9], label="advisory")
+            packet["ai_advisory"] = advisory
+        if len(row) > 10:
+            packet["previous_decision"] = None if row[10] is None else str(row[10])
         return packet
 
     def append_advisory(
@@ -184,8 +229,10 @@ class EntryDecisionStore:
     def _history_select(where: str = "") -> str:
         return (
             "SELECT e.id,e.symbol,e.event_at,e.decision,e.entry_readiness,"
-            "e.evidence_coverage_pct,e.packet_json,"
+            "e.evidence_coverage_pct,e.packet_json,e.packet_hash,"
             "(SELECT a.advisory_json FROM entry_decision_advisories a "
+            " WHERE a.decision_event_id=e.id ORDER BY a.id DESC LIMIT 1),"
+            "(SELECT a.advisory_hash FROM entry_decision_advisories a "
             " WHERE a.decision_event_id=e.id ORDER BY a.id DESC LIMIT 1),"
             "(SELECT p.decision FROM entry_decision_events p "
             " WHERE p.symbol=e.symbol AND p.id<e.id ORDER BY p.id DESC LIMIT 1) "
@@ -212,7 +259,7 @@ class EntryDecisionStore:
     def latest_map(self) -> dict[str, dict[str, Any]]:
         query = """
         SELECT e.id,e.symbol,e.event_at,e.decision,e.entry_readiness,
-               e.evidence_coverage_pct,e.packet_json
+               e.evidence_coverage_pct,e.packet_json,e.packet_hash
         FROM entry_decision_events e
         INNER JOIN (
             SELECT symbol, MAX(id) AS max_id

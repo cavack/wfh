@@ -1,4 +1,7 @@
+import json
 import sqlite3
+
+import pytest
 
 from schema_test_support import migrate_test_database
 from waterfallhunter.core.entry_decision_store import EntryDecisionStore
@@ -145,3 +148,113 @@ def test_advisory_is_append_only_and_survives_store_restart(tmp_path) -> None:
     assert history[0]["ai_advisory"]["ai_advice"] == "SHORT"
     assert history[0]["ai_advisory"]["ai_model"] == "gemini-test"
     assert history[0]["ai_advisory"]["advisory_at"] == 110
+
+
+def test_guarded_append_rejects_recycled_lifecycle_before_event_or_outbox(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    symbol = "TEST/USDT:USDT"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE lbank_catalog SET lifecycle_id=2, scan_eligible=1, status='WATCH' WHERE symbol=?",
+            (symbol,),
+        )
+
+    with pytest.raises(RuntimeError, match="candidate lifecycle is no longer current"):
+        store.append_if_changed(
+            symbol,
+            packet("ENTRY_READY", 84.0, 100),
+            expected_lifecycle_id=1,
+        )
+
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM entry_decision_events WHERE symbol=?", (symbol,)
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM entry_notification_outbox"
+        ).fetchone()[0] == 0
+
+
+def test_guarded_append_rejects_scan_ineligible_candidate(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    symbol = "TEST/USDT:USDT"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE lbank_catalog SET scan_eligible=0 WHERE symbol=?",
+            (symbol,),
+        )
+
+    with pytest.raises(RuntimeError, match="candidate lifecycle is no longer current"):
+        store.append_if_changed(
+            symbol,
+            packet("ENTRY_READY", 84.0, 100),
+            expected_lifecycle_id=1,
+        )
+
+
+def test_history_rejects_packet_hash_mismatch(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    event_id = store.append_if_changed(
+        "SXT/USDT:USDT", packet("ENTRY_READY", 84.0, 100)
+    )
+    assert event_id is not None
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TRIGGER entry_decision_events_no_update")
+        corrupted = packet("ENTRY_READY", 99.0, 100)
+        conn.execute(
+            "UPDATE entry_decision_events SET packet_json=? WHERE id=?",
+            (json.dumps(corrupted, sort_keys=True, separators=(",", ":")), event_id),
+        )
+
+    with pytest.raises(ValueError, match="packet hash mismatch"):
+        store.latest_for_symbol("SXT/USDT:USDT")
+
+
+def test_history_rejects_advisory_hash_mismatch(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    event_id = store.append_if_changed(
+        "SXT/USDT:USDT", packet("ENTRY_READY", 84.0, 100)
+    )
+    assert event_id is not None
+    advisory_id = store.append_advisory(
+        event_id,
+        {
+            "observational_only": True,
+            "decision_mutated": False,
+            "ai_advice": "SHORT",
+            "ai_confidence": 81,
+            "ai_reasoning": "Evidence agrees.",
+            "ai_provider": "gemini",
+            "ai_model": "gemini-test",
+            "ai_status": "AVAILABLE",
+        },
+        advisory_at=110,
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TRIGGER entry_decision_advisories_no_update")
+        row = conn.execute(
+            "SELECT advisory_json FROM entry_decision_advisories WHERE id=?", (advisory_id,)
+        ).fetchone()
+        corrupted = json.loads(row[0])
+        corrupted["ai_confidence"] = 1
+        conn.execute(
+            "UPDATE entry_decision_advisories SET advisory_json=? WHERE id=?",
+            (json.dumps(corrupted, sort_keys=True, separators=(",", ":")), advisory_id),
+        )
+
+    with pytest.raises(ValueError, match="advisory hash mismatch"):
+        store.latest_for_symbol("SXT/USDT:USDT")
+
+
+def test_runtime_binds_canonical_append_to_expected_lifecycle() -> None:
+    from pathlib import Path
+    from waterfallhunter import main
+
+    source = Path(main.__file__).read_text(encoding="utf-8")
+    candidate_body = source.split("async def evaluate_candidate(", 1)[1]
+    decision_section = candidate_body.split("episode_id =", 1)[0]
+    assert "expected_lifecycle_id=" in decision_section

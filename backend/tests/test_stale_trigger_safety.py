@@ -97,6 +97,19 @@ def test_stale_trigger_persistence_failure_suppresses_telegram(
             "trade_eligible": None,
         },
     )
+    # This test isolates the legacy signal-ledger persistence failure. The
+    # synthetic symbol is intentionally not in the catalogue, so bypass the
+    # independent canonical lifecycle CAS covered by entry-decision-store tests.
+    monkeypatch.setattr(
+        main.entry_decision_store,
+        "append_if_changed",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        main.entry_decision_store,
+        "latest_for_symbol",
+        lambda _symbol: None,
+    )
     persisted = []
 
     def reject_persistence(*args, **kwargs):
@@ -175,7 +188,7 @@ def test_missing_reference_persists_invalidation_after_entry_ready(monkeypatch):
     monkeypatch.setattr(
         main.entry_decision_store,
         "append_if_changed",
-        lambda _symbol, packet: persisted.append(packet) or 777,
+        lambda _symbol, packet, **_kwargs: persisted.append(packet) or 777,
     )
 
     asyncio.run(main.evaluate_candidate(symbol, {"status": "ARMED"}))

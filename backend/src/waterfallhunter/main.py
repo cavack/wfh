@@ -28,7 +28,10 @@ from waterfallhunter.core.entry_decision import (
     build_expired_entry_decision,
     build_invalidated_entry_decision,
 )
-from waterfallhunter.core.entry_decision_store import EntryDecisionStore
+from waterfallhunter.core.entry_decision_store import (
+    EntryDecisionStore,
+    StaleCandidateLifecycleError,
+)
 from waterfallhunter.core.notifier import TelegramNotifier, TelegramSignalTransport
 from waterfallhunter.core.notification_delivery import (
     DurableNotificationWorker,
@@ -1477,26 +1480,24 @@ def get_formatted_candidates(*, evaluation_time: float | None = None):  # NOSONA
                     reference_age_seconds=data.get("reference_age_seconds"),
                 )
 
-            data[
-                "metrics"
-            ] = (
-                (
-                    compact_metrics(
-                        live_metrics
-                    )
-                    if isinstance(
-                        live_metrics,
-                        dict,
-                    )
-                    else {
-                        "analysis_reason": (
-                            "live analysis pending"
-                        )
-                    }
+            if is_live:
+                data["metrics"] = (
+                    compact_metrics(live_metrics)
+                    if isinstance(live_metrics, dict)
+                    else {"analysis_reason": "live analysis pending"}
                 )
-                if is_live
-                else None
-            )
+            elif isinstance(live_metrics, dict) and isinstance(
+                live_metrics.get("entry_decision"), dict
+            ):
+                unavailable_projection = {
+                    "entry_decision": dict(live_metrics["entry_decision"]),
+                }
+                for key in ("error", "analysis_reason"):
+                    if key in live_metrics:
+                        unavailable_projection[key] = live_metrics[key]
+                data["metrics"] = unavailable_projection
+            else:
+                data["metrics"] = None
             strategy_profile = (
                 live_metrics.get("strategy_profile")
                 if isinstance(live_metrics, dict)
@@ -1919,10 +1920,19 @@ async def evaluate_candidate(
                     lifecycle_id=int(data.get("lifecycle_id") or 1),
                     previous_decision=previous_entry_decision,
                 )
-                decision_event_id = entry_decision_store.append_if_changed(
-                    symbol,
-                    invalidated_decision,
-                )
+                try:
+                    decision_event_id = entry_decision_store.append_if_changed(
+                        symbol,
+                        invalidated_decision,
+                        expected_lifecycle_id=int(data.get("lifecycle_id") or 1),
+                    )
+                except StaleCandidateLifecycleError:
+                    logger.info(
+                        "Discarding stale reference-failure evaluation for %s lifecycle=%s",
+                        symbol,
+                        int(data.get("lifecycle_id") or 1),
+                    )
+                    return
                 if decision_event_id is not None:
                     invalidated_decision["event_id"] = decision_event_id
                 reference_failure_metrics["entry_decision"] = invalidated_decision
@@ -2065,7 +2075,19 @@ async def evaluate_candidate(
         lifecycle_id=int(data.get("lifecycle_id") or 1),
         previous_decision=previous_entry_decision,
     )
-    event_id = entry_decision_store.append_if_changed(symbol, entry_decision)
+    try:
+        event_id = entry_decision_store.append_if_changed(
+            symbol,
+            entry_decision,
+            expected_lifecycle_id=int(data.get("lifecycle_id") or 1),
+        )
+    except StaleCandidateLifecycleError:
+        logger.info(
+            "Discarding stale canonical evaluation for %s lifecycle=%s",
+            symbol,
+            int(data.get("lifecycle_id") or 1),
+        )
+        return
     entry_decision["event_persisted"] = event_id is not None
     if event_id is not None:
         entry_decision["event_id"] = event_id
