@@ -9,7 +9,6 @@ from waterfallhunter.core.candle_analyzer import MultiTimeframeAnalyzer
 from waterfallhunter.core.cascade_intelligence import build_cascade_evidence
 from waterfallhunter.core.coinglass import CoinGlassDerivativesClient
 from waterfallhunter.core.derivatives import DerivativesAnalyzer
-from waterfallhunter.core.entry_decision import EntryDecisionPolicy
 from waterfallhunter.core.microstructure import MicrostructureAnalyzer
 from waterfallhunter.core.multi_exchange import MultiExchangeGateway
 from waterfallhunter.core.position_calculator import PositionCalculator
@@ -191,14 +190,6 @@ class MultiExchangeValidator:
             entry_slippage_pct=microstructure.get("entry_slippage_pct"),
             exit_slippage_pct=microstructure.get("exit_slippage_pct"),
         )
-        if str(setup.get("status") or "").upper() == "READY":
-            setup = {
-                **setup,
-                "expires_at": int(
-                    capture["evaluated_at_ms"] // 1000
-                    + EntryDecisionPolicy().max_analysis_age_seconds
-                ),
-            }
         return setup, capture, reference
 
     def _attach_position_setup_from_capture(

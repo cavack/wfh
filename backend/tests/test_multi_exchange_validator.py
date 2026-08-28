@@ -278,7 +278,7 @@ def test_position_setup_reuses_captured_5m_candles_without_a_new_fetch():
     assert reference == {"price": 100.0, "source": "ticker.last"}
 
 
-def test_live_position_setup_has_bounded_expiry(monkeypatch):
+def test_live_position_setup_does_not_invent_trade_plan_expiry(monkeypatch):
     import waterfallhunter.core.multi_exchange_validator as validator_module
     monkeypatch.setattr(validator_module.time, "time", lambda: 1_788_000_000.0)
     instance = validator()
@@ -303,7 +303,7 @@ def test_live_position_setup_has_bounded_expiry(monkeypatch):
         },
     )
     assert setup["status"] == "READY"
-    assert setup["expires_at"] == 1_788_000_180
+    assert "expires_at" not in setup
 
 
 def test_validator_attaches_observed_liquidation_flow_to_metrics():
