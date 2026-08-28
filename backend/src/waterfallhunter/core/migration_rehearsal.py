@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 import json
 import sqlite3
-from contextlib import redirect_stdout
+from contextlib import closing, redirect_stdout
 from pathlib import Path
 from typing import Any
 
@@ -88,7 +88,9 @@ def _require_isolated_targets(
 def _finalize_sqlite_snapshot(target: Path) -> None:
     """Checkpoint WAL state into one standalone database file for audit/cleanup."""
     try:
-        with sqlite3.connect(target, timeout=30.0, isolation_level=None) as connection:
+        with closing(
+            sqlite3.connect(target, timeout=30.0, isolation_level=None)
+        ) as connection:
             connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
             journal = connection.execute("PRAGMA journal_mode=DELETE").fetchone()
             if str(journal[0] if journal else "").lower() != "delete":

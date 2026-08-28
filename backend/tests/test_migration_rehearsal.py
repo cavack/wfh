@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import waterfallhunter.core.migration_rehearsal as migration_rehearsal_module
 from waterfallhunter.core.migration_rehearsal import (
     MigrationRehearsalError,
     rehearse_migration_and_rollback,
@@ -20,6 +21,44 @@ from waterfallhunter.core.sqlite_backup_certification import create_certified_ba
 def _empty_database(path: Path) -> None:
     with sqlite3.connect(path) as connection:
         connection.execute("PRAGMA user_version=0")
+
+
+def test_finalize_sqlite_snapshot_closes_connection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Result:
+        def fetchall(self):
+            return []
+
+        def fetchone(self):
+            return ("delete",)
+
+    class Connection:
+        closed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, _statement: str):
+            return Result()
+
+        def close(self):
+            self.closed = True
+
+    connection = Connection()
+    monkeypatch.setattr(
+        migration_rehearsal_module.sqlite3,
+        "connect",
+        lambda *_args, **_kwargs: connection,
+    )
+
+    migration_rehearsal_module._finalize_sqlite_snapshot(tmp_path / "target.db")
+
+    assert connection.closed is True
 
 
 def _certification(tmp_path: Path) -> dict:

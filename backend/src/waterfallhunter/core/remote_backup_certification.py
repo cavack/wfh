@@ -251,11 +251,13 @@ def build_remote_backup_certification(
 ) -> dict[str, Any]:
     """Seal one off-host remote backup after independent download and restore."""
     source_path = _require_source(source)
+    source_failure_domain = source_failure_domain.strip()
+    destination_failure_domain = destination_failure_domain.strip()
     if source_identity != _identity(source_path):
         raise RemoteBackupCertificationError("BACKUP_SOURCE_IDENTITY_CHANGED")
     if (
-        not source_failure_domain.strip()
-        or not destination_failure_domain.strip()
+        not source_failure_domain
+        or not destination_failure_domain
         or source_failure_domain == destination_failure_domain
     ):
         raise RemoteBackupCertificationError("FAILURE_DOMAIN_NOT_INDEPENDENT")

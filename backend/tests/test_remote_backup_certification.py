@@ -180,6 +180,33 @@ def test_remote_backup_certificate_rejects_same_failure_domain(tmp_path: Path) -
         )
 
 
+def test_remote_backup_certificate_normalizes_failure_domains_before_comparison(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source-normalized-domain.db"
+    staging = tmp_path / "staging-normalized-domain.db"
+    restored = tmp_path / "restored-normalized-domain.db"
+    _database(source)
+    _database(staging)
+    _database(restored)
+    backup_audit = audit_sqlite_snapshot(staging)
+
+    with pytest.raises(RemoteBackupCertificationError, match="FAILURE_DOMAIN_NOT_INDEPENDENT"):
+        build_remote_backup_certification(
+            source=source,
+            source_identity={"device_id": source.stat().st_dev, "inode": source.stat().st_ino},
+            source_failure_domain="production-vda1",
+            destination_failure_domain=" production-vda1 ",
+            backup_audit=backup_audit,
+            restored_backup_path=restored,
+            remote_assets=_assets(backup_audit),
+            remote_verification=_trusted(backup_audit),
+            backup_started_at=1_787_956_900,
+            backup_completed_at=1_787_956_950,
+            encryption=_encryption(backup_audit),
+        )
+
+
 def test_remote_backup_certificate_accepts_precomputed_audit_after_plaintext_staging_removed(
     tmp_path: Path,
 ) -> None:

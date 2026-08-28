@@ -508,7 +508,13 @@ def main() -> int:
     try:
         key = _load_key(args.key_file)
         _assert_private_repository(args.remote_repository)
-        if args.source_failure_domain == args.destination_failure_domain:
+        args.source_failure_domain = args.source_failure_domain.strip()
+        args.destination_failure_domain = args.destination_failure_domain.strip()
+        if (
+            not args.source_failure_domain
+            or not args.destination_failure_domain
+            or args.source_failure_domain == args.destination_failure_domain
+        ):
             raise RemoteBackupCLIError("FAILURE_DOMAIN_NOT_INDEPENDENT")
         snapshot = _prepare_encrypted_snapshot(
             args=args, key=key, staging_snapshot=staging_snapshot, bundle_dir=bundle_dir
