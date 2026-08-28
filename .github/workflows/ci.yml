@@ -200,4 +200,14 @@ jobs:
       tested_frontend_image_digest: ${{ needs.container-validation.outputs.tested_frontend_image_digest }}
       tested_watchdog_image_digest: ${{ needs.container-validation.outputs.tested_watchdog_image_digest }}
       tested_image_bundle_sha256: ${{ needs.container-validation.outputs.tested_image_bundle_sha256 }}
-    secrets: inherit
+    secrets:
+      WFH_PROD_HOST: ${{ secrets.WFH_PROD_HOST }}
+      WFH_DEPLOY_HOST: ${{ secrets.WFH_DEPLOY_HOST }}
+      WFH_PROD_PORT: ${{ secrets.WFH_PROD_PORT }}
+      WFH_DEPLOY_PORT: ${{ secrets.WFH_DEPLOY_PORT }}
+      WFH_PROD_USER: ${{ secrets.WFH_PROD_USER }}
+      WFH_DEPLOY_USER: ${{ secrets.WFH_DEPLOY_USER }}
+      WFH_PROD_SSH_KEY: ${{ secrets.WFH_PROD_SSH_KEY }}
+      WFH_DEPLOY_SSH_KEY: ${{ secrets.WFH_DEPLOY_SSH_KEY }}
+      WFH_PROD_KNOWN_HOSTS: ${{ secrets.WFH_PROD_KNOWN_HOSTS }}
+      WFH_DEPLOY_KNOWN_HOSTS: ${{ secrets.WFH_DEPLOY_KNOWN_HOSTS }}

@@ -433,6 +433,28 @@ def test_main_deploy_loads_ci_tested_images_instead_of_rebuilding_target() -> No
     assert "WFH_TESTED_IMAGE_BUNDLE_SHA256" in helper
 
 
+
+def test_production_reusable_workflow_receives_only_explicit_deploy_secrets() -> None:
+    ci_text = CI_WORKFLOW.read_text(encoding="utf-8")
+    deploy_text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+    deploy_job = ci_text.split("\n  deploy-production:\n", maxsplit=1)[1]
+    expected = (
+        "WFH_PROD_HOST",
+        "WFH_DEPLOY_HOST",
+        "WFH_PROD_PORT",
+        "WFH_DEPLOY_PORT",
+        "WFH_PROD_USER",
+        "WFH_DEPLOY_USER",
+        "WFH_PROD_SSH_KEY",
+        "WFH_DEPLOY_SSH_KEY",
+        "WFH_PROD_KNOWN_HOSTS",
+        "WFH_DEPLOY_KNOWN_HOSTS",
+    )
+    assert "secrets: inherit" not in deploy_job
+    for secret in expected:
+        assert f"      {secret}: ${{{{ secrets.{secret} }}}}" in deploy_job
+        assert f"      {secret}:\n        required: false" in deploy_text
+
 def test_ci_exports_and_uploads_exact_tested_image_bundle_to_deploy_job() -> None:
     ci_text = CI_WORKFLOW.read_text(encoding="utf-8")
     deploy_text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
