@@ -455,6 +455,14 @@ def test_production_reusable_workflow_receives_only_explicit_deploy_secrets() ->
         assert f"      {secret}: ${{{{ secrets.{secret} }}}}" in deploy_job
         assert f"      {secret}:\n        required: false" in deploy_text
 
+def test_deploy_verifies_portable_bundle_config_digest_not_daemon_local_image_id() -> None:
+    """Require portable bundle verification instead of daemon-local Docker image IDs."""
+    helper = (ROOT / "scripts/deploy_production.sh").read_text(encoding="utf-8")
+    assert "verify_ci_image_bundle.py" in helper
+    assert '--allowed-root "${STATE_DIR}/incoming/${WFH_DEPLOY_SHA}"' in helper
+    assert 'docker image inspect "$image_name" --format \'{{.Id}}\'' not in helper
+
+
 def test_ci_exports_and_uploads_exact_tested_image_bundle_to_deploy_job() -> None:
     ci_text = CI_WORKFLOW.read_text(encoding="utf-8")
     deploy_text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
