@@ -78,10 +78,8 @@ configure_production_compose_topology() {
   log "using host-owned Production Compose topology override: ${PRODUCTION_COMPOSE_OVERRIDE}"
 }
 
-verify_tested_image() {
-  local image_name="$1" expected_digest="$2" actual_digest actual_revision
-  actual_digest="$(docker image inspect "$image_name" --format '{{.Id}}' 2>/dev/null || true)"
-  [[ "$actual_digest" == "$expected_digest" ]] || return 1
+verify_loaded_image_revision() {
+  local image_name="$1" actual_revision
   actual_revision="$(docker image inspect "$image_name" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' 2>/dev/null || true)"
   [[ "$actual_revision" == "$WFH_DEPLOY_SHA" ]]
 }
@@ -111,13 +109,20 @@ load_tested_release_artifacts() {
   done
   actual_bundle_sha="$(sha256sum "$WFH_TESTED_IMAGE_BUNDLE" | awk '{print $1}')"
   [[ "$actual_bundle_sha" == "$WFH_TESTED_IMAGE_BUNDLE_SHA256" ]] || fail "tested image bundle checksum mismatch"
+  python3 "${WFH_DEPLOY_ROOT}/scripts/verify_ci_image_bundle.py" \
+    --bundle "$WFH_TESTED_IMAGE_BUNDLE" \
+    --revision "$WFH_DEPLOY_SHA" \
+    --image "waterfallhunter-waterfall-backend=$WFH_TESTED_BACKEND_IMAGE_DIGEST" \
+    --image "waterfallhunter-frontend=$WFH_TESTED_FRONTEND_IMAGE_DIGEST" \
+    --image "waterfallhunter-watchdog=$WFH_TESTED_WATCHDOG_IMAGE_DIGEST" \
+    || fail "CI-tested image bundle portable digest/revision verification failed"
   docker load -i "$WFH_TESTED_IMAGE_BUNDLE" >/dev/null || fail "unable to load CI-tested image bundle"
-  verify_tested_image waterfallhunter-waterfall-backend "$WFH_TESTED_BACKEND_IMAGE_DIGEST" \
-    || fail "loaded backend image does not match CI-tested digest/revision"
-  verify_tested_image waterfallhunter-frontend "$WFH_TESTED_FRONTEND_IMAGE_DIGEST" \
-    || fail "loaded frontend image does not match CI-tested digest/revision"
-  verify_tested_image waterfallhunter-watchdog "$WFH_TESTED_WATCHDOG_IMAGE_DIGEST" \
-    || fail "loaded watchdog image does not match CI-tested digest/revision"
+  verify_loaded_image_revision waterfallhunter-waterfall-backend \
+    || fail "loaded backend image revision does not match target SHA"
+  verify_loaded_image_revision waterfallhunter-frontend \
+    || fail "loaded frontend image revision does not match target SHA"
+  verify_loaded_image_revision waterfallhunter-watchdog \
+    || fail "loaded watchdog image revision does not match target SHA"
   log "loaded exact CI-tested release images for ${WFH_DEPLOY_SHA}"
 }
 
@@ -571,6 +576,7 @@ require_command find
 require_command sort
 require_command sha256sum
 require_command install
+require_command python3
 require_command systemctl
 require_command nginx
 require_command curl
