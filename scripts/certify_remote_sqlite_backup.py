@@ -111,6 +111,12 @@ def _gh(*arguments: str, timeout: int = 120) -> str:
             timeout=timeout,
             env=environment,
         )
+    except subprocess.CalledProcessError as error:
+        stderr = str(error.stderr or "").replace("\r", " ").replace("\n", " ").strip()[:500]
+        suffix = f":{stderr}" if stderr else ""
+        raise RemoteBackupCLIError(
+            f"REMOTE_BACKUP_GITHUB_COMMAND_FAILED{suffix}"
+        ) from error
     except (OSError, subprocess.SubprocessError) as error:
         raise RemoteBackupCLIError("REMOTE_BACKUP_GITHUB_COMMAND_FAILED") from error
     return completed.stdout

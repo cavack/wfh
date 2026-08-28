@@ -25,7 +25,17 @@ def test_key_loader_is_restricted_to_trusted_recovery_directory(
     outside = tmp_path / "outside.key"
     _key_file(inside)
     _key_file(outside)
+    original_stat = Path.stat
 
+    def root_owned_stat(path: Path, *, follow_symlinks: bool = True):
+        result = original_stat(path, follow_symlinks=follow_symlinks)
+        if path == inside:
+            values = list(result)
+            values[4] = 0
+            return os.stat_result(values)
+        return result
+
+    monkeypatch.setattr(Path, "stat", root_owned_stat)
     assert cli._load_key(inside) == b"k" * 32
     with pytest.raises(cli.RemoteBackupCLIError, match="REMOTE_BACKUP_KEY_FILE_INVALID"):
         cli._load_key(outside)
@@ -83,3 +93,17 @@ def test_gh_commands_pin_github_dot_com_host(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
     cli._gh("api", "user")
     assert observed_env.get("GH_HOST") == "github.com"
+
+
+def test_gh_failure_includes_bounded_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_run(arguments, **_kwargs):
+        raise cli.subprocess.CalledProcessError(
+            1,
+            arguments,
+            stderr="authentication failed\n" + ("x" * 2000),
+        )
+
+    monkeypatch.setattr(cli.subprocess, "run", fail_run)
+    with pytest.raises(cli.RemoteBackupCLIError, match="authentication failed") as captured:
+        cli._gh("api", "user")
+    assert len(str(captured.value)) < 700
