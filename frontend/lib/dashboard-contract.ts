@@ -55,8 +55,8 @@ export function decisionTerminal(value: unknown): DecisionTerminal | undefined {
 export function dashboardSnapshot(value: unknown): DashboardSnapshot | undefined {
   const packet = record(value);
   if (!packet) return undefined;
-  if (packet.contract_version !== "dashboard_snapshot_v1"
-    || packet.schema_version !== "1.0"
+  if (packet.contract_version !== "dashboard_snapshot_v2"
+    || packet.schema_version !== "2.0"
     || packet.state !== "READY"
     || !Number.isInteger(packet.snapshot_version)
     || (packet.snapshot_version as number) < 1
@@ -77,12 +77,12 @@ export function dashboardSnapshot(value: unknown): DashboardSnapshot | undefined
 export function dashboardStreamEvent(value: unknown): DashboardStreamEvent | undefined {
   const packet = record(value);
   if (!packet) return undefined;
-  if (packet.contract_version !== "dashboard_stream_event_v1"
+  if (packet.contract_version !== "dashboard_stream_event_v2"
     || !positiveIntegerText(packet.event_id)
     || !["snapshot", "heartbeat"].includes(String(packet.event_type))
     || !Number.isInteger(packet.snapshot_version)
     || (packet.snapshot_version as number) < 0
-    || packet.schema_version !== "1.0"
+    || packet.schema_version !== "2.0"
     || !finite(packet.generated_at)
     || !(packet.last_event_id === null || positiveIntegerText(packet.last_event_id))
     || typeof packet.payload_hash !== "string"

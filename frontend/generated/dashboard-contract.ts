@@ -37,8 +37,8 @@ export interface ZeroEntryReadyDiagnostics {
 }
 
 export interface DashboardSnapshot {
-  contract_version: "dashboard_snapshot_v1";
-  schema_version: "1.0";
+  contract_version: "dashboard_snapshot_v2";
+  schema_version: "2.0";
   snapshot_version: number;
   generated_at: number;
   state: "READY";
@@ -50,11 +50,11 @@ export interface DashboardSnapshot {
 }
 
 export interface DashboardStreamEvent {
-  contract_version: "dashboard_stream_event_v1";
+  contract_version: "dashboard_stream_event_v2";
   event_id: string;
   event_type: "snapshot" | "heartbeat";
   snapshot_version: number;
-  schema_version: "1.0";
+  schema_version: "2.0";
   generated_at: number;
   last_event_id?: string | null;
   payload_hash: string;

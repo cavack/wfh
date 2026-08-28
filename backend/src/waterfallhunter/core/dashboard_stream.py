@@ -12,9 +12,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from waterfallhunter.core.signal_metadata import canonical_sha256
 
 
-DASHBOARD_SCHEMA_VERSION = "1.0"
-DASHBOARD_SNAPSHOT_CONTRACT = "dashboard_snapshot_v1"
-DASHBOARD_EVENT_CONTRACT = "dashboard_stream_event_v1"
+DASHBOARD_SCHEMA_VERSION = "2.0"
+DASHBOARD_SNAPSHOT_CONTRACT = "dashboard_snapshot_v2"
+DASHBOARD_EVENT_CONTRACT = "dashboard_stream_event_v2"
 _VOLATILE_CANDIDATE_AGE_KEYS = frozenset(
     {
         "age_seconds",
@@ -154,8 +154,8 @@ class DecisionTerminal(BaseModel):
 class DashboardSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    contract_version: Literal["dashboard_snapshot_v1"]
-    schema_version: Literal["1.0"]
+    contract_version: Literal["dashboard_snapshot_v2"]
+    schema_version: Literal["2.0"]
     snapshot_version: int = Field(ge=1)
     generated_at: float = Field(ge=0, allow_inf_nan=False)
     state: Literal["READY"]
@@ -180,11 +180,11 @@ class DashboardSnapshot(BaseModel):
 class DashboardStreamEvent(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    contract_version: Literal["dashboard_stream_event_v1"]
+    contract_version: Literal["dashboard_stream_event_v2"]
     event_id: str = Field(pattern=r"^[1-9][0-9]*$")
     event_type: Literal["snapshot", "heartbeat"]
     snapshot_version: int = Field(ge=0)
-    schema_version: Literal["1.0"]
+    schema_version: Literal["2.0"]
     generated_at: float = Field(ge=0, allow_inf_nan=False)
     last_event_id: str | None = Field(default=None, pattern=r"^[1-9][0-9]*$")
     payload_hash: str = Field(pattern=r"^[0-9a-f]{64}$")

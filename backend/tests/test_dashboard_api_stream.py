@@ -51,8 +51,8 @@ def test_dashboard_snapshot_rejects_partial_decision_terminal() -> None:
     partial = {**PAYLOAD, "decision_terminal": {"contract_version": "decision_terminal_v1", "counts": {"ENTRY_READY": 1}}}
     try:
         DashboardSnapshot(
-            contract_version="dashboard_snapshot_v1",
-            schema_version="1.0",
+            contract_version="dashboard_snapshot_v2",
+            schema_version="2.0",
             snapshot_version=1,
             generated_at=1.0,
             state="READY",
@@ -75,8 +75,8 @@ def test_dashboard_snapshot_rejects_terminal_counts_that_do_not_match_candidates
     }
     try:
         DashboardSnapshot(
-            contract_version="dashboard_snapshot_v1",
-            schema_version="1.0",
+            contract_version="dashboard_snapshot_v2",
+            schema_version="2.0",
             snapshot_version=1,
             generated_at=1.0,
             state="READY",
@@ -101,8 +101,8 @@ def test_dashboard_snapshot_rejects_terminal_diagnostic_candidate_count_mismatch
     }
     try:
         DashboardSnapshot(
-            contract_version="dashboard_snapshot_v1",
-            schema_version="1.0",
+            contract_version="dashboard_snapshot_v2",
+            schema_version="2.0",
             snapshot_version=1,
             generated_at=1.0,
             state="READY",
@@ -123,8 +123,8 @@ def test_polling_endpoint_returns_a_valid_versioned_no_store_snapshot(monkeypatc
     snapshot = asyncio.run(main.get_candidates(response))
 
     assert snapshot is not None
-    assert snapshot.contract_version == "dashboard_snapshot_v1"
-    assert snapshot.schema_version == "1.0"
+    assert snapshot.contract_version == "dashboard_snapshot_v2"
+    assert snapshot.schema_version == "2.0"
     assert snapshot.state == "READY"
     assert snapshot.total == 1
     assert response.headers["Cache-Control"] == "no-store"

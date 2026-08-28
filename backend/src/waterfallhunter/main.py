@@ -1109,6 +1109,18 @@ async def _update_signal_evidence_metrics(
         _signal_evidence_metrics_last_refresh = now
 
 
+def _websocket_source(metrics: object) -> tuple[str, str] | None:
+    if not isinstance(metrics, dict):
+        return None
+    exchange = metrics.get("exchange")
+    mapped_symbol = metrics.get("mapped_symbol")
+    if not isinstance(exchange, str) or not exchange.strip():
+        return None
+    if not isinstance(mapped_symbol, str) or not mapped_symbol.strip():
+        return None
+    return exchange, mapped_symbol
+
+
 def _store_live_metrics(
     symbol: str,
     metrics: dict | None,
@@ -1349,7 +1361,7 @@ def _reconcile_inactive_actionable_decisions(
     return reconciled
 
 
-def _project_actionable_decision_freshness(
+def _project_entry_decision_freshness(
     metrics: dict[str, Any],
     *,
     candidate_status: str,
@@ -1358,7 +1370,7 @@ def _project_actionable_decision_freshness(
     reference_age_seconds: float | None,
 ) -> dict[str, Any]:
     stored = metrics.get("entry_decision")
-    if not isinstance(stored, dict) or stored.get("decision") not in {"ENTRY_READY", "ACTIVE"}:
+    if not isinstance(stored, dict) or stored.get("decision") not in {"FORMING", "ENTRY_READY", "ACTIVE"}:
         return metrics
 
     explicit_expiry = build_expired_entry_decision(stored, evaluated_at=int(evaluated_at))
@@ -1487,7 +1499,7 @@ def get_formatted_candidates(*, evaluation_time: float | None = None):  # NOSONA
                 "metrics"
             )
             if isinstance(live_metrics, dict):
-                live_metrics = _project_actionable_decision_freshness(
+                live_metrics = _project_entry_decision_freshness(
                     live_metrics,
                     candidate_status=str(data.get("status") or "WATCH"),
                     evaluated_at=now,
@@ -1821,6 +1833,7 @@ async def evaluate_candidate(
         symbol,
         {},
     )
+    previous_ws_source = _websocket_source(active_candidate.get("metrics"))
     active_candidate["analysis_status"] = "pending"
     active_candidate["analysis_observed_at"] = analysis_observed_at
 
@@ -2502,16 +2515,18 @@ async def evaluate_candidate(
                 persist_lifecycle_v2_shadow(str(current_state))
                 return
 
+        current_ws_source = _websocket_source(metrics)
+        if (
+            previous_ws_source is not None
+            and previous_ws_source != current_ws_source
+        ):
+            validator.ws_manager.unsubscribe(*previous_ws_source)
+
         if new_state == "ARMED":
-            validator.ws_manager.subscribe(
-                ex_name,
-                mapped_sym,
-            )
-        else:
-            validator.ws_manager.unsubscribe(
-                ex_name,
-                mapped_sym,
-            )
+            if current_ws_source is not None:
+                validator.ws_manager.subscribe(*current_ws_source)
+        elif current_ws_source is not None:
+            validator.ws_manager.unsubscribe(*current_ws_source)
 
         persist_lifecycle_v2_shadow(str(new_state))
 
