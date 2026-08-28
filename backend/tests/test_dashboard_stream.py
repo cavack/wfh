@@ -16,6 +16,20 @@ def _payload(symbol: str = "TEST") -> dict:
     return {
         "total": 1,
         "candidates": {symbol: {"status": "WATCH"}},
+        "decision_terminal": {
+            "contract_version": "decision_terminal_v1",
+            "counts": {
+                "ENTRY_READY": 0, "FORMING": 0, "ACTIVE": 0, "LATE": 0,
+                "INVALIDATED": 0, "EXPIRED": 0, "NO_TRADE": 1, "UNAVAILABLE": 0,
+            },
+            "entry_ready": [], "forming": [], "active": [], "late": [],
+            "zero_entry_ready_diagnostics": {
+                "entry_ready_zero": True,
+                "evaluated_candidates": 1,
+                "top_reasons": [],
+            },
+            "recent_changes": [],
+        },
         "final_ranking": {"version": "test"},
         "signal_funnel": {"version": "test"},
     }
@@ -100,3 +114,25 @@ def test_last_event_id_replays_in_order_or_requires_full_snapshot() -> None:
 
     buffer.publish_heartbeat(generated_at=13.0)
     assert buffer.replay_after(first.event_id) is None
+
+
+def test_periodic_snapshot_ignores_nested_entry_decision_evaluation_clock() -> None:
+    buffer = DashboardEventBuffer()
+    first_payload = _payload()
+    first_payload["candidates"]["TEST"]["entry_decision"] = {
+        "decision": "INVALIDATED",
+        "evaluated_at": 100,
+        "block_reasons": ["STALE_ANALYSIS"],
+    }
+    second_payload = _payload()
+    second_payload["candidates"]["TEST"]["entry_decision"] = {
+        "decision": "INVALIDATED",
+        "evaluated_at": 101,
+        "block_reasons": ["STALE_ANALYSIS"],
+    }
+
+    first = buffer.publish_snapshot_if_changed(first_payload, generated_at=100.0)
+    duplicate = buffer.publish_snapshot_if_changed(second_payload, generated_at=101.0)
+
+    assert first is not None
+    assert duplicate is None

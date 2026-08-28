@@ -1,5 +1,6 @@
 from waterfallhunter.core.multi_exchange_validator import MultiExchangeValidator
 from waterfallhunter.core.multi_exchange import MultiExchangeGateway
+from waterfallhunter.core.position_calculator import PositionCalculator
 
 
 def validator():
@@ -232,3 +233,118 @@ def test_position_reference_price_rejects_non_live_values():
         {"mark": None, "last": 0.0},
         {"best_bid": 1.0, "best_ask": None},
     ) == (None, None)
+
+
+def test_price_location_packet_preserves_selected_contract_evidence():
+    packet = validator()._price_location_packet({"last": 90.0, "vwap": 100.0})
+    assert packet == {"available": True, "last": 90.0, "vwap": 100.0, "below_vwap": True}
+    assert validator()._price_location_packet({"last": 90.0}) == {
+        "available": False,
+        "reason": "same-contract price location unavailable",
+    }
+
+
+def test_position_setup_reuses_captured_5m_candles_without_a_new_fetch():
+    instance = validator()
+    instance.position_calculator = PositionCalculator()
+    history = [
+        [1_788_000_000_000 + i * 300_000, 100.0, 101.0, 99.0, 100.0, 1_000.0]
+        for i in range(30)
+    ]
+    candle_results = {
+        "source_capture": {"primary_closed_ohlcv": {"5m": history}}
+    }
+    microstructure = {
+        "best_bid": 100.0,
+        "best_ask": 100.1,
+        "entry_slippage_pct": 0.05,
+        "exit_slippage_pct": 0.05,
+    }
+    market_info = {
+        "precision": {"price": 0.01, "amount": 0.001},
+        "contractSize": 1.0,
+        "limits": {"cost": {"min": 5.0}},
+    }
+    setup, capture, reference = instance._position_setup_from_candle_capture(
+        candle_results=candle_results,
+        ticker={"last": 100.0},
+        microstructure=microstructure,
+        market_info=market_info,
+    )
+    assert setup["status"] == "READY"
+    assert capture["source"] == "candle_analysis.primary_closed_ohlcv.5m"
+    assert capture["reused_existing_capture"] is True
+    assert capture["sample_count"] == 30
+    assert reference == {"price": 100.0, "source": "ticker.last"}
+
+
+def test_live_position_setup_does_not_invent_trade_plan_expiry(monkeypatch):
+    import waterfallhunter.core.multi_exchange_validator as validator_module
+    monkeypatch.setattr(validator_module.time, "time", lambda: 1_788_000_000.0)
+    instance = validator()
+    instance.position_calculator = PositionCalculator()
+    history = [
+        [1_787_990_000_000 + i * 300_000, 100.0, 101.0, 99.0, 100.0, 1_000.0]
+        for i in range(30)
+    ]
+    setup, _, _ = instance._position_setup_from_candle_capture(
+        candle_results={"source_capture": {"primary_closed_ohlcv": {"5m": history}}},
+        ticker={"last": 100.0},
+        microstructure={
+            "best_bid": 100.0,
+            "best_ask": 100.1,
+            "entry_slippage_pct": 0.05,
+            "exit_slippage_pct": 0.05,
+        },
+        market_info={
+            "precision": {"price": 0.01, "amount": 0.001},
+            "contractSize": 1.0,
+            "limits": {"cost": {"min": 5.0}},
+        },
+    )
+    assert setup["status"] == "READY"
+    assert "expires_at" not in setup
+
+
+def test_validator_attaches_observed_liquidation_flow_to_metrics():
+    instance = validator()
+    flow = {
+        "available": True,
+        "observed_at": 100.0,
+        "long_liquidation_notional_1m": 700.0,
+        "short_liquidation_notional_1m": 100.0,
+        "liquidation_velocity_usd_per_min": 800.0,
+        "burst_ratio": 4.0,
+    }
+
+    class LiquidationCache:
+        @staticmethod
+        def get_realtime_liquidation_flow(exchange, symbol, now=None):
+            assert exchange == "binance"
+            assert symbol == "TEST/USDT:USDT"
+            assert now == 100.0
+            return flow
+
+    instance.ws_manager = LiquidationCache()
+    metrics = {}
+    instance._attach_live_liquidation_flow(
+        metrics, exchange_name="binance", mapped_symbol="TEST/USDT:USDT", now=100.0
+    )
+    assert metrics["liquidation_flow"] == flow
+
+
+def test_validator_drops_stale_liquidation_flow_when_cache_is_unavailable():
+    instance = validator()
+
+    class EmptyCache:
+        @staticmethod
+        def get_realtime_liquidation_flow(exchange, symbol, now=None):
+            return None
+
+    instance.ws_manager = EmptyCache()
+    metrics = {"liquidation_flow": {"available": True}, "data_sources": {}}
+    instance._attach_live_liquidation_flow(
+        metrics, exchange_name="binance", mapped_symbol="TEST/USDT:USDT", now=100.0
+    )
+    assert "liquidation_flow" not in metrics
+    assert "liquidations" not in metrics["data_sources"]

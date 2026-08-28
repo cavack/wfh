@@ -105,7 +105,7 @@ def test_success_is_delivered_once_with_material_idempotency_key(tmp_path: Path)
     assert asyncio.run(worker.dispatch_once(now=201)) is None
 
 
-def test_rate_limit_and_timeout_use_bounded_retry_then_dead_letter(tmp_path: Path) -> None:
+def test_rate_limit_retries_then_ambiguous_timeout_becomes_uncertain(tmp_path: Path) -> None:
     db_path = _database(tmp_path / "retry.db")
     transport = FakeTransport(
         DeliveryResult(
@@ -132,9 +132,10 @@ def test_rate_limit_and_timeout_use_bounded_retry_then_dead_letter(tmp_path: Pat
 
     second = asyncio.run(worker.dispatch_once(now=207))
     assert second is not None
-    assert second.state == "DEAD_LETTER"
-    assert second.error_code == "TRANSPORT_TIMEOUT"
-    assert _state(db_path)[0:2] == ("DEAD_LETTER", 2)
+    assert second.state == "DELIVERY_UNCERTAIN"
+    assert second.error_code == "TRANSPORT_TIMEOUT_AFTER_SEND_MAY_HAVE_STARTED"
+    assert _state(db_path)[0:2] == ("DELIVERY_UNCERTAIN", 2)
+    assert asyncio.run(worker.dispatch_once(now=500)) is None
     with sqlite3.connect(db_path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM lbank_signal_ledger").fetchone() == (1,)
 
@@ -176,7 +177,7 @@ def test_pending_queue_lag_has_an_operator_alert(tmp_path: Path) -> None:
     assert health["alerts"] == ["NOTIFICATION_QUEUE_LAG_HIGH"]
 
 
-def test_hanging_transport_is_bounded_by_explicit_timeout(tmp_path: Path) -> None:
+def test_hanging_transport_timeout_is_bounded_and_marked_uncertain(tmp_path: Path) -> None:
     db_path = _database(tmp_path / "timeout.db")
     worker = DurableNotificationWorker(
         db_path,
@@ -189,8 +190,9 @@ def test_hanging_transport_is_bounded_by_explicit_timeout(tmp_path: Path) -> Non
     outcome = asyncio.run(worker.dispatch_once(now=200))
 
     assert outcome is not None
-    assert outcome.state == "DEAD_LETTER"
-    assert outcome.error_code == "TRANSPORT_TIMEOUT"
+    assert outcome.state == "DELIVERY_UNCERTAIN"
+    assert outcome.error_code == "TRANSPORT_TIMEOUT_AFTER_SEND_MAY_HAVE_STARTED"
+    assert asyncio.run(worker.dispatch_once(now=300)) is None
 
 
 def test_completion_after_lease_recovery_fails_cas_and_preserves_uncertainty(
@@ -233,3 +235,22 @@ def test_permanent_transport_failure_dead_letters_without_retry(tmp_path: Path) 
     assert outcome is not None
     assert outcome.state == "DEAD_LETTER"
     assert outcome.error_code == "INVALID_DESTINATION"
+
+
+def test_transport_timeout_becomes_delivery_uncertain_without_retry(tmp_path: Path) -> None:
+    db_path = _database(tmp_path / "ambiguous-timeout.db")
+    worker = DurableNotificationWorker(
+        db_path,
+        HangingTransport(),
+        worker_id="worker-timeout-uncertain",
+        transport_timeout_seconds=0.01,
+        max_attempts=6,
+    )
+
+    outcome = asyncio.run(worker.dispatch_once(now=200))
+
+    assert outcome is not None
+    assert outcome.state == "DELIVERY_UNCERTAIN"
+    assert outcome.error_code == "TRANSPORT_TIMEOUT_AFTER_SEND_MAY_HAVE_STARTED"
+    assert _state(db_path)[0] == "DELIVERY_UNCERTAIN"
+    assert asyncio.run(worker.dispatch_once(now=300)) is None

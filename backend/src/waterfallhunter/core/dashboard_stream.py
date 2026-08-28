@@ -12,9 +12,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from waterfallhunter.core.signal_metadata import canonical_sha256
 
 
-DASHBOARD_SCHEMA_VERSION = "1.0"
-DASHBOARD_SNAPSHOT_CONTRACT = "dashboard_snapshot_v1"
-DASHBOARD_EVENT_CONTRACT = "dashboard_stream_event_v1"
+DASHBOARD_SCHEMA_VERSION = "2.0"
+DASHBOARD_SNAPSHOT_CONTRACT = "dashboard_snapshot_v2"
+DASHBOARD_EVENT_CONTRACT = "dashboard_stream_event_v2"
 _VOLATILE_CANDIDATE_AGE_KEYS = frozenset(
     {
         "age_seconds",
@@ -37,6 +37,24 @@ def _normalize_dashboard_json(value: Any) -> Any:
     return value
 
 
+def _stable_entry_decision_clocks(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_stable_entry_decision_clocks(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    stable: dict[str, Any] = {}
+    for key, item in value.items():
+        if key == "entry_decision" and isinstance(item, dict):
+            stable[key] = {
+                nested_key: _stable_entry_decision_clocks(nested_value)
+                for nested_key, nested_value in item.items()
+                if nested_key != "evaluated_at"
+            }
+        else:
+            stable[key] = _stable_entry_decision_clocks(item)
+    return stable
+
+
 def _snapshot_content_material(payload: dict[str, Any]) -> dict[str, Any]:
     """Return the business-state projection used for SSE change detection.
 
@@ -57,13 +75,13 @@ def _snapshot_content_material(payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(candidate, dict):
             stable_candidates[symbol] = candidate
             continue
-        stable_candidate = {
+        stable_candidate = _stable_entry_decision_clocks({
             key: value
             for key, value in candidate.items()
             if key not in _VOLATILE_CANDIDATE_AGE_KEYS
-        }
+        })
         stable_candidates[symbol] = stable_candidate
-        changed = changed or len(stable_candidate) != len(candidate)
+        changed = changed or stable_candidate != candidate
 
     if not changed:
         return payload
@@ -73,16 +91,77 @@ def _snapshot_content_material(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+class DecisionDiagnosticReason(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    reason: str = Field(min_length=1)
+    count: int = Field(ge=0)
+    share_pct: float = Field(ge=0, le=100, allow_inf_nan=False)
+
+
+class ZeroEntryReadyDiagnostics(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    entry_ready_zero: bool
+    evaluated_candidates: int = Field(ge=0)
+    top_reasons: list[DecisionDiagnosticReason]
+
+
+class DecisionTerminalCounts(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    ENTRY_READY: int = Field(ge=0)
+    FORMING: int = Field(ge=0)
+    ACTIVE: int = Field(ge=0)
+    LATE: int = Field(ge=0)
+    INVALIDATED: int = Field(ge=0)
+    EXPIRED: int = Field(ge=0)
+    NO_TRADE: int = Field(ge=0)
+    UNAVAILABLE: int = Field(ge=0)
+
+
+class DecisionTerminal(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    contract_version: Literal["decision_terminal_v1"]
+    counts: DecisionTerminalCounts
+    entry_ready: list[str]
+    forming: list[str]
+    active: list[str]
+    late: list[str]
+    zero_entry_ready_diagnostics: ZeroEntryReadyDiagnostics
+    recent_changes: list[dict[str, Any]]
+
+    @model_validator(mode="after")
+    def _validate_groups(self) -> "DecisionTerminal":
+        expected_lengths = {
+            "entry_ready": min(self.counts.ENTRY_READY, 3),
+            "forming": min(self.counts.FORMING, 6),
+            "active": min(self.counts.ACTIVE, 6),
+            "late": min(self.counts.LATE, 6),
+        }
+        for field, expected in expected_lengths.items():
+            values = getattr(self, field)
+            if len(values) != expected or any(not value for value in values):
+                raise ValueError(f"decision terminal {field} does not match counts")
+        if self.zero_entry_ready_diagnostics.entry_ready_zero != (self.counts.ENTRY_READY == 0):
+            raise ValueError("decision terminal zero-entry diagnostic disagrees with counts")
+        if len(self.recent_changes) > 10:
+            raise ValueError("decision terminal recent changes exceed bounded contract")
+        return self
+
+
 class DashboardSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    contract_version: Literal["dashboard_snapshot_v1"]
-    schema_version: Literal["1.0"]
+    contract_version: Literal["dashboard_snapshot_v2"]
+    schema_version: Literal["2.0"]
     snapshot_version: int = Field(ge=1)
     generated_at: float = Field(ge=0, allow_inf_nan=False)
     state: Literal["READY"]
     total: int = Field(ge=0)
     candidates: dict[str, dict[str, Any]]
+    decision_terminal: DecisionTerminal
     final_ranking: dict[str, Any]
     signal_funnel: dict[str, Any]
 
@@ -90,17 +169,22 @@ class DashboardSnapshot(BaseModel):
     def _validate_total(self) -> "DashboardSnapshot":
         if self.total != len(self.candidates):
             raise ValueError("dashboard total must equal candidate count")
+        decision_total = sum(self.decision_terminal.counts.model_dump().values())
+        if decision_total != self.total:
+            raise ValueError("decision terminal counts must equal candidate count")
+        if self.decision_terminal.zero_entry_ready_diagnostics.evaluated_candidates != self.total:
+            raise ValueError("decision terminal diagnostic count must equal candidate count")
         return self
 
 
 class DashboardStreamEvent(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    contract_version: Literal["dashboard_stream_event_v1"]
+    contract_version: Literal["dashboard_stream_event_v2"]
     event_id: str = Field(pattern=r"^[1-9][0-9]*$")
     event_type: Literal["snapshot", "heartbeat"]
     snapshot_version: int = Field(ge=0)
-    schema_version: Literal["1.0"]
+    schema_version: Literal["2.0"]
     generated_at: float = Field(ge=0, allow_inf_nan=False)
     last_event_id: str | None = Field(default=None, pattern=r"^[1-9][0-9]*$")
     payload_hash: str = Field(pattern=r"^[0-9a-f]{64}$")

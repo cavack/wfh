@@ -226,14 +226,14 @@ def test_compose_run_commands_cannot_consume_streamed_deploy_script() -> None:
         assert "-T" in command or "--no-TTY" in command
 
 
-def test_host_deploy_rejects_dirty_source_worktree_before_checkout_and_build() -> None:
+def test_host_deploy_rejects_any_dirty_source_worktree_before_checkout_and_build() -> None:
     text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
     helper = text.split("assert_clean_deploy_worktree() {", maxsplit=1)[1].split(
         "}\n", maxsplit=1
     )[0]
     assert "git status --porcelain" in helper
-    assert ".env" in helper
-    assert ".deploy" in helper
+    assert ":(exclude).env" not in helper
+    assert ":(exclude).deploy" not in helper
     main_sequence = _main_deploy_sequence(text)
     assert main_sequence.index("assert_clean_deploy_worktree") < main_sequence.index(
         'git checkout --detach "$WFH_DEPLOY_SHA"'
@@ -261,14 +261,14 @@ def test_successful_deploy_removes_secret_environment_rollback_copy() -> None:
     assert certificate_index < cleanup_index
 
 
-def test_host_deploy_orders_backup_migration_telegram_and_runtime_certification() -> None:
+def test_host_deploy_orders_backup_migration_runtime_and_host_certification() -> None:
     text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
     main_sequence = _main_deploy_sequence(text)
     ordered_markers = [
         "flock -n 9",
         '[[ "$(git rev-parse origin/main)" == "$WFH_DEPLOY_SHA" ]]',
         "assert_signal_only_runtime_boundary",
-        "docker compose build",
+        "load_tested_release_artifacts",
         "backup_database",
         "--preflight",
         "MIGRATION_MAY_HAVE_MUTATED=1",
@@ -280,6 +280,12 @@ def test_host_deploy_orders_backup_migration_telegram_and_runtime_certification(
         "wait_for_container_healthy waterfall-frontend",
         "wait_for_container_healthy waterfall-watchdog",
         "org.opencontainers.image.revision",
+        "snapshot_host_integration_state",
+        "install_systemd_units",
+        "install_nginx_site",
+        "verify_public_edge",
+        "prune_database_backups",
+        'cat > "${STATE_DIR}/last-successful-deploy.txt"',
     ]
     positions = [main_sequence.index(marker) for marker in ordered_markers]
     assert positions == sorted(positions)
@@ -307,14 +313,15 @@ def test_host_deploy_auto_uses_host_owned_compose_topology_override() -> None:
     )
 
 
-def test_host_deploy_reuses_running_compose_project_with_host_override() -> None:
+def test_host_deploy_uses_one_canonical_compose_project_with_host_override() -> None:
     text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
     helper = text.split("configure_production_compose_topology() {", maxsplit=1)[1].split(
         "}\n", maxsplit=1
     )[0]
-    assert "com.docker.compose.project" in helper
-    assert "COMPOSE_PROJECT_NAME" in helper
-    assert "waterfall-backend" in helper
+    assert 'COMPOSE_PROJECT_NAME="waterfallhunter"' in helper
+    assert '${COMPOSE_PROJECT_NAME:-waterfallhunter}' not in text
+    assert "com.docker.compose.project" not in helper
+    assert "waterfall-backend" not in helper
 
 
 def test_host_deploy_removes_fixed_name_core_containers_before_activation_and_rollback() -> None:
@@ -349,3 +356,120 @@ def test_failed_deploys_also_enforce_backup_retention() -> None:
 def test_default_database_backup_retention_is_two() -> None:
     text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
     assert 'WFH_DEPLOY_BACKUP_RETENTION_COUNT="${WFH_DEPLOY_BACKUP_RETENTION_COUNT:-2}"' in text
+
+
+def test_host_deploy_uses_canonical_host_owned_env_state_and_backup_paths() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    assert 'WFH_HOST_ROOT="${WFH_HOST_ROOT:-/srv/waterfallhunter}"' in text
+    assert 'ENV_FILE="${WFH_ENV_FILE:-/etc/waterfallhunter/waterfallhunter.env}"' in text
+    assert 'DEPLOY_STATE_DIR="${WFH_HOST_ROOT}/runtime"' in text
+    assert 'BACKUP_DIR="${WFH_HOST_ROOT}/backups"' in text
+    assert 'PRODUCTION_COMPOSE_OVERRIDE="${STATE_DIR}/production-volumes.override.yml"' in text
+    assert 'export WFH_ENV_FILE="$ENV_FILE"' in text
+
+
+def test_deploy_clean_worktree_no_longer_depends_on_runtime_files_inside_git() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    helper = text.split("assert_clean_deploy_worktree() {", maxsplit=1)[1].split("}\n", maxsplit=1)[0]
+    assert "git status --porcelain" in helper
+    assert ":(exclude).env" not in helper
+    assert ":(exclude).deploy" not in helper
+
+
+def test_schema_changing_rollback_restores_backup_before_previous_schema_preflight() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    assert "restore_database_backup()" in text
+    rollback = text.split("rollback_previous_revision() {", maxsplit=1)[1].split(
+        "terminate_with_cleanup() {", maxsplit=1
+    )[0]
+    restore_index = rollback.index("restore_database_backup")
+    preflight_index = rollback.index("previous_revision_accepts_current_schema")
+    assert restore_index < preflight_index
+    restore = text.split("restore_database_backup() {", maxsplit=1)[1].split(
+        "prune_database_backups() {", maxsplit=1
+    )[0]
+    assert 'sha256sum "$DB_BACKUP"' in restore
+    assert '${BACKUP_DIR}:/backup:ro' in restore
+    assert "docker compose stop waterfall-backend frontend watchdog" in restore
+    assert "PRAGMA integrity_check" in restore
+
+
+def test_deploy_installs_and_enables_canonical_systemd_units_after_runtime_health() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    assert "install_systemd_units()" in text
+    helper = text.split("install_systemd_units() {", maxsplit=1)[1].split("}\n", maxsplit=1)[0]
+    for unit in (
+        "waterfallhunter.service",
+        "waterfallhunter-healthcheck.service",
+        "waterfallhunter-healthcheck.timer",
+    ):
+        assert unit in helper
+    assert "systemctl daemon-reload" in helper
+    assert "systemctl enable waterfallhunter.service waterfallhunter-healthcheck.timer" in helper
+    assert "host integration snapshot missing before systemd install" in helper
+    main_sequence = _main_deploy_sequence(text)
+    runtime_index = main_sequence.index("docker compose up -d")
+    healthy_index = main_sequence.index("verify_running_signal_only")
+    snapshot_index = main_sequence.index("snapshot_host_integration_state")
+    install_index = main_sequence.index("install_systemd_units")
+    certificate_index = main_sequence.index('cat > "${STATE_DIR}/last-successful-deploy.txt"')
+    assert runtime_index < healthy_index < snapshot_index < install_index < certificate_index
+
+
+def test_main_deploy_loads_ci_tested_images_instead_of_rebuilding_target() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    main_sequence = _main_deploy_sequence(text)
+    assert "load_tested_release_artifacts" in main_sequence
+    load_index = main_sequence.index("load_tested_release_artifacts")
+    backup_index = main_sequence.index("backup_database")
+    assert load_index < backup_index
+    target_prefix = main_sequence[:backup_index]
+    assert "docker compose build" not in target_prefix
+    helper = text.split("load_tested_release_artifacts() {", maxsplit=1)[1].split("}\n", maxsplit=1)[0]
+    assert 'docker load -i "$WFH_TESTED_IMAGE_BUNDLE"' in helper
+    assert "WFH_TESTED_BACKEND_IMAGE_DIGEST" in helper
+    assert "WFH_TESTED_FRONTEND_IMAGE_DIGEST" in helper
+    assert "WFH_TESTED_WATCHDOG_IMAGE_DIGEST" in helper
+    assert "WFH_TESTED_IMAGE_BUNDLE_SHA256" in helper
+
+
+def test_ci_exports_and_uploads_exact_tested_image_bundle_to_deploy_job() -> None:
+    ci_text = CI_WORKFLOW.read_text(encoding="utf-8")
+    deploy_text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+    container_job = ci_text.split("\n  container-validation:\n", maxsplit=1)[1].split(
+        "\n  repository-hygiene:\n", maxsplit=1
+    )[0]
+    assert "outputs:" in container_job
+    assert "tested_backend_image_digest" in container_job
+    assert "tested_frontend_image_digest" in container_job
+    assert "tested_watchdog_image_digest" in container_job
+    assert "tested_image_bundle_sha256" in container_job
+    assert "docker save" in container_job
+    assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in container_job
+
+    deploy_job = ci_text.split("\n  deploy-production:\n", maxsplit=1)[1]
+    assert "tested_backend_image_digest: ${{ needs.container-validation.outputs.tested_backend_image_digest }}" in deploy_job
+    assert "tested_frontend_image_digest: ${{ needs.container-validation.outputs.tested_frontend_image_digest }}" in deploy_job
+    assert "tested_watchdog_image_digest: ${{ needs.container-validation.outputs.tested_watchdog_image_digest }}" in deploy_job
+    assert "tested_image_bundle_sha256: ${{ needs.container-validation.outputs.tested_image_bundle_sha256 }}" in deploy_job
+
+    assert "workflow_call:" in deploy_text
+    assert "tested_backend_image_digest:" in deploy_text
+    assert "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093" in deploy_text
+    assert "WFH_TESTED_IMAGE_BUNDLE_SHA256" in deploy_text
+    assert "WFH_TESTED_BACKEND_IMAGE_DIGEST" in deploy_text
+
+
+def test_production_compose_wrapper_exports_canonical_env_path() -> None:
+    wrapper = (ROOT / "scripts/production_compose.sh").read_text(encoding="utf-8")
+    assert 'ENV_FILE="${WFH_ENV_FILE:-/etc/waterfallhunter/waterfallhunter.env}"' in wrapper
+    assert 'export WFH_ENV_FILE="$ENV_FILE"' in wrapper
+
+
+def test_ci_tested_image_bundle_upload_path_is_not_hidden() -> None:
+    ci_text = CI_WORKFLOW.read_text(encoding="utf-8")
+    container_job = ci_text.split("\n  container-validation:\n", maxsplit=1)[1].split(
+        "\n  repository-hygiene:\n", maxsplit=1
+    )[0]
+    assert "path: ci-artifacts/" in container_job
+    assert ".ci-artifacts/" not in container_job

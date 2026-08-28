@@ -260,7 +260,9 @@ export function BacktestLab() {
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">Deterministic replay with the canonical risk policy, portfolio capacity, isolated liquidation and explicit cost attribution. Input data is never inferred or repaired.</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <span className="status-pill border border-cyan-400/30 bg-cyan-500/10 text-cyan-100">SIMULATED ONLY</span>
+
+          <span className="status-pill border border-cyan-400/30 bg-cyan-500/10 text-cyan-100">SIGNAL ONLY</span>
+
           <span className="status-pill border border-rose-400/30 bg-rose-500/10 text-rose-100">STRATEGY-EQUIVALENT: FALSE</span>
         </div>
       </div>

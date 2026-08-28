@@ -4,6 +4,7 @@ import traceback
 import json
 import math
 import time
+from typing import Any
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
@@ -21,14 +22,29 @@ from waterfallhunter.discovery.lbank_scanner import LBankCatalogScanner
 from waterfallhunter.discovery.dexscreener import DexScreenerClient
 from waterfallhunter.discovery.onchain import OnChainIntelligence
 from waterfallhunter.core.multi_exchange_validator import MultiExchangeValidator
-from waterfallhunter.core.notifier import TelegramNotifier
+from waterfallhunter.core.entry_decision import (
+    EntryDecisionPolicy,
+    build_entry_decision,
+    build_expired_entry_decision,
+    build_invalidated_entry_decision,
+)
+from waterfallhunter.core.entry_decision_store import (
+    EntryDecisionStore,
+    StaleCandidateLifecycleError,
+)
+from waterfallhunter.core.notifier import TelegramNotifier, TelegramSignalTransport
 from waterfallhunter.core.notification_delivery import (
+    DurableNotificationWorker,
     NotificationDeliveryError,
     notification_delivery_health,
 )
-from waterfallhunter.core.ai_veto import AIVetoEngine
+from waterfallhunter.core.ai_veto import (
+    AIVetoEngine,
+    CANONICAL_ADVISORY_DELIVERY_GRACE_SECONDS,
+)
 from waterfallhunter.core.risk_manager import get_leverage, recommend_signal_leverage
 from waterfallhunter.core.dashboard import compact_metrics
+from waterfallhunter.core.decision_terminal import build_decision_terminal
 from waterfallhunter.core.dashboard_stream import (
     DashboardEventBuffer,
     DashboardSnapshot,
@@ -132,6 +148,11 @@ db = DBAdapter(
 )
 
 stage_lifecycle_store = StageLifecycleStore(
+    db_path=db.db_path,
+    verify_schema=False,
+)
+
+entry_decision_store = EntryDecisionStore(
     db_path=db.db_path,
     verify_schema=False,
 )
@@ -282,6 +303,8 @@ _HUNTER_STARTUP_DELAY_SECONDS = 5.0
 _HUNTER_SHUTDOWN_GRACE_SECONDS = 5.0
 _lbank_execution_shadow_worker: LBankExecutionShadowWorker | None = None
 _signal_settlement_worker: LBankSignalSettlementWorker | None = None
+_entry_notification_worker: DurableNotificationWorker | None = None
+_entry_notification_probe: dict | None = None
 _signal_evidence_metrics_last_refresh = 0.0
 _signal_evidence_metrics_lock = asyncio.Lock()
 _sse_clients = set()
@@ -680,6 +703,101 @@ def _build_lbank_execution_shadow_worker(
     )
 
 
+def _telegram_probe_allows_worker(probe: dict[str, Any]) -> bool:
+    if probe.get("reachable") is True:
+        return True
+    status_code = probe.get("status_code")
+    return status_code not in {400, 401, 403, 404}
+
+
+def _build_entry_notification_worker() -> DurableNotificationWorker | None:
+    if (
+        not notifier.enabled
+        or not notifier.signal_delivery_enabled
+        or notifier.signal_delivery_cutover_at is None
+    ):
+        return None
+    transport = TelegramSignalTransport(
+        str(settings.telegram_token),
+        str(settings.telegram_chat_id),
+        cutover_at=notifier.signal_delivery_cutover_at,
+        decision_db_path=db.db_path,
+        max_entry_age_seconds=int(EntryDecisionPolicy().max_analysis_age_seconds),
+    )
+    return DurableNotificationWorker(
+        db.db_path,
+        transport,
+        worker_id="canonical-entry-telegram",
+        outbox_table="entry_notification_outbox",
+        transport_timeout_seconds=10.0,
+        advisory_wait_seconds=CANONICAL_ADVISORY_DELIVERY_GRACE_SECONDS,
+        verify_schema=False,
+    )
+
+
+async def _entry_notification_loop(interval_seconds: float = 2.0) -> None:
+    while _hunter_running:
+        worker = _entry_notification_worker
+        if worker is None:
+            return
+        try:
+            dispatch_now = int(time.time())
+            outcome = await worker.dispatch_once(now=dispatch_now)
+            if outcome is None:
+                await asyncio.sleep(interval_seconds)
+            elif outcome.state != "DELIVERED":
+                logger.warning(
+                    "Canonical Telegram delivery %s for %s (%s)",
+                    outcome.state, outcome.event_id, outcome.error_code,
+                )
+                if (
+                    outcome.error_code == "HTTP_429"
+                    and outcome.next_available_at is not None
+                ):
+                    await asyncio.sleep(
+                        max(
+                            interval_seconds,
+                            float(outcome.next_available_at - dispatch_now),
+                        )
+                    )
+        except NotificationDeliveryError as exc:
+            logger.exception("Canonical Telegram delivery worker failed: %s", exc)
+            await asyncio.sleep(max(interval_seconds, 5.0))
+
+
+async def _refresh_canonical_ai_advisory(
+    symbol: str,
+    decision_event_id: int,
+    metrics_snapshot: dict,
+    decision_snapshot: dict,
+) -> None:
+    advisory = await ai_veto.advisory_for_decision(
+        symbol, metrics_snapshot, decision_snapshot
+    )
+    try:
+        advisory_event_id = entry_decision_store.append_advisory(
+            decision_event_id,
+            advisory,
+            advisory_at=int(time.time()),
+        )
+    except Exception:
+        logger.exception("Unable to persist canonical AI advisory for %s", symbol)
+        return
+    advisory = {**advisory, "advisory_event_id": advisory_event_id}
+    live = scanner.active_candidates.get(symbol)
+    if not isinstance(live, dict):
+        return
+    current_metrics = live.get("metrics")
+    if not isinstance(current_metrics, dict):
+        return
+    current_decision = current_metrics.get("entry_decision")
+    if not isinstance(current_decision, dict):
+        return
+    if current_decision.get("event_id") != decision_event_id:
+        return
+    current_metrics["ai_advisory"] = advisory
+
+
 def _lbank_shadow_health_snapshot() -> dict:
     if _lbank_execution_shadow_worker is None:
         return {
@@ -991,6 +1109,18 @@ async def _update_signal_evidence_metrics(
         _signal_evidence_metrics_last_refresh = now
 
 
+def _websocket_source(metrics: object) -> tuple[str, str] | None:
+    if not isinstance(metrics, dict):
+        return None
+    exchange = metrics.get("exchange")
+    mapped_symbol = metrics.get("mapped_symbol")
+    if not isinstance(exchange, str) or not exchange.strip():
+        return None
+    if not isinstance(mapped_symbol, str) or not mapped_symbol.strip():
+        return None
+    return exchange, mapped_symbol
+
+
 def _store_live_metrics(
     symbol: str,
     metrics: dict | None,
@@ -1164,6 +1294,127 @@ def _schedule_ai_advisory_observational(
     )
 
 
+def _restore_persisted_decision_projection(
+    current_decision: dict[str, Any],
+    metrics: dict[str, Any],
+    persisted_decision: dict[str, Any] | None,
+) -> None:
+    if not isinstance(persisted_decision, dict):
+        return
+    if persisted_decision.get("decision") != current_decision.get("decision"):
+        return
+    event_id = persisted_decision.get("event_id")
+    if isinstance(event_id, int) and not isinstance(event_id, bool) and event_id > 0:
+        current_decision["event_id"] = event_id
+        current_decision["event_persisted"] = False
+    if current_decision.get("decision") == "ENTRY_READY":
+        persisted_plan = persisted_decision.get("trade_plan")
+        if isinstance(persisted_plan, dict):
+            current_decision["trade_plan"] = dict(persisted_plan)
+    advisory = persisted_decision.get("ai_advisory")
+    if isinstance(advisory, dict):
+        metrics["ai_advisory"] = dict(advisory)
+
+
+def _reconcile_explicit_entry_expirations(*, evaluated_at: int) -> int:
+    """Persist EXPIRED only when a prior canonical plan carries explicit expiry."""
+    reconciled = 0
+    for symbol, previous in entry_decision_store.latest_map().items():
+        expired = build_expired_entry_decision(previous, evaluated_at=evaluated_at)
+        if expired is None:
+            continue
+        event_id = entry_decision_store.append_if_changed(symbol, expired)
+        if event_id is None:
+            continue
+        expired["event_id"] = event_id
+        expired["event_persisted"] = True
+        live = scanner.active_candidates.get(symbol)
+        if isinstance(live, dict):
+            metrics = live.get("metrics")
+            if isinstance(metrics, dict):
+                metrics["entry_decision"] = expired
+        reconciled += 1
+    return reconciled
+
+
+def _reconcile_inactive_actionable_decisions(
+    *,
+    active_symbols: set[str],
+    evaluated_at: int,
+) -> int:
+    """Invalidate actionable decisions after a symbol leaves the active universe."""
+    reconciled = 0
+    for symbol, previous in entry_decision_store.latest_map().items():
+        if symbol in active_symbols:
+            continue
+        invalidated = build_invalidated_entry_decision(
+            previous,
+            evaluated_at=evaluated_at,
+            block_reason="CANDIDATE_NO_LONGER_ACTIVE",
+        )
+        if invalidated is None:
+            continue
+        event_id = entry_decision_store.append_if_changed(symbol, invalidated)
+        if event_id is None:
+            continue
+        reconciled += 1
+    return reconciled
+
+
+def _project_entry_decision_freshness(
+    metrics: dict[str, Any],
+    *,
+    candidate_status: str,
+    evaluated_at: float,
+    analysis_age_seconds: float | None,
+    reference_age_seconds: float | None,
+) -> dict[str, Any]:
+    stored = metrics.get("entry_decision")
+    if not isinstance(stored, dict) or stored.get("decision") not in {"FORMING", "ENTRY_READY", "ACTIVE"}:
+        return metrics
+
+    explicit_expiry = build_expired_entry_decision(stored, evaluated_at=int(evaluated_at))
+    if explicit_expiry is not None:
+        if "event_id" in stored:
+            explicit_expiry["event_id"] = stored["event_id"]
+        projected_metrics = dict(metrics)
+        projected_metrics["entry_decision"] = explicit_expiry
+        return projected_metrics
+
+    policy = EntryDecisionPolicy()
+    analysis_age = analysis_age_seconds if isinstance(analysis_age_seconds, (int, float)) else None
+    reference_age = reference_age_seconds if isinstance(reference_age_seconds, (int, float)) else None
+    freshness_expired = bool(
+        analysis_age is None
+        or analysis_age > policy.max_analysis_age_seconds
+        or reference_age is None
+        or reference_age > policy.max_reference_age_seconds
+    )
+    if not freshness_expired:
+        return metrics
+
+    projected = build_entry_decision(
+        metrics,
+        candidate_status,
+        evaluated_at=int(evaluated_at),
+        analysis_age_seconds=analysis_age,
+        reference_age_seconds=reference_age,
+        policy=policy,
+        lifecycle_id=(
+            int(stored["lifecycle_id"])
+            if isinstance(stored.get("lifecycle_id"), int)
+            and not isinstance(stored.get("lifecycle_id"), bool)
+            else None
+        ),
+        previous_decision=stored,
+    )
+    if "event_id" in stored:
+        projected["event_id"] = stored["event_id"]
+    projected_metrics = dict(metrics)
+    projected_metrics["entry_decision"] = projected
+    return projected_metrics
+
+
 def get_formatted_candidates(*, evaluation_time: float | None = None):  # NOSONAR
     now = time.time() if evaluation_time is None else float(evaluation_time)
     if not math.isfinite(now) or now < 0:
@@ -1247,27 +1498,33 @@ def get_formatted_candidates(*, evaluation_time: float | None = None):  # NOSONA
             live_metrics = live_data.get(
                 "metrics"
             )
-
-            data[
-                "metrics"
-            ] = (
-                (
-                    compact_metrics(
-                        live_metrics
-                    )
-                    if isinstance(
-                        live_metrics,
-                        dict,
-                    )
-                    else {
-                        "analysis_reason": (
-                            "live analysis pending"
-                        )
-                    }
+            if isinstance(live_metrics, dict):
+                live_metrics = _project_entry_decision_freshness(
+                    live_metrics,
+                    candidate_status=str(data.get("status") or "WATCH"),
+                    evaluated_at=now,
+                    analysis_age_seconds=data.get("analysis_age_seconds"),
+                    reference_age_seconds=data.get("reference_age_seconds"),
                 )
-                if is_live
-                else None
-            )
+
+            if is_live:
+                data["metrics"] = (
+                    compact_metrics(live_metrics)
+                    if isinstance(live_metrics, dict)
+                    else {"analysis_reason": "live analysis pending"}
+                )
+            elif isinstance(live_metrics, dict) and isinstance(
+                live_metrics.get("entry_decision"), dict
+            ):
+                unavailable_projection = {
+                    "entry_decision": dict(live_metrics["entry_decision"]),
+                }
+                for key in ("error", "analysis_reason"):
+                    if key in live_metrics:
+                        unavailable_projection[key] = live_metrics[key]
+                data["metrics"] = unavailable_projection
+            else:
+                data["metrics"] = None
             strategy_profile = (
                 live_metrics.get("strategy_profile")
                 if isinstance(live_metrics, dict)
@@ -1444,6 +1701,11 @@ def get_formatted_candidates(*, evaluation_time: float | None = None):  # NOSONA
         )
     }
 
+    decision_terminal = build_decision_terminal(
+        sorted_candidates,
+        recent_changes=entry_decision_store.recent_changes(limit=10),
+    )
+
     return {
         "total": len(
             sorted_candidates
@@ -1451,6 +1713,7 @@ def get_formatted_candidates(*, evaluation_time: float | None = None):  # NOSONA
         "candidates": (
             sorted_candidates
         ),
+        "decision_terminal": decision_terminal,
         "final_ranking": {
             key: value
             for key, value in final_ranking.items()
@@ -1545,6 +1808,21 @@ def _build_runtime_lifecycle_v2_evidence(
     )
 
 
+def _apply_deterministic_entry_gate(
+    symbol: str, decision_state: str, metrics: dict[str, Any]
+) -> tuple[str, bool]:
+    """Attach the provider-free hard gate before any potentially actionable decision."""
+    if decision_state not in {"WATCH", "FUEL-RICH", "PRE-TRIGGER", "ARMED", "TRIGGERED"}:
+        return decision_state, False
+    vetoed, advisory = ai_veto.evaluate_deterministic(
+        symbol,
+        metrics.get("orderbook", {}),
+        metrics.get("ticker", {}),
+    )
+    metrics["ai_advisory"] = advisory
+    return decision_state, vetoed
+
+
 async def evaluate_candidate(
     symbol: str,
     data: dict,
@@ -1555,6 +1833,7 @@ async def evaluate_candidate(
         symbol,
         {},
     )
+    previous_ws_source = _websocket_source(active_candidate.get("metrics"))
     active_candidate["analysis_status"] = "pending"
     active_candidate["analysis_observed_at"] = analysis_observed_at
 
@@ -1646,14 +1925,49 @@ async def evaluate_candidate(
                 "analysis_status"
             ] = "unavailable"
 
+            reference_failure_metrics = {
+                "error": "no fresh reference price in exchange waterfall",
+            }
+            try:
+                previous_entry_decision = entry_decision_store.latest_for_symbol(symbol)
+            except Exception:
+                logger.exception("Unable to read canonical decision during reference failure for %s", symbol)
+                previous_entry_decision = None
+
+            if (
+                isinstance(previous_entry_decision, dict)
+                and previous_entry_decision.get("decision") in {"ENTRY_READY", "ACTIVE"}
+            ):
+                decision_now = int(time.time())
+                invalidated_decision = build_entry_decision(
+                    reference_failure_metrics,
+                    "WATCH",
+                    evaluated_at=decision_now,
+                    analysis_age_seconds=max(0.0, decision_now - analysis_observed_at),
+                    reference_age_seconds=None,
+                    lifecycle_id=int(data.get("lifecycle_id") or 1),
+                    previous_decision=previous_entry_decision,
+                )
+                try:
+                    decision_event_id = entry_decision_store.append_if_changed(
+                        symbol,
+                        invalidated_decision,
+                        expected_lifecycle_id=int(data.get("lifecycle_id") or 1),
+                    )
+                except StaleCandidateLifecycleError:
+                    logger.info(
+                        "Discarding stale reference-failure evaluation for %s lifecycle=%s",
+                        symbol,
+                        int(data.get("lifecycle_id") or 1),
+                    )
+                    return
+                if decision_event_id is not None:
+                    invalidated_decision["event_id"] = decision_event_id
+                reference_failure_metrics["entry_decision"] = invalidated_decision
+
             _store_live_metrics(
                 symbol,
-                {
-                    "error": (
-                        "no fresh reference price "
-                        "in exchange waterfall"
-                    )
-                },
+                reference_failure_metrics,
             )
 
             if current_state in {
@@ -1754,6 +2068,71 @@ async def evaluate_candidate(
                     snapshot_stages,
                 )
             )
+
+    decision_now = int(time.time())
+    try:
+        result_metrics.setdefault("applied_leverage", get_leverage(symbol))
+    except Exception:
+        result_metrics.setdefault("applied_leverage", None)
+
+    decision_state = str(
+        result.get("suggested_status")
+        if result.get("suggested_status") in {"WATCH", "FUEL-RICH", "PRE-TRIGGER", "ARMED", "TRIGGERED", "EXHAUSTED", "INVALIDATED"}
+        else result.get("observation_status")
+        if result.get("observation_status") in {"WATCH", "FUEL-RICH", "PRE-TRIGGER", "ARMED"}
+        else current_state
+    )
+
+    decision_state, deterministic_vetoed = _apply_deterministic_entry_gate(
+        symbol, decision_state, result_metrics
+    )
+
+    reference_age = (
+        max(0.0, decision_now - float(reference_observed_at))
+        if isinstance(reference_observed_at, (int, float))
+        and not isinstance(reference_observed_at, bool)
+        else None
+    )
+    previous_entry_decision = entry_decision_store.latest_for_symbol(symbol)
+    entry_decision = build_entry_decision(
+        result_metrics,
+        decision_state,
+        evaluated_at=decision_now,
+        analysis_age_seconds=max(0.0, decision_now - analysis_observed_at),
+        reference_age_seconds=reference_age,
+        lifecycle_id=int(data.get("lifecycle_id") or 1),
+        previous_decision=previous_entry_decision,
+    )
+    try:
+        event_id = entry_decision_store.append_if_changed(
+            symbol,
+            entry_decision,
+            expected_lifecycle_id=int(data.get("lifecycle_id") or 1),
+        )
+    except StaleCandidateLifecycleError:
+        logger.info(
+            "Discarding stale canonical evaluation for %s lifecycle=%s",
+            symbol,
+            int(data.get("lifecycle_id") or 1),
+        )
+        return
+    entry_decision["event_persisted"] = event_id is not None
+    if event_id is not None:
+        entry_decision["event_id"] = event_id
+    else:
+        persisted_decision = entry_decision_store.latest_for_symbol(symbol)
+        _restore_persisted_decision_projection(
+            entry_decision,
+            result_metrics,
+            persisted_decision,
+        )
+    result_metrics["entry_decision"] = entry_decision
+    if event_id is not None and entry_decision.get("decision") in {"ENTRY_READY", "FORMING"}:
+        _start_background_task(
+            _refresh_canonical_ai_advisory(
+                symbol, int(event_id), dict(result_metrics), dict(entry_decision)
+            )
+        )
 
     episode_id = f"{symbol}:{int(data.get('lifecycle_id') or 1)}"
 
@@ -2136,16 +2515,18 @@ async def evaluate_candidate(
                 persist_lifecycle_v2_shadow(str(current_state))
                 return
 
+        current_ws_source = _websocket_source(metrics)
+        if (
+            previous_ws_source is not None
+            and previous_ws_source != current_ws_source
+        ):
+            validator.ws_manager.unsubscribe(*previous_ws_source)
+
         if new_state == "ARMED":
-            validator.ws_manager.subscribe(
-                ex_name,
-                mapped_sym,
-            )
-        else:
-            validator.ws_manager.unsubscribe(
-                ex_name,
-                mapped_sym,
-            )
+            if current_ws_source is not None:
+                validator.ws_manager.subscribe(*current_ws_source)
+        elif current_ws_source is not None:
+            validator.ws_manager.unsubscribe(*current_ws_source)
 
         persist_lifecycle_v2_shadow(str(new_state))
 
@@ -2174,26 +2555,10 @@ async def evaluate_candidate(
         return
 
     if new_state == "TRIGGERED":
-        (
-            is_vetoed,
-            advisory,
-        ) = ai_veto.evaluate_deterministic(
-            symbol,
-            metrics.get(
-                "orderbook",
-                {},
-            ),
-            metrics.get(
-                "ticker",
-                {},
-            ),
-        )
-
-        metrics[
-            "ai_advisory"
-        ] = advisory
-
-        if is_vetoed:
+        # Deterministic market-data veto is part of the canonical hard-gate
+        # path and was already evaluated before the entry decision event was
+        # persisted. Gemini output remains advisory-only and cannot mutate it.
+        if deterministic_vetoed:
             state_persisted = db.update_candidate_state(
                 symbol,
                 "WATCH",
@@ -2226,18 +2591,12 @@ async def evaluate_candidate(
 
             _schedule_ai_advisory_observational(
                 symbol,
-                analysis_observed_at=(
-                    analysis_observed_at
-                ),
-                orderbook=metrics.get(
-                    "orderbook"
-                ),
-                ticker=metrics.get(
-                    "ticker"
-                ),
+                analysis_observed_at=analysis_observed_at,
+                orderbook=metrics.get("orderbook"),
+                ticker=metrics.get("ticker"),
             )
-
             return
+
 
         execution_suitability = (
             execution_suitability_enricher
@@ -2382,12 +2741,10 @@ async def evaluate_candidate(
         )
 
         if _signal_alert_allowed(metrics):
-            await notifier.send_signal_alert(
-                symbol,
-                {
-                    "score": score,
-                    "metrics": metrics,
-                },
+            logger.info(
+                "STRICT TRIGGERED event %s persisted without proactive Telegram; "
+                "delivery is reserved for canonical ENTRY_READY transitions",
+                signal_id,
             )
         else:
             logger.warning(
@@ -2446,9 +2803,27 @@ async def hunter_loop(
                 .refresh_live_references()
             )
 
+            expired_count = await asyncio.to_thread(
+                _reconcile_explicit_entry_expirations,
+                evaluated_at=int(time.time()),
+            )
+            if expired_count:
+                logger.info("Reconciled %s explicit canonical entry expirations", expired_count)
+
             candidates = (
                 db.get_all_active_candidates()
             )
+
+            inactive_count = await asyncio.to_thread(
+                _reconcile_inactive_actionable_decisions,
+                active_symbols=set(candidates),
+                evaluated_at=int(time.time()),
+            )
+            if inactive_count:
+                logger.info(
+                    "Invalidated %s canonical entries outside the active universe",
+                    inactive_count,
+                )
 
             if candidates:
                 semaphore = (
@@ -2595,6 +2970,8 @@ async def startup_event():
     global _hunter_stop_event
     global _lbank_execution_shadow_worker
     global _signal_settlement_worker
+    global _entry_notification_worker
+    global _entry_notification_probe
 
     _hunter_stop_event = asyncio.Event()
 
@@ -2643,6 +3020,41 @@ async def startup_event():
     _start_background_task(
         notifier.start_interactive_bot()
     )
+
+    _entry_notification_worker = _build_entry_notification_worker()
+    if _entry_notification_worker is not None:
+        transport = _entry_notification_worker.transport
+        _entry_notification_probe = await transport.probe()
+        if not _telegram_probe_allows_worker(_entry_notification_probe):
+            logger.error(
+                "Telegram bot/chat probe was permanently rejected; canonical delivery not started "
+                "(bot=%s chat=%s status=%s).",
+                _entry_notification_probe.get("bot_reachable"),
+                _entry_notification_probe.get("chat_reachable"),
+                _entry_notification_probe.get("status_code"),
+            )
+            _entry_notification_worker = None
+        else:
+            if _entry_notification_probe.get("reachable") is not True:
+                logger.warning(
+                    "Telegram startup probe was transiently unavailable; durable ENTRY_READY "
+                    "delivery remains active and will retry through the outbox worker "
+                    "(status=%s).",
+                    _entry_notification_probe.get("status_code"),
+                )
+            _start_background_task(_entry_notification_loop())
+            logger.info("Canonical ENTRY_READY Telegram delivery enabled.")
+    else:
+        _entry_notification_probe = {
+            "configured": bool(notifier.enabled),
+            "reachable": False,
+            "bot_reachable": False,
+            "chat_reachable": False,
+            "status_code": None,
+        }
+        logger.warning(
+            "Canonical Telegram delivery disabled: release gate/cutover is not active."
+        )
 
     _lbank_execution_shadow_worker = (
         _build_lbank_execution_shadow_worker()
@@ -2696,6 +3108,7 @@ async def shutdown_event():
     global _hunter_task
     global _lbank_execution_shadow_worker
     global _signal_settlement_worker
+    global _entry_notification_worker
 
     _hunter_running = False
     _hunter_stop_event.set()
@@ -2891,7 +3304,14 @@ async def _notification_delivery_health_snapshot() -> dict:
         notification_delivery_health,
         settings.registry_db_path,
         now=int(time.time()),
+        outbox_table="entry_notification_outbox",
     )
+    report["transport"] = {
+        "provider": "telegram",
+        "configured": bool(notifier.enabled),
+        "worker_running": _entry_notification_worker is not None,
+        "probe": _entry_notification_probe,
+    }
     counts = report["counts"]
     for state in (
         "PENDING",

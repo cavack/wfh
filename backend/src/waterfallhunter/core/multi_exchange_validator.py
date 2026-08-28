@@ -6,6 +6,7 @@ from typing import Any, Dict
 
 from waterfallhunter.config import settings
 from waterfallhunter.core.candle_analyzer import MultiTimeframeAnalyzer
+from waterfallhunter.core.cascade_intelligence import build_cascade_evidence
 from waterfallhunter.core.coinglass import CoinGlassDerivativesClient
 from waterfallhunter.core.derivatives import DerivativesAnalyzer
 from waterfallhunter.core.microstructure import MicrostructureAnalyzer
@@ -90,6 +91,131 @@ class MultiExchangeValidator:
             return (float(best_bid) + float(best_ask)) / 2.0, "orderbook.mid"
 
         return None, None
+
+    @classmethod
+    def _price_location_packet(cls, ticker: dict[str, Any]) -> dict[str, Any]:
+        last = ticker.get("last") if isinstance(ticker, dict) else None
+        vwap = ticker.get("vwap") if isinstance(ticker, dict) else None
+        if not (cls._finite_positive(last) and cls._finite_positive(vwap)):
+            return {
+                "available": False,
+                "reason": "same-contract price location unavailable",
+            }
+        last_value = float(last)
+        vwap_value = float(vwap)
+        return {
+            "available": True,
+            "last": last_value,
+            "vwap": vwap_value,
+            "below_vwap": last_value < vwap_value,
+        }
+
+    def _attach_live_liquidation_flow(
+        self,
+        metrics: dict[str, Any],
+        *,
+        exchange_name: str,
+        mapped_symbol: str,
+        now: float | None = None,
+    ) -> None:
+        getter = getattr(self.ws_manager, "get_realtime_liquidation_flow", None)
+        if not callable(getter):
+            metrics.pop("liquidation_flow", None)
+            return
+        flow = getter(exchange_name, mapped_symbol, now=now)
+        if not isinstance(flow, dict) or flow.get("available") is not True:
+            metrics.pop("liquidation_flow", None)
+            return
+        metrics["liquidation_flow"] = flow
+        sources = metrics.get("data_sources")
+        if isinstance(sources, dict):
+            sources["liquidations"] = f"{exchange_name}:public_ws"
+
+    def _position_setup_from_candle_capture(
+        self,
+        *,
+        candle_results: dict[str, Any],
+        ticker: dict[str, Any],
+        microstructure: dict[str, Any],
+        market_info: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        source_capture = (
+            candle_results.get("source_capture")
+            if isinstance(candle_results.get("source_capture"), dict)
+            else {}
+        )
+        primary = (
+            source_capture.get("primary_closed_ohlcv")
+            if isinstance(source_capture.get("primary_closed_ohlcv"), dict)
+            else {}
+        )
+        history = primary.get("5m") if isinstance(primary.get("5m"), list) else []
+        capture = {
+            "attempted": True,
+            "timeframe": "5m",
+            "requested_limit": len(history),
+            "evaluated_at_ms": int(time.time() * 1000),
+            "source": "candle_analysis.primary_closed_ohlcv.5m",
+            "reused_existing_capture": True,
+            "sample_count": len(history),
+            "raw_ohlcv": history,
+        }
+        mark_price, mark_price_source = self._position_reference_price(
+            ticker,
+            microstructure,
+        )
+        reference = {
+            "price": mark_price,
+            "source": mark_price_source,
+        }
+        vwap_entry = microstructure.get("best_bid")
+        if not history:
+            return {"status": "REJECTED: Missing captured 5m history"}, capture, reference
+
+        recent_high = None
+        try:
+            recent_high = max(
+                float(row[2])
+                for row in history[-24:]
+                if isinstance(row, (list, tuple)) and len(row) >= 6
+            )
+        except (TypeError, ValueError, IndexError):
+            recent_high = None
+
+        setup = self.position_calculator.calculate_short_position(
+            vwap_entry,
+            recent_high=recent_high,
+            market_info=market_info,
+            mark_price=mark_price,
+            entry_slippage_pct=microstructure.get("entry_slippage_pct"),
+            exit_slippage_pct=microstructure.get("exit_slippage_pct"),
+        )
+        return setup, capture, reference
+
+    def _attach_position_setup_from_capture(
+        self,
+        metrics: dict[str, Any],
+        *,
+        status: str,
+        candle_results: dict[str, Any],
+        ticker: dict[str, Any],
+        microstructure: dict[str, Any],
+        market_info: dict[str, Any],
+    ) -> str:
+        if status not in {"PRE-TRIGGER", "ARMED", "TRIGGERED"}:
+            return status
+        setup, capture, reference = self._position_setup_from_candle_capture(
+            candle_results=candle_results,
+            ticker=ticker,
+            microstructure=microstructure,
+            market_info=market_info,
+        )
+        metrics.setdefault("source_capture", {})["position"] = capture
+        metrics["position_reference_price"] = reference
+        metrics["position_setup"] = setup
+        if status in {"ARMED", "TRIGGERED"} and str(setup.get("status") or "").startswith("REJECTED"):
+            return "WATCH"
+        return status
 
     @staticmethod
     def _finite_number(value: Any) -> float | None:
@@ -653,17 +779,10 @@ class MultiExchangeValidator:
             else None
         )
 
+        location_packet = self._price_location_packet(ticker)
         price_location = (
-            {
-                "below_vwap": (
-                    float(last)
-                    < float(vwap)
-                )
-            }
-            if (
-                self._finite_positive(last)
-                and self._finite_positive(vwap)
-            )
+            {"below_vwap": location_packet["below_vwap"]}
+            if location_packet.get("available") is True
             else {}
         )
 
@@ -754,17 +873,10 @@ class MultiExchangeValidator:
             else None
         )
 
+        location_packet = self._price_location_packet(ticker)
         price_location = (
-            {
-                "below_vwap": (
-                    float(last)
-                    < float(vwap)
-                )
-            }
-            if (
-                self._finite_positive(last)
-                and self._finite_positive(vwap)
-            )
+            {"below_vwap": location_packet["below_vwap"]}
+            if location_packet.get("available") is True
             else {}
         )
 
@@ -1645,6 +1757,8 @@ class MultiExchangeValidator:
             microstructure,
         ) = selected
 
+        metrics["price_location"] = self._price_location_packet(ticker)
+
         derivatives, benchmark = (
             await asyncio.gather(
                 self._derivatives_context(
@@ -1940,6 +2054,18 @@ class MultiExchangeValidator:
         )
         if stage_lifecycle is not None:
             metrics["stage_lifecycle"] = stage_lifecycle
+
+        cascade_evaluated_at = int(time.time())
+        self._attach_live_liquidation_flow(
+            metrics,
+            exchange_name=str(metrics.get("exchange") or ""),
+            mapped_symbol=mapped_sym,
+            now=float(cascade_evaluated_at),
+        )
+        metrics["cascade_intelligence"] = build_cascade_evidence(
+            metrics,
+            evaluated_at=cascade_evaluated_at,
+        )
 
         if not derivatives.get(
             "available"
@@ -2246,6 +2372,14 @@ class MultiExchangeValidator:
             )
 
             if not experimental_trigger:
+                self._attach_position_setup_from_capture(
+                    metrics,
+                    status=observation_state,
+                    candle_results=candle_results,
+                    ticker=ticker,
+                    microstructure=microstructure,
+                    market_info=market_info,
+                )
                 return {
                     "is_valid": False,
                     "score": None,
@@ -2295,113 +2429,14 @@ class MultiExchangeValidator:
             "total_score"
         ] = base_score
 
-        if (
-            status == "TRIGGERED"
-            and orderbook
-            and ticker
-        ):
-            # Entry slippage must be applied exactly once. The position
-            # calculator adjusts its entry by entry_slippage_pct itself, so
-            # pass the raw best bid here; feature replay uses the same input,
-            # keeping production and replay decisions identical.
-            vwap_entry = (
-                microstructure.get(
-                    "best_bid"
-                )
-            )
-
-            history = (
-                await ex_instance
-                .fetch_ohlcv(
-                    mapped_sym,
-                    timeframe="5m",
-                    limit=1000,
-                )
-            )
-
-            position_evaluated_at_ms = int(time.time() * 1000)
-            metrics.setdefault(
-                "source_capture",
-                {},
-            )["position"] = {
-                "attempted": True,
-                "timeframe": "5m",
-                "requested_limit": 1000,
-                "evaluated_at_ms": position_evaluated_at_ms,
-                "raw_ohlcv": history,
-            }
-
-            mark_price, mark_price_source = (
-                self._position_reference_price(
-                    ticker,
-                    microstructure,
-                )
-            )
-
-            metrics["position_reference_price"] = {
-                "price": mark_price,
-                "source": mark_price_source,
-            }
-
-            try:
-                recent_high = max(
-                    float(
-                        row[2]
-                    )
-                    for row in (
-                        history[-24:]
-                    )
-                    if len(row) >= 6
-                )
-
-            except (
-                TypeError,
-                ValueError,
-                IndexError,
-            ):
-                recent_high = None
-
-            pos_setup = (
-                self
-                .position_calculator
-                .calculate_short_position(
-                    vwap_entry,
-                    recent_high=(
-                        recent_high
-                    ),
-                    market_info=(
-                        market_info
-                    ),
-                    mark_price=(
-                        mark_price
-                    ),
-                    entry_slippage_pct=(
-                        microstructure.get(
-                            "entry_slippage_pct"
-                        )
-                    ),
-                    exit_slippage_pct=(
-                        microstructure.get(
-                            "exit_slippage_pct"
-                        )
-                    ),
-                )
-            )
-
-            metrics[
-                "position_setup"
-            ] = pos_setup
-
-            if (
-                pos_setup.get(
-                    "status",
-                    "",
-                )
-                .startswith(
-                    "REJECTED"
-                )
-            ):
-                status = "WATCH"
+        status = self._attach_position_setup_from_capture(
+            metrics,
+            status=status,
+            candle_results=candle_results,
+            ticker=ticker,
+            microstructure=microstructure,
+            market_info=market_info,
+        )
 
         return {
             "is_valid": True,

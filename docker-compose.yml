@@ -7,7 +7,7 @@ services:
     container_name: waterfall-backend
     restart: unless-stopped
     env_file:
-      - .env
+      - ${WFH_ENV_FILE:-.env}
     environment:
       # Production invariant: observational execution evidence must survive a
       # normal base-compose deploy. This worker never places orders or gates
@@ -105,7 +105,7 @@ services:
     container_name: waterfall-watchdog
     restart: unless-stopped
     env_file:
-      - .env
+      - ${WFH_ENV_FILE:-.env}
     depends_on:
       waterfall-backend:
         condition: service_healthy

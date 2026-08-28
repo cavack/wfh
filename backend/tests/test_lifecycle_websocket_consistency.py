@@ -44,6 +44,19 @@ def _prepare_invalid_evaluation(monkeypatch, *, symbol: str, result: dict, persi
         "update_candidate_state",
         lambda *args, **kwargs: persist_state,
     )
+    # Synthetic symbols in this unit test do not exist in lbank_catalog.
+    # Bypass the independent canonical lifecycle CAS so this fixture continues
+    # to isolate websocket unsubscribe behavior.
+    monkeypatch.setattr(
+        main.entry_decision_store,
+        "latest_for_symbol",
+        lambda _symbol: None,
+    )
+    monkeypatch.setattr(
+        main.entry_decision_store,
+        "append_if_changed",
+        lambda *_args, **_kwargs: None,
+    )
 
     unsubscribed: list[tuple[str, str]] = []
     monkeypatch.setattr(
@@ -126,3 +139,66 @@ def test_successful_unavailable_downgrade_unsubscribes_armed_websocket(monkeypat
     )
 
     assert unsubscribed == [("binance", mapped_symbol)]
+
+
+def test_armed_source_failover_retires_previous_websocket_subscription(monkeypatch) -> None:
+    symbol = "FAILOVER/USDT:USDT"
+    old_symbol = "OLD/USDT:USDT"
+    new_symbol = "NEW/USDT:USDT"
+    monkeypatch.setattr(
+        main.scanner,
+        "active_candidates",
+        {symbol: {"metrics": {"exchange": "binance", "mapped_symbol": old_symbol}}},
+    )
+    monkeypatch.setattr(
+        main.scanner,
+        "get_live_reference",
+        lambda requested_symbol: (0.01, __import__("time").time()),
+    )
+    monkeypatch.setattr(main.execution_decision_logger, "observe_evaluation", lambda *args, **kwargs: None)
+
+    async def cross_check_symbol(*args, **kwargs):
+        return {
+            "is_valid": True,
+            "score": 80.0,
+            "suggested_status": "ARMED",
+            "metrics": {"exchange": "bybit", "mapped_symbol": new_symbol},
+        }
+
+    monkeypatch.setattr(main.validator, "cross_check_symbol", cross_check_symbol)
+    monkeypatch.setattr(main, "_apply_deterministic_entry_gate", lambda _s, state, _m: (state, False))
+    monkeypatch.setattr(main, "get_leverage", lambda _symbol: 1)
+    monkeypatch.setattr(main.entry_decision_store, "latest_for_symbol", lambda _symbol: None)
+    monkeypatch.setattr(main.entry_decision_store, "append_if_changed", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(main.production_evidence_recorder, "record", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main.lifecycle_v2_shadow_store, "latest_state", lambda **kwargs: LifecycleV2State.WATCH)
+    monkeypatch.setattr(main.lifecycle_v2_shadow_store, "append_comparison", lambda **kwargs: True)
+
+    subscribed: list[tuple[str, str]] = []
+    unsubscribed: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        main.validator.ws_manager,
+        "subscribe",
+        lambda exchange, mapped_symbol: subscribed.append((exchange, mapped_symbol)),
+    )
+    monkeypatch.setattr(
+        main.validator.ws_manager,
+        "unsubscribe",
+        lambda exchange, mapped_symbol: unsubscribed.append((exchange, mapped_symbol)),
+    )
+
+    asyncio.run(
+        main.evaluate_candidate(
+            symbol,
+            {
+                "status": "ARMED",
+                "lifecycle_id": 1,
+                "scan_eligible": True,
+                "quote_volume": 3_000_000.0,
+                "last_price": 0.01,
+            },
+        )
+    )
+
+    assert unsubscribed == [("binance", old_symbol)]
+    assert subscribed == [("bybit", new_symbol)]

@@ -14,7 +14,7 @@ from waterfallhunter.core.schema_unique_constraints import (
 )
 
 
-CURRENT_RUNTIME_SCHEMA_VERSION = 5
+CURRENT_RUNTIME_SCHEMA_VERSION = 7
 NON_NEGATIVE_INTEGER_CREATED_AT_CHECK = (
     "check(typeof(created_at) = 'integer' and created_at >= 0)"
 )
@@ -755,6 +755,116 @@ _RUNTIME_SCHEMA: dict[str, ManagedTableSpec] = {
                 "domain_outbox_events_no_delete",
                 "DELETE",
                 "domain outbox events cannot be deleted",
+            ),
+        ),
+    ),
+    "entry_decision_events": ManagedTableSpec(
+        name="entry_decision_events",
+        columns=(
+            _c("id", "INTEGER", pk=1, autoincrement=True),
+            _c("symbol", "TEXT", not_null=True),
+            _c("event_at", "INTEGER", not_null=True),
+            _c("decision", "TEXT", not_null=True),
+            _c("lifecycle_state", "TEXT", not_null=True),
+            _c("entry_readiness", "REAL", not_null=True),
+            _c("evidence_coverage_pct", "REAL", not_null=True),
+            _c("policy_version", "TEXT", not_null=True),
+            _c("packet_json", "TEXT", not_null=True),
+            _c("packet_hash", "TEXT", not_null=True),
+            _c("created_at", "INTEGER", not_null=True),
+        ),
+        indexes=(
+            IndexSpec("idx_entry_decision_symbol_event", ("symbol", "event_at", "id")),
+            IndexSpec("idx_entry_decision_decision_event", ("decision", "event_at")),
+        ),
+        check_fragments=(
+            "check(typeof(symbol) = 'text' and length(symbol) > 0)",
+            "check(typeof(event_at) = 'integer' and event_at >= 0)",
+            "check(decision in ('NO_TRADE','FORMING','ENTRY_READY','ACTIVE','LATE','INVALIDATED','EXPIRED'))",
+            "check(typeof(entry_readiness) in ('integer','real') and entry_readiness >= 0 and entry_readiness <= 100)",
+            "check(typeof(evidence_coverage_pct) in ('integer','real') and evidence_coverage_pct >= 0 and evidence_coverage_pct <= 100)",
+            "check(json_valid(packet_json))",
+            "check(length(packet_hash) = 64 and packet_hash not glob '*[^0-9a-f]*')",
+            NON_NEGATIVE_INTEGER_CREATED_AT_CHECK,
+        ),
+        triggers=_immutable(
+            "entry_decision_events",
+            message="entry decision events are immutable",
+        ),
+    ),
+    "entry_decision_advisories": ManagedTableSpec(
+        name="entry_decision_advisories",
+        columns=(
+            _c("id", "INTEGER", pk=1, autoincrement=True),
+            _c("decision_event_id", "INTEGER", not_null=True),
+            _c("advisory_at", "INTEGER", not_null=True),
+            _c("provider", "TEXT", not_null=True),
+            _c("model", "TEXT", not_null=True),
+            _c("status", "TEXT", not_null=True),
+            _c("advisory_json", "TEXT", not_null=True),
+            _c("advisory_hash", "TEXT", not_null=True),
+            _c("created_at", "INTEGER", not_null=True),
+        ),
+        indexes=(IndexSpec("idx_entry_decision_advisory_event", ("decision_event_id", "id")),),
+        foreign_keys=(ForeignKeySpec("decision_event_id", "entry_decision_events", "id"),),
+        check_fragments=(
+            "check(typeof(advisory_at) = 'integer' and advisory_at >= 0)",
+            "check(typeof(provider) = 'text' and length(provider) > 0)",
+            "check(typeof(model) = 'text' and length(model) > 0)",
+            "check(status in ('AVAILABLE','UNAVAILABLE'))",
+            "check(json_valid(advisory_json))",
+            "check(length(advisory_hash) = 64 and advisory_hash not glob '*[^0-9a-f]*')",
+            NON_NEGATIVE_INTEGER_CREATED_AT_CHECK,
+        ),
+        triggers=_immutable(
+            "entry_decision_advisories",
+            message="entry decision advisories are immutable",
+        ),
+    ),
+    "entry_notification_outbox": ManagedTableSpec(
+        name="entry_notification_outbox",
+        columns=(
+            _c("event_id", "TEXT", pk=1),
+            _c("decision_event_id", "INTEGER", not_null=True),
+            _c("event_key", "TEXT", not_null=True),
+            _c("event_type", "TEXT", not_null=True),
+            _c("payload_contract_version", "TEXT", not_null=True),
+            _c("payload_json", "TEXT", not_null=True),
+            _c("payload_hash", "TEXT", not_null=True),
+            _c("status", "TEXT", not_null=True),
+            _c("attempt_count", "INTEGER", not_null=True, default="0"),
+            _c("available_at", "INTEGER", not_null=True),
+            _c("lease_owner", "TEXT"),
+            _c("lease_expires_at", "INTEGER"),
+            _c("last_error_code", "TEXT"),
+            _c("created_at", "INTEGER", not_null=True),
+            _c("updated_at", "INTEGER", not_null=True),
+        ),
+        indexes=(IndexSpec("idx_entry_notification_delivery_queue", ("status", "available_at", "created_at")),),
+        foreign_keys=(ForeignKeySpec("decision_event_id", "entry_decision_events", "id"),),
+        check_fragments=(
+            "check(event_type = 'ENTRY_READY')",
+            "check(payload_contract_version = 'entry_ready_notification_v1')",
+            "check(json_valid(payload_json))",
+            "check(length(payload_hash) = 64 and payload_hash not glob '*[^0-9a-f]*')",
+            "check(status in ('PENDING','SENDING','DELIVERED','RETRY_WAIT','DEAD_LETTER','DELIVERY_UNCERTAIN'))",
+            "check(typeof(attempt_count) = 'integer' and attempt_count >= 0)",
+            "check(typeof(available_at) = 'integer' and available_at >= 0)",
+            "check(lease_expires_at is null or (typeof(lease_expires_at) = 'integer' and lease_expires_at >= 0))",
+            NON_NEGATIVE_INTEGER_CREATED_AT_CHECK,
+            "check(typeof(updated_at) = 'integer' and updated_at >= created_at)",
+        ),
+        triggers=(
+            TriggerSpec(
+                "entry_notification_outbox_material_immutable",
+                "UPDATE",
+                "entry notification material is immutable",
+                ("event_id","decision_event_id","event_key","event_type","payload_contract_version","payload_json","payload_hash","created_at"),
+            ),
+            TriggerSpec(
+                "entry_notification_outbox_no_delete",
+                "DELETE",
+                "entry notification events cannot be deleted",
             ),
         ),
     ),

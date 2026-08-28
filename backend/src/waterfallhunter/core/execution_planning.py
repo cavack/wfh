@@ -1,4 +1,4 @@
-"""Hash-bound LBank constraints and risk-first simulated execution planning."""
+"""Hash-bound LBank constraints and risk-first SIGNAL_ONLY planning."""
 
 from __future__ import annotations
 
@@ -795,6 +795,7 @@ def build_short_paper_execution_plan(
         "venue": "LBANK",
         "venue_symbol": constraints.venue_symbol,
         "evaluation_time": evaluation_time,
+        "expires_at": constraints.expires_at,
         "constraints_hash": constraints.constraints_hash,
         "cost_policy_hash": cost_policy.policy_hash,
         "risk_policy_hash": risk_policy.policy_hash,
@@ -925,6 +926,7 @@ def _blocked_plan(
         "reason_codes": list(reason_codes),
         "signal_id": signal_id,
         "evaluation_time": evaluation_time,
+        "expires_at": constraints.expires_at,
         "constraints_hash": constraints.constraints_hash,
         "raw_safe_leverage": raw_safe_leverage,
         "system_leverage": None,

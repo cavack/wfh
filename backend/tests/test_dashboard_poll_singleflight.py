@@ -29,6 +29,20 @@ def test_bootstrap_candidate_poll_builds_preview_once_for_concurrent_clients(
         return {
             "total": 0,
             "candidates": {},
+            "decision_terminal": {
+                "contract_version": "decision_terminal_v1",
+                "counts": {
+                    "ENTRY_READY": 0, "FORMING": 0, "ACTIVE": 0, "LATE": 0,
+                    "INVALIDATED": 0, "EXPIRED": 0, "NO_TRADE": 0, "UNAVAILABLE": 0,
+                },
+                "entry_ready": [], "forming": [], "active": [], "late": [],
+                "zero_entry_ready_diagnostics": {
+                    "entry_ready_zero": True,
+                    "evaluated_candidates": 0,
+                    "top_reasons": [],
+                },
+                "recent_changes": [],
+            },
             "final_ranking": {},
             "signal_funnel": {},
         }
@@ -67,6 +81,20 @@ def test_poll_refreshes_retained_snapshot_after_it_becomes_stale(monkeypatch) ->
         {
             "total": 1,
             "candidates": {"OLD": {"status": "WATCH"}},
+            "decision_terminal": {
+            "contract_version": "decision_terminal_v1",
+            "counts": {
+                "ENTRY_READY": 0, "FORMING": 0, "ACTIVE": 0, "LATE": 0,
+                "INVALIDATED": 0, "EXPIRED": 0, "NO_TRADE": 1, "UNAVAILABLE": 0,
+            },
+            "entry_ready": [], "forming": [], "active": [], "late": [],
+            "zero_entry_ready_diagnostics": {
+                "entry_ready_zero": True,
+                "evaluated_candidates": 1,
+                "top_reasons": [],
+            },
+            "recent_changes": [],
+        },
             "final_ranking": {},
             "signal_funnel": {},
         },
@@ -82,6 +110,20 @@ def test_poll_refreshes_retained_snapshot_after_it_becomes_stale(monkeypatch) ->
         lambda *, evaluation_time=None: {
             "total": 1,
             "candidates": {"NEW": {"status": "ARMED"}},
+            "decision_terminal": {
+            "contract_version": "decision_terminal_v1",
+            "counts": {
+                "ENTRY_READY": 0, "FORMING": 0, "ACTIVE": 0, "LATE": 0,
+                "INVALIDATED": 0, "EXPIRED": 0, "NO_TRADE": 1, "UNAVAILABLE": 0,
+            },
+            "entry_ready": [], "forming": [], "active": [], "late": [],
+            "zero_entry_ready_diagnostics": {
+                "entry_ready_zero": True,
+                "evaluated_candidates": 1,
+                "top_reasons": [],
+            },
+            "recent_changes": [],
+        },
             "final_ranking": {},
             "signal_funnel": {},
         },

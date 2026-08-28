@@ -1,18 +1,30 @@
 # WaterfallHunter
 
-WaterfallHunter is a SIGNAL_ONLY observational monitoring and research system for USDT perpetual futures. It collects exchange evidence, evaluates a staged waterfall setup, records natural signal outcomes, replays production decision packets, and exposes the results through a read-only dashboard.
+WaterfallHunter is a SIGNAL_ONLY USDT perpetual-futures waterfall detector. It normalizes exchange evidence, builds one canonical decision packet per symbol, separates lifecycle from entry timing, records outcomes/replay evidence, and exposes a decision-first read-only dashboard.
 
-> **Safety status:** `LIVE_TRADING_ENABLED=false` is the project invariant. The current system does not place orders. Rankings, execution suitability, historical outcomes, experimental pre-triggers, and dashboard labels are observational until their promotion gates are satisfied.
+> **Safety status:** `LIVE_TRADING_ENABLED=false` is the project invariant. WaterfallHunter does not place orders. Only canonical `ENTRY_READY` is an actionable signal state; research rankings, experimental features, historical evidence, replay, and diagnostics cannot create or veto a signal.
 
 ## Components
 
 - `backend/` — FastAPI evaluator, evidence recorder, lifecycle persistence, replay, outcome ledger, execution analysis, and API.
-- `frontend/` — Next.js monitoring dashboard.
+- `frontend/` — Next.js canonical Decision Terminal; research/validation panels are secondary and collapsed by default.
 - `watchdog/` — service-health watcher and optional notification bridge.
 - `deploy/` — Prometheus, Alertmanager, and Grafana configuration.
 - `scripts/` — backtesting and calibration tools.
 - `docs/` — evidence, replay, and operational-design documentation.
 - `research/` — curated research notes only; generated datasets and backtest outputs are intentionally excluded.
+
+## Canonical documentation
+
+- [Project handoff](docs/PROJECT_HANDOFF.md) — cold-start briefing for a new developer or AI session.
+- [Architecture](docs/ARCHITECTURE.md) — runtime topology and data flow.
+- [Model](docs/MODEL.md) — fixed market rules and evidence families.
+- [Decision engine](docs/DECISION_ENGINE.md) — canonical entry states and readiness semantics.
+- [Dashboard](docs/DASHBOARD.md) — Decision Terminal information architecture.
+- [Data and database](docs/DATA_AND_DATABASE.md) — SQLite ownership and schema lineage.
+- [Operations](docs/OPERATIONS.md) / [Deployment](docs/DEPLOYMENT.md) / [Backup & restore](docs/BACKUP_RESTORE.md).
+- [Telegram](docs/TELEGRAM.md) and [AI advisory](docs/AI_ADVISORY.md).
+- [Developer onboarding](docs/DEVELOPER_ONBOARDING.md) and [Troubleshooting](docs/TROUBLESHOOTING.md).
 
 ## Current operational boundaries
 
@@ -21,8 +33,8 @@ WaterfallHunter is a SIGNAL_ONLY observational monitoring and research system fo
 - Historical downloads and the natural live outcome ledger remain separate.
 - Execution suitability cannot replace the volume proxy until promotion criteria pass.
 - Lifecycle persistence and stale-trigger safety must be audited before any hard gate.
-- Any future trading integration would require a separate design, approval, implementation, and risk-control boundary; it is not part of this repository runtime.
-- AI output is advisory only. Gemini is the only configured AI advisory provider; if it is unavailable, deterministic logic continues without a local-model fallback.
+- Any future order-execution capability requires a separate design, approval, implementation, and risk-control boundary; it is outside this runtime.
+- AI output is advisory only and cannot veto or downgrade a canonical decision. Gemini is the only configured AI advisory provider; if it is unavailable, deterministic logic continues without a local-model fallback.
 
 ## Local development
 
@@ -40,9 +52,27 @@ The services bind to loopback by default:
 
 Never commit `.env`, runtime databases, evidence packets, logs, backups, or provider credentials.
 
+## Canonical signal semantics
+
+The decision path is `evidence -> cascade intelligence -> canonical entry decision -> durable transition/event -> dashboard/Telegram`. The public decision states are `NO_TRADE`, `FORMING`, `ENTRY_READY`, `ACTIVE`, `LATE`, `INVALIDATED`, `EXPIRED`, and `UNAVAILABLE`. `ENTRY_READY` is the only proactively actionable state; `ACTIVE` and lifecycle `TRIGGERED` never imply an entry by themselves.
+
 ## Validation
 
-Backend:
+For a release-candidate commit, run the isolated clean-install validator. It rejects a dirty worktree, exports the exact commit to a temporary directory, validates Compose, builds the exact production image family, runs the backend suite inside the built backend image, applies migrations to a throwaway SQLite database, and verifies OCI revision labels. It never starts Production services, mounts the Production database, or sends Telegram messages.
+
+```bash
+./scripts/validate_clean_install.sh
+```
+
+Stable developer commands:
+
+```bash
+make help
+make validate
+make clean-install-check   # release-candidate only; requires a clean committed SHA
+```
+
+Backend directly:
 
 ```bash
 python -m pip install --require-hashes -r backend/requirements.lock

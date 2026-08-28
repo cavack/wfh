@@ -14,6 +14,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
 
+from waterfallhunter.core.entry_decision_store import EntryDecisionStore
 from waterfallhunter.core.managed_sqlite import connect_managed_sqlite
 from waterfallhunter.core.schema_contract import require_managed_schema
 
@@ -24,6 +25,7 @@ logger = logging.getLogger("WaterfallHunter.NotificationDelivery")
 class DeliveryDisposition(str, Enum):
     DELIVERED = "DELIVERED"
     RATE_LIMITED = "RATE_LIMITED"
+    DELIVERY_UNCERTAIN = "DELIVERY_UNCERTAIN"
     TRANSIENT_FAILURE = "TRANSIENT_FAILURE"
     PERMANENT_FAILURE = "PERMANENT_FAILURE"
 
@@ -63,6 +65,16 @@ class NotificationDeliveryError(RuntimeError):
     """Raised when durable delivery state cannot be updated safely."""
 
 
+_ALLOWED_OUTBOX_TABLES = frozenset({"domain_outbox_events", "entry_notification_outbox"})
+
+
+def _outbox_table(value: str) -> str:
+    table = str(value or "").strip()
+    if table not in _ALLOWED_OUTBOX_TABLES:
+        raise ValueError("unsupported notification outbox table")
+    return table
+
+
 class DurableNotificationWorker:
     """At-least-once transport with leases and explicit uncertainty."""
 
@@ -77,7 +89,9 @@ class DurableNotificationWorker:
         base_backoff_seconds: int = 5,
         max_backoff_seconds: int = 900,
         transport_timeout_seconds: float | None = None,
+        advisory_wait_seconds: int = 0,
         jitter: Callable[[], float] = random.random,
+        outbox_table: str = "domain_outbox_events",
         verify_schema: bool = True,
     ):
         if not worker_id.strip() or len(worker_id) > 128:
@@ -87,6 +101,7 @@ class DurableNotificationWorker:
         if base_backoff_seconds < 1 or max_backoff_seconds < base_backoff_seconds:
             raise ValueError("invalid delivery backoff bounds")
         self.db_path = str(db_path)
+        self.outbox_table = _outbox_table(outbox_table)
         self.transport = transport
         self.worker_id = worker_id
         self.lease_seconds = lease_seconds
@@ -98,11 +113,18 @@ class DurableNotificationWorker:
         )
         if not math.isfinite(self.transport_timeout_seconds) or self.transport_timeout_seconds <= 0:
             raise ValueError("transport timeout must be positive and finite")
+        if (
+            isinstance(advisory_wait_seconds, bool)
+            or not isinstance(advisory_wait_seconds, int)
+            or advisory_wait_seconds < 0
+        ):
+            raise ValueError("advisory_wait_seconds must be a non-negative integer")
+        self.advisory_wait_seconds = advisory_wait_seconds
         self.jitter = jitter
         if verify_schema:
             require_managed_schema(
                 self.db_path,
-                required_tables=frozenset({"domain_outbox_events"}),
+                required_tables=frozenset({self.outbox_table}),
             )
 
     def recover_expired_leases(self, *, now: int) -> int:
@@ -110,8 +132,8 @@ class DurableNotificationWorker:
         try:
             with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
                 result = conn.execute(
-                    """
-                    UPDATE domain_outbox_events
+                    f"""
+                    UPDATE {self.outbox_table}
                     SET
                         status = 'DELIVERY_UNCERTAIN',
                         lease_owner = NULL,
@@ -129,34 +151,93 @@ class DurableNotificationWorker:
         except sqlite3.Error as exc:
             raise NotificationDeliveryError("DELIVERY_LEASE_RECOVERY_FAILED") from exc
 
+    def _ensure_expired_entry_advisory_grace(self, *, now: int) -> None:
+        if (
+            self.outbox_table != "entry_notification_outbox"
+            or self.advisory_wait_seconds <= 0
+        ):
+            return
+        timestamp = self._timestamp(now)
+        try:
+            with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
+                row = conn.execute(
+                    "SELECT outbox.decision_event_id "
+                    "FROM entry_notification_outbox outbox "
+                    "WHERE outbox.status IN ('PENDING','RETRY_WAIT') "
+                    "AND outbox.available_at <= ? "
+                    "AND outbox.created_at + ? <= ? "
+                    "AND NOT EXISTS ("
+                    "SELECT 1 FROM entry_decision_advisories advisory "
+                    "WHERE advisory.decision_event_id=outbox.decision_event_id"
+                    ") "
+                    "ORDER BY outbox.available_at,outbox.created_at,outbox.event_id "
+                    "LIMIT 1",
+                    (timestamp, self.advisory_wait_seconds, timestamp),
+                ).fetchone()
+            if row is None:
+                return
+            EntryDecisionStore(
+                self.db_path, verify_schema=False
+            ).ensure_unavailable_advisory(
+                int(row[0]),
+                advisory_at=timestamp,
+                reason="AI advisory grace elapsed; canonical delivery continued without AI.",
+            )
+        except (sqlite3.Error, ValueError) as exc:
+            logger.warning(
+                "Advisory grace fallback failed without blocking canonical delivery: %s",
+                type(exc).__name__,
+            )
+
     def claim_next(self, *, now: int) -> ClaimedEvent | None:
         timestamp = self._timestamp(now)
         try:
             with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
                 conn.row_factory = sqlite3.Row
                 conn.execute("BEGIN IMMEDIATE")
-                row = conn.execute(
+                advisory_clause = ""
+                query_parameters: list[Any] = [timestamp, timestamp]
+                if (
+                    self.outbox_table == "entry_notification_outbox"
+                    and self.advisory_wait_seconds > 0
+                ):
+                    advisory_clause = """
+                        AND (
+                            created_at + ? <= ?
+                            OR EXISTS (
+                                SELECT 1
+                                FROM entry_decision_advisories advisory
+                                WHERE advisory.decision_event_id =
+                                      entry_notification_outbox.decision_event_id
+                            )
+                        )
                     """
+                    query_parameters.extend(
+                        [self.advisory_wait_seconds, timestamp]
+                    )
+                row = conn.execute(
+                    f"""
                     SELECT
                         event_id, event_key, event_type,
                         payload_contract_version, payload_json, payload_hash,
                         attempt_count
-                    FROM domain_outbox_events
+                    FROM {self.outbox_table}
                     WHERE
                         status IN ('PENDING', 'RETRY_WAIT')
                         AND available_at <= ?
                         AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+                        {advisory_clause}
                     ORDER BY available_at, created_at, event_id
                     LIMIT 1
                     """,
-                    (timestamp, timestamp),
+                    tuple(query_parameters),
                 ).fetchone()
                 if row is None:
                     conn.commit()
                     return None
                 updated = conn.execute(
-                    """
-                    UPDATE domain_outbox_events
+                    f"""
+                    UPDATE {self.outbox_table}
                     SET
                         status = 'SENDING',
                         attempt_count = attempt_count + 1,
@@ -196,6 +277,10 @@ class DurableNotificationWorker:
     async def dispatch_once(self, *, now: int) -> DispatchOutcome | None:
         timestamp = self._timestamp(now)
         await asyncio.to_thread(self.recover_expired_leases, now=timestamp)
+        await asyncio.to_thread(
+            self._ensure_expired_entry_advisory_grace,
+            now=timestamp,
+        )
         event = await asyncio.to_thread(self.claim_next, now=timestamp)
         if event is None:
             return None
@@ -215,8 +300,8 @@ class DurableNotificationWorker:
             )
         except (asyncio.TimeoutError, TimeoutError):
             result = DeliveryResult(
-                DeliveryDisposition.TRANSIENT_FAILURE,
-                error_code="TRANSPORT_TIMEOUT",
+                DeliveryDisposition.DELIVERY_UNCERTAIN,
+                error_code="TRANSPORT_TIMEOUT_AFTER_SEND_MAY_HAVE_STARTED",
             )
         except Exception:
             logger.exception(
@@ -245,8 +330,8 @@ class DurableNotificationWorker:
         try:
             with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
                 updated = conn.execute(
-                    """
-                    UPDATE domain_outbox_events
+                    f"""
+                    UPDATE {self.outbox_table}
                     SET
                         status = ?,
                         available_at = ?,
@@ -292,6 +377,12 @@ class DurableNotificationWorker:
         error_code = self._safe_error_code(result.error_code)
         if result.disposition is DeliveryDisposition.DELIVERED:
             return "DELIVERED", None, None
+        if result.disposition is DeliveryDisposition.DELIVERY_UNCERTAIN:
+            return (
+                "DELIVERY_UNCERTAIN",
+                None,
+                error_code or "DELIVERY_OUTCOME_UNCERTAIN",
+            )
         if result.disposition is DeliveryDisposition.PERMANENT_FAILURE:
             return "DEAD_LETTER", None, error_code or "PERMANENT_FAILURE"
         if event.attempt_count >= self.max_attempts:
@@ -337,8 +428,10 @@ def notification_delivery_health(
     db_path: str | Path,
     *,
     now: int,
+    outbox_table: str = "domain_outbox_events",
 ) -> dict[str, Any]:
     timestamp = DurableNotificationWorker._timestamp(now)
+    table = _outbox_table(outbox_table)
     path = Path(db_path)
     if not path.is_file():
         raise NotificationDeliveryError("DELIVERY_HEALTH_DATABASE_UNAVAILABLE")
@@ -353,8 +446,8 @@ def notification_delivery_health(
             with conn:
                 conn.execute("PRAGMA query_only=ON")
                 rows = conn.execute(
-                    "SELECT status, COUNT(*), MIN(created_at) "
-                    "FROM domain_outbox_events GROUP BY status ORDER BY status"
+                    f"SELECT status, COUNT(*), MIN(created_at) FROM {table} "
+                    "GROUP BY status ORDER BY status"
                 ).fetchall()
     except sqlite3.Error as exc:
         raise NotificationDeliveryError("DELIVERY_HEALTH_QUERY_FAILED") from exc

@@ -414,6 +414,46 @@ class TelegramNotifier:
         )
         return "\n".join(lines)
 
+    @classmethod
+    def build_entry_ready_message(cls, payload: dict) -> str:
+        symbol = escape(str(payload.get("symbol") or "UNKNOWN").split("/")[0])
+        packet = payload.get("decision_packet") if isinstance(payload.get("decision_packet"), dict) else {}
+        plan = packet.get("trade_plan") if isinstance(packet.get("trade_plan"), dict) else {}
+        evidence = packet.get("evidence_summary") if isinstance(packet.get("evidence_summary"), dict) else {}
+        derivatives = evidence.get("derivatives") if isinstance(evidence.get("derivatives"), dict) else {}
+        flow = evidence.get("order_flow") if isinstance(evidence.get("order_flow"), dict) else {}
+        cascade = evidence.get("cascade") if isinstance(evidence.get("cascade"), dict) else {}
+        reasons = [escape(str(item)) for item in packet.get("reason_codes", [])][:6]
+        lines = [
+            "🌊 <b>WATERFALL SHORT — ENTRY READY</b>",
+            f"🪙 <b>#{symbol}</b> · readiness <b>{cls._number(packet.get('entry_readiness'), 1)}/100</b>",
+            f"🧭 Lifecycle: <b>{escape(str(packet.get('lifecycle_state') or 'UNKNOWN'))}</b>",
+            f"📦 Evidence coverage: <b>{cls._number(packet.get('evidence_coverage_pct'), 1)}%</b>",
+            "",
+            f"🎯 Entry: <b>${cls._number(plan.get('entry_price'), 8)}</b>",
+            f"🛑 SL: <b>${cls._number(plan.get('stop_loss'), 8)}</b>",
+            f"💰 TP1 / TP2 / TP3: <b>${cls._number(plan.get('take_profit_1'), 8)}</b> / <b>${cls._number(plan.get('take_profit_2'), 8)}</b> / <b>${cls._number(plan.get('take_profit_3'), 8)}</b>",
+            f"⚖️ Leverage: <b>{cls._number(plan.get('leverage'), 0)}×</b>",
+            "",
+            f"📉 OI 1h: <b>{cls._number(derivatives.get('oi_change_1h_pct'), 3)}%</b> · Funding: <b>{cls._number(derivatives.get('funding_rate_pct'), 4)}%</b>",
+            f"🔻 Taker B/S: <b>{cls._number(flow.get('taker_buy_sell_ratio'), 3)}</b> · Sell share: <b>{cls._number(flow.get('sell_share_pct'), 1)}%</b>",
+            f"💥 Cascade: <b>{escape(str(cascade.get('status') or 'UNAVAILABLE'))}</b> · {cls._number(cascade.get('readiness_points'), 1)}/10",
+        ]
+        advisory = payload.get("ai_advisory") if isinstance(payload.get("ai_advisory"), dict) else {}
+        if advisory.get("ai_status") == "AVAILABLE":
+            lines.append(
+                "🤖 AI: "
+                f"<b>{escape(str(advisory.get('ai_advice') or 'UNAVAILABLE'))}</b> · "
+                f"{cls._number(advisory.get('ai_confidence'), 0)}% · "
+                f"{escape(str(advisory.get('ai_provider') or 'none'))}"
+            )
+        else:
+            lines.append("🤖 AI: <b>UNAVAILABLE</b>")
+        if reasons:
+            lines.append("🧾 " + " · ".join(reasons))
+        lines.extend(["", "<i>Signal only. No live order is placed.</i>"])
+        return "\n".join(lines)
+
     async def start_interactive_bot(self):
         if not self.enabled:
             return
@@ -422,23 +462,18 @@ class TelegramNotifier:
         # every application lifespan so it is never bound to a previous loop.
         self.delivery_wakeup = asyncio.Event()
 
-        delivery_task = (
-            asyncio.create_task(self._delivery_loop())
-            if self.signal_delivery_enabled
-            else None
-        )
+        # Proactive signal delivery is owned exclusively by the canonical
+        # ENTRY_READY outbox worker in main.py.  Keep the legacy worker
+        # implementation for historical/replay compatibility, but never
+        # activate it from the interactive command bot.
+        delivery_task = None
 
         url = f"https://api.telegram.org/bot{self.token}/getUpdates"
         logger.info("📡 Interactive Telegram Command Center Online.")
-
-        if self.signal_delivery_enabled:
-            logger.info(
-                "Durable STRICT Telegram signal delivery enabled "
-                "from cutover_at=%s.",
-                self.signal_delivery_cutover_at,
-            )
-        else:
-            logger.info("Durable STRICT Telegram signal delivery disabled.")
+        logger.info(
+            "Legacy TRIGGERED Telegram delivery is disabled; "
+            "canonical ENTRY_READY delivery is managed by the runtime."
+        )
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -545,3 +580,285 @@ class TelegramNotifier:
 
         elif cmd == "/ping":
             await self.send_message("🏓 <b>Pong!</b> Connection is stable.")
+
+
+class TelegramSignalTransport:
+    """Durable Telegram transport with explicit HTTP outcome classification."""
+
+    def __init__(
+        self,
+        token: str,
+        chat_id: str,
+        *,
+        cutover_at: int | None = None,
+        decision_db_path: str | Path | None = None,
+        max_entry_age_seconds: int = 180,
+        http_transport=None,
+    ):
+        self.token = str(token or "").strip()
+        self.chat_id = str(chat_id or "").strip()
+        if not self.token or not self.chat_id:
+            raise ValueError("Telegram token and chat id are required")
+        self.cutover_at = (
+            cutover_at
+            if (
+                isinstance(cutover_at, int)
+                and not isinstance(cutover_at, bool)
+                and cutover_at > 0
+            )
+            else None
+        )
+        self.decision_db_path = (
+            str(Path(decision_db_path)) if decision_db_path is not None else None
+        )
+        if (
+            isinstance(max_entry_age_seconds, bool)
+            or not isinstance(max_entry_age_seconds, int)
+            or max_entry_age_seconds < 1
+        ):
+            raise ValueError("max_entry_age_seconds must be a positive integer")
+        self.max_entry_age_seconds = max_entry_age_seconds
+        self.http_transport = http_transport
+
+    def _current_entry_ready_is_deliverable(
+        self, payload: dict[str, Any], *, now: int
+    ) -> tuple[bool, str | None]:
+        packet = payload.get("decision_packet")
+        if not isinstance(packet, dict):
+            return False, "INVALID_DECISION_PACKET"
+        event_at = packet.get("evaluated_at")
+        if isinstance(event_at, bool) or not isinstance(event_at, int) or event_at < 0:
+            return False, "INVALID_EVENT_TIMESTAMP"
+        if event_at > now:
+            return False, "FUTURE_DATED_ENTRY_READY"
+        expires_at = (
+            packet.get("trade_plan", {}).get("expires_at")
+            if isinstance(packet.get("trade_plan"), dict)
+            else None
+        )
+        if (
+            isinstance(expires_at, int)
+            and not isinstance(expires_at, bool)
+            and expires_at >= 0
+            and now >= expires_at
+        ):
+            return False, "ENTRY_READY_EXPIRED"
+        if now - event_at > self.max_entry_age_seconds:
+            return False, "ENTRY_READY_STALE"
+        if self.decision_db_path is None:
+            return True, None
+        decision_event_id = payload.get("decision_event_id")
+        symbol = str(payload.get("symbol") or "").strip()
+        if (
+            isinstance(decision_event_id, bool)
+            or not isinstance(decision_event_id, int)
+            or decision_event_id <= 0
+            or not symbol
+        ):
+            return False, "INVALID_DECISION_IDENTITY"
+        try:
+            db_path = Path(self.decision_db_path).resolve()
+            with closing(
+                sqlite3.connect(
+                    f"{db_path.as_uri()}?mode=ro", uri=True, timeout=5.0
+                )
+            ) as conn:
+                row = conn.execute(
+                    "SELECT id, decision FROM entry_decision_events "
+                    "WHERE symbol=? ORDER BY id DESC LIMIT 1",
+                    (symbol,),
+                ).fetchone()
+        except (OSError, sqlite3.Error):
+            return False, "DECISION_STATE_UNAVAILABLE"
+        if row is None or int(row[0]) != decision_event_id or str(row[1]) != "ENTRY_READY":
+            return False, "ENTRY_READY_SUPERSEDED"
+        return True, None
+
+    def _load_advisory_for_decision(self, decision_event_id: int) -> dict[str, Any] | None:
+        if self.decision_db_path is None:
+            return None
+        try:
+            db_path = Path(self.decision_db_path).resolve()
+            with closing(
+                sqlite3.connect(
+                    f"{db_path.as_uri()}?mode=ro", uri=True, timeout=5.0
+                )
+            ) as conn:
+                row = conn.execute(
+                    "SELECT advisory_json, advisory_hash "
+                    "FROM entry_decision_advisories "
+                    "WHERE decision_event_id=? ORDER BY id DESC LIMIT 1",
+                    (decision_event_id,),
+                ).fetchone()
+        except (OSError, sqlite3.Error):
+            return None
+        if row is None:
+            return None
+        try:
+            advisory = json.loads(str(row[0]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(advisory, dict):
+            return None
+        if str(row[1] or "") != canonical_sha256(advisory):
+            return None
+        return advisory
+
+    async def deliver(self, event: dict) -> DeliveryResult:
+        try:
+            payload = json.loads(str(event.get("payload_json") or "{}"))
+        except json.JSONDecodeError:
+            return DeliveryResult(DeliveryDisposition.PERMANENT_FAILURE, "INVALID_PAYLOAD_JSON")
+        if payload.get("contract_version") != "entry_ready_notification_v1":
+            return DeliveryResult(DeliveryDisposition.PERMANENT_FAILURE, "UNSUPPORTED_PAYLOAD")
+        expected_hash = event.get("payload_hash")
+        if expected_hash is not None and str(expected_hash) != canonical_sha256(payload):
+            return DeliveryResult(
+                DeliveryDisposition.PERMANENT_FAILURE, "PAYLOAD_HASH_MISMATCH"
+            )
+
+        packet = payload.get("decision_packet")
+        event_at = packet.get("evaluated_at") if isinstance(packet, dict) else None
+        now = int(time.time())
+        deliverable, suppression_reason = await asyncio.to_thread(
+            self._current_entry_ready_is_deliverable, payload, now=now
+        )
+        if not deliverable:
+            if suppression_reason == "DECISION_STATE_UNAVAILABLE":
+                return DeliveryResult(
+                    DeliveryDisposition.TRANSIENT_FAILURE, suppression_reason
+                )
+            logger.info(
+                "Suppressing ENTRY_READY event %s: %s",
+                event.get("event_id"), suppression_reason,
+            )
+            return DeliveryResult(DeliveryDisposition.DELIVERED)
+        if self.cutover_at is not None and event_at < self.cutover_at:
+            logger.info(
+                "Suppressing pre-cutover ENTRY_READY event %s "
+                "(evaluated_at=%s cutover_at=%s)",
+                event.get("event_id"), event_at, self.cutover_at,
+            )
+            return DeliveryResult(DeliveryDisposition.DELIVERED)
+
+        decision_event_id = payload.get("decision_event_id")
+        advisory = (
+            await asyncio.to_thread(self._load_advisory_for_decision, decision_event_id)
+            if isinstance(decision_event_id, int)
+            and not isinstance(decision_event_id, bool)
+            and decision_event_id > 0
+            else None
+        )
+        payload["ai_advisory"] = advisory or {
+            "ai_status": "UNAVAILABLE",
+            "ai_provider": "none",
+            "ai_advice": "UNAVAILABLE",
+            "ai_confidence": 0,
+        }
+        text = TelegramNotifier.build_entry_ready_message(payload)
+        url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+        try:
+            async with httpx.AsyncClient(timeout=10.0, transport=self.http_transport) as client:
+                response = await client.post(url, json={"chat_id": self.chat_id, "text": text, "parse_mode": "HTML"})
+        except httpx.ConnectTimeout:
+            return DeliveryResult(
+                DeliveryDisposition.TRANSIENT_FAILURE,
+                "TELEGRAM_CONNECT_TIMEOUT",
+            )
+        except httpx.PoolTimeout:
+            return DeliveryResult(
+                DeliveryDisposition.TRANSIENT_FAILURE,
+                "TELEGRAM_POOL_TIMEOUT",
+            )
+        except (httpx.ReadTimeout, httpx.WriteTimeout, TimeoutError):
+            return DeliveryResult(
+                DeliveryDisposition.DELIVERY_UNCERTAIN,
+                "TELEGRAM_READ_TIMEOUT_AFTER_SEND_MAY_HAVE_STARTED",
+            )
+        except httpx.TimeoutException:
+            return DeliveryResult(
+                DeliveryDisposition.DELIVERY_UNCERTAIN,
+                "TELEGRAM_TIMEOUT_AFTER_SEND_MAY_HAVE_STARTED",
+            )
+        except httpx.HTTPError:
+            return DeliveryResult(DeliveryDisposition.TRANSIENT_FAILURE, "TELEGRAM_HTTP_ERROR")
+        if 200 <= response.status_code < 300:
+            try:
+                response_payload = response.json()
+            except (ValueError, json.JSONDecodeError):
+                response_payload = None
+            if isinstance(response_payload, dict) and response_payload.get("ok") is True:
+                return DeliveryResult(DeliveryDisposition.DELIVERED)
+            return DeliveryResult(
+                DeliveryDisposition.TRANSIENT_FAILURE,
+                "INVALID_TELEGRAM_RESPONSE",
+            )
+        if response.status_code == 429:
+            retry_after = None
+            try:
+                retry_after = int((response.json().get("parameters") or {}).get("retry_after"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                retry_after = None
+            return DeliveryResult(DeliveryDisposition.RATE_LIMITED, "HTTP_429", retry_after)
+        if response.status_code in {400, 401, 403, 404}:
+            return DeliveryResult(DeliveryDisposition.PERMANENT_FAILURE, f"HTTP_{response.status_code}")
+        return DeliveryResult(DeliveryDisposition.TRANSIENT_FAILURE, f"HTTP_{response.status_code}")
+
+    async def probe(self) -> dict:
+        bot_url = f"https://api.telegram.org/bot{self.token}/getMe"
+        chat_url = f"https://api.telegram.org/bot{self.token}/getChat"
+        try:
+            async with httpx.AsyncClient(timeout=10.0, transport=self.http_transport) as client:
+                bot_response = await client.get(bot_url)
+                try:
+                    bot_payload = bot_response.json()
+                except (ValueError, json.JSONDecodeError):
+                    bot_payload = None
+                bot_reachable = bool(
+                    bot_response.status_code == 200
+                    and isinstance(bot_payload, dict)
+                    and bot_payload.get("ok") is True
+                )
+                if not bot_reachable:
+                    return {
+                        "configured": True,
+                        "reachable": False,
+                        "bot_reachable": False,
+                        "chat_reachable": False,
+                        "status_code": bot_response.status_code,
+                        "bot_status_code": bot_response.status_code,
+                        "chat_status_code": None,
+                    }
+
+                chat_response = await client.get(
+                    chat_url,
+                    params={"chat_id": self.chat_id},
+                )
+                try:
+                    chat_payload = chat_response.json()
+                except (ValueError, json.JSONDecodeError):
+                    chat_payload = None
+                chat_reachable = bool(
+                    chat_response.status_code == 200
+                    and isinstance(chat_payload, dict)
+                    and chat_payload.get("ok") is True
+                )
+                return {
+                    "configured": True,
+                    "reachable": bool(bot_reachable and chat_reachable),
+                    "bot_reachable": bot_reachable,
+                    "chat_reachable": chat_reachable,
+                    "status_code": chat_response.status_code,
+                    "bot_status_code": bot_response.status_code,
+                    "chat_status_code": chat_response.status_code,
+                }
+        except httpx.HTTPError:
+            return {
+                "configured": True,
+                "reachable": False,
+                "bot_reachable": False,
+                "chat_reachable": False,
+                "status_code": None,
+                "bot_status_code": None,
+                "chat_status_code": None,
+            }

@@ -5,8 +5,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+from pathlib import Path
+
+WFH_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(WFH_REPOSITORY_ROOT))
+sys.path.insert(0, str(WFH_REPOSITORY_ROOT / "backend" / "src"))
 
 from scripts.certify_sqlite_backup import _canonical_absolute_path, _write_report_atomic
+from waterfallhunter.core.signal_metadata import canonical_sha256
 from waterfallhunter.core.migration_rehearsal import (
     MigrationRehearsalError,
     rehearse_migration_and_rollback,
@@ -29,6 +36,27 @@ def main() -> int:
         )
         if not isinstance(certification, dict):
             raise MigrationRehearsalError("BACKUP_CERTIFICATION_INVALID")
+        if certification.get("certificate_type") == "waterfallhunter_db_backup_v1":
+            claimed = str(certification.get("certificate_sha256", ""))
+            material = {key: value for key, value in certification.items() if key != "certificate_sha256"}
+            if claimed != canonical_sha256(material):
+                raise MigrationRehearsalError("CUTOVER_BACKUP_CERTIFICATION_HASH_MISMATCH")
+            if certification.get("status") != "PASS" or certification.get("source_revision") != args.source_revision:
+                raise MigrationRehearsalError("CUTOVER_BACKUP_CERTIFICATION_IDENTITY_MISMATCH")
+            if certification.get("device_separation_enforced") is not False or certification.get("source_volume_preserved_until_post_cutover") is not True:
+                raise MigrationRehearsalError("CUTOVER_BACKUP_SAFETY_CONTRACT_INVALID")
+            wrapped = certification.get("sqlite_backup_certification")
+            if not isinstance(wrapped, dict):
+                raise MigrationRehearsalError("CUTOVER_BACKUP_CORE_CERTIFICATION_MISSING")
+            backup_audit = wrapped.get("backup_audit")
+            if not isinstance(backup_audit, dict):
+                raise MigrationRehearsalError("CUTOVER_BACKUP_CORE_CERTIFICATION_MISMATCH")
+            if (
+                certification.get("backup_path") != wrapped.get("backup_path")
+                or certification.get("sha256") != backup_audit.get("file_sha256")
+            ):
+                raise MigrationRehearsalError("CUTOVER_BACKUP_CORE_CERTIFICATION_MISMATCH")
+            certification = wrapped
         report = rehearse_migration_and_rollback(
             backup_certification=certification,
             migration_target=args.migration_target,

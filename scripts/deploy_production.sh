@@ -2,13 +2,19 @@
 set -Eeuo pipefail
 
 WFH_DEPLOY_ROOT="${WFH_DEPLOY_ROOT:-/srv/waterfallhunter/app}"
+WFH_HOST_ROOT="${WFH_HOST_ROOT:-/srv/waterfallhunter}"
 WFH_DEPLOY_SHA="${WFH_DEPLOY_SHA:-}"
-ENV_FILE="${WFH_DEPLOY_ROOT}/.env"
-DEPLOY_STATE_DIR="${WFH_DEPLOY_ROOT}/.deploy"
-BACKUP_DIR="${DEPLOY_STATE_DIR}/backups"
-STATE_DIR="${DEPLOY_STATE_DIR}/state"
+ENV_FILE="${WFH_ENV_FILE:-/etc/waterfallhunter/waterfallhunter.env}"
+DEPLOY_STATE_DIR="${WFH_HOST_ROOT}/runtime"
+BACKUP_DIR="${WFH_HOST_ROOT}/backups"
+STATE_DIR="${DEPLOY_STATE_DIR}"
 LOCK_FILE="${WFH_DEPLOY_LOCK_FILE:-${STATE_DIR}/deploy.lock}"
 WFH_DEPLOY_BACKUP_RETENTION_COUNT="${WFH_DEPLOY_BACKUP_RETENTION_COUNT:-2}"
+WFH_TESTED_IMAGE_BUNDLE="${WFH_TESTED_IMAGE_BUNDLE:-}"
+WFH_TESTED_IMAGE_BUNDLE_SHA256="${WFH_TESTED_IMAGE_BUNDLE_SHA256:-}"
+WFH_TESTED_BACKEND_IMAGE_DIGEST="${WFH_TESTED_BACKEND_IMAGE_DIGEST:-}"
+WFH_TESTED_FRONTEND_IMAGE_DIGEST="${WFH_TESTED_FRONTEND_IMAGE_DIGEST:-}"
+WFH_TESTED_WATCHDOG_IMAGE_DIGEST="${WFH_TESTED_WATCHDOG_IMAGE_DIGEST:-}"
 PRODUCTION_COMPOSE_OVERRIDE="${STATE_DIR}/production-volumes.override.yml"
 DB_PATH="/app/data/waterfall_registry.db"
 DEPLOY_EPOCH="$(date -u +%s)"
@@ -22,6 +28,9 @@ MIGRATION_MAY_HAVE_MUTATED=0
 RUNTIME_REPLACED=0
 ROLLBACK_ACTIVE=0
 CLEANUP_ACTIVE=0
+HOST_INTEGRATION_BACKUP_DIR=""
+HOST_INTEGRATION_SNAPSHOTTED=0
+HOST_INTEGRATION_MUTATED=0
 
 log() {
   printf '[waterfallhunter-deploy] %s\n' "$*"
@@ -42,7 +51,8 @@ set_env_value() {
   local key="$1"
   local value="$2"
   local tmp
-  tmp="$(mktemp "${WFH_DEPLOY_ROOT}/.env.deploy.XXXXXX")"
+  install -d -m 0750 "$(dirname "$ENV_FILE")"
+  tmp="$(mktemp "$(dirname "$ENV_FILE")/.waterfallhunter.env.deploy.XXXXXX")"
   awk -v key="$key" 'index($0, key "=") != 1 { print }' "$ENV_FILE" > "$tmp"
   printf '%s=%s\n' "$key" "$value" >> "$tmp"
   chmod --reference="$ENV_FILE" "$tmp" 2>/dev/null || chmod 600 "$tmp"
@@ -56,23 +66,200 @@ assert_signal_only_runtime_boundary() {
 
 assert_clean_deploy_worktree() {
   local dirty
-  dirty="$(
-    git status --porcelain=v1 --untracked-files=all -- \
-      . ':(exclude).env' ':(exclude).deploy/**'
-  )"
+  dirty="$(git status --porcelain=v1 --untracked-files=all -- .)"
   [[ -z "$dirty" ]]
 }
 
 configure_production_compose_topology() {
-  local running_project
   [[ -f "$PRODUCTION_COMPOSE_OVERRIDE" ]] || return 0
 
   export COMPOSE_FILE="${WFH_DEPLOY_ROOT}/docker-compose.yml:${PRODUCTION_COMPOSE_OVERRIDE}"
-  if [[ -z "${COMPOSE_PROJECT_NAME:-}" ]]; then
-    running_project="$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' waterfall-backend 2>/dev/null || true)"
-    [[ -z "$running_project" ]] || export COMPOSE_PROJECT_NAME="$running_project"
-  fi
+  export COMPOSE_PROJECT_NAME="waterfallhunter"
   log "using host-owned Production Compose topology override: ${PRODUCTION_COMPOSE_OVERRIDE}"
+}
+
+verify_tested_image() {
+  local image_name="$1" expected_digest="$2" actual_digest actual_revision
+  actual_digest="$(docker image inspect "$image_name" --format '{{.Id}}' 2>/dev/null || true)"
+  [[ "$actual_digest" == "$expected_digest" ]] || return 1
+  actual_revision="$(docker image inspect "$image_name" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' 2>/dev/null || true)"
+  [[ "$actual_revision" == "$WFH_DEPLOY_SHA" ]]
+}
+
+cleanup_incoming_artifacts() {
+  local incoming="${STATE_DIR}/incoming" dir base
+  [[ -d "$incoming" ]] || return 0
+  if [[ -n "$WFH_TESTED_IMAGE_BUNDLE" && "$WFH_TESTED_IMAGE_BUNDLE" == "${incoming}/"* ]]; then
+    rm -f -- "$WFH_TESTED_IMAGE_BUNDLE"
+  fi
+  while IFS= read -r dir; do
+    base="$(basename "$dir")"
+    [[ "$base" =~ ^[0-9a-f]{40}$ ]] || continue
+    rm -f -- "$dir/wfh-tested-images.tar"
+    rmdir -- "$dir" 2>/dev/null || true
+  done < <(find "$incoming" -mindepth 1 -maxdepth 1 -type d -print)
+}
+
+load_tested_release_artifacts() {
+  local expected_bundle actual_bundle_sha
+  expected_bundle="${STATE_DIR}/incoming/${WFH_DEPLOY_SHA}/wfh-tested-images.tar"
+  [[ "$WFH_TESTED_IMAGE_BUNDLE" == "$expected_bundle" ]] || fail "tested image bundle path is not canonical"
+  [[ -f "$WFH_TESTED_IMAGE_BUNDLE" && ! -L "$WFH_TESTED_IMAGE_BUNDLE" ]] || fail "tested image bundle missing or symlinked"
+  [[ "$WFH_TESTED_IMAGE_BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]] || fail "tested image bundle SHA256 invalid"
+  for digest in "$WFH_TESTED_BACKEND_IMAGE_DIGEST" "$WFH_TESTED_FRONTEND_IMAGE_DIGEST" "$WFH_TESTED_WATCHDOG_IMAGE_DIGEST"; do
+    [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "tested image digest invalid"
+  done
+  actual_bundle_sha="$(sha256sum "$WFH_TESTED_IMAGE_BUNDLE" | awk '{print $1}')"
+  [[ "$actual_bundle_sha" == "$WFH_TESTED_IMAGE_BUNDLE_SHA256" ]] || fail "tested image bundle checksum mismatch"
+  docker load -i "$WFH_TESTED_IMAGE_BUNDLE" >/dev/null || fail "unable to load CI-tested image bundle"
+  verify_tested_image waterfallhunter-waterfall-backend "$WFH_TESTED_BACKEND_IMAGE_DIGEST" \
+    || fail "loaded backend image does not match CI-tested digest/revision"
+  verify_tested_image waterfallhunter-frontend "$WFH_TESTED_FRONTEND_IMAGE_DIGEST" \
+    || fail "loaded frontend image does not match CI-tested digest/revision"
+  verify_tested_image waterfallhunter-watchdog "$WFH_TESTED_WATCHDOG_IMAGE_DIGEST" \
+    || fail "loaded watchdog image does not match CI-tested digest/revision"
+  log "loaded exact CI-tested release images for ${WFH_DEPLOY_SHA}"
+}
+
+snapshot_host_integration_state() {
+  local unit target state manifest
+  [[ "$HOST_INTEGRATION_SNAPSHOTTED" -eq 0 ]] || return 0
+  HOST_INTEGRATION_BACKUP_DIR="${STATE_DIR}/host-integration.${PREVIOUS_SHA:-unknown}.${DEPLOY_EPOCH}"
+  install -d -m 0700 \
+    "$HOST_INTEGRATION_BACKUP_DIR/systemd" \
+    "$HOST_INTEGRATION_BACKUP_DIR/nginx"
+  manifest="$HOST_INTEGRATION_BACKUP_DIR/manifest"
+  : > "$manifest"
+  : > "$HOST_INTEGRATION_BACKUP_DIR/systemd-enabled"
+  : > "$HOST_INTEGRATION_BACKUP_DIR/systemd-active"
+
+  for unit in \
+    waterfallhunter.service \
+    waterfallhunter-healthcheck.service \
+    waterfallhunter-healthcheck.timer; do
+    target="/etc/systemd/system/${unit}"
+    if [[ -e "$target" || -L "$target" ]]; then
+      cp -a -- "$target" "$HOST_INTEGRATION_BACKUP_DIR/systemd/${unit}"
+      printf 'systemd:%s=present\n' "$unit" >> "$manifest"
+    else
+      printf 'systemd:%s=absent\n' "$unit" >> "$manifest"
+    fi
+    state="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
+    printf '%s=%s\n' "$unit" "${state:-unknown}" \
+      >> "$HOST_INTEGRATION_BACKUP_DIR/systemd-enabled"
+    state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+    printf '%s=%s\n' "$unit" "${state:-unknown}" \
+      >> "$HOST_INTEGRATION_BACKUP_DIR/systemd-active"
+  done
+
+  for target in \
+    /etc/nginx/sites-available/waterfallhunter.conf \
+    /etc/nginx/sites-enabled/waterfallhunter.conf; do
+    if [[ -e "$target" || -L "$target" ]]; then
+      cp -a -- "$target" "$HOST_INTEGRATION_BACKUP_DIR/nginx/$(basename "$(dirname "$target")")"
+      printf 'nginx:%s=present\n' "$target" >> "$manifest"
+    else
+      printf 'nginx:%s=absent\n' "$target" >> "$manifest"
+    fi
+  done
+  HOST_INTEGRATION_SNAPSHOTTED=1
+}
+
+restore_host_integration_state() {
+  local unit target presence state status=0 manifest
+  [[ "$HOST_INTEGRATION_SNAPSHOTTED" -eq 1 ]] || return 0
+  manifest="$HOST_INTEGRATION_BACKUP_DIR/manifest"
+  systemctl stop waterfallhunter-healthcheck.timer waterfallhunter.service >/dev/null 2>&1 || true
+
+  for unit in \
+    waterfallhunter.service \
+    waterfallhunter-healthcheck.service \
+    waterfallhunter-healthcheck.timer; do
+    target="/etc/systemd/system/${unit}"
+    presence="$(awk -F= -v key="systemd:${unit}" '$1 == key { print $2 }' "$manifest")"
+    rm -f -- "$target" || status=1
+    if [[ "$presence" == "present" ]]; then
+      cp -a -- "$HOST_INTEGRATION_BACKUP_DIR/systemd/${unit}" "$target" || status=1
+    fi
+  done
+  systemctl daemon-reload || status=1
+  for unit in waterfallhunter.service waterfallhunter-healthcheck.timer; do
+    state="$(awk -F= -v key="$unit" '$1 == key { print $2 }' "$HOST_INTEGRATION_BACKUP_DIR/systemd-enabled")"
+    case "$state" in
+      enabled|enabled-runtime)
+        systemctl enable "$unit" >/dev/null 2>&1 || status=1
+        ;;
+      *)
+        systemctl disable "$unit" >/dev/null 2>&1 || true
+        ;;
+    esac
+  done
+
+  for unit in waterfallhunter.service waterfallhunter-healthcheck.timer; do
+    state="$(awk -F= -v key="$unit" '$1 == key { print $2 }' "$HOST_INTEGRATION_BACKUP_DIR/systemd-active")"
+    case "$state" in
+      active|activating)
+        systemctl start "$unit" >/dev/null 2>&1 || status=1
+        ;;
+    esac
+  done
+
+  for target in \
+    /etc/nginx/sites-available/waterfallhunter.conf \
+    /etc/nginx/sites-enabled/waterfallhunter.conf; do
+    presence="$(awk -F= -v key="nginx:${target}" '$1 == key { print $2 }' "$manifest")"
+    rm -f -- "$target" || status=1
+    if [[ "$presence" == "present" ]]; then
+      cp -a -- "$HOST_INTEGRATION_BACKUP_DIR/nginx/$(basename "$(dirname "$target")")" "$target" || status=1
+    fi
+  done
+  if command -v nginx >/dev/null 2>&1; then
+    nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || status=1
+  fi
+  HOST_INTEGRATION_MUTATED=0
+  return "$status"
+}
+
+install_systemd_units() {
+  local source_dir="${WFH_DEPLOY_ROOT}/deploy/systemd"
+  [[ "$HOST_INTEGRATION_SNAPSHOTTED" -eq 1 ]] || fail "host integration snapshot missing before systemd install"
+  [[ -f "$source_dir/waterfallhunter.service" ]] || fail "canonical systemd service missing"
+  [[ -f "$source_dir/waterfallhunter-healthcheck.service" ]] || fail "canonical healthcheck service missing"
+  [[ -f "$source_dir/waterfallhunter-healthcheck.timer" ]] || fail "canonical healthcheck timer missing"
+  HOST_INTEGRATION_MUTATED=1
+  install -m 0644 "$source_dir/waterfallhunter.service" /etc/systemd/system/waterfallhunter.service
+  install -m 0644 "$source_dir/waterfallhunter-healthcheck.service" /etc/systemd/system/waterfallhunter-healthcheck.service
+  install -m 0644 "$source_dir/waterfallhunter-healthcheck.timer" /etc/systemd/system/waterfallhunter-healthcheck.timer
+  systemctl daemon-reload
+  systemctl enable waterfallhunter.service waterfallhunter-healthcheck.timer >/dev/null
+}
+
+activate_systemd_units() {
+  systemctl start waterfallhunter.service
+  systemctl start waterfallhunter-healthcheck.timer
+  systemctl is-active --quiet waterfallhunter.service
+  systemctl is-active --quiet waterfallhunter-healthcheck.timer
+}
+
+install_nginx_site() {
+  local source="${WFH_DEPLOY_ROOT}/deploy/nginx/waterfallhunter.conf"
+  local available="/etc/nginx/sites-available/waterfallhunter.conf"
+  local enabled="/etc/nginx/sites-enabled/waterfallhunter.conf"
+  [[ "$HOST_INTEGRATION_SNAPSHOTTED" -eq 1 ]] || fail "host integration snapshot missing before Nginx install"
+  [[ -f "$source" ]] || fail "canonical Nginx site missing: deploy/nginx/waterfallhunter.conf"
+  [[ -d /etc/nginx/sites-available && -d /etc/nginx/sites-enabled ]] \
+    || fail "canonical Nginx site directories are unavailable"
+  HOST_INTEGRATION_MUTATED=1
+  install -m 0644 "$source" "$available"
+  ln -sfn "$available" "$enabled"
+  nginx -t >/dev/null
+  systemctl reload nginx
+}
+
+verify_public_edge() {
+  local public_url="${WFH_PUBLIC_EDGE_URL:-http://waterfall.booksreadlive.online/}"
+  curl --fail --silent --show-error --location --max-time 15 \
+    --output /dev/null "$public_url"
 }
 
 remove_fixed_name_core_containers() {
@@ -200,6 +387,51 @@ print(h.hexdigest())' \
   log "database backup certified: ${DB_BACKUP} sha256=${DB_BACKUP_SHA256}"
 }
 
+restore_database_backup() {
+  local backup_name actual_sha
+  [[ -n "$DB_BACKUP" && -f "$DB_BACKUP" ]] || return 1
+  [[ "$DB_BACKUP" == "${BACKUP_DIR}/"* ]] || return 1
+  [[ "$DB_BACKUP_SHA256" =~ ^[0-9a-f]{64}$ ]] || return 1
+  actual_sha="$(sha256sum "$DB_BACKUP" | awk '{print $1}')" || return 1
+  [[ "$actual_sha" == "$DB_BACKUP_SHA256" ]] || return 1
+
+  docker compose stop waterfall-backend frontend watchdog >/dev/null 2>&1 || true
+  backup_name="$(basename "$DB_BACKUP")"
+  docker compose run --rm --no-deps --interactive=false -T --user 0:0 \
+    -v "${BACKUP_DIR}:/backup:ro" \
+    waterfall-backend \
+    /opt/venv/bin/python -c \
+    'import hashlib, os, pathlib, shutil, sqlite3, sys
+src = pathlib.Path("/backup") / sys.argv[1]
+expected = sys.argv[2]
+dst = pathlib.Path("/app/data/waterfall_registry.db")
+if not src.is_file(): raise SystemExit("rollback backup missing")
+h = hashlib.sha256()
+with src.open("rb") as fh:
+    for chunk in iter(lambda: fh.read(1024 * 1024), b""): h.update(chunk)
+if h.hexdigest() != expected: raise SystemExit("rollback backup checksum mismatch")
+with sqlite3.connect(f"file:{src}?mode=ro", uri=True) as check:
+    row = check.execute("PRAGMA integrity_check").fetchone()
+    if not row or str(row[0]).lower() != "ok": raise SystemExit("rollback backup integrity failure")
+owner = dst.stat() if dst.exists() else dst.parent.stat()
+tmp = dst.with_name(f".{dst.name}.rollback-{os.getpid()}")
+try:
+    tmp.unlink(missing_ok=True)
+    shutil.copyfile(src, tmp)
+    os.chown(tmp, owner.st_uid, owner.st_gid)
+    os.chmod(tmp, (owner.st_mode & 0o777) if dst.exists() else 0o600)
+    pathlib.Path(str(dst) + "-wal").unlink(missing_ok=True)
+    pathlib.Path(str(dst) + "-shm").unlink(missing_ok=True)
+    os.replace(tmp, dst)
+finally:
+    tmp.unlink(missing_ok=True)
+with sqlite3.connect(dst) as check:
+    row = check.execute("PRAGMA integrity_check").fetchone()
+    if not row or str(row[0]).lower() != "ok": raise SystemExit("restored database integrity failure")' \
+    "$backup_name" "$DB_BACKUP_SHA256" || return 1
+  log "database restored from certified pre-migration backup: ${DB_BACKUP}"
+}
+
 prune_database_backups() {
   local keep="$WFH_DEPLOY_BACKUP_RETENTION_COUNT"
   local line path index=0
@@ -253,8 +485,14 @@ rollback_previous_revision() {
   [[ -n "$PREVIOUS_SHA" ]] || return 1
 
   if [[ "$MIGRATION_MAY_HAVE_MUTATED" -eq 1 ]]; then
+    if ! restore_database_backup; then
+      log "rollback stopped: certified pre-migration database restore failed"
+      docker compose stop waterfall-backend frontend watchdog >/dev/null 2>&1 || true
+      git checkout --detach "$WFH_DEPLOY_SHA" >/dev/null 2>&1 || true
+      return 1
+    fi
     if ! previous_revision_accepts_current_schema; then
-      log "rollback stopped: previous revision is not certified against the current schema"
+      log "rollback stopped: previous revision is not certified against the restored schema"
       docker compose stop waterfall-backend frontend watchdog >/dev/null 2>&1 || true
       git checkout --detach "$WFH_DEPLOY_SHA" >/dev/null 2>&1 || true
       return 1
@@ -291,6 +529,12 @@ terminate_with_cleanup() {
     restore_previous_workspace \
       || log "pre-mutation workspace restoration could not be certified"
   fi
+  if [[ "$HOST_INTEGRATION_MUTATED" -eq 1 ]]; then
+    restore_host_integration_state \
+      || log "host integration restoration could not be certified"
+  fi
+  cleanup_incoming_artifacts \
+    || log "incoming artifact cleanup failed during failure handling"
   prune_database_backups \
     || log "database backup retention cleanup failed during failure handling"
   exit "$status"
@@ -325,14 +569,25 @@ require_command flock
 require_command awk
 require_command find
 require_command sort
+require_command sha256sum
+require_command install
+require_command systemctl
+require_command nginx
+require_command curl
 
 [[ "$WFH_DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "WFH_DEPLOY_SHA must be an exact 40-character Git SHA"
+[[ "$WFH_TESTED_IMAGE_BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]] || fail "WFH_TESTED_IMAGE_BUNDLE_SHA256 must be a SHA256"
+[[ "$WFH_TESTED_BACKEND_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "WFH_TESTED_BACKEND_IMAGE_DIGEST invalid"
+[[ "$WFH_TESTED_FRONTEND_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "WFH_TESTED_FRONTEND_IMAGE_DIGEST invalid"
+[[ "$WFH_TESTED_WATCHDOG_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "WFH_TESTED_WATCHDOG_IMAGE_DIGEST invalid"
 [[ -d "$WFH_DEPLOY_ROOT/.git" ]] || fail "deployment root is not a Git checkout: $WFH_DEPLOY_ROOT"
 [[ -f "$ENV_FILE" ]] || fail "Production .env is missing"
 [[ "$WFH_DEPLOY_BACKUP_RETENTION_COUNT" =~ ^[1-9][0-9]*$ ]] || fail "WFH_DEPLOY_BACKUP_RETENTION_COUNT must be a positive integer"
 
 cd "$WFH_DEPLOY_ROOT"
-install -d -m 0750 "$STATE_DIR"
+export WFH_ENV_FILE="$ENV_FILE"
+export COMPOSE_PROJECT_NAME="waterfallhunter"
+install -d -m 0750 "$STATE_DIR" "$BACKUP_DIR"
 exec 9>"$LOCK_FILE"
 flock -n 9 || fail "another WaterfallHunter deployment is already running"
 configure_production_compose_topology
@@ -354,11 +609,7 @@ git checkout --detach "$WFH_DEPLOY_SHA"
 docker compose config --quiet
 assert_signal_only_runtime_boundary
 
-docker compose build \
-  --build-arg VCS_REF="$WFH_DEPLOY_SHA" \
-  --build-arg BUILD_DATE="$BUILD_DATE" \
-  --build-arg VERSION="$WFH_DEPLOY_SHA" \
-  waterfall-backend frontend watchdog
+load_tested_release_artifacts
 
 backup_database
 
@@ -378,7 +629,7 @@ activate_telegram_for_release
 
 RUNTIME_REPLACED=1
 remove_fixed_name_core_containers
-docker compose up -d --remove-orphans
+docker compose up -d --remove-orphans --no-build
 
 wait_for_backend_endpoint /livez 20 3 || fail "backend /livez did not become healthy"
 wait_for_backend_endpoint /readyz 30 4 || fail "backend /readyz did not become ready"
@@ -387,6 +638,13 @@ wait_for_container_healthy waterfall-frontend 30 3 || fail "frontend container d
 wait_for_container_healthy waterfall-watchdog 30 3 || fail "watchdog container did not become healthy"
 verify_running_revision "$WFH_DEPLOY_SHA" || fail "running OCI org.opencontainers.image.revision does not match target SHA"
 verify_running_signal_only || fail "running backend violated the SIGNAL_ONLY live-trading boundary"
+
+snapshot_host_integration_state
+install_systemd_units
+install_nginx_site
+verify_public_edge || fail "public WaterfallHunter edge did not become reachable"
+activate_systemd_units || fail "canonical systemd service/timer did not become active"
+cleanup_incoming_artifacts || fail "incoming tested-image bundle cleanup failed"
 
 prune_database_backups || fail "database backup retention cleanup failed"
 
@@ -397,6 +655,10 @@ previous_revision=${PREVIOUS_SHA}
 deployed_at=${DEPLOY_EPOCH}
 backup=${DB_BACKUP}
 backup_sha256=${DB_BACKUP_SHA256}
+tested_backend_image_digest=${WFH_TESTED_BACKEND_IMAGE_DIGEST}
+tested_frontend_image_digest=${WFH_TESTED_FRONTEND_IMAGE_DIGEST}
+tested_watchdog_image_digest=${WFH_TESTED_WATCHDOG_IMAGE_DIGEST}
+tested_image_bundle_sha256=${WFH_TESTED_IMAGE_BUNDLE_SHA256}
 telegram_cutover_at=${TELEGRAM_CUTOVER_EPOCH}
 live_trading_enabled=false
 product_mode=SIGNAL_ONLY
@@ -405,6 +667,10 @@ EOF
 if [[ -n "$ENV_BACKUP" ]]; then
   rm -f -- "$ENV_BACKUP"
   ENV_BACKUP=""
+fi
+if [[ -n "$HOST_INTEGRATION_BACKUP_DIR" && -d "$HOST_INTEGRATION_BACKUP_DIR" ]]; then
+  rm -rf -- "$HOST_INTEGRATION_BACKUP_DIR"
+  HOST_INTEGRATION_BACKUP_DIR=""
 fi
 
 trap - ERR TERM HUP INT

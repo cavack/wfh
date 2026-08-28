@@ -435,3 +435,10 @@ def test_negative_funding_rate_is_a_short_cost() -> None:
 
     assert plan["status"] == "READY"
     assert plan["expected_funding_cost"] > 0
+
+
+def test_ready_execution_plan_exposes_authoritative_constraints_expiry() -> None:
+    constraints = _constraints(expires_at=250)
+    plan = _plan(constraints=constraints, expected_constraints_hash=constraints.constraints_hash)
+    assert plan["status"] == "READY"
+    assert plan["expires_at"] == 250

@@ -84,6 +84,23 @@ def test_trigger_persistence_does_not_wait_for_gemini_advisory(monkeypatch) -> N
         "send_signal_alert",
         AsyncMock(),
     )
+    # This test isolates non-blocking AI behavior; catalogue lifecycle CAS is
+    # covered independently by EntryDecisionStore regression tests.
+    monkeypatch.setattr(
+        main.entry_decision_store,
+        "latest_for_symbol",
+        lambda _symbol: None,
+    )
+    monkeypatch.setattr(
+        main.entry_decision_store,
+        "append_if_changed",
+        lambda *_args, **_kwargs: 9001,
+    )
+    monkeypatch.setattr(
+        main.entry_decision_store,
+        "append_advisory",
+        lambda *_args, **_kwargs: 9002,
+    )
 
     async def scenario() -> None:
         provider_started = asyncio.Event()
