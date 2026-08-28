@@ -74,7 +74,7 @@ configure_production_compose_topology() {
   [[ -f "$PRODUCTION_COMPOSE_OVERRIDE" ]] || return 0
 
   export COMPOSE_FILE="${WFH_DEPLOY_ROOT}/docker-compose.yml:${PRODUCTION_COMPOSE_OVERRIDE}"
-  export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-waterfallhunter}"
+  export COMPOSE_PROJECT_NAME="waterfallhunter"
   log "using host-owned Production Compose topology override: ${PRODUCTION_COMPOSE_OVERRIDE}"
 }
 
@@ -586,7 +586,7 @@ require_command curl
 
 cd "$WFH_DEPLOY_ROOT"
 export WFH_ENV_FILE="$ENV_FILE"
-export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-waterfallhunter}"
+export COMPOSE_PROJECT_NAME="waterfallhunter"
 install -d -m 0750 "$STATE_DIR" "$BACKUP_DIR"
 exec 9>"$LOCK_FILE"
 flock -n 9 || fail "another WaterfallHunter deployment is already running"

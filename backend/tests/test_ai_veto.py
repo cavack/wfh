@@ -1,5 +1,7 @@
 import asyncio
-from pathlib import Path
+import time
+
+import pytest
 
 from waterfallhunter import main
 from waterfallhunter.core.ai_veto import AIVetoEngine
@@ -79,11 +81,40 @@ def test_deterministic_entry_gate_runs_for_armed_candidate(monkeypatch):
     assert metrics["ai_advisory"]["deterministic_veto"] is True
 
 
-def test_runtime_applies_deterministic_gate_before_canonical_decision() -> None:
-    source = Path(main.__file__).read_text(encoding="utf-8")
-    body = source.split("async def evaluate_candidate(", maxsplit=1)[1].split(
-        "episode_id =", maxsplit=1
-    )[0]
-    assert body.index("_apply_deterministic_entry_gate(") < body.index(
-        "entry_decision = build_entry_decision("
-    )
+def test_runtime_applies_deterministic_gate_before_canonical_decision(monkeypatch) -> None:
+    symbol = "ORDER/USDT:USDT"
+    calls: list[str] = []
+    monkeypatch.setattr(main.scanner, "active_candidates", {symbol: {}})
+    monkeypatch.setattr(main.scanner, "get_live_reference", lambda _symbol: (0.01, time.time()))
+    monkeypatch.setattr(main.execution_decision_logger, "observe_evaluation", lambda *args, **kwargs: None)
+
+    async def cross_check_symbol(*args, **kwargs):
+        return {
+            "is_valid": True, "score": 80.0, "suggested_status": "ARMED",
+            "metrics": {"exchange": "binance", "mapped_symbol": symbol},
+        }
+
+    monkeypatch.setattr(main.validator, "cross_check_symbol", cross_check_symbol)
+    monkeypatch.setattr(main, "get_leverage", lambda _symbol: 1)
+    monkeypatch.setattr(main.entry_decision_store, "latest_for_symbol", lambda _symbol: None)
+
+    def gate(_symbol, state, _metrics):
+        calls.append("gate")
+        return state, False
+
+    def build(*args, **kwargs):
+        calls.append("decision")
+        return {"decision": "FORMING"}
+
+    def stop_append(*args, **kwargs):
+        raise RuntimeError("stop-after-canonical-append")
+
+    monkeypatch.setattr(main, "_apply_deterministic_entry_gate", gate)
+    monkeypatch.setattr(main, "build_entry_decision", build)
+    monkeypatch.setattr(main.entry_decision_store, "append_if_changed", stop_append)
+    with pytest.raises(RuntimeError, match="stop-after-canonical-append"):
+        asyncio.run(main.evaluate_candidate(symbol, {
+            "status": "ARMED", "lifecycle_id": 7, "scan_eligible": True,
+            "quote_volume": 3_000_000.0, "last_price": 0.01,
+        }))
+    assert calls == ["gate", "decision"]

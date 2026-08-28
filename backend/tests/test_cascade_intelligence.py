@@ -111,3 +111,18 @@ def test_full_coverage_without_support_is_fail_not_pass() -> None:
     assert packet["maximum_available"] == 10.0
     assert packet["readiness_pct"] < 65.0
     assert packet["status"] == "FAIL"
+
+
+def test_liquidation_observation_within_shared_sixty_second_window_is_fresh() -> None:
+    metrics = base_metrics()
+    metrics["liquidation_flow"] = {
+        "available": True,
+        "observed_at": 1_788_000_000,
+        "long_liquidation_notional_1m": 420_000.0,
+        "short_liquidation_notional_1m": 40_000.0,
+        "liquidation_velocity_usd_per_min": 420_000.0,
+        "burst_ratio": 3.2,
+    }
+    packet = build_cascade_evidence(metrics, evaluated_at=1_788_000_055)
+    assert packet["components"]["liquidations"]["available"] is True
+    assert packet["maximum_available"] == 10.0

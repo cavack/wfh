@@ -20,6 +20,7 @@ FAILURES_BEFORE_RECOVERY = 3
 RECOVERY_COOLDOWN_SECONDS = 600
 MAX_RECOVERIES_PER_HOUR = 3
 DOCKER_BIN = "/usr/bin/docker"
+GIT_BIN = "/usr/bin/git"
 CANONICAL_PROJECT_DIR = Path("/srv/waterfallhunter/app")
 CANONICAL_ENV_FILE = Path("/etc/waterfallhunter/waterfallhunter.env")
 CANONICAL_STATE_FILE = Path("/srv/waterfallhunter/runtime/healthcheck-state.json")
@@ -202,7 +203,7 @@ def _running_revision() -> str | None:
 
 def _checkout_revision(project_dir: Path) -> str | None:
     result = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
+        [GIT_BIN, "rev-parse", "HEAD"],
         cwd=project_dir, text=True, capture_output=True, check=False,
     )
     revision = result.stdout.strip()

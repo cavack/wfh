@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -213,6 +213,9 @@ function CandidateTable({ candidates }: Readonly<{ candidates: Record<string, Ca
   }, [candidates, query, decisionFilter]);
   const pages = Math.max(1, Math.ceil(rows.length / pageSize));
   const safePage = Math.min(page, pages - 1);
+  useEffect(() => {
+    setPage((current) => Math.min(current, pages - 1));
+  }, [pages]);
   const visible = rows.slice(safePage * pageSize, safePage * pageSize + pageSize);
   return (
     <section id="all-candidates" className="panel mt-6 overflow-hidden">

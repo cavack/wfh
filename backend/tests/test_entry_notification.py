@@ -4,6 +4,7 @@ import asyncio
 import json
 import sqlite3
 import time
+import threading
 
 import httpx
 
@@ -521,3 +522,62 @@ def test_telegram_read_timeout_is_delivery_uncertain_but_connect_timeout_is_retr
     assert read.error_code == "TELEGRAM_READ_TIMEOUT_AFTER_SEND_MAY_HAVE_STARTED"
     assert connect.disposition is DeliveryDisposition.TRANSIENT_FAILURE
     assert connect.error_code == "TELEGRAM_CONNECT_TIMEOUT"
+
+
+def test_telegram_transport_runs_decision_store_reads_off_event_loop(monkeypatch) -> None:
+    main_thread = threading.get_ident()
+    worker_threads: list[int] = []
+    payload = {
+        "contract_version": "entry_ready_notification_v1",
+        "symbol": "SXT/USDT:USDT",
+        "decision_event_id": 1,
+        "decision_packet": entry_packet(),
+    }
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    transport = TelegramSignalTransport(
+        "token", "123", http_transport=httpx.MockTransport(handler),
+        max_entry_age_seconds=10_000_000_000,
+    )
+
+    def deliverable(_payload, *, now):
+        worker_threads.append(threading.get_ident())
+        return True, None
+
+    def advisory(_event_id):
+        worker_threads.append(threading.get_ident())
+        return None
+
+    monkeypatch.setattr(transport, "_current_entry_ready_is_deliverable", deliverable)
+    monkeypatch.setattr(transport, "_load_advisory_for_decision", advisory)
+    result = asyncio.run(transport.deliver({
+        "event_id": "entry:1:ready",
+        "payload_json": json.dumps(payload),
+    }))
+    assert result.disposition is DeliveryDisposition.DELIVERED
+    assert len(worker_threads) == 2
+    assert all(thread_id != main_thread for thread_id in worker_threads)
+
+
+def test_advisory_grace_failure_does_not_block_entry_delivery(tmp_path, monkeypatch) -> None:
+    db_path = migrate_test_database(tmp_path / "advisory-grace-nonblocking.db")
+    EntryDecisionStore(db_path).append_if_changed("SXT/USDT:USDT", entry_packet())
+    with sqlite3.connect(db_path) as conn:
+        created_at = conn.execute(
+            "SELECT created_at FROM entry_notification_outbox"
+        ).fetchone()[0]
+
+    def fail_advisory(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(EntryDecisionStore, "ensure_unavailable_advisory", fail_advisory)
+    transport = FakeTransport()
+    worker = DurableNotificationWorker(
+        db_path, transport, worker_id="entry-advisory-nonblocking",
+        outbox_table="entry_notification_outbox", advisory_wait_seconds=10,
+    )
+    outcome = asyncio.run(worker.dispatch_once(now=created_at + 10))
+    assert outcome is not None and outcome.state == "DELIVERED"
+    assert len(transport.calls) == 1

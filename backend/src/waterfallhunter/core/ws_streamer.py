@@ -2,6 +2,8 @@ import asyncio
 import logging
 import math
 import time
+
+from waterfallhunter.core.liquidation_flow import LIQUIDATION_FLOW_FRESHNESS_SECONDS
 import random
 from typing import Dict, Any, Optional
 
@@ -51,7 +53,7 @@ class WebSocketManager:
         self.live_tickers: Dict[str, Dict[str, Any]] = {}
         self.live_trades: Dict[str, Dict[str, Any]] = {}
         self.live_liquidations: Dict[str, Dict[str, Any]] = {}
-        self.liquidation_window_seconds = 60.0
+        self.liquidation_window_seconds = LIQUIDATION_FLOW_FRESHNESS_SECONDS
         self.liquidation_retention_seconds = 120.0
         self.active_tasks: Dict[str, asyncio.Task] = {}
         self.circuit_breakers: Dict[str, CircuitBreaker] = {}

@@ -720,8 +720,8 @@ class TelegramSignalTransport:
         packet = payload.get("decision_packet")
         event_at = packet.get("evaluated_at") if isinstance(packet, dict) else None
         now = int(time.time())
-        deliverable, suppression_reason = self._current_entry_ready_is_deliverable(
-            payload, now=now
+        deliverable, suppression_reason = await asyncio.to_thread(
+            self._current_entry_ready_is_deliverable, payload, now=now
         )
         if not deliverable:
             if suppression_reason == "DECISION_STATE_UNAVAILABLE":
@@ -743,7 +743,7 @@ class TelegramSignalTransport:
 
         decision_event_id = payload.get("decision_event_id")
         advisory = (
-            self._load_advisory_for_decision(decision_event_id)
+            await asyncio.to_thread(self._load_advisory_for_decision, decision_event_id)
             if isinstance(decision_event_id, int)
             and not isinstance(decision_event_id, bool)
             and decision_event_id > 0

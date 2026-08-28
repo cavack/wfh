@@ -42,7 +42,7 @@ def test_subscription_starts_and_unsubscribe_stops_liquidation_stream(monkeypatc
 
     monkeypatch.setattr(manager, "watch_orderbook_stream", idle)
     monkeypatch.setattr(manager, "_watch_stream", idle)
-    monkeypatch.setattr(manager, "_watch_liquidations_stream", idle, raising=False)
+    monkeypatch.setattr(manager, "_watch_liquidations_stream", idle)
 
     async def scenario() -> None:
         manager.subscribe("binance", symbol)

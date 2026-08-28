@@ -389,6 +389,25 @@ def _evidence_summary(metrics: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _terminal_transition_packet(
+    previous: dict[str, Any], *, evaluated_at: int, decision: str
+) -> dict[str, Any]:
+    packet = dict(previous)
+    for transient in (
+        "event_id",
+        "event_at",
+        "symbol",
+        "previous_decision",
+        "ai_advisory",
+        "event_persisted",
+    ):
+        packet.pop(transient, None)
+    packet["evaluated_at"] = evaluated_at
+    packet["decision"] = decision
+    packet["hard_blocked"] = True
+    return packet
+
+
 def build_expired_entry_decision(
     previous_decision: dict[str, Any],
     *,
@@ -410,19 +429,7 @@ def build_expired_entry_decision(
     ):
         return None
 
-    packet = dict(previous)
-    for transient in (
-        "event_id",
-        "event_at",
-        "symbol",
-        "previous_decision",
-        "ai_advisory",
-        "event_persisted",
-    ):
-        packet.pop(transient, None)
-    packet["evaluated_at"] = evaluated_at
-    packet["decision"] = "EXPIRED"
-    packet["hard_blocked"] = True
+    packet = _terminal_transition_packet(previous, evaluated_at=evaluated_at, decision="EXPIRED")
     packet["block_reasons"] = ["TRADE_PLAN_EXPIRED"]
     packet["trade_plan"] = dict(plan)
     return packet
@@ -444,19 +451,7 @@ def build_invalidated_entry_decision(
     if str(previous.get("decision") or "") not in {"ENTRY_READY", "ACTIVE"}:
         return None
 
-    packet = dict(previous)
-    for transient in (
-        "event_id",
-        "event_at",
-        "symbol",
-        "previous_decision",
-        "ai_advisory",
-        "event_persisted",
-    ):
-        packet.pop(transient, None)
-    packet["evaluated_at"] = evaluated_at
-    packet["decision"] = "INVALIDATED"
-    packet["hard_blocked"] = True
+    packet = _terminal_transition_packet(previous, evaluated_at=evaluated_at, decision="INVALIDATED")
     packet["block_reasons"] = [reason]
     packet["reason_codes"] = sorted(
         set([*list(packet.get("reason_codes") or []), reason])
@@ -511,35 +506,51 @@ def _score_entry_components(
 
     structure, maximum, component_reasons = _structure_points(metrics)
     _record_component(components, "structure", structure, maximum)
-    total_points += structure; available_weight += maximum; reasons.extend(component_reasons)
+    total_points += structure
+    available_weight += maximum
+    reasons.extend(component_reasons)
 
     timing, maximum, component_reasons = _timing_points(metrics)
     _record_component(components, "timing", timing, maximum)
-    total_points += timing; available_weight += maximum; reasons.extend(component_reasons)
+    total_points += timing
+    available_weight += maximum
+    reasons.extend(component_reasons)
 
     order_flow, maximum, component_reasons, direction_ok = _order_flow_points(metrics)
     _record_component(components, "order_flow", order_flow, maximum)
-    total_points += order_flow; available_weight += maximum; reasons.extend(component_reasons)
+    total_points += order_flow
+    available_weight += maximum
+    reasons.extend(component_reasons)
 
     derivatives, maximum, component_reasons = _derivative_points(metrics)
     _record_component(components, "derivatives", derivatives, maximum)
-    total_points += derivatives; available_weight += maximum; reasons.extend(component_reasons)
+    total_points += derivatives
+    available_weight += maximum
+    reasons.extend(component_reasons)
 
     execution, maximum, component_reasons, execution_ok = _execution_points(metrics, policy)
     _record_component(components, "execution", execution, maximum)
-    total_points += execution; available_weight += maximum; reasons.extend(component_reasons)
+    total_points += execution
+    available_weight += maximum
+    reasons.extend(component_reasons)
 
     cross, maximum, component_reasons, cross_ok = _cross_exchange_points(metrics)
     _record_component(components, "cross_exchange", cross, maximum)
-    total_points += cross; available_weight += maximum; reasons.extend(component_reasons)
+    total_points += cross
+    available_weight += maximum
+    reasons.extend(component_reasons)
 
     location, maximum, component_reasons = _price_location_points(metrics)
     _record_component(components, "price_location", location, maximum)
-    total_points += location; available_weight += maximum; reasons.extend(component_reasons)
+    total_points += location
+    available_weight += maximum
+    reasons.extend(component_reasons)
 
     cascade, maximum, component_reasons = _cascade_points(metrics)
     _record_component(components, "cascade", cascade, maximum)
-    total_points += cascade; available_weight += maximum; reasons.extend(component_reasons)
+    total_points += cascade
+    available_weight += maximum
+    reasons.extend(component_reasons)
     return components, total_points, available_weight, reasons, direction_ok, timing, execution_ok, cross_ok
 
 

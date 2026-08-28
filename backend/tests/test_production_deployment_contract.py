@@ -318,7 +318,8 @@ def test_host_deploy_uses_one_canonical_compose_project_with_host_override() -> 
     helper = text.split("configure_production_compose_topology() {", maxsplit=1)[1].split(
         "}\n", maxsplit=1
     )[0]
-    assert 'COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-waterfallhunter}"' in helper
+    assert 'COMPOSE_PROJECT_NAME="waterfallhunter"' in helper
+    assert '${COMPOSE_PROJECT_NAME:-waterfallhunter}' not in text
     assert "com.docker.compose.project" not in helper
     assert "waterfall-backend" not in helper
 

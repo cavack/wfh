@@ -331,3 +331,20 @@ def test_validator_attaches_observed_liquidation_flow_to_metrics():
         metrics, exchange_name="binance", mapped_symbol="TEST/USDT:USDT", now=100.0
     )
     assert metrics["liquidation_flow"] == flow
+
+
+def test_validator_drops_stale_liquidation_flow_when_cache_is_unavailable():
+    instance = validator()
+
+    class EmptyCache:
+        @staticmethod
+        def get_realtime_liquidation_flow(exchange, symbol, now=None):
+            return None
+
+    instance.ws_manager = EmptyCache()
+    metrics = {"liquidation_flow": {"available": True}, "data_sources": {}}
+    instance._attach_live_liquidation_flow(
+        metrics, exchange_name="binance", mapped_symbol="TEST/USDT:USDT", now=100.0
+    )
+    assert "liquidation_flow" not in metrics
+    assert "liquidations" not in metrics["data_sources"]

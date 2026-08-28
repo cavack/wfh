@@ -1,8 +1,19 @@
 from __future__ import annotations
 
 from pathlib import Path
+import importlib.util
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _load_cutover_module(name: str):
+    script = ROOT / "scripts/verify_production_cutover.py"
+    spec = importlib.util.spec_from_file_location(name, script)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_waterfallhunter_systemd_unit_contract() -> None:
@@ -60,12 +71,7 @@ def test_systemd_and_recovery_reuse_optional_host_owned_production_volume_overri
 
 
 def test_release_certificate_builder_is_exact_sha_and_signal_only() -> None:
-    import importlib.util
-    script = ROOT / "scripts/verify_production_cutover.py"
-    spec = importlib.util.spec_from_file_location("verify_production_cutover_test", script)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = _load_cutover_module("verify_production_cutover_test")
     snapshot = {
         "healthy": True,
         "running_revision": "a" * 40,
@@ -101,12 +107,7 @@ def test_release_certificate_builder_is_exact_sha_and_signal_only() -> None:
 
 
 def test_release_certificate_builder_rejects_unhealthy_or_revision_mismatch() -> None:
-    import importlib.util
-    script = ROOT / "scripts/verify_production_cutover.py"
-    spec = importlib.util.spec_from_file_location("verify_production_cutover_invalid_test", script)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = _load_cutover_module("verify_production_cutover_invalid_test")
     base = {
         "healthy": True,
         "running_revision": "a" * 40,
@@ -128,12 +129,7 @@ def test_release_certificate_builder_rejects_unhealthy_or_revision_mismatch() ->
 
 
 def test_release_certificate_builder_rejects_core_container_revision_mismatch() -> None:
-    import importlib.util
-    script = ROOT / "scripts/verify_production_cutover.py"
-    spec = importlib.util.spec_from_file_location("verify_production_cutover_core_revision_test", script)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = _load_cutover_module("verify_production_cutover_core_revision_test")
     snapshot = {
         "healthy": True,
         "running_revision": "a" * 40,
@@ -155,12 +151,7 @@ def test_release_certificate_builder_rejects_core_container_revision_mismatch() 
 
 
 def test_production_verifier_rejects_noncanonical_operator_paths() -> None:
-    import importlib.util
-    script = ROOT / "scripts/verify_production_cutover.py"
-    spec = importlib.util.spec_from_file_location("verify_operator_path_test", script)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = _load_cutover_module("verify_operator_path_test")
     try:
         module._require_canonical_operator_path(
             Path("/tmp/not-production"), module.CANONICAL_PROJECT_DIR
@@ -172,12 +163,7 @@ def test_production_verifier_rejects_noncanonical_operator_paths() -> None:
 
 
 def test_recovery_state_io_uses_configured_canonical_state_path(tmp_path: Path) -> None:
-    import importlib.util
-    script = ROOT / "scripts/verify_production_cutover.py"
-    spec = importlib.util.spec_from_file_location("verify_state_path_test", script)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = _load_cutover_module("verify_state_path_test")
     module.CANONICAL_RUNTIME_DIR = tmp_path
     module.CANONICAL_STATE_FILE = tmp_path / "healthcheck-state.json"
     state = {"consecutive_failures": 2, "recoveries": [], "last_recovery_at": 0.0}
@@ -207,12 +193,7 @@ def test_recovery_guard_refuses_lock_held_by_deployment(tmp_path: Path) -> None:
 
 
 def test_health_compose_exports_canonical_wfh_env_file(monkeypatch) -> None:
-    import importlib.util
-    script = ROOT / "scripts/verify_production_cutover.py"
-    spec = importlib.util.spec_from_file_location("verify_compose_env_test", script)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = _load_cutover_module("verify_compose_env_test")
     captured = {}
 
     def fake_run(command, **kwargs):
@@ -233,12 +214,7 @@ def test_health_compose_exports_canonical_wfh_env_file(monkeypatch) -> None:
 
 
 def test_recovery_path_skips_compose_while_deployment_lock_is_busy(tmp_path: Path, monkeypatch) -> None:
-    import importlib.util
-    script = ROOT / "scripts/verify_production_cutover.py"
-    spec = importlib.util.spec_from_file_location("verify_recovery_busy_test", script)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = _load_cutover_module("verify_recovery_busy_test")
     module.CANONICAL_RUNTIME_DIR = tmp_path
     module.CANONICAL_STATE_FILE = tmp_path / "healthcheck-state.json"
     module._save_state({
@@ -262,12 +238,7 @@ def test_recovery_path_skips_compose_while_deployment_lock_is_busy(tmp_path: Pat
 
 
 def test_recovery_releases_deploy_guard_after_failed_compose(tmp_path: Path, monkeypatch) -> None:
-    import importlib.util
-    script = ROOT / "scripts/verify_production_cutover.py"
-    spec = importlib.util.spec_from_file_location("verify_recovery_release_test", script)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = _load_cutover_module("verify_recovery_release_test")
     module.CANONICAL_RUNTIME_DIR = tmp_path
     module.CANONICAL_STATE_FILE = tmp_path / "healthcheck-state.json"
     module._save_state({
@@ -294,12 +265,7 @@ def test_recovery_releases_deploy_guard_after_failed_compose(tmp_path: Path, mon
 
 
 def test_required_service_without_healthcheck_is_unhealthy(monkeypatch) -> None:
-    import importlib.util
-    script = ROOT / "scripts/verify_production_cutover.py"
-    spec = importlib.util.spec_from_file_location("verify_missing_healthcheck_test", script)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = _load_cutover_module("verify_missing_healthcheck_test")
 
     class ComposeResult:
         returncode = 0
@@ -323,12 +289,7 @@ def test_required_service_without_healthcheck_is_unhealthy(monkeypatch) -> None:
 
 
 def test_release_evidence_requires_notification_delivery_health(monkeypatch) -> None:
-    import importlib.util
-    script = ROOT / "scripts/verify_production_cutover.py"
-    spec = importlib.util.spec_from_file_location("verify_notification_release_test", script)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = _load_cutover_module("verify_notification_release_test")
     sha = "a" * 40
     monkeypatch.setattr(module, "health_snapshot", lambda *args: {"healthy": True})
     monkeypatch.setattr(module, "_backend_endpoint", lambda *args: True)
@@ -352,3 +313,8 @@ def test_release_evidence_requires_notification_delivery_health(monkeypatch) -> 
     )
     assert snapshot["healthy"] is False
     assert snapshot["notification_delivery_ready"] is False
+
+
+def test_health_verifier_uses_absolute_git_binary() -> None:
+    module = _load_cutover_module("verify_production_cutover_git_bin")
+    assert module.GIT_BIN == "/usr/bin/git"

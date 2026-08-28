@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from waterfallhunter.core.liquidation_flow import LIQUIDATION_FLOW_FRESHNESS_SECONDS
+
 
 def _record(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
@@ -128,7 +130,7 @@ def _liquidations(metrics: dict[str, Any], evaluated_at: int | None) -> tuple[di
     burst_ratio = _finite(packet.get("burst_ratio"))
     if None in {observed_at, long_notional, short_notional, velocity, burst_ratio}:
         return {"available": False, "reason": "incomplete liquidation flow"}, 0.0, 0.0
-    if evaluated_at is not None and not 0 <= evaluated_at - observed_at <= 30:
+    if evaluated_at is not None and not 0 <= evaluated_at - observed_at < LIQUIDATION_FLOW_FRESHNESS_SECONDS:
         return {"available": False, "reason": "stale or future liquidation flow"}, 0.0, 0.0
     total = long_notional + short_notional
     long_share = long_notional / total if total > 0 else 0.0

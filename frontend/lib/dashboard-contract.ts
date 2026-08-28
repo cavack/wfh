@@ -64,6 +64,7 @@ export function dashboardSnapshot(value: unknown): DashboardSnapshot | undefined
     || !Number.isInteger(packet.total)
     || (packet.total as number) < 0
     || !record(packet.candidates)
+    || !Object.values(packet.candidates as JsonObject).every((candidate) => record(candidate) !== undefined)
     || !record(packet.final_ranking)
     || !record(packet.signal_funnel)) return undefined;
   const terminal = decisionTerminal(packet.decision_terminal);

@@ -268,29 +268,17 @@ def _assert_database_target_certificate_binding(
         raise ValueError("database certificate does not bind the cleanup target database")
 
 
-def _current_docker_labels(kind: str, name: str) -> dict[str, str] | None:
-    resource_kind = str(kind or "").strip()
-    safe_name = str(name or "").strip()
-    if resource_kind not in {"container", "volume", "network", "image"}:
-        raise ValueError("unsupported Docker resource kind")
-    if not safe_name or safe_name.startswith("-"):
-        raise ValueError("invalid Docker resource name")
+def _docker_inspect_command(resource_kind: str, safe_name: str) -> list[str]:
     if resource_kind == "container":
-        command = [DOCKER_BIN, "inspect", safe_name]
-    elif resource_kind == "image":
-        command = [DOCKER_BIN, "image", "inspect", safe_name]
-    else:
-        command = [DOCKER_BIN, resource_kind, "inspect", safe_name]
-    result = subprocess.run(command, text=True, capture_output=True, check=False)
-    if result.returncode != 0:
-        combined = result.stderr + result.stdout
-        if "No such" in combined or "not found" in combined.lower():
-            return None
-        raise RuntimeError(f"Docker inspect failed for {resource_kind} {safe_name}")
-    try:
-        obj = json.loads(result.stdout)[0]
-    except (ValueError, IndexError, TypeError) as exc:
-        raise RuntimeError("Docker inspect returned invalid JSON") from exc
+        return [DOCKER_BIN, "inspect", safe_name]
+    if resource_kind == "image":
+        return [DOCKER_BIN, "image", "inspect", safe_name]
+    return [DOCKER_BIN, resource_kind, "inspect", safe_name]
+
+
+def _docker_inspect_labels(resource_kind: str, obj: object) -> dict[str, str]:
+    if not isinstance(obj, dict):
+        raise RuntimeError("Docker inspect returned invalid object")
     labels = (
         obj.get("Config", {}).get("Labels", {})
         if resource_kind in {"container", "image"}
@@ -304,6 +292,31 @@ def _current_docker_labels(kind: str, name: str) -> dict[str, str] | None:
     ):
         raise RuntimeError("Docker labels are invalid")
     return dict(labels)
+
+
+def _current_docker_labels(kind: str, name: str) -> dict[str, str] | None:
+    resource_kind = str(kind or "").strip()
+    safe_name = str(name or "").strip()
+    if resource_kind not in {"container", "volume", "network", "image"}:
+        raise ValueError("unsupported Docker resource kind")
+    if not safe_name or safe_name.startswith("-"):
+        raise ValueError("invalid Docker resource name")
+    result = subprocess.run(
+        _docker_inspect_command(resource_kind, safe_name),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        combined = result.stderr + result.stdout
+        if "No such" in combined or "not found" in combined.lower():
+            return None
+        raise RuntimeError(f"Docker inspect failed for {resource_kind} {safe_name}")
+    try:
+        obj = json.loads(result.stdout)[0]
+    except (ValueError, IndexError, TypeError) as exc:
+        raise RuntimeError("Docker inspect returned invalid JSON") from exc
+    return _docker_inspect_labels(resource_kind, obj)
 
 
 def _validated_docker_resource_name(

@@ -83,6 +83,8 @@ def build_decision_terminal(
     *,
     recent_changes: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    if any(not isinstance(symbol, str) or not symbol.strip() for symbol in candidates):
+        raise ValueError("decision terminal candidate symbol must be non-empty")
     ranked: dict[str, list[tuple[str, float]]] = {
         decision: [] for decision in _DECISIONS
     }

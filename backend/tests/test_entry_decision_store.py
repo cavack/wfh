@@ -1,3 +1,5 @@
+import asyncio
+import time
 import json
 import sqlite3
 
@@ -250,11 +252,36 @@ def test_history_rejects_advisory_hash_mismatch(tmp_path) -> None:
         store.latest_for_symbol("SXT/USDT:USDT")
 
 
-def test_runtime_binds_canonical_append_to_expected_lifecycle() -> None:
-    from pathlib import Path
+def test_runtime_binds_canonical_append_to_expected_lifecycle(monkeypatch) -> None:
     from waterfallhunter import main
 
-    source = Path(main.__file__).read_text(encoding="utf-8")
-    candidate_body = source.split("async def evaluate_candidate(", 1)[1]
-    decision_section = candidate_body.split("episode_id =", 1)[0]
-    assert "expected_lifecycle_id=" in decision_section
+    symbol = "CAS/USDT:USDT"
+    expected_lifecycle = 23
+    observed: list[int | None] = []
+    monkeypatch.setattr(main.scanner, "active_candidates", {symbol: {}})
+    monkeypatch.setattr(main.scanner, "get_live_reference", lambda _symbol: (0.01, time.time()))
+    monkeypatch.setattr(main.execution_decision_logger, "observe_evaluation", lambda *args, **kwargs: None)
+
+    async def cross_check_symbol(*args, **kwargs):
+        return {
+            "is_valid": True, "score": 80.0, "suggested_status": "ARMED",
+            "metrics": {"exchange": "binance", "mapped_symbol": symbol},
+        }
+
+    monkeypatch.setattr(main.validator, "cross_check_symbol", cross_check_symbol)
+    monkeypatch.setattr(main, "_apply_deterministic_entry_gate", lambda _s, state, _m: (state, False))
+    monkeypatch.setattr(main, "get_leverage", lambda _symbol: 1)
+    monkeypatch.setattr(main.entry_decision_store, "latest_for_symbol", lambda _symbol: None)
+    monkeypatch.setattr(main, "build_entry_decision", lambda *args, **kwargs: {"decision": "FORMING"})
+
+    def stop_append(*args, **kwargs):
+        observed.append(kwargs.get("expected_lifecycle_id"))
+        raise RuntimeError("stop-after-canonical-append")
+
+    monkeypatch.setattr(main.entry_decision_store, "append_if_changed", stop_append)
+    with pytest.raises(RuntimeError, match="stop-after-canonical-append"):
+        asyncio.run(main.evaluate_candidate(symbol, {
+            "status": "ARMED", "lifecycle_id": expected_lifecycle, "scan_eligible": True,
+            "quote_volume": 3_000_000.0, "last_price": 0.01,
+        }))
+    assert observed == [expected_lifecycle]

@@ -72,6 +72,47 @@ def classify_path(path: Path) -> tuple[str, str]:
     return REVIEW, "not on canonical cleanup allowlist"
 
 
+_CANONICAL_DOCKER_NAMES = {
+    "container": {"waterfall-backend", "waterfall-frontend", "waterfall-watchdog", "waterfall-prometheus", "waterfall-grafana"},
+    "volume": {"waterfallhunter_data", "waterfallhunter_prometheus_data", "waterfallhunter_grafana_data", "waterfallhunter_alertmanager_data"},
+    "network": {"waterfallhunter_edge", "waterfallhunter_application", "waterfallhunter_egress", "waterfallhunter_alerting"},
+    "image": {
+        "waterfallhunter-waterfall-backend:latest",
+        "waterfallhunter-frontend:latest",
+        "waterfallhunter-watchdog:latest",
+    },
+}
+_CANONICAL_DOCKER_SERVICES = {
+    "waterfall-backend", "frontend", "watchdog", "prometheus", "grafana", "alertmanager",
+}
+
+
+def _is_canonical_docker_resource(kind: str, name: str, labels: dict[str, str]) -> bool:
+    project = labels.get("com.docker.compose.project", "")
+    service = labels.get("com.docker.compose.service", "")
+    named = name in _CANONICAL_DOCKER_NAMES.get(kind, set())
+    if named and (kind == "image" or project == "waterfallhunter"):
+        return True
+    return (
+        kind == "container"
+        and project == "waterfallhunter"
+        and service in _CANONICAL_DOCKER_SERVICES
+    )
+
+
+def _is_wfh_docker_resource(kind: str, name: str, labels: dict[str, str]) -> bool:
+    project = labels.get("com.docker.compose.project", "")
+    if kind == "image" and labels.get("org.opencontainers.image.source") == WFH_OCI_SOURCE:
+        return True
+    return (
+        name.startswith(("waterfall", "wfh-"))
+        or "waterfallhunter" in name.lower()
+        or project.startswith("waterfall")
+        or bool(re.fullmatch(r"[0-9a-f]{40}", project))
+        or (kind == "image" and name.startswith(("wfh-", "waterfallhunter-")))
+    )
+
+
 def classify_docker_resource(
     kind: str,
     name: str,
@@ -85,39 +126,9 @@ def classify_docker_resource(
         return KEEP, "volume referenced by active Production Compose topology"
     if kind == "network" and name in (protected_network_names or set()):
         return KEEP, "network referenced by active Production Compose topology"
-    project = labels.get("com.docker.compose.project", "")
-    canonical_names = {
-        "container": {"waterfall-backend", "waterfall-frontend", "waterfall-watchdog", "waterfall-prometheus", "waterfall-grafana"},
-        "volume": {"waterfallhunter_data", "waterfallhunter_prometheus_data", "waterfallhunter_grafana_data", "waterfallhunter_alertmanager_data"},
-        "network": {"waterfallhunter_edge", "waterfallhunter_application", "waterfallhunter_egress", "waterfallhunter_alerting"},
-        "image": {
-            "waterfallhunter-waterfall-backend:latest",
-            "waterfallhunter-frontend:latest",
-            "waterfallhunter-watchdog:latest",
-        },
-    }
-    canonical_services = {
-        "waterfall-backend", "frontend", "watchdog",
-        "prometheus", "grafana", "alertmanager",
-    }
-    service = labels.get("com.docker.compose.service", "")
-    if (
-        name in canonical_names.get(kind, set())
-        and (kind == "image" or project == "waterfallhunter")
-    ) or (
-        kind == "container"
-        and project == "waterfallhunter"
-        and service in canonical_services
-    ):
+    if _is_canonical_docker_resource(kind, name, labels):
         return KEEP, "canonical WaterfallHunter Docker resource"
-    if kind == "image" and labels.get("org.opencontainers.image.source") == WFH_OCI_SOURCE:
-        return DELETE, "legacy/orphan WaterfallHunter Docker resource"
-    is_wfh = (
-        name.startswith(("waterfall", "wfh-")) or "waterfallhunter" in name.lower()
-        or project.startswith("waterfall") or bool(re.fullmatch(r"[0-9a-f]{40}", project))
-        or (kind == "image" and name.startswith(("wfh-", "waterfallhunter-")))
-    )
-    if is_wfh:
+    if _is_wfh_docker_resource(kind, name, labels):
         return DELETE, "legacy/orphan WaterfallHunter Docker resource"
     return REVIEW, "Docker resource not proven WaterfallHunter-owned"
 
@@ -156,35 +167,18 @@ def _path_entries() -> list[dict[str, object]]:
     return entries
 
 
-def _production_compose_resource_names() -> dict[str, set[str]]:
-    """Resolve host-owned volumes/networks from the effective Production Compose model."""
-    base = PRODUCTION_PROJECT_DIR / "docker-compose.yml"
-    if not base.is_file() or not PRODUCTION_ENV_FILE.is_file():
-        return {"volume": set(), "network": set()}
+def _production_compose_command(base: Path) -> list[str]:
     command = [
         DOCKER_BIN, "compose", "--project-name", PRODUCTION_COMPOSE_PROJECT,
         "--env-file", str(PRODUCTION_ENV_FILE), "-f", str(base),
     ]
     if PRODUCTION_OVERRIDE.is_file():
         command.extend(("-f", str(PRODUCTION_OVERRIDE)))
-    # Do not resolve service env_file contents here. The inventory only needs
-    # topology names, and older deployed revisions may still reference .env.
     command.extend(("config", "--no-env-resolution", "--format", "json"))
-    environment = os.environ.copy()
-    environment["WFH_ENV_FILE"] = str(PRODUCTION_ENV_FILE)
-    result = subprocess.run(
-        command, cwd=PRODUCTION_PROJECT_DIR, text=True, capture_output=True,
-        check=False, env=environment,
-    )
-    if result.returncode != 0:
-        raise RuntimeError("unable to resolve active Production Compose topology")
-    try:
-        config = json.loads(result.stdout)
-    except ValueError as exc:
-        raise RuntimeError("invalid Production Compose topology output") from exc
-    if not isinstance(config, dict):
-        raise RuntimeError("invalid Production Compose topology object")
+    return command
 
+
+def _resolved_compose_resource_names(config: dict[str, object]) -> dict[str, set[str]]:
     resolved: dict[str, set[str]] = {"volume": set(), "network": set()}
     for kind, section_name in (("volume", "volumes"), ("network", "networks")):
         section = config.get(section_name)
@@ -200,6 +194,32 @@ def _production_compose_resource_names() -> dict[str, set[str]]:
             else:
                 resolved[kind].add(f"{PRODUCTION_COMPOSE_PROJECT}_{key}")
     return resolved
+
+
+def _production_compose_resource_names() -> dict[str, set[str]]:
+    """Resolve host-owned volumes/networks from the effective Production Compose model."""
+    base = PRODUCTION_PROJECT_DIR / "docker-compose.yml"
+    if not base.is_file() or not PRODUCTION_ENV_FILE.is_file():
+        return {"volume": set(), "network": set()}
+    environment = os.environ.copy()
+    environment["WFH_ENV_FILE"] = str(PRODUCTION_ENV_FILE)
+    result = subprocess.run(
+        _production_compose_command(base),
+        cwd=PRODUCTION_PROJECT_DIR,
+        text=True,
+        capture_output=True,
+        check=False,
+        env=environment,
+    )
+    if result.returncode != 0:
+        raise RuntimeError("unable to resolve active Production Compose topology")
+    try:
+        config = json.loads(result.stdout)
+    except ValueError as exc:
+        raise RuntimeError("invalid Production Compose topology output") from exc
+    if not isinstance(config, dict):
+        raise RuntimeError("invalid Production Compose topology object")
+    return _resolved_compose_resource_names(config)
 
 
 def _production_compose_volume_names() -> set[str]:

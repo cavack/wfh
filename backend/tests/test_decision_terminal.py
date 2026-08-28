@@ -1,3 +1,5 @@
+import pytest
+
 from waterfallhunter.core.decision_terminal import build_decision_terminal
 
 
@@ -76,3 +78,8 @@ def test_terminal_explains_systemic_zero_entry_ready() -> None:
         "BUYERS_ACTIVE",
         "CROSS_EXCHANGE_DISAGREEMENT",
     }
+
+
+def test_terminal_rejects_empty_candidate_symbol() -> None:
+    with pytest.raises(ValueError, match="candidate symbol"):
+        build_decision_terminal({"": candidate("NO_TRADE", 20)}, recent_changes=[])

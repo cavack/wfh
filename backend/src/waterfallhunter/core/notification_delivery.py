@@ -158,28 +158,36 @@ class DurableNotificationWorker:
         ):
             return
         timestamp = self._timestamp(now)
-        with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
-            row = conn.execute(
-                "SELECT outbox.decision_event_id "
-                "FROM entry_notification_outbox outbox "
-                "WHERE outbox.status IN ('PENDING','RETRY_WAIT') "
-                "AND outbox.available_at <= ? "
-                "AND outbox.created_at + ? <= ? "
-                "AND NOT EXISTS ("
-                "SELECT 1 FROM entry_decision_advisories advisory "
-                "WHERE advisory.decision_event_id=outbox.decision_event_id"
-                ") "
-                "ORDER BY outbox.available_at,outbox.created_at,outbox.event_id "
-                "LIMIT 1",
-                (timestamp, self.advisory_wait_seconds, timestamp),
-            ).fetchone()
-        if row is None:
-            return
-        EntryDecisionStore(self.db_path, verify_schema=False).ensure_unavailable_advisory(
-            int(row[0]),
-            advisory_at=timestamp,
-            reason="AI advisory grace elapsed; canonical delivery continued without AI.",
-        )
+        try:
+            with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
+                row = conn.execute(
+                    "SELECT outbox.decision_event_id "
+                    "FROM entry_notification_outbox outbox "
+                    "WHERE outbox.status IN ('PENDING','RETRY_WAIT') "
+                    "AND outbox.available_at <= ? "
+                    "AND outbox.created_at + ? <= ? "
+                    "AND NOT EXISTS ("
+                    "SELECT 1 FROM entry_decision_advisories advisory "
+                    "WHERE advisory.decision_event_id=outbox.decision_event_id"
+                    ") "
+                    "ORDER BY outbox.available_at,outbox.created_at,outbox.event_id "
+                    "LIMIT 1",
+                    (timestamp, self.advisory_wait_seconds, timestamp),
+                ).fetchone()
+            if row is None:
+                return
+            EntryDecisionStore(
+                self.db_path, verify_schema=False
+            ).ensure_unavailable_advisory(
+                int(row[0]),
+                advisory_at=timestamp,
+                reason="AI advisory grace elapsed; canonical delivery continued without AI.",
+            )
+        except (sqlite3.Error, ValueError) as exc:
+            logger.warning(
+                "Advisory grace fallback failed without blocking canonical delivery: %s",
+                type(exc).__name__,
+            )
 
     def claim_next(self, *, now: int) -> ClaimedEvent | None:
         timestamp = self._timestamp(now)
