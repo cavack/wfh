@@ -29,9 +29,15 @@ from waterfallhunter.core.sqlite_backup_certification import (  # noqa: E402
     BackupCertificationError,
     audit_sqlite_snapshot,
 )
+from verify_production_cutover import (  # noqa: E402
+    CANONICAL_ENV_FILE as PRODUCTION_ENV_FILE,
+    CANONICAL_PROJECT_DIR as PRODUCTION_PROJECT_DIR,
+    release_evidence_snapshot,
+)
 
 DOCKER_BIN = "/usr/bin/docker"
 CANONICAL_RUNTIME_DIR = Path("/srv/waterfallhunter/runtime")
+MAX_RELEASE_CERTIFICATE_AGE_SECONDS = 900
 CERTIFIED_BACKUP_ROOTS = (
     Path("/srv/waterfallhunter/backups"),
     Path("/srv/wfh-release-backups"),
@@ -89,6 +95,29 @@ def validate_release_certificate(path: Path) -> dict[str, object]:
     ):
         raise ValueError("release certificate is not a complete passing WaterfallHunter release certificate")
     return data
+
+
+def _revalidate_release_certificate_for_cleanup(release: dict[str, object]) -> None:
+    certified_at = release.get("certified_at")
+    if isinstance(certified_at, bool) or not isinstance(certified_at, (int, float)):
+        raise ValueError("release certificate certified_at is invalid")
+    age = time.time() - float(certified_at)
+    if age < 0 or age > MAX_RELEASE_CERTIFICATE_AGE_SECONDS:
+        raise ValueError("release certificate is outside the cleanup authorization window")
+    release_sha = str(release.get("release_sha") or "")
+    snapshot = release_evidence_snapshot(PRODUCTION_PROJECT_DIR, PRODUCTION_ENV_FILE)
+    core_revisions = snapshot.get("core_revisions")
+    if not (
+        snapshot.get("healthy") is True
+        and snapshot.get("running_revision") == release_sha
+        and snapshot.get("checkout_revision") == release_sha
+        and snapshot.get("live_trading_enabled") is False
+        and snapshot.get("notification_delivery_ready") is True
+        and isinstance(core_revisions, dict)
+        and set(core_revisions) == {"waterfall-backend", "waterfall-frontend", "waterfall-watchdog"}
+        and all(revision == release_sha for revision in core_revisions.values())
+    ):
+        raise ValueError("release certificate no longer matches the healthy canonical runtime")
 
 
 def _lower_hex(value: object, length: int) -> bool:
@@ -178,6 +207,65 @@ def _validated_legacy_path(value: str) -> Path:
     if _has_symlink_ancestor(safe):
         raise ValueError(f"cleanup path has a symlink ancestor: {safe}")
     return safe
+
+
+def _docker_volume_mountpoint(name: str) -> Path:
+    safe_name = str(name or "").strip()
+    if not _SAFE_BASENAME.fullmatch(safe_name) or safe_name.startswith("-"):
+        raise ValueError("invalid Docker volume name")
+    result = subprocess.run(
+        [DOCKER_BIN, "volume", "inspect", "--format", "{{.Mountpoint}}", safe_name],
+        text=True, capture_output=True, check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError(f"unable to inspect Docker volume mountpoint: {safe_name}")
+    mountpoint = Path(result.stdout.strip())
+    if not mountpoint.is_absolute() or mountpoint.is_symlink() or not mountpoint.is_dir():
+        raise ValueError("Docker volume mountpoint is not a canonical directory")
+    return mountpoint
+
+
+def _database_source_paths_for_cleanup_target(entry: dict[str, object]) -> list[Path]:
+    kind = str(entry.get("type") or "")
+    name = str(entry.get("path_or_resource") or "")
+    candidates: list[Path] = []
+    if kind == "docker-volume":
+        mountpoint = _docker_volume_mountpoint(name)
+        candidates.append(mountpoint / "waterfall_registry.db")
+    elif kind == "path":
+        target = _validated_legacy_path(name)
+        if target.is_file() and target.name == "waterfall_registry.db":
+            candidates.append(target)
+        elif target.is_dir():
+            candidates.extend((target / "waterfall_registry.db", target / "data" / "waterfall_registry.db"))
+    sources = [
+        candidate.resolve()
+        for candidate in candidates
+        if candidate.is_file() and not candidate.is_symlink() and not _has_symlink_ancestor(candidate)
+    ]
+    if len(sources) > 1:
+        raise ValueError("cleanup target contains multiple database sources")
+    return sources
+
+
+def _assert_database_target_certificate_binding(
+    entry: dict[str, object], db_certificate: dict[str, object]
+) -> None:
+    sources = _database_source_paths_for_cleanup_target(entry)
+    if not sources:
+        return
+    core = db_certificate.get("sqlite_backup_certification")
+    if not isinstance(core, dict):
+        raise ValueError("database certificate source binding is missing")
+    source_path = Path(str(core.get("source_path") or ""))
+    source_identity = core.get("source_identity")
+    if not source_path.is_absolute() or not isinstance(source_identity, dict):
+        raise ValueError("database certificate source binding is invalid")
+    actual_source = sources[0]
+    stat = actual_source.stat()
+    current_identity = {"device_id": int(stat.st_dev), "inode": int(stat.st_ino)}
+    if source_path.resolve(strict=False) != actual_source or source_identity != current_identity:
+        raise ValueError("database certificate does not bind the cleanup target database")
 
 
 def _current_docker_labels(kind: str, name: str) -> dict[str, str] | None:
@@ -391,6 +479,7 @@ def main() -> int:
         if args.release_certificate is None or args.db_certificate is None:
             raise ValueError("release certificate and database certificate are required for --execute")
         release = validate_release_certificate(args.release_certificate)
+        _revalidate_release_certificate_for_cleanup(release)
         db = validate_db_certificate(args.db_certificate)
         certified_backup = Path(str(db["backup_path"]))
         removed: list[dict[str, object]] = []
@@ -402,6 +491,7 @@ def main() -> int:
                 raise ValueError(
                     f"cleanup target contains certified database backup: {entry.get('path_or_resource')}"
                 )
+            _assert_database_target_certificate_binding(entry, db)
             _delete_entry(
                 entry,
                 protected_volume_names=protected["volume"],

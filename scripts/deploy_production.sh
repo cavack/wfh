@@ -86,6 +86,20 @@ verify_tested_image() {
   [[ "$actual_revision" == "$WFH_DEPLOY_SHA" ]]
 }
 
+cleanup_incoming_artifacts() {
+  local incoming="${STATE_DIR}/incoming" dir base
+  [[ -d "$incoming" ]] || return 0
+  if [[ -n "$WFH_TESTED_IMAGE_BUNDLE" && "$WFH_TESTED_IMAGE_BUNDLE" == "${incoming}/"* ]]; then
+    rm -f -- "$WFH_TESTED_IMAGE_BUNDLE"
+  fi
+  while IFS= read -r dir; do
+    base="$(basename "$dir")"
+    [[ "$base" =~ ^[0-9a-f]{40}$ ]] || continue
+    rm -f -- "$dir/wfh-tested-images.tar"
+    rmdir -- "$dir" 2>/dev/null || true
+  done < <(find "$incoming" -mindepth 1 -maxdepth 1 -type d -print)
+}
+
 load_tested_release_artifacts() {
   local expected_bundle actual_bundle_sha
   expected_bundle="${STATE_DIR}/incoming/${WFH_DEPLOY_SHA}/wfh-tested-images.tar"
@@ -117,6 +131,7 @@ snapshot_host_integration_state() {
   manifest="$HOST_INTEGRATION_BACKUP_DIR/manifest"
   : > "$manifest"
   : > "$HOST_INTEGRATION_BACKUP_DIR/systemd-enabled"
+  : > "$HOST_INTEGRATION_BACKUP_DIR/systemd-active"
 
   for unit in \
     waterfallhunter.service \
@@ -132,6 +147,9 @@ snapshot_host_integration_state() {
     state="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
     printf '%s=%s\n' "$unit" "${state:-unknown}" \
       >> "$HOST_INTEGRATION_BACKUP_DIR/systemd-enabled"
+    state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+    printf '%s=%s\n' "$unit" "${state:-unknown}" \
+      >> "$HOST_INTEGRATION_BACKUP_DIR/systemd-active"
   done
 
   for target in \
@@ -151,6 +169,7 @@ restore_host_integration_state() {
   local unit target presence state status=0 manifest
   [[ "$HOST_INTEGRATION_SNAPSHOTTED" -eq 1 ]] || return 0
   manifest="$HOST_INTEGRATION_BACKUP_DIR/manifest"
+  systemctl stop waterfallhunter-healthcheck.timer waterfallhunter.service >/dev/null 2>&1 || true
 
   for unit in \
     waterfallhunter.service \
@@ -172,6 +191,15 @@ restore_host_integration_state() {
         ;;
       *)
         systemctl disable "$unit" >/dev/null 2>&1 || true
+        ;;
+    esac
+  done
+
+  for unit in waterfallhunter.service waterfallhunter-healthcheck.timer; do
+    state="$(awk -F= -v key="$unit" '$1 == key { print $2 }' "$HOST_INTEGRATION_BACKUP_DIR/systemd-active")"
+    case "$state" in
+      active|activating)
+        systemctl start "$unit" >/dev/null 2>&1 || status=1
         ;;
     esac
   done
@@ -204,6 +232,13 @@ install_systemd_units() {
   install -m 0644 "$source_dir/waterfallhunter-healthcheck.timer" /etc/systemd/system/waterfallhunter-healthcheck.timer
   systemctl daemon-reload
   systemctl enable waterfallhunter.service waterfallhunter-healthcheck.timer >/dev/null
+}
+
+activate_systemd_units() {
+  systemctl start waterfallhunter.service
+  systemctl start waterfallhunter-healthcheck.timer
+  systemctl is-active --quiet waterfallhunter.service
+  systemctl is-active --quiet waterfallhunter-healthcheck.timer
 }
 
 install_nginx_site() {
@@ -498,6 +533,8 @@ terminate_with_cleanup() {
     restore_host_integration_state \
       || log "host integration restoration could not be certified"
   fi
+  cleanup_incoming_artifacts \
+    || log "incoming artifact cleanup failed during failure handling"
   prune_database_backups \
     || log "database backup retention cleanup failed during failure handling"
   exit "$status"
@@ -606,6 +643,8 @@ snapshot_host_integration_state
 install_systemd_units
 install_nginx_site
 verify_public_edge || fail "public WaterfallHunter edge did not become reachable"
+activate_systemd_units || fail "canonical systemd service/timer did not become active"
+cleanup_incoming_artifacts || fail "incoming tested-image bundle cleanup failed"
 
 prune_database_backups || fail "database backup retention cleanup failed"
 

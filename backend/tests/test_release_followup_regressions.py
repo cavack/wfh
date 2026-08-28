@@ -128,3 +128,38 @@ def test_deploy_installs_validates_and_restores_canonical_nginx_edge() -> None:
         "on_error() {", maxsplit=1
     )[0]
     assert "restore_host_integration_state" in cleanup
+
+
+def test_deploy_activates_canonical_systemd_units_before_final_success_certificate() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    assert "activate_systemd_units()" in text
+    helper = text.split("activate_systemd_units() {", maxsplit=1)[1].split("}\n", maxsplit=1)[0]
+    assert "systemctl start waterfallhunter.service" in helper
+    assert "systemctl start waterfallhunter-healthcheck.timer" in helper
+    assert "systemctl is-active --quiet waterfallhunter.service" in helper
+    assert "systemctl is-active --quiet waterfallhunter-healthcheck.timer" in helper
+    snapshot = text.split("snapshot_host_integration_state() {", maxsplit=1)[1].split("restore_host_integration_state() {", maxsplit=1)[0]
+    restore = text.split("restore_host_integration_state() {", maxsplit=1)[1].split("install_systemd_units() {", maxsplit=1)[0]
+    assert "systemctl is-active" in snapshot
+    assert "systemd-active" in snapshot
+    assert "systemctl stop waterfallhunter-healthcheck.timer waterfallhunter.service" in restore
+    assert "systemd-active" in restore
+    main_sequence = _main_deploy_sequence(text)
+    activation = main_sequence.index("activate_systemd_units")
+    certificate = main_sequence.index('cat > "${STATE_DIR}/last-successful-deploy.txt"')
+    assert activation < certificate
+
+
+def test_deploy_cleans_staged_image_bundle_on_success_and_failure() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    assert "cleanup_incoming_artifacts()" in text
+    helper = text.split("cleanup_incoming_artifacts() {", maxsplit=1)[1].split("}\n", maxsplit=1)[0]
+    assert '"${STATE_DIR}/incoming"' in helper
+    assert "WFH_TESTED_IMAGE_BUNDLE" in helper
+    cleanup = text.split("terminate_with_cleanup() {", maxsplit=1)[1].split("on_error() {", maxsplit=1)[0]
+    assert "cleanup_incoming_artifacts" in cleanup
+    main_sequence = _main_deploy_sequence(text)
+    edge = main_sequence.index("verify_public_edge")
+    cleanup_index = main_sequence.index("cleanup_incoming_artifacts", edge)
+    certificate = main_sequence.index('cat > "${STATE_DIR}/last-successful-deploy.txt"')
+    assert edge < cleanup_index < certificate

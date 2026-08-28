@@ -19,6 +19,7 @@ PRODUCTION_PROJECT_DIR = Path("/srv/waterfallhunter/app")
 PRODUCTION_ENV_FILE = Path("/etc/waterfallhunter/waterfallhunter.env")
 PRODUCTION_OVERRIDE = Path("/srv/waterfallhunter/runtime/production-volumes.override.yml")
 PRODUCTION_COMPOSE_PROJECT = "waterfallhunter"
+WFH_OCI_SOURCE = "https://github.com/cavack/wfh"
 
 CANONICAL_PATHS = {
     Path("/srv/waterfallhunter"),
@@ -109,6 +110,8 @@ def classify_docker_resource(
         and service in canonical_services
     ):
         return KEEP, "canonical WaterfallHunter Docker resource"
+    if kind == "image" and labels.get("org.opencontainers.image.source") == WFH_OCI_SOURCE:
+        return DELETE, "legacy/orphan WaterfallHunter Docker resource"
     is_wfh = (
         name.startswith(("waterfall", "wfh-")) or "waterfallhunter" in name.lower()
         or project.startswith("waterfall") or bool(re.fullmatch(r"[0-9a-f]{40}", project))
@@ -235,7 +238,13 @@ def _docker_entries() -> list[dict[str, object]]:
             if kind == "image":
                 repository = str(row.get("Repository") or "")
                 tag = str(row.get("Tag") or "")
-                name = f"{repository}:{tag}" if repository and tag and repository != "<none>" else ""
+                image_id = str(row.get("ID") or "").removeprefix("sha256:")
+                if repository and tag and repository != "<none>" and tag != "<none>":
+                    name = f"{repository}:{tag}"
+                elif re.fullmatch(r"[0-9a-f]{12,64}", image_id):
+                    name = image_id
+                else:
+                    name = ""
             else:
                 name = str(row.get("Names") or row.get("Name") or "")
             if not name:

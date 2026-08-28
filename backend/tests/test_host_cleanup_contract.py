@@ -291,3 +291,97 @@ def test_cleanup_revalidates_current_compose_labels_for_sha_project_resource(mon
         protected_volume_names=set(),
         protected_network_names=set(),
     )
+
+
+def test_cleanup_binds_database_volume_to_its_certified_source(tmp_path: Path, monkeypatch) -> None:
+    cleanup = _load_module(CLEANUP_PATH, "cleanup_database_binding")
+    assert hasattr(cleanup, "_assert_database_target_certificate_binding")
+    mountpoint = tmp_path / "legacy-volume"
+    mountpoint.mkdir()
+    source = mountpoint / "waterfall_registry.db"
+    source.write_bytes(b"sqlite-fixture")
+    stat = source.stat()
+    legacy_sha = "a" * 40
+    monkeypatch.setattr(cleanup, "_docker_volume_mountpoint", lambda name: mountpoint)
+    entry = {
+        "type": "docker-volume",
+        "path_or_resource": "legacy_waterfall_data",
+        "labels": {"com.docker.compose.project": legacy_sha},
+    }
+    certificate = {
+        "source_revision": legacy_sha,
+        "sqlite_backup_certification": {
+            "source_path": str(source),
+            "source_identity": {"device_id": int(stat.st_dev), "inode": int(stat.st_ino)},
+        },
+    }
+    cleanup._assert_database_target_certificate_binding(entry, certificate)
+    different_revision = {**certificate, "source_revision": "b" * 40}
+    cleanup._assert_database_target_certificate_binding(entry, different_revision)
+    bad_core = {**certificate["sqlite_backup_certification"], "source_path": str(tmp_path / "other.db")}
+    bad = {**certificate, "sqlite_backup_certification": bad_core}
+    try:
+        cleanup._assert_database_target_certificate_binding(entry, bad)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("database cleanup must reject a certificate from another database source")
+
+
+def test_cleanup_revalidates_release_certificate_against_live_runtime(monkeypatch) -> None:
+    cleanup = _load_module(CLEANUP_PATH, "cleanup_release_revalidation")
+    assert hasattr(cleanup, "_revalidate_release_certificate_for_cleanup")
+    sha = "a" * 40
+    release = {"release_sha": sha, "certified_at": 100}
+    monkeypatch.setattr(cleanup.time, "time", lambda: 101)
+    monkeypatch.setattr(
+        cleanup,
+        "release_evidence_snapshot",
+        lambda project_dir, env_file: {
+            "healthy": True,
+            "running_revision": sha,
+            "checkout_revision": sha,
+            "core_revisions": {
+                "waterfall-backend": sha,
+                "waterfall-frontend": sha,
+                "waterfall-watchdog": sha,
+            },
+            "live_trading_enabled": False,
+            "notification_delivery_ready": True,
+        },
+    )
+    cleanup._revalidate_release_certificate_for_cleanup(release)
+    monkeypatch.setattr(cleanup.time, "time", lambda: 100 + cleanup.MAX_RELEASE_CERTIFICATE_AGE_SECONDS + 1)
+    try:
+        cleanup._revalidate_release_certificate_for_cleanup(release)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("stale release certificates must not authorize destructive cleanup")
+
+
+def test_inventory_includes_dangling_wfh_image_by_image_id(monkeypatch) -> None:
+    audit = _load_module(AUDIT_PATH, "audit_dangling_image")
+    image_id = "a" * 12
+    def fake_json(command):
+        if "image" in command:
+            return [{"Repository": "<none>", "Tag": "<none>", "ID": image_id}]
+        return []
+    class Result:
+        returncode = 0
+        stderr = ""
+        stdout = json.dumps([{"Config": {"Labels": {"org.opencontainers.image.source": "https://github.com/cavack/wfh"}}}])
+    monkeypatch.setattr(audit, "_docker_json", fake_json)
+    monkeypatch.setattr(audit, "_production_compose_resource_names", lambda: {"volume": set(), "network": set()})
+    monkeypatch.setattr(audit.subprocess, "run", lambda *args, **kwargs: Result())
+    entries = audit._docker_entries()
+    matches = [entry for entry in entries if entry["type"] == "docker-image"]
+    assert matches == [{
+        "type": "docker-image",
+        "path_or_resource": image_id,
+        "size_bytes": 0,
+        "mtime": 0.0,
+        "disposition": "DELETE_AFTER_CERTIFICATION",
+        "reason": "legacy/orphan WaterfallHunter Docker resource",
+        "labels": {"org.opencontainers.image.source": "https://github.com/cavack/wfh"},
+    }]
