@@ -4,6 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      deploy_production:
+        description: "Deploy exact CI-tested main revision to Production"
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -193,7 +200,7 @@ jobs:
       - dependency-audit
       - container-validation
       - repository-hygiene
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_production == true }}
     uses: ./.github/workflows/deploy-production.yml
     with:
       tested_backend_image_digest: ${{ needs.container-validation.outputs.tested_backend_image_digest }}

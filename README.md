@@ -100,7 +100,7 @@ CI runs backend tests, frontend typechecking/build, Python and npm dependency au
 
 ## Deployment
 
-Production secrets and state live outside Git. The Production runtime remains `SIGNAL_ONLY` with `LIVE_TRADING_ENABLED=false`. After a successful `CI` run on `main`, the Production deployment workflow deploys that exact revision, backs up and migrates the managed SQLite database, activates release-scoped Telegram signal delivery, and certifies health/readiness plus OCI revision identity. The application database is stored in the `waterfall_data` volume and is not part of this repository.
+Production secrets and state live outside Git. The Production runtime remains `SIGNAL_ONLY` with `LIVE_TRADING_ENABLED=false`. A normal push to protected `main` runs CI only and never deploys. After successful exact-SHA CI and the required release/backup/migration/rollback certification, an operator explicitly dispatches the `CI` workflow on `main` with `deploy_production=true`; the workflow reruns the required checks before deploying that exact revision, backing up and migrating the managed SQLite database, activating release-scoped Telegram signal delivery, and certifying health/readiness plus OCI revision identity. The application database is stored in the `waterfall_data` volume and is not part of this repository.
 
 ## Repository governance
 

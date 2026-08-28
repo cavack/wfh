@@ -5,6 +5,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import yaml
+
 from waterfallhunter.core.contracts import ExecutionMode, SignalDecisionPacket
 
 
@@ -57,6 +59,7 @@ def test_signal_decision_defaults_to_signal_only() -> None:
 
 
 def test_tracked_repository_text_does_not_use_deprecated_product_boundary_terms() -> None:
+    """Reject deprecated execution-boundary language from tracked repository text."""
     forbidden = (
         "SIMULATED" + "_ONLY",
         "simulated" + "-only",
@@ -85,28 +88,38 @@ def test_tracked_repository_text_does_not_use_deprecated_product_boundary_terms(
     assert offenders == []
 
 
-def test_production_deploy_is_chained_to_successful_main_push_ci() -> None:
+def test_production_deploy_requires_explicit_main_dispatch_after_ci() -> None:
+    """Require the manual Production gate to be structurally bound to protected main."""
     ci_text = CI_WORKFLOW.read_text(encoding="utf-8")
     deploy_text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+    ci_workflow = yaml.load(ci_text, Loader=yaml.BaseLoader)
+
+    assert isinstance(ci_workflow, dict)
+    triggers = ci_workflow["on"]
+    deploy_input = triggers["workflow_dispatch"]["inputs"]["deploy_production"]
+    assert deploy_input["required"] == "true"
+    assert deploy_input["type"] == "boolean"
+    assert deploy_input["default"] == "false"
+
+    deploy_job_contract = ci_workflow["jobs"]["deploy-production"]
+    assert deploy_job_contract["needs"] == [
+        "backend",
+        "frontend",
+        "dependency-audit",
+        "container-validation",
+        "repository-hygiene",
+    ]
+    assert deploy_job_contract["if"] == (
+        "${{ github.event_name == 'workflow_dispatch' && "
+        "github.ref == 'refs/heads/main' && inputs.deploy_production == true }}"
+    )
+    assert deploy_job_contract["uses"] == "./.github/workflows/deploy-production.yml"
 
     assert "workflow_call:" in deploy_text
     assert "workflow_run:" not in deploy_text
     assert "workflow_dispatch" not in deploy_text
     assert "environment: production" in deploy_text
     assert "WFH_DEPLOY_SHA: ${{ github.sha }}" in deploy_text
-
-    deploy_job = ci_text.split("\n  deploy-production:\n", maxsplit=1)[1]
-    for dependency in (
-        "backend",
-        "frontend",
-        "dependency-audit",
-        "container-validation",
-        "repository-hygiene",
-    ):
-        assert f"      - {dependency}\n" in deploy_job
-    assert "github.event_name == 'push'" in deploy_job
-    assert "github.ref == 'refs/heads/main'" in deploy_job
-    assert "uses: ./.github/workflows/deploy-production.yml" in deploy_job
 
     callers = []
     for workflow in sorted((ROOT / ".github" / "workflows").glob("*.y*ml")):
@@ -116,12 +129,16 @@ def test_production_deploy_is_chained_to_successful_main_push_ci() -> None:
 
 
 def test_privileged_deploy_does_not_use_workflow_run_head_code() -> None:
+    """Keep privileged deployment on explicit main dispatch, never workflow_run code."""
     ci_text = CI_WORKFLOW.read_text(encoding="utf-8")
     deploy_text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+    ci_workflow = yaml.load(ci_text, Loader=yaml.BaseLoader)
     assert "workflow_run" not in deploy_text
     assert "github.event.workflow_run" not in deploy_text
-    assert "github.event_name == 'push'" in ci_text
-    assert "github.ref == 'refs/heads/main'" in ci_text
+    assert ci_workflow["jobs"]["deploy-production"]["if"] == (
+        "${{ github.event_name == 'workflow_dispatch' && "
+        "github.ref == 'refs/heads/main' && inputs.deploy_production == true }}"
+    )
     deploy_job = deploy_text.split("jobs:\n  deploy:\n", maxsplit=1)[1]
     assert "    permissions:\n      contents: read\n" in deploy_job
 
