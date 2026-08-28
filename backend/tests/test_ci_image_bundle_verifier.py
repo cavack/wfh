@@ -13,6 +13,7 @@ VERIFIER = ROOT / "scripts/verify_ci_image_bundle.py"
 
 
 def _config(revision: str) -> bytes:
+    """Build a minimal OCI config carrying the requested revision label."""
     return json.dumps(
         {"config": {"Labels": {"org.opencontainers.image.revision": revision}}},
         sort_keys=True,
@@ -21,6 +22,7 @@ def _config(revision: str) -> bytes:
 
 
 def _bundle(path: Path, revision: str) -> tuple[str, str]:
+    """Create a minimal docker-save style bundle for verifier tests."""
     config = _config(revision)
     digest = hashlib.sha256(config).hexdigest()
     config_name = f"blobs/sha256/{digest}"
@@ -37,8 +39,15 @@ def _bundle(path: Path, revision: str) -> tuple[str, str]:
 
 
 def _run(bundle: Path, revision: str, image: str, digest: str) -> subprocess.CompletedProcess[str]:
+    """Run the verifier with the bundle parent as the authorized root."""
     return subprocess.run(
-        [sys.executable, str(VERIFIER), "--bundle", str(bundle), "--revision", revision, "--image", f"{image}={digest}"],
+        [
+            sys.executable, str(VERIFIER),
+            "--allowed-root", str(bundle.parent),
+            "--bundle", str(bundle),
+            "--revision", revision,
+            "--image", f"{image}={digest}",
+        ],
         cwd=ROOT,
         text=True,
         capture_output=True,
@@ -47,6 +56,7 @@ def _run(bundle: Path, revision: str, image: str, digest: str) -> subprocess.Com
 
 
 def test_bundle_verifier_accepts_portable_config_digest_and_revision(tmp_path: Path) -> None:
+    """Accept a bundle whose config digest and revision match CI evidence."""
     revision = "a" * 40
     bundle = tmp_path / "images.tar"
     image, digest = _bundle(bundle, revision)
@@ -55,8 +65,30 @@ def test_bundle_verifier_accepts_portable_config_digest_and_revision(tmp_path: P
 
 
 def test_bundle_verifier_rejects_digest_or_revision_mismatch(tmp_path: Path) -> None:
+    """Reject digest and revision evidence that does not match the bundle."""
     revision = "a" * 40
     bundle = tmp_path / "images.tar"
     image, digest = _bundle(bundle, revision)
     assert _run(bundle, revision, image, "sha256:" + "b" * 64).returncode != 0
     assert _run(bundle, "c" * 40, image, digest).returncode != 0
+
+
+def test_bundle_verifier_rejects_bundle_outside_allowed_root(tmp_path: Path) -> None:
+    """Reject CLI-controlled bundle paths that escape the authorized directory."""
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    bundle = tmp_path / "outside.tar"
+    revision = "a" * 40
+    image, digest = _bundle(bundle, revision)
+    result = subprocess.run(
+        [
+            sys.executable, str(VERIFIER),
+            "--allowed-root", str(allowed),
+            "--bundle", str(bundle),
+            "--revision", revision,
+            "--image", f"{image}={digest}",
+        ],
+        cwd=ROOT, text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 2
+    assert "outside allowed root" in result.stdout

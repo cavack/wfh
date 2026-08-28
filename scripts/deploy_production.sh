@@ -110,6 +110,7 @@ load_tested_release_artifacts() {
   actual_bundle_sha="$(sha256sum "$WFH_TESTED_IMAGE_BUNDLE" | awk '{print $1}')"
   [[ "$actual_bundle_sha" == "$WFH_TESTED_IMAGE_BUNDLE_SHA256" ]] || fail "tested image bundle checksum mismatch"
   python3 "${WFH_DEPLOY_ROOT}/scripts/verify_ci_image_bundle.py" \
+    --allowed-root "${STATE_DIR}/incoming/${WFH_DEPLOY_SHA}" \
     --bundle "$WFH_TESTED_IMAGE_BUNDLE" \
     --revision "$WFH_DEPLOY_SHA" \
     --image "waterfallhunter-waterfall-backend=$WFH_TESTED_BACKEND_IMAGE_DIGEST" \
