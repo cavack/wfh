@@ -195,6 +195,9 @@ def test_snapshot_audit_releases_read_only_handle_for_journal_finalization(
     audit = audit_sqlite_snapshot(source)
     assert audit["integrity_check"] == "ok"
 
-    with sqlite3.connect(source, timeout=1.0, isolation_level=None) as connection:
+    connection = sqlite3.connect(source, timeout=1.0, isolation_level=None)
+    try:
         row = connection.execute("PRAGMA journal_mode=DELETE").fetchone()
+    finally:
+        connection.close()
     assert str(row[0] if row else "").lower() == "delete"

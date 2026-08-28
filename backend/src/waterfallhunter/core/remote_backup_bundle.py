@@ -171,6 +171,20 @@ def encrypt_sqlite_backup_bundle(
     return manifest
 
 
+def _decompress_checked(decompressor: zlib.decompressobj, data: bytes) -> bytes:
+    try:
+        return decompressor.decompress(data)
+    except zlib.error as error:
+        raise RemoteBackupBundleError("BUNDLE_DECOMPRESSION_FAILED") from error
+
+
+def _flush_decompressor_checked(decompressor: zlib.decompressobj) -> bytes:
+    try:
+        return decompressor.flush()
+    except zlib.error as error:
+        raise RemoteBackupBundleError("BUNDLE_DECOMPRESSION_FAILED") from error
+
+
 def _load_manifest(path: Path) -> dict[str, Any]:
     if not path.is_absolute() or path.is_symlink() or not path.is_file():
         raise RemoteBackupBundleError("BUNDLE_MANIFEST_INVALID")
@@ -191,6 +205,117 @@ def _load_manifest(path: Path) -> dict[str, Any]:
     return value
 
 
+def _crypto_metadata(manifest: dict[str, Any]) -> tuple[bytes, bytes]:
+    try:
+        nonce = base64.b64decode(manifest["nonce_b64"], validate=True)
+        tag = base64.b64decode(manifest["tag_b64"], validate=True)
+    except (KeyError, ValueError) as error:
+        raise RemoteBackupBundleError("BUNDLE_CRYPTO_METADATA_INVALID") from error
+    if len(nonce) != 12 or len(tag) != 16:
+        raise RemoteBackupBundleError("BUNDLE_CRYPTO_METADATA_INVALID")
+    return nonce, tag
+
+
+def _validated_chunk_path(
+    *, bundle_dir: Path, item: Any, expected_index: int
+) -> Path:
+    if not isinstance(item, dict) or item.get("index") != expected_index:
+        raise RemoteBackupBundleError("BUNDLE_CHUNK_ORDER_INVALID")
+    name = item.get("name")
+    if not isinstance(name, str) or Path(name).name != name:
+        raise RemoteBackupBundleError("BUNDLE_CHUNK_INVALID")
+    chunk_path = bundle_dir / name
+    if chunk_path.is_symlink() or not chunk_path.is_file():
+        raise RemoteBackupBundleError("BUNDLE_CHUNK_MISSING")
+    if (
+        chunk_path.stat().st_size != item.get("size_bytes")
+        or _sha256_file(chunk_path) != item.get("sha256")
+    ):
+        raise RemoteBackupBundleError("BUNDLE_CHUNK_MISMATCH")
+    return chunk_path
+
+
+def _write_plaintext(
+    *, output: Any, data: bytes, plaintext_hash: Any, plaintext_size: int
+) -> int:
+    if not data:
+        return plaintext_size
+    output.write(data)
+    plaintext_hash.update(data)
+    return plaintext_size + len(data)
+
+
+def _restore_encrypted_chunks(
+    *,
+    manifest: dict[str, Any],
+    bundle_dir: Path,
+    output: Any,
+    decryptor: Any,
+    decompressor: Any,
+    plaintext_hash: Any,
+    ciphertext_hash: Any,
+) -> int:
+    plaintext_size = 0
+    for expected_index, item in enumerate(manifest["chunks"]):
+        chunk_path = _validated_chunk_path(
+            bundle_dir=bundle_dir, item=item, expected_index=expected_index
+        )
+        with chunk_path.open("rb") as source:
+            for block in iter(lambda: source.read(_BUFFER_BYTES), b""):
+                ciphertext_hash.update(block)
+                decrypted = decryptor.update(block)
+                plaintext_size = _write_plaintext(
+                    output=output,
+                    data=_decompress_checked(decompressor, decrypted) if decrypted else b"",
+                    plaintext_hash=plaintext_hash,
+                    plaintext_size=plaintext_size,
+                )
+    return plaintext_size
+
+
+def _finalize_restore_stream(
+    *, output: Any, decryptor: Any, decompressor: Any, plaintext_hash: Any, plaintext_size: int
+) -> int:
+    try:
+        final = decryptor.finalize()
+    except InvalidTag as error:
+        raise RemoteBackupBundleError("BUNDLE_AUTHENTICATION_FAILED") from error
+    if final:
+        plaintext_size = _write_plaintext(
+            output=output,
+            data=_decompress_checked(decompressor, final),
+            plaintext_hash=plaintext_hash,
+            plaintext_size=plaintext_size,
+        )
+    return _write_plaintext(
+        output=output,
+        data=_flush_decompressor_checked(decompressor),
+        plaintext_hash=plaintext_hash,
+        plaintext_size=plaintext_size,
+    )
+
+
+def _verify_restored_stream(
+    *, manifest: dict[str, Any], plaintext_hash: Any, plaintext_size: int, ciphertext_hash: Any
+) -> None:
+    if ciphertext_hash.hexdigest() != manifest.get("ciphertext_sha256"):
+        raise RemoteBackupBundleError("BUNDLE_CIPHERTEXT_DIGEST_MISMATCH")
+    if plaintext_hash.hexdigest() != manifest.get("plaintext_sha256"):
+        raise RemoteBackupBundleError("BUNDLE_PLAINTEXT_DIGEST_MISMATCH")
+    if plaintext_size != manifest.get("plaintext_size_bytes"):
+        raise RemoteBackupBundleError("BUNDLE_PLAINTEXT_SIZE_MISMATCH")
+
+
+def _publish_restored_file(*, partial: Path, target: Path) -> None:
+    os.link(partial, target)
+    partial.unlink()
+    directory_fd = os.open(target.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def restore_sqlite_backup_bundle(
     *,
     manifest_path: Path,
@@ -198,6 +323,7 @@ def restore_sqlite_backup_bundle(
     target: Path,
     key: bytes,
 ) -> dict[str, Any]:
+    """Restore and authenticate one encrypted SQLite backup bundle."""
     _validate_key(key)
     if not bundle_dir.is_absolute() or bundle_dir.is_symlink() or not bundle_dir.is_dir():
         raise RemoteBackupBundleError("BUNDLE_DIR_INVALID")
@@ -207,80 +333,43 @@ def restore_sqlite_backup_bundle(
         raise RemoteBackupBundleError("BUNDLE_RESTORE_PARENT_INVALID")
 
     manifest = _load_manifest(manifest_path)
-    try:
-        nonce = base64.b64decode(manifest["nonce_b64"], validate=True)
-        tag = base64.b64decode(manifest["tag_b64"], validate=True)
-    except (KeyError, ValueError) as error:
-        raise RemoteBackupBundleError("BUNDLE_CRYPTO_METADATA_INVALID") from error
-    if len(nonce) != 12 or len(tag) != 16:
-        raise RemoteBackupBundleError("BUNDLE_CRYPTO_METADATA_INVALID")
-
+    nonce, tag = _crypto_metadata(manifest)
     decryptor = Cipher(algorithms.AES(key), modes.GCM(nonce, tag)).decryptor()
     decompressor = zlib.decompressobj()
     plaintext_hash = hashlib.sha256()
-    plaintext_size = 0
     ciphertext_hash = hashlib.sha256()
     partial = target.with_name(f".{target.name}.partial")
     if partial.exists() or partial.is_symlink():
         raise RemoteBackupBundleError("BUNDLE_RESTORE_PARTIAL_EXISTS")
+
     fd = os.open(partial, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     try:
         with os.fdopen(fd, "wb") as output:
-            expected_index = 0
-            for item in manifest["chunks"]:
-                if not isinstance(item, dict) or item.get("index") != expected_index:
-                    raise RemoteBackupBundleError("BUNDLE_CHUNK_ORDER_INVALID")
-                name = item.get("name")
-                size = item.get("size_bytes")
-                sha256 = item.get("sha256")
-                if not isinstance(name, str) or Path(name).name != name:
-                    raise RemoteBackupBundleError("BUNDLE_CHUNK_INVALID")
-                chunk_path = bundle_dir / name
-                if chunk_path.is_symlink() or not chunk_path.is_file():
-                    raise RemoteBackupBundleError("BUNDLE_CHUNK_MISSING")
-                if chunk_path.stat().st_size != size or _sha256_file(chunk_path) != sha256:
-                    raise RemoteBackupBundleError("BUNDLE_CHUNK_MISMATCH")
-                with chunk_path.open("rb") as source:
-                    for block in iter(lambda: source.read(_BUFFER_BYTES), b""):
-                        ciphertext_hash.update(block)
-                        decrypted = decryptor.update(block)
-                        if decrypted:
-                            plain = decompressor.decompress(decrypted)
-                            if plain:
-                                output.write(plain)
-                                plaintext_hash.update(plain)
-                                plaintext_size += len(plain)
-                expected_index += 1
-            try:
-                final = decryptor.finalize()
-            except InvalidTag as error:
-                raise RemoteBackupBundleError("BUNDLE_AUTHENTICATION_FAILED") from error
-            if final:
-                plain = decompressor.decompress(final)
-                if plain:
-                    output.write(plain)
-                    plaintext_hash.update(plain)
-                    plaintext_size += len(plain)
-            tail = decompressor.flush()
-            if tail:
-                output.write(tail)
-                plaintext_hash.update(tail)
-                plaintext_size += len(tail)
+            plaintext_size = _restore_encrypted_chunks(
+                manifest=manifest,
+                bundle_dir=bundle_dir,
+                output=output,
+                decryptor=decryptor,
+                decompressor=decompressor,
+                plaintext_hash=plaintext_hash,
+                ciphertext_hash=ciphertext_hash,
+            )
+            plaintext_size = _finalize_restore_stream(
+                output=output,
+                decryptor=decryptor,
+                decompressor=decompressor,
+                plaintext_hash=plaintext_hash,
+                plaintext_size=plaintext_size,
+            )
             output.flush()
             os.fsync(output.fileno())
-        if ciphertext_hash.hexdigest() != manifest.get("ciphertext_sha256"):
-            raise RemoteBackupBundleError("BUNDLE_CIPHERTEXT_DIGEST_MISMATCH")
-        if plaintext_hash.hexdigest() != manifest.get("plaintext_sha256"):
-            raise RemoteBackupBundleError("BUNDLE_PLAINTEXT_DIGEST_MISMATCH")
-        if plaintext_size != manifest.get("plaintext_size_bytes"):
-            raise RemoteBackupBundleError("BUNDLE_PLAINTEXT_SIZE_MISMATCH")
-        os.link(partial, target)
-        partial.unlink()
-        directory_fd = os.open(target.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        _verify_restored_stream(
+            manifest=manifest,
+            plaintext_hash=plaintext_hash,
+            plaintext_size=plaintext_size,
+            ciphertext_hash=ciphertext_hash,
+        )
+        _publish_restored_file(partial=partial, target=target)
         return {
             "plaintext_sha256": plaintext_hash.hexdigest(),
             "plaintext_size_bytes": plaintext_size,

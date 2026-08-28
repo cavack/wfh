@@ -207,51 +207,58 @@ def rehearse_migration_and_rollback_sequential(
         raise MigrationRehearsalError("REHEARSAL_TARGET_DEVICE_MISMATCH")
 
     baseline_audit = audit_sqlite_snapshot(backup)
-    pre_migration_audit = restore_sqlite_snapshot(source=backup, target=target)
-    if any(
-        baseline_audit[field] != pre_migration_audit[field]
-        for field in _ROLLBACK_COMPARABLE_FIELDS
-    ):
-        raise MigrationRehearsalError("MIGRATION_CLONE_MISMATCH")
-    migration_result = _run_canonical_migration(target, source_revision)
-    _finalize_sqlite_snapshot(target)
-    postflight = classify_database(db_path=target)
-    if (
-        postflight.state is not PreflightState.MIGRATED_COMPATIBLE
-        or postflight.user_version != CURRENT_RUNTIME_SCHEMA_VERSION
-    ):
-        raise MigrationRehearsalError("MIGRATION_POSTFLIGHT_FAILED")
-    post_migration_audit = audit_sqlite_snapshot(target)
+    rollback_retained = False
+    try:
+        pre_migration_audit = restore_sqlite_snapshot(source=backup, target=target)
+        if any(
+            baseline_audit[field] != pre_migration_audit[field]
+            for field in _ROLLBACK_COMPARABLE_FIELDS
+        ):
+            raise MigrationRehearsalError("MIGRATION_CLONE_MISMATCH")
+        migration_result = _run_canonical_migration(target, source_revision)
+        _finalize_sqlite_snapshot(target)
+        postflight = classify_database(db_path=target)
+        if (
+            postflight.state is not PreflightState.MIGRATED_COMPATIBLE
+            or postflight.user_version != CURRENT_RUNTIME_SCHEMA_VERSION
+        ):
+            raise MigrationRehearsalError("MIGRATION_POSTFLIGHT_FAILED")
+        post_migration_audit = audit_sqlite_snapshot(target)
 
-    sidecars = [Path(f"{target}{suffix}") for suffix in ("-wal", "-shm")]
-    if any(path.exists() for path in sidecars):
-        raise MigrationRehearsalError("MIGRATION_ARTIFACT_HAS_SQLITE_SIDECARS")
-    target.unlink()
+        sidecars = [Path(f"{target}{suffix}") for suffix in ("-wal", "-shm")]
+        if any(path.exists() for path in sidecars):
+            raise MigrationRehearsalError("MIGRATION_ARTIFACT_HAS_SQLITE_SIDECARS")
+        target.unlink()
 
-    rollback_audit = restore_sqlite_snapshot(source=backup, target=target)
-    rollback_mismatches = [
-        field
-        for field in _ROLLBACK_COMPARABLE_FIELDS
-        if baseline_audit[field] != rollback_audit[field]
-    ]
-    if rollback_mismatches:
-        raise MigrationRehearsalError(
-            "ROLLBACK_RESTORE_MISMATCH:" + ",".join(rollback_mismatches)
-        )
-    body = {
-        "contract_version": "sqlite_migration_rollback_rehearsal_v2",
-        "status": "MIGRATION_AND_ROLLBACK_REHEARSED",
-        "source_revision": source_revision,
-        "backup_certification_sha256": backup_certification["certification_sha256"],
-        "baseline_audit_sha256": baseline_audit["audit_sha256"],
-        "working_target": str(target),
-        "migration_result": migration_result,
-        "post_migration_audit": post_migration_audit,
-        "migration_artifact_retained": False,
-        "rollback_audit": rollback_audit,
-        "rollback_matches_baseline": True,
-        "rollback_artifact_retained": True,
-        "production_migration_authorized": False,
-        "production_deployment_authorized": False,
-    }
-    return {**body, "rehearsal_sha256": canonical_sha256(body)}
+        rollback_audit = restore_sqlite_snapshot(source=backup, target=target)
+        rollback_mismatches = [
+            field
+            for field in _ROLLBACK_COMPARABLE_FIELDS
+            if baseline_audit[field] != rollback_audit[field]
+        ]
+        if rollback_mismatches:
+            raise MigrationRehearsalError(
+                "ROLLBACK_RESTORE_MISMATCH:" + ",".join(rollback_mismatches)
+            )
+        rollback_retained = True
+        body = {
+            "contract_version": "sqlite_migration_rollback_rehearsal_v2",
+            "status": "MIGRATION_AND_ROLLBACK_REHEARSED",
+            "source_revision": source_revision,
+            "backup_certification_sha256": backup_certification["certification_sha256"],
+            "baseline_audit_sha256": baseline_audit["audit_sha256"],
+            "working_target": str(target),
+            "migration_result": migration_result,
+            "post_migration_audit": post_migration_audit,
+            "migration_artifact_retained": False,
+            "rollback_audit": rollback_audit,
+            "rollback_matches_baseline": True,
+            "rollback_artifact_retained": True,
+            "production_migration_authorized": False,
+            "production_deployment_authorized": False,
+        }
+        return {**body, "rehearsal_sha256": canonical_sha256(body)}
+    finally:
+        if not rollback_retained:
+            for artifact in (target, Path(f"{target}-wal"), Path(f"{target}-shm")):
+                artifact.unlink(missing_ok=True)

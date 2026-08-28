@@ -100,6 +100,8 @@ def _gh(*arguments: str, timeout: int = 120) -> str:
     executable = Path("/usr/bin/gh")
     if not executable.is_file() or executable.is_symlink():
         raise RemoteBackupCLIError("GITHUB_CLI_UNAVAILABLE_OR_UNTRUSTED")
+    environment = os.environ.copy()
+    environment["GH_HOST"] = "github.com"
     try:
         completed = subprocess.run(
             [str(executable), *arguments],
@@ -107,6 +109,7 @@ def _gh(*arguments: str, timeout: int = 120) -> str:
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=environment,
         )
     except (OSError, subprocess.SubprocessError) as error:
         raise RemoteBackupCLIError("REMOTE_BACKUP_GITHUB_COMMAND_FAILED") from error
@@ -199,6 +202,43 @@ def _remove_files(paths: list[Path]) -> None:
         path.unlink(missing_ok=True)
 
 
+def _delete_draft_release_best_effort(*, repository: str, tag_name: str) -> None:
+    try:
+        _gh(
+            "release", "delete", tag_name, "--repo", repository,
+            "--yes", "--cleanup-tag", timeout=120,
+        )
+    except RemoteBackupCLIError:
+        pass
+
+
+def _publish_release_assets(
+    *, repository: str, tag_name: str, upload_paths: list[Path]
+) -> None:
+    try:
+        _gh(
+            "release", "create", tag_name, "--repo", repository, "--draft",
+            "--title", f"WaterfallHunter DR {tag_name}", "--notes",
+            "Encrypted off-host SQLite disaster-recovery backup. No plaintext database is stored in this release.",
+            timeout=120,
+        )
+    except RemoteBackupCLIError:
+        _delete_draft_release_best_effort(repository=repository, tag_name=tag_name)
+        raise
+    try:
+        _gh(
+            "release", "upload", tag_name, *[str(path) for path in upload_paths],
+            "--repo", repository, timeout=21_600,
+        )
+    except RemoteBackupCLIError:
+        _delete_draft_release_best_effort(repository=repository, tag_name=tag_name)
+        raise
+    _gh(
+        "release", "edit", tag_name, "--repo", repository,
+        "--draft=false", timeout=120,
+    )
+
+
 def _safe_unlink_staging_artifact(
     path: Path,
     *,
@@ -220,7 +260,7 @@ def _safe_unlink_staging_artifact(
     candidate.unlink(missing_ok=True)
 
 
-def main() -> int:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Create an encrypted GitHub Release DR backup and prove re-download/restore."
     )
@@ -234,8 +274,13 @@ def main() -> int:
     parser.add_argument("--source-failure-domain", required=True)
     parser.add_argument("--destination-failure-domain", required=True)
     parser.add_argument("--max-chunk-bytes", type=int, default=1_500_000_000)
-    args = parser.parse_args()
+    return parser
 
+
+def _validated_layout(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+) -> tuple[Path, Path, Path]:
     if not args.staging_dir.is_dir() or args.staging_dir.is_symlink():
         parser.error("staging directory must already exist and be non-symlinked")
     if args.restore_target.parent != args.staging_dir:
@@ -244,14 +289,148 @@ def main() -> int:
         parser.error("report must be directly inside staging directory")
     if args.restore_target.exists() or args.report.exists():
         parser.error("restore target and report must not already exist")
-
     staging_snapshot = args.staging_dir / "remote-staging-backup.db"
     bundle_dir = args.staging_dir / "encrypted-upload"
     download_dir = args.staging_dir / "remote-download"
     if any(path.exists() or path.is_symlink() for path in (staging_snapshot, bundle_dir, download_dir)):
         parser.error("staging artifacts already exist")
+    return staging_snapshot, bundle_dir, download_dir
 
-    release_created = False
+
+def _prepare_encrypted_snapshot(
+    *, args: argparse.Namespace, key: bytes, staging_snapshot: Path, bundle_dir: Path
+) -> dict[str, Any]:
+    bundle_dir.mkdir(mode=0o700)
+    backup_started_at = int(time.time())
+    source_identity = _online_backup(args.source, staging_snapshot)
+    backup_completed_at = int(time.time())
+    backup_audit = audit_sqlite_snapshot(staging_snapshot)
+    manifest = encrypt_sqlite_backup_bundle(
+        source=staging_snapshot,
+        output_dir=bundle_dir,
+        prefix="waterfall_registry",
+        key=key,
+        max_chunk_bytes=args.max_chunk_bytes,
+    )
+    if (
+        manifest.get("plaintext_sha256") != backup_audit.get("file_sha256")
+        or manifest.get("plaintext_size_bytes") != backup_audit.get("file_size_bytes")
+    ):
+        raise RemoteBackupCLIError("REMOTE_BACKUP_ENCRYPTED_PLAINTEXT_IDENTITY_MISMATCH")
+    manifest_path = bundle_dir / "waterfall_registry.manifest.json"
+    upload_paths = [manifest_path, *[bundle_dir / item["name"] for item in manifest["chunks"]]]
+    return {
+        "backup_started_at": backup_started_at,
+        "backup_completed_at": backup_completed_at,
+        "source_identity": source_identity,
+        "backup_audit": backup_audit,
+        "manifest": manifest,
+        "manifest_path": manifest_path,
+        "upload_paths": upload_paths,
+        "local_assets": _asset_material(upload_paths),
+    }
+
+
+def _publish_and_verify_remote(
+    *, args: argparse.Namespace, upload_paths: list[Path], local_assets: dict[str, dict[str, Any]]
+) -> tuple[int, list[dict[str, Any]], Any]:
+    _publish_release_assets(
+        repository=args.remote_repository,
+        tag_name=args.release_tag,
+        upload_paths=upload_paths,
+    )
+    release_id, remote_assets = _release_assets(
+        repository=args.remote_repository,
+        tag_name=args.release_tag,
+        expected=local_assets,
+    )
+    trusted_remote = resolve_github_release_backup_verification(
+        repository=args.remote_repository,
+        release_id=release_id,
+        tag_name=args.release_tag,
+        expected_assets=remote_assets,
+    )
+    return release_id, remote_assets, trusted_remote
+
+
+def _redownload_and_restore(
+    *,
+    args: argparse.Namespace,
+    key: bytes,
+    staging_snapshot: Path,
+    bundle_dir: Path,
+    download_dir: Path,
+    manifest_path: Path,
+    upload_paths: list[Path],
+    local_assets: dict[str, dict[str, Any]],
+) -> None:
+    _remove_files(upload_paths)
+    bundle_dir.rmdir()
+    _safe_unlink_staging_artifact(
+        staging_snapshot,
+        staging_dir=args.staging_dir,
+        allowed_names={"remote-staging-backup.db"},
+    )
+    download_dir.mkdir(mode=0o700)
+    _gh(
+        "release", "download", args.release_tag, "--repo", args.remote_repository,
+        "--dir", str(download_dir), timeout=21_600,
+    )
+    downloaded_manifest = download_dir / manifest_path.name
+    expected_manifest = local_assets[manifest_path.name]["sha256"]
+    if not downloaded_manifest.is_file() or _sha256_file(downloaded_manifest) != expected_manifest:
+        raise RemoteBackupCLIError("REMOTE_BACKUP_REDOWNLOAD_MANIFEST_MISMATCH")
+    restore_sqlite_backup_bundle(
+        manifest_path=downloaded_manifest,
+        bundle_dir=download_dir,
+        target=args.restore_target,
+        key=key,
+    )
+
+
+def _encryption_evidence(
+    *, manifest: dict[str, Any], manifest_path: Path, local_assets: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
+    return {
+        "algorithm": "AES-256-GCM",
+        "compression": "zlib",
+        "manifest_asset_name": manifest_path.name,
+        "manifest_sha256": local_assets[manifest_path.name]["sha256"],
+        "plaintext_sha256": manifest["plaintext_sha256"],
+        "ciphertext_sha256": manifest["ciphertext_sha256"],
+        "chunk_count": len(manifest["chunks"]),
+    }
+
+
+def _cleanup_staging(
+    *,
+    args: argparse.Namespace,
+    staging_snapshot: Path,
+    bundle_dir: Path,
+    download_dir: Path,
+    success: bool,
+) -> None:
+    _safe_unlink_staging_artifact(
+        staging_snapshot,
+        staging_dir=args.staging_dir,
+        allowed_names={"remote-staging-backup.db"},
+    )
+    if bundle_dir.exists() and not bundle_dir.is_symlink():
+        shutil.rmtree(bundle_dir, ignore_errors=True)
+    if download_dir.exists() and not download_dir.is_symlink():
+        shutil.rmtree(download_dir, ignore_errors=True)
+    if not success:
+        _safe_unlink_staging_artifact(
+            args.restore_target,
+            staging_dir=args.staging_dir,
+            allowed_names={args.restore_target.name},
+        )
+
+
+def main() -> int:
+    parser = _build_parser()
+    args = parser.parse_args()
+    staging_snapshot, bundle_dir, download_dir = _validated_layout(parser, args)
     release_published = False
     success = False
     try:
@@ -259,157 +438,56 @@ def main() -> int:
         _assert_private_repository(args.remote_repository)
         if args.source_failure_domain == args.destination_failure_domain:
             raise RemoteBackupCLIError("FAILURE_DOMAIN_NOT_INDEPENDENT")
-        bundle_dir.mkdir(mode=0o700)
-        backup_started_at = int(time.time())
-        source_identity = _online_backup(args.source, staging_snapshot)
-        backup_completed_at = int(time.time())
-        backup_audit = audit_sqlite_snapshot(staging_snapshot)
-        manifest = encrypt_sqlite_backup_bundle(
-            source=staging_snapshot,
-            output_dir=bundle_dir,
-            prefix="waterfall_registry",
-            key=key,
-            max_chunk_bytes=args.max_chunk_bytes,
+        snapshot = _prepare_encrypted_snapshot(
+            args=args, key=key, staging_snapshot=staging_snapshot, bundle_dir=bundle_dir
         )
-        if (
-            manifest.get("plaintext_sha256") != backup_audit.get("file_sha256")
-            or manifest.get("plaintext_size_bytes") != backup_audit.get("file_size_bytes")
-        ):
-            raise RemoteBackupCLIError("REMOTE_BACKUP_ENCRYPTED_PLAINTEXT_IDENTITY_MISMATCH")
-        manifest_path = bundle_dir / "waterfall_registry.manifest.json"
-        upload_paths = [
-            manifest_path,
-            *[bundle_dir / item["name"] for item in manifest["chunks"]],
-        ]
-        local_assets = _asset_material(upload_paths)
-
-        _gh(
-            "release",
-            "create",
-            args.release_tag,
-            "--repo",
-            args.remote_repository,
-            "--draft",
-            "--title",
-            f"WaterfallHunter DR {args.release_tag}",
-            "--notes",
-            "Encrypted off-host SQLite disaster-recovery backup. No plaintext database is stored in this release.",
-            timeout=120,
-        )
-        release_created = True
-        _gh(
-            "release",
-            "upload",
-            args.release_tag,
-            *[str(path) for path in upload_paths],
-            "--repo",
-            args.remote_repository,
-            timeout=21_600,
-        )
-        _gh(
-            "release",
-            "edit",
-            args.release_tag,
-            "--repo",
-            args.remote_repository,
-            "--draft=false",
-            timeout=120,
+        release_id, remote_assets, trusted_remote = _publish_and_verify_remote(
+            args=args,
+            upload_paths=snapshot["upload_paths"],
+            local_assets=snapshot["local_assets"],
         )
         release_published = True
-
-        release_id, remote_assets = _release_assets(
-            repository=args.remote_repository,
-            tag_name=args.release_tag,
-            expected=local_assets,
-        )
-        trusted_remote = resolve_github_release_backup_verification(
-            repository=args.remote_repository,
-            release_id=release_id,
-            tag_name=args.release_tag,
-            expected_assets=remote_assets,
-        )
-
-        _remove_files(upload_paths)
-        bundle_dir.rmdir()
-        # Off-host publication is now independently verified. Retire the local
-        # plaintext staging copy before re-download so disk peak stays bounded.
-        _safe_unlink_staging_artifact(
-            staging_snapshot,
-            staging_dir=args.staging_dir,
-            allowed_names={"remote-staging-backup.db"},
-        )
-        download_dir.mkdir(mode=0o700)
-        _gh(
-            "release",
-            "download",
-            args.release_tag,
-            "--repo",
-            args.remote_repository,
-            "--dir",
-            str(download_dir),
-            timeout=21_600,
-        )
-        downloaded_manifest = download_dir / manifest_path.name
-        if (
-            not downloaded_manifest.is_file()
-            or _sha256_file(downloaded_manifest) != local_assets[manifest_path.name]["sha256"]
-        ):
-            raise RemoteBackupCLIError("REMOTE_BACKUP_REDOWNLOAD_MANIFEST_MISMATCH")
-
-        restore_sqlite_backup_bundle(
-            manifest_path=downloaded_manifest,
-            bundle_dir=download_dir,
-            target=args.restore_target,
+        _redownload_and_restore(
+            args=args,
             key=key,
+            staging_snapshot=staging_snapshot,
+            bundle_dir=bundle_dir,
+            download_dir=download_dir,
+            manifest_path=snapshot["manifest_path"],
+            upload_paths=snapshot["upload_paths"],
+            local_assets=snapshot["local_assets"],
         )
-        encryption = {
-            "algorithm": "AES-256-GCM",
-            "compression": "zlib",
-            "manifest_asset_name": manifest_path.name,
-            "manifest_sha256": local_assets[manifest_path.name]["sha256"],
-            "plaintext_sha256": manifest["plaintext_sha256"],
-            "ciphertext_sha256": manifest["ciphertext_sha256"],
-            "chunk_count": len(manifest["chunks"]),
-        }
         report = build_remote_backup_certification(
             source=args.source,
-            source_identity=source_identity,
+            source_identity=snapshot["source_identity"],
             source_failure_domain=args.source_failure_domain,
             destination_failure_domain=args.destination_failure_domain,
-            backup_audit=backup_audit,
+            backup_audit=snapshot["backup_audit"],
             restored_backup_path=args.restore_target,
-            repository=args.remote_repository,
-            release_id=release_id,
-            tag_name=args.release_tag,
             remote_assets=remote_assets,
             remote_verification=trusted_remote,
-            backup_started_at=backup_started_at,
-            backup_completed_at=backup_completed_at,
-            encryption=encryption,
+            backup_started_at=snapshot["backup_started_at"],
+            backup_completed_at=snapshot["backup_completed_at"],
+            encryption=_encryption_evidence(
+                manifest=snapshot["manifest"],
+                manifest_path=snapshot["manifest_path"],
+                local_assets=snapshot["local_assets"],
+            ),
         )
-        _write_report_atomic(
-            args.report,
-            report,
-            allowed_directory=args.staging_dir,
-        )
+        _write_report_atomic(args.report, report, allowed_directory=args.staging_dir)
         success = True
-        print(
-            json.dumps(
-                {
-                    "ok": True,
-                    "status": report["status"],
-                    "certification_sha256": report["certification_sha256"],
-                    "remote_repository": args.remote_repository,
-                    "remote_release_id": release_id,
-                    "remote_tag_name": args.release_tag,
-                    "report": str(args.report),
-                    "local_restore_path": str(args.restore_target),
-                    "production_migration_authorized": False,
-                    "production_deployment_authorized": False,
-                },
-                sort_keys=True,
-            )
-        )
+        print(json.dumps({
+            "ok": True,
+            "status": report["status"],
+            "certification_sha256": report["certification_sha256"],
+            "remote_repository": args.remote_repository,
+            "remote_release_id": release_id,
+            "remote_tag_name": args.release_tag,
+            "report": str(args.report),
+            "local_restore_path": str(args.restore_target),
+            "production_migration_authorized": False,
+            "production_deployment_authorized": False,
+        }, sort_keys=True))
         return 0
     except (
         BackupCertificationError,
@@ -419,49 +497,22 @@ def main() -> int:
         TrustedRemoteBackupVerificationError,
         OSError,
     ) as error:
-        if release_created and not release_published:
-            try:
-                _gh(
-                    "release",
-                    "delete",
-                    args.release_tag,
-                    "--repo",
-                    args.remote_repository,
-                    "--yes",
-                    "--cleanup-tag",
-                    timeout=120,
-                )
-            except RemoteBackupCLIError:
-                pass
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "reason": str(error),
-                    "published_remote_release_preserved": release_published,
-                    "remote_repository": args.remote_repository,
-                    "remote_tag_name": args.release_tag,
-                },
-                sort_keys=True,
-            )
-        )
+        print(json.dumps({
+            "ok": False,
+            "reason": str(error),
+            "published_remote_release_preserved": release_published,
+            "remote_repository": args.remote_repository,
+            "remote_tag_name": args.release_tag,
+        }, sort_keys=True))
         return 2
     finally:
-        _safe_unlink_staging_artifact(
-            staging_snapshot,
-            staging_dir=args.staging_dir,
-            allowed_names={"remote-staging-backup.db"},
+        _cleanup_staging(
+            args=args,
+            staging_snapshot=staging_snapshot,
+            bundle_dir=bundle_dir,
+            download_dir=download_dir,
+            success=success,
         )
-        if bundle_dir.exists() and not bundle_dir.is_symlink():
-            shutil.rmtree(bundle_dir, ignore_errors=True)
-        if download_dir.exists() and not download_dir.is_symlink():
-            shutil.rmtree(download_dir, ignore_errors=True)
-        if not success:
-            _safe_unlink_staging_artifact(
-                args.restore_target,
-                staging_dir=args.staging_dir,
-                allowed_names={args.restore_target.name},
-            )
 
 
 if __name__ == "__main__":

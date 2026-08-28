@@ -45,3 +45,41 @@ def test_cleanup_never_unlinks_outside_staging_directory(tmp_path: Path) -> None
         )
 
     assert outside.read_bytes() == b"operator-owned"
+
+
+def test_release_create_failure_attempts_draft_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def fake_gh(*arguments: str, timeout: int = 120) -> str:
+        calls.append(tuple(arguments))
+        if arguments[:2] == ("release", "create"):
+            raise cli.RemoteBackupCLIError("SIMULATED_CREATE_TIMEOUT")
+        return ""
+
+    monkeypatch.setattr(cli, "_gh", fake_gh)
+    with pytest.raises(cli.RemoteBackupCLIError, match="SIMULATED_CREATE_TIMEOUT"):
+        cli._publish_release_assets(
+            repository="cavack/wfh-dr",
+            tag_name="wfh-dr-timeout-test",
+            upload_paths=[Path("/tmp/part.enc")],
+        )
+
+    assert any(
+        call[:3] == ("release", "delete", "wfh-dr-timeout-test")
+        for call in calls
+    )
+
+
+def test_gh_commands_pin_github_dot_com_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    observed_env: dict[str, str] = {}
+
+    class Result:
+        stdout = "{}"
+
+    def fake_run(_arguments, **kwargs):
+        observed_env.update(kwargs.get("env") or {})
+        return Result()
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    cli._gh("api", "user")
+    assert observed_env.get("GH_HOST") == "github.com"

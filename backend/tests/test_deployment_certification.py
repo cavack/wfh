@@ -596,6 +596,7 @@ def _remoteize_request(tmp_path: Path, request: dict, observed_now: int) -> dict
     restore_sqlite_snapshot(source=staging, target=restored)
     verification_body = {
         "contract_version": "github_release_backup_verification_v1",
+        "github_host": "github.com",
         "repository": "cavack/wfh-dr",
         "release_id": 77,
         "tag_name": "wfh-dr-test",
@@ -625,9 +626,6 @@ def _remoteize_request(tmp_path: Path, request: dict, observed_now: int) -> dict
         destination_failure_domain="github-private-release:cavack/wfh-dr",
         backup_audit=backup_audit,
         restored_backup_path=restored,
-        repository="cavack/wfh-dr",
-        release_id=77,
-        tag_name="wfh-dr-test",
         remote_assets=[
             {"name": "part-000.enc", "id": 101, "size_bytes": 1234, "sha256": "a" * 64},
             {"name": "waterfall_registry.manifest.json", "id": 102, "size_bytes": 456, "sha256": "b" * 64},

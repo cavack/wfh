@@ -164,9 +164,6 @@ def build_remote_backup_certification(
     destination_failure_domain: str,
     backup_audit: dict[str, Any],
     restored_backup_path: Path,
-    repository: str,
-    release_id: int,
-    tag_name: str,
     remote_assets: list[dict[str, Any]],
     remote_verification: TrustedRemoteBackupVerification | dict[str, Any],
     backup_started_at: int,
@@ -195,6 +192,8 @@ def build_remote_backup_certification(
         backup_audit.get("contract_version") != "sqlite_snapshot_audit_v1"
         or backup_audit.get("integrity_check") != "ok"
         or backup_audit.get("foreign_key_violation_count") != 0
+        or any(field not in backup_audit for field in _COMPARABLE_FIELDS)
+        or "file_sha256" not in backup_audit
         or not isinstance(claimed_audit_hash, str)
         or claimed_audit_hash != canonical_sha256(audit_material)
     ):
@@ -220,9 +219,7 @@ def build_remote_backup_certification(
     )
     trusted = _trusted_verification(remote_verification)
     if (
-        trusted.repository != repository
-        or trusted.release_id != release_id
-        or trusted.tag_name != tag_name
+        trusted.github_host != "github.com"
         or trusted.private_repository is not True
         or trusted.asset_ids != {item["name"]: item["id"] for item in assets}
         or trusted.asset_sha256 != {item["name"]: item["sha256"] for item in assets}
@@ -238,9 +235,9 @@ def build_remote_backup_certification(
         "destination_failure_domain": destination_failure_domain,
         "off_host_separation_enforced": True,
         "storage_kind": "github_private_release",
-        "remote_repository": repository,
-        "remote_release_id": release_id,
-        "remote_tag_name": tag_name,
+        "remote_repository": trusted.repository,
+        "remote_release_id": trusted.release_id,
+        "remote_tag_name": trusted.tag_name,
         "remote_assets": assets,
         "remote_verification": trusted.model_dump(mode="python"),
         "backup_started_at": backup_started_at,

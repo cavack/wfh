@@ -28,6 +28,7 @@ class TrustedRemoteBackupVerification(BaseModel):
     contract_version: Literal["github_release_backup_verification_v1"] = (
         "github_release_backup_verification_v1"
     )
+    github_host: Literal["github.com"]
     repository: str = Field(min_length=3)
     release_id: int = Field(ge=1, strict=True)
     tag_name: str = Field(min_length=1)
@@ -73,7 +74,7 @@ def _gh_executable() -> str:
 def _gh_json(endpoint: str) -> dict[str, Any]:
     try:
         completed = subprocess.run(
-            [_gh_executable(), "api", endpoint],
+            [_gh_executable(), "api", "--hostname", "github.com", endpoint],
             check=True,
             capture_output=True,
             text=True,
@@ -106,23 +107,22 @@ def _epoch(value: Any) -> int:
     return result
 
 
-def resolve_github_release_backup_verification(
-    *,
-    repository: str,
-    release_id: int,
-    tag_name: str,
-    expected_assets: list[dict[str, Any]],
-) -> TrustedRemoteBackupVerification:
-    """Prove one private GitHub release asset set by exact IDs, sizes and digests."""
+def _validate_request_identity(
+    *, repository: str, release_id: int, tag_name: str, expected_assets: list[dict[str, Any]]
+) -> None:
     if (
         not _REPOSITORY.fullmatch(repository)
         or not isinstance(release_id, int)
         or isinstance(release_id, bool)
         or release_id < 1
+        or not isinstance(tag_name, str)
+        or not tag_name.strip()
+        or not expected_assets
     ):
         raise TrustedRemoteBackupVerificationError("REMOTE_BACKUP_IDENTITY_INVALID")
-    if not isinstance(tag_name, str) or not tag_name.strip() or not expected_assets:
-        raise TrustedRemoteBackupVerificationError("REMOTE_BACKUP_IDENTITY_INVALID")
+
+
+def _require_private_repository(repository: str) -> None:
     repo = _gh_json(f"repos/{repository}")
     if (
         repo.get("full_name") != repository
@@ -133,6 +133,8 @@ def resolve_github_release_backup_verification(
             "REMOTE_BACKUP_REPOSITORY_NOT_PRIVATE"
         )
 
+
+def _require_release(repository: str, release_id: int, tag_name: str) -> dict[str, Any]:
     release = _gh_json(f"repos/{repository}/releases/{release_id}")
     if (
         release.get("id") != release_id
@@ -146,7 +148,12 @@ def resolve_github_release_backup_verification(
     assets = release.get("assets")
     if not isinstance(assets, list):
         raise TrustedRemoteBackupVerificationError("REMOTE_BACKUP_ASSETS_INVALID")
+    return release
 
+
+def _normalize_expected_assets(
+    expected_assets: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
     expected_by_name: dict[str, dict[str, Any]] = {}
     for item in expected_assets:
         if not isinstance(item, dict):
@@ -157,23 +164,31 @@ def resolve_github_release_backup_verification(
         asset_id = item.get("id")
         size = item.get("size_bytes")
         digest = item.get("sha256")
-        if (
-            not isinstance(name, str)
-            or not name
-            or not isinstance(asset_id, int)
-            or isinstance(asset_id, bool)
-            or asset_id < 1
-            or not isinstance(size, int)
-            or isinstance(size, bool)
-            or size < 1
-            or not isinstance(digest, str)
-            or re.fullmatch(SHA256_PATTERN, digest) is None
-            or name in expected_by_name
-        ):
+        valid = (
+            isinstance(name, str)
+            and bool(name)
+            and isinstance(asset_id, int)
+            and not isinstance(asset_id, bool)
+            and asset_id >= 1
+            and isinstance(size, int)
+            and not isinstance(size, bool)
+            and size >= 1
+            and isinstance(digest, str)
+            and re.fullmatch(SHA256_PATTERN, digest) is not None
+            and name not in expected_by_name
+        )
+        if not valid:
             raise TrustedRemoteBackupVerificationError(
                 "REMOTE_BACKUP_EXPECTED_ASSET_INVALID"
             )
         expected_by_name[name] = item
+    return expected_by_name
+
+
+def _verified_asset_maps(
+    *, release: dict[str, Any], expected_by_name: dict[str, dict[str, Any]]
+) -> tuple[dict[str, int], dict[str, str]]:
+    assets = release["assets"]
     actual_by_name = {
         str(item.get("name")): item
         for item in assets
@@ -183,7 +198,6 @@ def resolve_github_release_backup_verification(
         raise TrustedRemoteBackupVerificationError(
             "REMOTE_BACKUP_ASSET_SET_MISMATCH"
         )
-
     asset_ids: dict[str, int] = {}
     asset_sha256: dict[str, str] = {}
     for name, expected in expected_by_name.items():
@@ -199,8 +213,32 @@ def resolve_github_release_backup_verification(
             )
         asset_ids[name] = int(actual["id"])
         asset_sha256[name] = str(expected["sha256"])
+    return asset_ids, asset_sha256
+
+
+def resolve_github_release_backup_verification(
+    *,
+    repository: str,
+    release_id: int,
+    tag_name: str,
+    expected_assets: list[dict[str, Any]],
+) -> TrustedRemoteBackupVerification:
+    """Prove one private github.com release asset set by exact IDs, sizes and digests."""
+    _validate_request_identity(
+        repository=repository,
+        release_id=release_id,
+        tag_name=tag_name,
+        expected_assets=expected_assets,
+    )
+    _require_private_repository(repository)
+    release = _require_release(repository, release_id, tag_name)
+    expected_by_name = _normalize_expected_assets(expected_assets)
+    asset_ids, asset_sha256 = _verified_asset_maps(
+        release=release, expected_by_name=expected_by_name
+    )
     body = {
         "contract_version": "github_release_backup_verification_v1",
+        "github_host": "github.com",
         "repository": repository,
         "release_id": release_id,
         "tag_name": tag_name,

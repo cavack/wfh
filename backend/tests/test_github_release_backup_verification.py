@@ -38,6 +38,7 @@ def test_private_release_assets_are_authoritatively_verified(monkeypatch: pytest
         tag_name="wfh-dr-test",
         expected_assets=[{"name": "part-000.enc", "id": 101, "size_bytes": 1234, "sha256": "a" * 64}],
     )
+    assert report.github_host == "github.com"
     assert report.private_repository is True
     assert report.release_id == 77
     assert report.asset_sha256 == {"part-000.enc": "a" * 64}
@@ -60,3 +61,24 @@ def test_remote_backup_verification_rejects_asset_digest_mismatch(monkeypatch: p
             repository="cavack/wfh-dr", release_id=77, tag_name="wfh-dr-test",
             expected_assets=[{"name": "part-000.enc", "id": 101, "size_bytes": 1234, "sha256": "a" * 64}],
         )
+
+
+def test_github_api_is_pinned_to_github_dot_com(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[str] = []
+
+    class Result:
+        stdout = '{"ok": true}'
+
+    def fake_run(arguments, **_kwargs):
+        observed.extend(str(value) for value in arguments)
+        return Result()
+
+    monkeypatch.setattr(remote, "_gh_executable", lambda: "/usr/bin/gh")
+    monkeypatch.setattr(remote.subprocess, "run", fake_run)
+
+    assert remote._gh_json("repos/cavack/wfh-dr") == {"ok": True}
+    assert observed == [
+        "/usr/bin/gh", "api", "--hostname", "github.com", "repos/cavack/wfh-dr"
+    ]

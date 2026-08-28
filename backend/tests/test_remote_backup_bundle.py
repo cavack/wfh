@@ -74,3 +74,29 @@ def test_restore_rejects_tampered_encrypted_chunk(tmp_path: Path) -> None:
             target=restored,
             key=key,
         )
+
+
+def test_restore_wrong_key_fails_closed_without_plaintext_artifact(tmp_path: Path) -> None:
+    source = tmp_path / "wrong-key-backup.db"
+    output_dir = tmp_path / "wrong-key-bundle"
+    output_dir.mkdir()
+    restored = tmp_path / "wrong-key-restored.db"
+    key = os.urandom(32)
+    _database(source)
+    encrypt_sqlite_backup_bundle(
+        source=source,
+        output_dir=output_dir,
+        prefix="registry",
+        key=key,
+        max_chunk_bytes=1024,
+    )
+
+    with pytest.raises(RemoteBackupBundleError):
+        restore_sqlite_backup_bundle(
+            manifest_path=output_dir / "registry.manifest.json",
+            bundle_dir=output_dir,
+            target=restored,
+            key=os.urandom(32),
+        )
+    assert not restored.exists()
+    assert not restored.with_name(f".{restored.name}.partial").exists()

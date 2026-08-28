@@ -121,6 +121,7 @@ def _remote_certification(tmp_path: Path) -> dict:
     restore_sqlite_snapshot(source=staging, target=restored)
     verification_body = {
         "contract_version": "github_release_backup_verification_v1",
+        "github_host": "github.com",
         "repository": "cavack/wfh-dr",
         "release_id": 77,
         "tag_name": "wfh-dr-test",
@@ -149,9 +150,6 @@ def _remote_certification(tmp_path: Path) -> dict:
         destination_failure_domain="github-private-release:cavack/wfh-dr",
         backup_audit=backup_audit,
         restored_backup_path=restored,
-        repository="cavack/wfh-dr",
-        release_id=77,
-        tag_name="wfh-dr-test",
         remote_assets=[
             {"name": "part-000.enc", "id": 101, "size_bytes": 1234, "sha256": "a" * 64},
             {"name": "waterfall_registry.manifest.json", "id": 102, "size_bytes": 456, "sha256": "b" * 64},
@@ -209,3 +207,29 @@ def test_sequential_rehearsal_reuses_one_working_target_and_finishes_rolled_back
     assert report["post_migration_audit"]["user_version"] == CURRENT_RUNTIME_SCHEMA_VERSION
     assert report["rollback_audit"]["user_version"] == 0
     assert report["rollback_matches_baseline"] is True
+
+
+def test_sequential_rehearsal_cleans_working_target_after_migration_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    certification = _certification(tmp_path)
+    destination = tmp_path / "independent"
+    working = (destination / "sequential-failure.db").resolve()
+
+    import waterfallhunter.core.migration_rehearsal as module
+
+    def fail_migration(_target: Path, _revision: str) -> dict:
+        raise MigrationRehearsalError("EXPECTED_FAILURE")
+
+    monkeypatch.setattr(module, "_run_canonical_migration", fail_migration)
+    with pytest.raises(MigrationRehearsalError, match="EXPECTED_FAILURE"):
+        module.rehearse_migration_and_rollback_sequential(
+            backup_certification=certification,
+            working_target=working,
+            source_revision="a" * 40,
+        )
+
+    assert not working.exists()
+    assert not Path(f"{working}-wal").exists()
+    assert not Path(f"{working}-shm").exists()

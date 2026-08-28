@@ -30,6 +30,7 @@ def _database(path: Path) -> None:
 def _trusted() -> TrustedRemoteBackupVerification:
     body = {
         "contract_version": "github_release_backup_verification_v1",
+        "github_host": "github.com",
         "repository": "cavack/wfh-dr",
         "release_id": 77,
         "tag_name": "wfh-dr-test",
@@ -95,9 +96,6 @@ def test_remote_backup_certificate_binds_off_host_release_and_restored_sqlite(
         destination_failure_domain="github-private-release:cavack/wfh-dr",
         backup_audit=backup_audit,
         restored_backup_path=restored,
-        repository="cavack/wfh-dr",
-        release_id=77,
-        tag_name="wfh-dr-test",
         remote_assets=assets,
         remote_verification=_trusted(),
         backup_started_at=1_787_956_900,
@@ -126,22 +124,23 @@ def test_remote_backup_certificate_rejects_same_failure_domain(tmp_path: Path) -
     _database(staging)
     _database(restored)
     backup_audit = audit_sqlite_snapshot(staging)
+    source_stat = source.stat()
+    remote_assets = _assets()
+    remote_verification = _trusted()
+    encryption = _encryption(backup_audit)
     with pytest.raises(RemoteBackupCertificationError, match="FAILURE_DOMAIN_NOT_INDEPENDENT"):
         build_remote_backup_certification(
             source=source,
-            source_identity={"device_id": source.stat().st_dev, "inode": source.stat().st_ino},
+            source_identity={"device_id": source_stat.st_dev, "inode": source_stat.st_ino},
             source_failure_domain="same",
             destination_failure_domain="same",
             backup_audit=backup_audit,
             restored_backup_path=restored,
-            repository="cavack/wfh-dr",
-            release_id=77,
-            tag_name="wfh-dr-test",
-            remote_assets=_assets(),
-            remote_verification=_trusted(),
+            remote_assets=remote_assets,
+            remote_verification=remote_verification,
             backup_started_at=1_787_956_900,
             backup_completed_at=1_787_956_950,
-            encryption=_encryption(backup_audit),
+            encryption=encryption,
         )
 
 
@@ -164,9 +163,6 @@ def test_remote_backup_certificate_accepts_precomputed_audit_after_plaintext_sta
         destination_failure_domain="github-private-release:cavack/wfh-dr",
         backup_audit=backup_audit,
         restored_backup_path=restored,
-        repository="cavack/wfh-dr",
-        release_id=77,
-        tag_name="wfh-dr-test",
         remote_assets=_assets(),
         remote_verification=_trusted(),
         backup_started_at=1_787_956_900,
@@ -186,20 +182,57 @@ def test_remote_backup_certificate_rejects_bundle_without_manifest_and_plaintext
     _database(source)
     _database(staging)
     _database(restored)
+    source_stat = source.stat()
+    backup_audit = audit_sqlite_snapshot(staging)
+    remote_verification = _trusted()
+    invalid_assets = [{"name": "part-000.enc", "id": 101, "size_bytes": 1234, "sha256": "a" * 64}]
+    invalid_encryption = {"algorithm": "AES-256-GCM", "manifest_sha256": "b" * 64}
     with pytest.raises(RemoteBackupCertificationError, match="REMOTE_BACKUP_ENCRYPTION_INVALID"):
         build_remote_backup_certification(
             source=source,
-            source_identity={"device_id": source.stat().st_dev, "inode": source.stat().st_ino},
+            source_identity={"device_id": source_stat.st_dev, "inode": source_stat.st_ino},
             source_failure_domain="production-vda1",
             destination_failure_domain="github-private-release:cavack/wfh-dr",
-            backup_audit=audit_sqlite_snapshot(staging),
+            backup_audit=backup_audit,
             restored_backup_path=restored,
-            repository="cavack/wfh-dr",
-            release_id=77,
-            tag_name="wfh-dr-test",
-            remote_assets=[{"name": "part-000.enc", "id": 101, "size_bytes": 1234, "sha256": "a" * 64}],
-            remote_verification=_trusted(),
+            remote_assets=invalid_assets,
+            remote_verification=remote_verification,
             backup_started_at=1_787_956_900,
             backup_completed_at=1_787_956_950,
-            encryption={"algorithm": "AES-256-GCM", "manifest_sha256": "b" * 64},
+            encryption=invalid_encryption,
+        )
+
+
+def test_remote_backup_certificate_rejects_truncated_baseline_audit_cleanly(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source-truncated-audit.db"
+    staging = tmp_path / "staging-truncated-audit.db"
+    restored = tmp_path / "restored-truncated-audit.db"
+    _database(source)
+    _database(staging)
+    _database(restored)
+    backup_audit = audit_sqlite_snapshot(staging)
+    backup_audit.pop("schema_sha256")
+    audit_material = {key: value for key, value in backup_audit.items() if key != "audit_sha256"}
+    backup_audit["audit_sha256"] = canonical_sha256(audit_material)
+
+    source_stat = source.stat()
+    remote_assets = _assets()
+    remote_verification = _trusted()
+    valid_audit = audit_sqlite_snapshot(staging)
+    encryption = _encryption(valid_audit)
+    with pytest.raises(RemoteBackupCertificationError, match="REMOTE_BACKUP_BASELINE_AUDIT_INVALID"):
+        build_remote_backup_certification(
+            source=source,
+            source_identity={"device_id": source_stat.st_dev, "inode": source_stat.st_ino},
+            source_failure_domain="production-vda1",
+            destination_failure_domain="github-private-release:cavack/wfh-dr",
+            backup_audit=backup_audit,
+            restored_backup_path=restored,
+            remote_assets=remote_assets,
+            remote_verification=remote_verification,
+            backup_started_at=1_787_956_900,
+            backup_completed_at=1_787_956_950,
+            encryption=encryption,
         )
