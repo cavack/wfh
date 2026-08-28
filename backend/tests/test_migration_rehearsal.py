@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 import sqlite3
 from pathlib import Path
 
@@ -119,6 +122,28 @@ def _remote_certification(tmp_path: Path) -> dict:
     _empty_database(source)
     restore_sqlite_snapshot(source=source, target=staging)
     restore_sqlite_snapshot(source=staging, target=restored)
+    backup_audit = audit_sqlite_snapshot(staging)
+    manifest = {
+        "contract_version": "wfh_encrypted_backup_bundle_v1",
+        "algorithm": "AES-256-GCM",
+        "compression": "zlib",
+        "nonce_b64": base64.b64encode(b"n" * 12).decode("ascii"),
+        "tag_b64": base64.b64encode(b"t" * 16).decode("ascii"),
+        "plaintext_size_bytes": backup_audit["file_size_bytes"],
+        "plaintext_sha256": backup_audit["file_sha256"],
+        "ciphertext_sha256": "c" * 64,
+        "max_chunk_bytes": 1_500_000_000,
+        "chunks": [{
+            "name": "part-000.enc",
+            "index": 0,
+            "size_bytes": 1234,
+            "sha256": "a" * 64,
+        }],
+    }
+    manifest_payload = (
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    manifest_sha256 = hashlib.sha256(manifest_payload).hexdigest()
     verification_body = {
         "contract_version": "github_release_backup_verification_v1",
         "github_host": "github.com",
@@ -133,7 +158,7 @@ def _remote_certification(tmp_path: Path) -> dict:
         },
         "asset_sha256": {
             "part-000.enc": "a" * 64,
-            "waterfall_registry.manifest.json": "b" * 64,
+            "waterfall_registry.manifest.json": manifest_sha256,
         },
     }
     trusted = TrustedRemoteBackupVerification.model_validate(
@@ -142,7 +167,6 @@ def _remote_certification(tmp_path: Path) -> dict:
             "verification_report_sha256": canonical_sha256(verification_body),
         }
     )
-    backup_audit = audit_sqlite_snapshot(staging)
     return build_remote_backup_certification(
         source=source,
         source_identity={"device_id": source.stat().st_dev, "inode": source.stat().st_ino},
@@ -152,7 +176,12 @@ def _remote_certification(tmp_path: Path) -> dict:
         restored_backup_path=restored,
         remote_assets=[
             {"name": "part-000.enc", "id": 101, "size_bytes": 1234, "sha256": "a" * 64},
-            {"name": "waterfall_registry.manifest.json", "id": 102, "size_bytes": 456, "sha256": "b" * 64},
+            {
+                "name": "waterfall_registry.manifest.json",
+                "id": 102,
+                "size_bytes": len(manifest_payload),
+                "sha256": manifest_sha256,
+            },
         ],
         remote_verification=trusted,
         backup_started_at=1_787_956_900,
@@ -161,10 +190,11 @@ def _remote_certification(tmp_path: Path) -> dict:
             "algorithm": "AES-256-GCM",
             "compression": "zlib",
             "manifest_asset_name": "waterfall_registry.manifest.json",
-            "manifest_sha256": "b" * 64,
+            "manifest_sha256": manifest_sha256,
             "plaintext_sha256": backup_audit["file_sha256"],
             "ciphertext_sha256": "c" * 64,
             "chunk_count": 1,
+            "manifest": manifest,
         },
     )
 

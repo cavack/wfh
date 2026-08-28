@@ -8,6 +8,7 @@ import base64
 import hashlib
 import json
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -26,6 +27,7 @@ TRUSTED_KEY_NAME = "wfh-dr-aes256.key"
 from scripts.certify_sqlite_backup import _canonical_absolute_path, _write_report_atomic
 from waterfallhunter.core.github_release_backup_verification import (
     TrustedRemoteBackupVerificationError,
+    _gh_executable as _trusted_gh_executable,
     resolve_github_release_backup_verification,
 )
 from waterfallhunter.core.remote_backup_bundle import (
@@ -97,14 +99,15 @@ def _load_key(path: Path) -> bytes:
 
 
 def _gh(*arguments: str, timeout: int = 120) -> str:
-    executable = Path("/usr/bin/gh")
-    if not executable.is_file() or executable.is_symlink():
-        raise RemoteBackupCLIError("GITHUB_CLI_UNAVAILABLE_OR_UNTRUSTED")
+    try:
+        executable = _trusted_gh_executable()
+    except TrustedRemoteBackupVerificationError as error:
+        raise RemoteBackupCLIError("GITHUB_CLI_UNAVAILABLE_OR_UNTRUSTED") from error
     environment = os.environ.copy()
     environment["GH_HOST"] = "github.com"
     try:
         completed = subprocess.run(
-            [str(executable), *arguments],
+            [executable, *arguments],
             check=True,
             capture_output=True,
             text=True,
@@ -208,41 +211,108 @@ def _remove_files(paths: list[Path]) -> None:
         path.unlink(missing_ok=True)
 
 
-def _delete_draft_release_best_effort(*, repository: str, tag_name: str) -> None:
+def _release_notes(ownership_marker: str) -> str:
+    return (
+        "Encrypted off-host SQLite disaster-recovery backup. "
+        "No plaintext database is stored in this release.\n\n"
+        f"{ownership_marker}"
+    )
+
+
+def _owned_draft_release_id(
+    *, repository: str, tag_name: str, ownership_marker: str
+) -> int | None:
+    try:
+        release = _gh_json(f"repos/{repository}/releases/tags/{tag_name}")
+    except RemoteBackupCLIError:
+        return None
+    release_id = release.get("id")
+    if (
+        not isinstance(release_id, int)
+        or isinstance(release_id, bool)
+        or release_id < 1
+        or release.get("tag_name") != tag_name
+        or release.get("draft") is not True
+        or release.get("body") != _release_notes(ownership_marker)
+    ):
+        return None
+    return release_id
+
+
+def _delete_owned_draft_release_best_effort(
+    *, repository: str, tag_name: str, ownership_marker: str
+) -> None:
+    release_id = _owned_draft_release_id(
+        repository=repository,
+        tag_name=tag_name,
+        ownership_marker=ownership_marker,
+    )
+    if release_id is None:
+        return
     try:
         _gh(
-            "release", "delete", tag_name, "--repo", repository,
-            "--yes", "--cleanup-tag", timeout=120,
+            "api", "--method", "DELETE", "--hostname", "github.com",
+            f"repos/{repository}/releases/{release_id}", timeout=120,
+        )
+        _gh(
+            "api", "--method", "DELETE", "--hostname", "github.com",
+            f"repos/{repository}/git/refs/tags/{tag_name}", timeout=120,
         )
     except RemoteBackupCLIError:
-        pass
+        return
 
 
 def _publish_release_assets(
-    *, repository: str, tag_name: str, upload_paths: list[Path]
-) -> None:
+    *,
+    repository: str,
+    tag_name: str,
+    upload_paths: list[Path],
+    ownership_marker: str | None = None,
+) -> int:
+    marker = ownership_marker or f"wfh-backup-run:{secrets.token_hex(16)}"
     try:
         _gh(
             "release", "create", tag_name, "--repo", repository, "--draft",
             "--title", f"WaterfallHunter DR {tag_name}", "--notes",
-            "Encrypted off-host SQLite disaster-recovery backup. No plaintext database is stored in this release.",
+            _release_notes(marker),
             timeout=120,
         )
     except RemoteBackupCLIError:
-        _delete_draft_release_best_effort(repository=repository, tag_name=tag_name)
+        _delete_owned_draft_release_best_effort(
+            repository=repository,
+            tag_name=tag_name,
+            ownership_marker=marker,
+        )
         raise
+    release_id = _owned_draft_release_id(
+        repository=repository,
+        tag_name=tag_name,
+        ownership_marker=marker,
+    )
+    if release_id is None:
+        _delete_owned_draft_release_best_effort(
+            repository=repository,
+            tag_name=tag_name,
+            ownership_marker=marker,
+        )
+        raise RemoteBackupCLIError("REMOTE_BACKUP_CREATED_RELEASE_IDENTITY_INVALID")
     try:
         _gh(
             "release", "upload", tag_name, *[str(path) for path in upload_paths],
             "--repo", repository, timeout=21_600,
         )
+        _gh(
+            "release", "edit", tag_name, "--repo", repository,
+            "--draft=false", timeout=120,
+        )
     except RemoteBackupCLIError:
-        _delete_draft_release_best_effort(repository=repository, tag_name=tag_name)
+        _delete_owned_draft_release_best_effort(
+            repository=repository,
+            tag_name=tag_name,
+            ownership_marker=marker,
+        )
         raise
-    _gh(
-        "release", "edit", tag_name, "--repo", repository,
-        "--draft=false", timeout=120,
-    )
+    return release_id
 
 
 def _safe_unlink_staging_artifact(
@@ -337,14 +407,9 @@ def _prepare_encrypted_snapshot(
     }
 
 
-def _publish_and_verify_remote(
-    *, args: argparse.Namespace, upload_paths: list[Path], local_assets: dict[str, dict[str, Any]]
+def _verify_published_remote(
+    *, args: argparse.Namespace, local_assets: dict[str, dict[str, Any]]
 ) -> tuple[int, list[dict[str, Any]], Any]:
-    _publish_release_assets(
-        repository=args.remote_repository,
-        tag_name=args.release_tag,
-        upload_paths=upload_paths,
-    )
     release_id, remote_assets = _release_assets(
         repository=args.remote_repository,
         tag_name=args.release_tag,
@@ -405,6 +470,7 @@ def _encryption_evidence(
         "plaintext_sha256": manifest["plaintext_sha256"],
         "ciphertext_sha256": manifest["ciphertext_sha256"],
         "chunk_count": len(manifest["chunks"]),
+        "manifest": manifest,
     }
 
 
@@ -447,12 +513,16 @@ def main() -> int:
         snapshot = _prepare_encrypted_snapshot(
             args=args, key=key, staging_snapshot=staging_snapshot, bundle_dir=bundle_dir
         )
-        release_id, remote_assets, trusted_remote = _publish_and_verify_remote(
-            args=args,
+        _publish_release_assets(
+            repository=args.remote_repository,
+            tag_name=args.release_tag,
             upload_paths=snapshot["upload_paths"],
-            local_assets=snapshot["local_assets"],
         )
         release_published = True
+        release_id, remote_assets, trusted_remote = _verify_published_remote(
+            args=args,
+            local_assets=snapshot["local_assets"],
+        )
         _redownload_and_restore(
             args=args,
             key=key,

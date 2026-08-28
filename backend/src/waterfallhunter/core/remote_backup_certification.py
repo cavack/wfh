@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -114,6 +117,7 @@ def validate_remote_encryption_evidence(
     plaintext_sha256 = encryption.get("plaintext_sha256")
     ciphertext_sha256 = encryption.get("ciphertext_sha256")
     chunk_count = encryption.get("chunk_count")
+    manifest_body = encryption.get("manifest")
     if (
         encryption.get("algorithm") != "AES-256-GCM"
         or encryption.get("compression") != "zlib"
@@ -127,18 +131,93 @@ def validate_remote_encryption_evidence(
         or isinstance(chunk_count, bool)
         or chunk_count < 1
         or plaintext_sha256 != backup_audit.get("file_sha256")
+        or not isinstance(manifest_body, dict)
     ):
         raise RemoteBackupCertificationError("REMOTE_BACKUP_ENCRYPTION_INVALID")
 
     assets = _validate_assets(remote_assets)
     by_name = {item["name"]: item for item in assets}
-    manifest = by_name.get(manifest_name)
-    chunks = [item for item in assets if item["name"] != manifest_name]
+    manifest_asset = by_name.get(manifest_name)
+    chunk_assets = [item for item in assets if item["name"] != manifest_name]
+    expected_manifest_keys = {
+        "contract_version",
+        "algorithm",
+        "compression",
+        "nonce_b64",
+        "tag_b64",
+        "plaintext_size_bytes",
+        "plaintext_sha256",
+        "ciphertext_sha256",
+        "max_chunk_bytes",
+        "chunks",
+    }
+    manifest_chunks = manifest_body.get("chunks")
+    try:
+        nonce = base64.b64decode(manifest_body.get("nonce_b64", ""), validate=True)
+        tag = base64.b64decode(manifest_body.get("tag_b64", ""), validate=True)
+        manifest_payload = (
+            json.dumps(manifest_body, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode("utf-8")
+    except (TypeError, ValueError):
+        raise RemoteBackupCertificationError(
+            "REMOTE_BACKUP_ENCRYPTION_INVALID"
+        ) from None
     if (
-        manifest is None
-        or manifest.get("sha256") != manifest_sha256
-        or len(chunks) != chunk_count
-        or any(not str(item["name"]).endswith(".enc") for item in chunks)
+        set(manifest_body) != expected_manifest_keys
+        or manifest_body.get("contract_version") != "wfh_encrypted_backup_bundle_v1"
+        or manifest_body.get("algorithm") != encryption.get("algorithm")
+        or manifest_body.get("compression") != encryption.get("compression")
+        or len(nonce) != 12
+        or len(tag) != 16
+        or manifest_body.get("plaintext_size_bytes") != backup_audit.get("file_size_bytes")
+        or manifest_body.get("plaintext_sha256") != plaintext_sha256
+        or manifest_body.get("ciphertext_sha256") != ciphertext_sha256
+        or not isinstance(manifest_body.get("max_chunk_bytes"), int)
+        or isinstance(manifest_body.get("max_chunk_bytes"), bool)
+        or manifest_body["max_chunk_bytes"] < 256
+        or not isinstance(manifest_chunks, list)
+        or len(manifest_chunks) != chunk_count
+    ):
+        raise RemoteBackupCertificationError("REMOTE_BACKUP_ENCRYPTION_INVALID")
+
+    normalized_manifest_chunks: list[dict[str, Any]] = []
+    for index, item in enumerate(manifest_chunks):
+        if not isinstance(item, dict):
+            raise RemoteBackupCertificationError("REMOTE_BACKUP_ENCRYPTION_INVALID")
+        name = item.get("name")
+        size_bytes = item.get("size_bytes")
+        sha256 = item.get("sha256")
+        if (
+            set(item) != {"name", "index", "size_bytes", "sha256"}
+            or item.get("index") != index
+            or not isinstance(name, str)
+            or Path(name).name != name
+            or not name.endswith(".enc")
+            or not isinstance(size_bytes, int)
+            or isinstance(size_bytes, bool)
+            or size_bytes < 1
+            or not _valid_sha256(sha256)
+        ):
+            raise RemoteBackupCertificationError("REMOTE_BACKUP_ENCRYPTION_INVALID")
+        normalized_manifest_chunks.append(
+            {"name": name, "size_bytes": size_bytes, "sha256": sha256}
+        )
+
+    normalized_asset_chunks = [
+        {
+            "name": item["name"],
+            "size_bytes": item["size_bytes"],
+            "sha256": item["sha256"],
+        }
+        for item in chunk_assets
+    ]
+    if (
+        manifest_asset is None
+        or manifest_asset.get("size_bytes") != len(manifest_payload)
+        or manifest_asset.get("sha256") != manifest_sha256
+        or hashlib.sha256(manifest_payload).hexdigest() != manifest_sha256
+        or sorted(normalized_manifest_chunks, key=lambda item: item["name"])
+        != sorted(normalized_asset_chunks, key=lambda item: item["name"])
     ):
         raise RemoteBackupCertificationError("REMOTE_BACKUP_ENCRYPTION_INVALID")
 

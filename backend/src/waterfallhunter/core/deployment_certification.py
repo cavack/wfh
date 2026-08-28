@@ -24,6 +24,11 @@ from waterfallhunter.core.github_release_backup_verification import (
     TrustedRemoteBackupVerificationError,
     resolve_github_release_backup_verification,
 )
+from waterfallhunter.core.github_remote_restore_verification import (
+    TrustedIndependentRestoreVerification,
+    TrustedIndependentRestoreVerificationError,
+    resolve_github_independent_restore_verification,
+)
 from waterfallhunter.core.remote_backup_certification import (
     RemoteBackupCertificationError,
     validate_remote_encryption_evidence,
@@ -142,6 +147,7 @@ class DeploymentCertificationRequest(BaseModel):
     expected_production_database_path: str = Field(min_length=1)
     artifact_provenance: dict[str, Any]
     backup_certification: dict[str, Any]
+    independent_restore_verification: dict[str, Any] | None = None
     migration_rollback_rehearsal: dict[str, Any]
     verification: VerificationEvidence
     readiness: ReadinessEvidence
@@ -642,6 +648,52 @@ def _backup_reasons(
     return reasons
 
 
+def _independent_remote_restore_reasons(
+    packet: DeploymentCertificationRequest,
+    backup: dict[str, Any],
+) -> list[str]:
+    if backup.get("contract_version") != "sqlite_remote_backup_certification_v1":
+        return []
+    claimed = packet.independent_restore_verification
+    if not isinstance(claimed, dict):
+        return ["INDEPENDENT_REMOTE_RESTORE_NOT_VERIFIED"]
+    try:
+        expected = TrustedIndependentRestoreVerification.model_validate(claimed)
+    except (TypeError, ValueError):
+        return ["INDEPENDENT_REMOTE_RESTORE_EVIDENCE_INVALID"]
+    backup_audit = backup.get("backup_audit")
+    if not isinstance(backup_audit, dict):
+        return ["INDEPENDENT_REMOTE_RESTORE_BACKUP_IDENTITY_INVALID"]
+    if (
+        expected.repository != backup.get("remote_repository")
+        or expected.release_tag != backup.get("remote_tag_name")
+        or expected.restore_file_sha256 != backup_audit.get("file_sha256")
+        or expected.restore_file_size_bytes != backup_audit.get("file_size_bytes")
+        or expected.user_version != backup_audit.get("user_version")
+    ):
+        return ["INDEPENDENT_REMOTE_RESTORE_BACKUP_IDENTITY_MISMATCH"]
+    try:
+        current = resolve_github_independent_restore_verification(
+            repository=expected.repository,
+            run_id=expected.run_id,
+            release_tag=expected.release_tag,
+            expected_plaintext_sha256=str(backup_audit.get("file_sha256", "")),
+            expected_plaintext_size_bytes=int(backup_audit.get("file_size_bytes", 0)),
+            expected_user_version=int(backup_audit.get("user_version", -1)),
+        )
+    except (
+        TrustedIndependentRestoreVerificationError,
+        TypeError,
+        ValueError,
+    ):
+        return ["INDEPENDENT_REMOTE_RESTORE_TRUST_FAILED"]
+    if current.verification_report_sha256 != expected.verification_report_sha256:
+        return ["INDEPENDENT_REMOTE_RESTORE_IDENTITY_CHANGED"]
+    if current.completed_at_epoch < int(backup.get("backup_completed_at", 0)):
+        return ["INDEPENDENT_REMOTE_RESTORE_PREDATES_BACKUP"]
+    return []
+
+
 def _rehearsal_artifact_revalidation_reasons(
     *,
     path: Path,
@@ -992,6 +1044,7 @@ def evaluate_deployment_certification(
             expected_source_path=packet.expected_production_database_path,
             now=observed_now,
         ),
+        *_independent_remote_restore_reasons(packet, backup),
         *_rehearsal_reasons(
             rehearsal,
             backup=backup,

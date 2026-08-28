@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 import sqlite3
 import time
 from pathlib import Path
@@ -582,11 +585,14 @@ def test_verification_evidence_must_bind_revision_and_tested_image(
 
 
 from waterfallhunter.core.github_release_backup_verification import TrustedRemoteBackupVerification
+from waterfallhunter.core.github_remote_restore_verification import (
+    TrustedIndependentRestoreVerification,
+)
 from waterfallhunter.core.remote_backup_certification import build_remote_backup_certification
 from waterfallhunter.core.sqlite_backup_certification import audit_sqlite_snapshot, restore_sqlite_snapshot
 
 
-def _remoteize_request(tmp_path: Path, request: dict, observed_now: int) -> dict:
+def _remoteize_request(tmp_path: Path, request: dict, observed_now: int) -> tuple[dict, dict]:
     remote_dir = tmp_path / "remote-proof"
     remote_dir.mkdir()
     local_backup = Path(request["backup_certification"]["backup_path"])
@@ -594,6 +600,28 @@ def _remoteize_request(tmp_path: Path, request: dict, observed_now: int) -> dict
     restored = remote_dir / "restored.db"
     restore_sqlite_snapshot(source=local_backup, target=staging)
     restore_sqlite_snapshot(source=staging, target=restored)
+    backup_audit = audit_sqlite_snapshot(staging)
+    manifest = {
+        "contract_version": "wfh_encrypted_backup_bundle_v1",
+        "algorithm": "AES-256-GCM",
+        "compression": "zlib",
+        "nonce_b64": base64.b64encode(b"n" * 12).decode("ascii"),
+        "tag_b64": base64.b64encode(b"t" * 16).decode("ascii"),
+        "plaintext_size_bytes": backup_audit["file_size_bytes"],
+        "plaintext_sha256": backup_audit["file_sha256"],
+        "ciphertext_sha256": "c" * 64,
+        "max_chunk_bytes": 1_500_000_000,
+        "chunks": [{
+            "name": "part-000.enc",
+            "index": 0,
+            "size_bytes": 1234,
+            "sha256": "a" * 64,
+        }],
+    }
+    manifest_payload = (
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    manifest_sha256 = hashlib.sha256(manifest_payload).hexdigest()
     verification_body = {
         "contract_version": "github_release_backup_verification_v1",
         "github_host": "github.com",
@@ -608,7 +636,7 @@ def _remoteize_request(tmp_path: Path, request: dict, observed_now: int) -> dict
         },
         "asset_sha256": {
             "part-000.enc": "a" * 64,
-            "waterfall_registry.manifest.json": "b" * 64,
+            "waterfall_registry.manifest.json": manifest_sha256,
         },
     }
     trusted = TrustedRemoteBackupVerification.model_validate(
@@ -618,7 +646,6 @@ def _remoteize_request(tmp_path: Path, request: dict, observed_now: int) -> dict
         }
     )
     source = Path(request["expected_production_database_path"])
-    backup_audit = audit_sqlite_snapshot(staging)
     remote_backup = build_remote_backup_certification(
         source=source,
         source_identity={"device_id": source.stat().st_dev, "inode": source.stat().st_ino},
@@ -628,7 +655,12 @@ def _remoteize_request(tmp_path: Path, request: dict, observed_now: int) -> dict
         restored_backup_path=restored,
         remote_assets=[
             {"name": "part-000.enc", "id": 101, "size_bytes": 1234, "sha256": "a" * 64},
-            {"name": "waterfall_registry.manifest.json", "id": 102, "size_bytes": 456, "sha256": "b" * 64},
+            {
+                "name": "waterfall_registry.manifest.json",
+                "id": 102,
+                "size_bytes": len(manifest_payload),
+                "sha256": manifest_sha256,
+            },
         ],
         remote_verification=trusted,
         backup_started_at=observed_now - 60,
@@ -637,10 +669,11 @@ def _remoteize_request(tmp_path: Path, request: dict, observed_now: int) -> dict
             "algorithm": "AES-256-GCM",
             "compression": "zlib",
             "manifest_asset_name": "waterfall_registry.manifest.json",
-            "manifest_sha256": "b" * 64,
+            "manifest_sha256": manifest_sha256,
             "plaintext_sha256": backup_audit["file_sha256"],
             "ciphertext_sha256": "c" * 64,
             "chunk_count": 1,
+            "manifest": manifest,
         },
     )
     rehearsal = rehearse_migration_and_rollback(
@@ -651,7 +684,28 @@ def _remoteize_request(tmp_path: Path, request: dict, observed_now: int) -> dict
     )
     request["backup_certification"] = remote_backup
     request["migration_rollback_rehearsal"] = rehearsal
-    return trusted.model_dump(mode="python")
+    independent_body = {
+        "contract_version": "github_actions_remote_restore_verification_v1",
+        "github_host": "github.com",
+        "repository": "cavack/wfh-dr",
+        "run_id": 123,
+        "workflow_path": ".github/workflows/restore.yml",
+        "workflow_revision": "d" * 40,
+        "release_tag": "wfh-dr-test",
+        "artifact_id": 456,
+        "artifact_name": "restore-verification-wfh-dr-test",
+        "artifact_sha256": "e" * 64,
+        "completed_at_epoch": observed_now - 5,
+        "restore_file_sha256": backup_audit["file_sha256"],
+        "restore_file_size_bytes": backup_audit["file_size_bytes"],
+        "user_version": backup_audit["user_version"],
+    }
+    independent = TrustedIndependentRestoreVerification.model_validate({
+        **independent_body,
+        "verification_report_sha256": canonical_sha256(independent_body),
+    })
+    request["independent_restore_verification"] = independent.model_dump(mode="python")
+    return trusted.model_dump(mode="python"), independent.model_dump(mode="python")
 
 
 def test_complete_remote_backup_evidence_is_ready_for_owner_approval(
@@ -659,12 +713,17 @@ def test_complete_remote_backup_evidence_is_ready_for_owner_approval(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request, observed_now = _request(tmp_path)
-    trusted = _remoteize_request(tmp_path, request, observed_now)
+    trusted, independent = _remoteize_request(tmp_path, request, observed_now)
     monkeypatch.setattr(
         deployment_certification_module,
         "resolve_github_release_backup_verification",
         lambda **_kwargs: TrustedRemoteBackupVerification.model_validate(trusted),
         raising=False,
+    )
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "resolve_github_independent_restore_verification",
+        lambda **_kwargs: TrustedIndependentRestoreVerification.model_validate(independent),
     )
 
     report = _evaluate(request, now=observed_now)
@@ -675,12 +734,32 @@ def test_complete_remote_backup_evidence_is_ready_for_owner_approval(
     assert report["migration_allowed"] is False
 
 
+def test_remote_backup_cannot_be_ready_without_independent_restore_proof(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, observed_now = _request(tmp_path)
+    trusted, _independent = _remoteize_request(tmp_path, request, observed_now)
+    request.pop("independent_restore_verification")
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "resolve_github_release_backup_verification",
+        lambda **_kwargs: TrustedRemoteBackupVerification.model_validate(trusted),
+        raising=False,
+    )
+
+    report = _evaluate(request, now=observed_now)
+
+    assert report["status"] == "NOT_READY"
+    assert "INDEPENDENT_REMOTE_RESTORE_NOT_VERIFIED" in report["blocking_reasons"]
+
+
 def test_complete_remote_backup_with_sequential_rehearsal_is_ready_for_owner_approval(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request, observed_now = _request(tmp_path)
-    trusted = _remoteize_request(tmp_path, request, observed_now)
+    trusted, independent = _remoteize_request(tmp_path, request, observed_now)
     remote_dir = tmp_path / "remote-proof"
     sequential = rehearse_migration_and_rollback_sequential(
         backup_certification=request["backup_certification"],
@@ -693,6 +772,11 @@ def test_complete_remote_backup_with_sequential_rehearsal_is_ready_for_owner_app
         "resolve_github_release_backup_verification",
         lambda **_kwargs: TrustedRemoteBackupVerification.model_validate(trusted),
         raising=False,
+    )
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "resolve_github_independent_restore_verification",
+        lambda **_kwargs: TrustedIndependentRestoreVerification.model_validate(independent),
     )
 
     report = _evaluate(request, now=observed_now)

@@ -36,6 +36,65 @@ an independent backup. Deployment certification rejects backups older than seven
 days (`MAXIMUM_BACKUP_AGE_SECONDS`) and re-audits the immutable backup file
 read-only before accepting rollback evidence.
 
+### Encrypted private-GitHub alternative
+
+When no independent block device exists, a recorded owner authorization may
+instead approve an encrypted off-host backup to the private `cavack/wfh-dr`
+repository. If the active release handoff already records that exact approval,
+do not request it again. This does not authorize migration or deployment.
+
+Preconditions:
+
+- `cavack/wfh-dr` is private and not archived;
+- `/root/.wfh-dr/wfh-dr-aes256.key` is a root-owned `0600` regular file and its
+  value is never printed;
+- the `WFH_DR_AES256_KEY_B64` Actions secret exists in `cavack/wfh-dr`;
+- SQLite Online Backup—not raw `cp`—creates the temporary snapshot;
+- the release tag and staging paths are new and the destination failure domain
+  names `github.com` truthfully.
+
+Run from an isolated worktree at the exact tested `main` revision:
+
+```bash
+PYTHONPATH=backend/src:. python scripts/certify_remote_sqlite_backup.py \
+  --source /absolute/production/waterfall_registry.db \
+  --staging-dir /srv/wfh-release-backups/remote-dr-<utc>-<sha> \
+  --restore-target /srv/wfh-release-backups/remote-dr-<utc>-<sha>/restored.db \
+  --report /srv/wfh-release-backups/remote-dr-<utc>-<sha>/backup-certification.json \
+  --key-file /root/.wfh-dr/wfh-dr-aes256.key \
+  --remote-repository cavack/wfh-dr \
+  --release-tag wfh-production-dr-<utc>-<sha> \
+  --source-failure-domain production-root-vda1 \
+  --destination-failure-domain github.com-private-release:cavack/wfh-dr
+```
+
+Only the authenticated manifest and encrypted chunks may be published. After
+GitHub asset IDs, sizes, and SHA-256 digests are verified, the command removes
+the plaintext staging snapshot before re-downloading, decrypting, restoring,
+and auditing the release. The resulting certificate must say
+`BACKUP_RESTORE_CERTIFIED` and keep both Production authorization flags false.
+
+Prove key recovery and restoreability outside the Production host by dispatching
+the private DR workflow with plaintext artifact emission disabled, then seal its
+exact successful run and report artifact:
+
+```bash
+gh workflow run restore.yml -R cavack/wfh-dr \
+  -f release_tag=wfh-production-dr-<utc>-<sha> \
+  -f emit_plaintext_artifact=false
+
+PYTHONPATH=backend/src:. python scripts/verify_github_remote_restore.py \
+  --backup-certification /srv/wfh-release-backups/remote-dr-<utc>-<sha>/backup-certification.json \
+  --github-repository cavack/wfh-dr \
+  --github-run-id <exact-successful-restore-run-id> \
+  --report /srv/wfh-release-backups/remote-dr-<utc>-<sha>/independent-restore-verification.json
+```
+
+The deployment request must include this
+`github_actions_remote_restore_verification_v1` object as
+`independent_restore_verification`. Remote backup evidence cannot reach owner
+approval readiness without it.
+
 ## 2. Staging migration and rollback rehearsal
 
 This is a separate write to isolated clone files and requires:
@@ -56,12 +115,30 @@ boundary and verifies the current schema. The rollback clone is freshly restored
 from the same certified artifact and must match the pre-migration schema and all
 table counts. Production is not a target of this rehearsal.
 
+For the remote certificate, use the retained restored baseline and the
+single-working-target mode to cap disk usage:
+
+```bash
+PYTHONPATH=backend/src:. python scripts/rehearse_sqlite_migration.py \
+  --backup-certification /srv/wfh-release-backups/remote-dr-<utc>-<sha>/backup-certification.json \
+  --sequential-working-target /srv/wfh-release-backups/remote-dr-<utc>-<sha>/sequential-rehearsal.db \
+  --source-revision <40-character-tested-git-sha> \
+  --report /srv/wfh-release-backups/remote-dr-<utc>-<sha>/migration-rehearsal.json
+```
+
+The migrated artifact is deleted before the same path is restored to the
+baseline. Success requires `sqlite_migration_rollback_rehearsal_v2`, retained
+rollback evidence matching the baseline, and both Production authorization
+flags false.
+
 ## 3. Artifact, test, readiness, and soak packet
 
 Build one `deployment_certification_request_v1` JSON packet containing:
 
 - exact Git/CI revision and complete `deployment_provenance_v1` links;
 - the backup and rehearsal reports above;
+- for remote DR, authoritative independent restore evidence from the exact
+  successful `cavack/wfh-dr` workflow run and release tag;
 - backend, frontend, E2E, migration, load, fault, security and secret-scan PASS
   claims in the packet; these claims cannot authorize certification by themselves;
 - an independently queried GitHub Actions run for the exact source revision, with
