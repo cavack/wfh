@@ -59,6 +59,7 @@ def test_signal_decision_defaults_to_signal_only() -> None:
 
 
 def test_tracked_repository_text_does_not_use_deprecated_product_boundary_terms() -> None:
+    """Reject deprecated execution-boundary language from tracked repository text."""
     forbidden = (
         "SIMULATED" + "_ONLY",
         "simulated" + "-only",
