@@ -1,12 +1,12 @@
-# Automatic Production Deployment
+# Explicit Production Deployment
 
 WaterfallHunter Production is `SIGNAL_ONLY`. The supported runtime must keep `LIVE_TRADING_ENABLED=false`; deployment never authorizes order placement, order cancellation, or exchange-account execution.
 
 ## Trigger
 
-Production deployment is the final dependent job in `.github/workflows/ci.yml`. It runs only after backend, frontend, dependency-audit, container-validation, and repository-hygiene jobs succeed for a `push` to `main`.
+A normal `push` to protected `main` runs backend, frontend, dependency-audit, container-validation, and repository-hygiene verification only; it does **not** deploy Production. After the exact current `main` SHA has a successful CI run and the required release/backup/migration/rollback certification is complete, an operator explicitly dispatches the `CI` workflow on `main` with `deploy_production=true`. The dispatch reruns the required CI jobs and only then makes the Production deployment job eligible.
 
-That job calls `.github/workflows/deploy-production.yml` through `workflow_call`. Pull requests never receive Production credentials, there is no `workflow_run` trust boundary, there is no manual revision input, and there is no dry-run deployment mode.
+The deployment job calls `.github/workflows/deploy-production.yml` through `workflow_call`. Pull requests never receive Production credentials, there is no `workflow_run` trust boundary, and there is no caller-supplied revision input: the deployment revision remains the dispatched workflow's trusted `github.sha`. Do not use a normal push as a deployment trigger.
 
 The deployment revision is the trusted `github.sha`. Both GitHub Actions and the host require that SHA to equal the current `origin/main` tip before Production mutation begins. An older successful CI run therefore cannot deploy over a newer main revision.
 
@@ -43,7 +43,7 @@ The deployment account needs narrowly scoped access to:
 
 The checkout must not contain local tracked edits or untracked source/build-context files. The deployment script allows only the host-owned `.env` and `.deploy/` state paths outside Git and fails closed on other worktree drift before checkout/build.
 
-The host-owned `.env` must exist before automatic deployment and is never replaced from Git. Required values include:
+The host-owned `.env` must exist before an explicitly dispatched deployment and is never replaced from Git. Required values include:
 
 ```text
 LIVE_TRADING_ENABLED=false
@@ -63,7 +63,7 @@ For a validated current `main` tip, `scripts/deploy_production.sh` runs under an
 3. resolve the previous certified/running revision for rollback provenance;
 4. verify `LIVE_TRADING_ENABLED=false`;
 5. load any host-owned Production topology override, checkout the exact target revision, and validate Compose;
-6. build revision-labelled backend, frontend, and watchdog images;
+6. load and verify the exact CI-tested backend, frontend, and watchdog image bundle for the target revision;
 7. create a timestamped SQLite backup and verify `PRAGMA integrity_check` plus SHA-256;
 8. run managed migration preflight;
 9. mark migration as potentially mutable before invoking migration apply;
@@ -150,7 +150,7 @@ The success certificate is not replaced until backup retention and all runtime c
 
 ## Recovery checklist
 
-If automatic deployment fails after a mutable Production step:
+If an explicitly dispatched deployment fails after a mutable Production step:
 
 1. inspect the GitHub Actions deploy job and host log;
 2. read `.deploy/state/last-successful-deploy.txt` when present;
@@ -159,4 +159,4 @@ If automatic deployment fails after a mutable Production step:
 5. if schema compatibility cannot be certified, keep the application containers quarantined until operator recovery is complete;
 6. keep `LIVE_TRADING_ENABLED=false` throughout recovery;
 7. restore Telegram settings from the active deployment's pre-release `.env` copy when rollback is possible;
-8. fix/review the cause and let the normal validated main-push CI path perform the next deployment.
+8. fix/review the cause, re-establish any release certification made stale by the change, then explicitly dispatch `CI` on protected `main` with `deploy_production=true`; a normal push must not deploy Production.
