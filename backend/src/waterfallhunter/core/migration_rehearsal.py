@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import sqlite3
 from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
@@ -44,7 +45,13 @@ def _verified_backup_path(certification: dict[str, Any]) -> Path:
         raise MigrationRehearsalError("BACKUP_CERTIFICATION_HASH_MISMATCH")
     if certification.get("status") != "BACKUP_RESTORE_CERTIFIED":
         raise MigrationRehearsalError("BACKUP_NOT_CERTIFIED")
-    backup = Path(str(certification.get("backup_path", "")))
+
+    remote = certification.get("contract_version") == "sqlite_remote_backup_certification_v1"
+    path_key = "local_restore_path" if remote else "backup_path"
+    audit_key = "restore_audit" if remote else "backup_audit"
+    backup = Path(str(certification.get(path_key, "")))
+    if not backup.is_absolute() or backup.is_symlink() or not backup.is_file():
+        raise MigrationRehearsalError("CERTIFIED_BACKUP_UNREADABLE")
     sidecars = [Path(f"{backup}{suffix}") for suffix in ("-wal", "-shm")]
     if any(path.exists() for path in sidecars):
         raise MigrationRehearsalError("CERTIFIED_BACKUP_HAS_SQLITE_SIDECARS")
@@ -52,7 +59,7 @@ def _verified_backup_path(certification: dict[str, Any]) -> Path:
         audit = audit_sqlite_snapshot(backup)
     except (BackupCertificationError, OSError) as error:
         raise MigrationRehearsalError("CERTIFIED_BACKUP_UNREADABLE") from error
-    certified_audit = certification.get("backup_audit")
+    certified_audit = certification.get(audit_key)
     if not isinstance(certified_audit, dict) or (
         audit.get("audit_sha256") != certified_audit.get("audit_sha256")
     ):
@@ -76,6 +83,21 @@ def _require_isolated_targets(
     device = backup.stat().st_dev
     if any(target.parent.stat().st_dev != device for target in targets):
         raise MigrationRehearsalError("REHEARSAL_TARGET_DEVICE_MISMATCH")
+
+
+def _finalize_sqlite_snapshot(target: Path) -> None:
+    """Checkpoint WAL state into one standalone database file for audit/cleanup."""
+    try:
+        with sqlite3.connect(target, timeout=30.0, isolation_level=None) as connection:
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+            journal = connection.execute("PRAGMA journal_mode=DELETE").fetchone()
+            if str(journal[0] if journal else "").lower() != "delete":
+                raise MigrationRehearsalError("MIGRATION_JOURNAL_FINALIZATION_FAILED")
+    except sqlite3.Error as error:
+        raise MigrationRehearsalError("MIGRATION_JOURNAL_FINALIZATION_FAILED") from error
+    sidecars = [Path(f"{target}{suffix}") for suffix in ("-wal", "-shm")]
+    if any(path.exists() for path in sidecars):
+        raise MigrationRehearsalError("MIGRATION_ARTIFACT_HAS_SQLITE_SIDECARS")
 
 
 def _run_canonical_migration(target: Path, source_revision: str) -> dict[str, Any]:
@@ -157,6 +179,78 @@ def rehearse_migration_and_rollback(
         "rollback_target": str(rollback_target),
         "rollback_audit": rollback_audit,
         "rollback_matches_baseline": True,
+        "production_migration_authorized": False,
+        "production_deployment_authorized": False,
+    }
+    return {**body, "rehearsal_sha256": canonical_sha256(body)}
+
+
+def rehearse_migration_and_rollback_sequential(
+    *,
+    backup_certification: dict[str, Any],
+    working_target: Path,
+    source_revision: str,
+) -> dict[str, Any]:
+    """Prove migration and rollback with one reusable working database target."""
+    if len(source_revision) != 40 or any(
+        character not in "0123456789abcdef" for character in source_revision
+    ):
+        raise MigrationRehearsalError("SOURCE_REVISION_INVALID")
+    backup = _verified_backup_path(backup_certification)
+    target = working_target.resolve(strict=False)
+    destination = backup.parent.resolve()
+    if target.parent != destination or target == backup.resolve():
+        raise MigrationRehearsalError("REHEARSAL_TARGET_OUTSIDE_CERTIFIED_DESTINATION")
+    if target.exists() or target.is_symlink():
+        raise MigrationRehearsalError("REHEARSAL_TARGET_ALREADY_EXISTS")
+    if target.parent.stat().st_dev != backup.stat().st_dev:
+        raise MigrationRehearsalError("REHEARSAL_TARGET_DEVICE_MISMATCH")
+
+    baseline_audit = audit_sqlite_snapshot(backup)
+    pre_migration_audit = restore_sqlite_snapshot(source=backup, target=target)
+    if any(
+        baseline_audit[field] != pre_migration_audit[field]
+        for field in _ROLLBACK_COMPARABLE_FIELDS
+    ):
+        raise MigrationRehearsalError("MIGRATION_CLONE_MISMATCH")
+    migration_result = _run_canonical_migration(target, source_revision)
+    _finalize_sqlite_snapshot(target)
+    postflight = classify_database(db_path=target)
+    if (
+        postflight.state is not PreflightState.MIGRATED_COMPATIBLE
+        or postflight.user_version != CURRENT_RUNTIME_SCHEMA_VERSION
+    ):
+        raise MigrationRehearsalError("MIGRATION_POSTFLIGHT_FAILED")
+    post_migration_audit = audit_sqlite_snapshot(target)
+
+    sidecars = [Path(f"{target}{suffix}") for suffix in ("-wal", "-shm")]
+    if any(path.exists() for path in sidecars):
+        raise MigrationRehearsalError("MIGRATION_ARTIFACT_HAS_SQLITE_SIDECARS")
+    target.unlink()
+
+    rollback_audit = restore_sqlite_snapshot(source=backup, target=target)
+    rollback_mismatches = [
+        field
+        for field in _ROLLBACK_COMPARABLE_FIELDS
+        if baseline_audit[field] != rollback_audit[field]
+    ]
+    if rollback_mismatches:
+        raise MigrationRehearsalError(
+            "ROLLBACK_RESTORE_MISMATCH:" + ",".join(rollback_mismatches)
+        )
+    body = {
+        "contract_version": "sqlite_migration_rollback_rehearsal_v2",
+        "status": "MIGRATION_AND_ROLLBACK_REHEARSED",
+        "source_revision": source_revision,
+        "backup_certification_sha256": backup_certification["certification_sha256"],
+        "baseline_audit_sha256": baseline_audit["audit_sha256"],
+        "working_target": str(target),
+        "migration_result": migration_result,
+        "post_migration_audit": post_migration_audit,
+        "migration_artifact_retained": False,
+        "rollback_audit": rollback_audit,
+        "rollback_matches_baseline": True,
+        "rollback_artifact_retained": True,
         "production_migration_authorized": False,
         "production_deployment_authorized": False,
     }

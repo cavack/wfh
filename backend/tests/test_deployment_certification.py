@@ -25,7 +25,10 @@ from waterfallhunter.core.github_ci_verification import (
 from waterfallhunter.core.schema_contract import CURRENT_RUNTIME_SCHEMA_VERSION
 from waterfallhunter.core.signal_metadata import canonical_sha256
 from waterfallhunter.core.sqlite_backup_certification import create_certified_backup
-from waterfallhunter.core.migration_rehearsal import rehearse_migration_and_rollback
+from waterfallhunter.core.migration_rehearsal import (
+    rehearse_migration_and_rollback,
+    rehearse_migration_and_rollback_sequential,
+)
 
 
 REVISION = "a" * 40
@@ -207,7 +210,6 @@ def test_complete_evidence_is_only_ready_for_explicit_owner_approval(
 ) -> None:
     request, observed_now = _request(tmp_path)
     report = _evaluate(request, now=observed_now)
-
     assert report["status"] == "READY_FOR_EXPLICIT_OWNER_APPROVAL"
     assert report["blocking_reasons"] == []
     assert report["deployment_allowed"] is False
@@ -577,3 +579,125 @@ def test_verification_evidence_must_bind_revision_and_tested_image(
     assert "VERIFICATION_REVISION_MISMATCH" in report["blocking_reasons"]
     assert "VERIFICATION_IMAGE_MISMATCH" in report["blocking_reasons"]
     assert report["status"] == "NOT_READY"
+
+
+from waterfallhunter.core.github_release_backup_verification import TrustedRemoteBackupVerification
+from waterfallhunter.core.remote_backup_certification import build_remote_backup_certification
+from waterfallhunter.core.sqlite_backup_certification import audit_sqlite_snapshot, restore_sqlite_snapshot
+
+
+def _remoteize_request(tmp_path: Path, request: dict, observed_now: int) -> dict:
+    remote_dir = tmp_path / "remote-proof"
+    remote_dir.mkdir()
+    local_backup = Path(request["backup_certification"]["backup_path"])
+    staging = remote_dir / "staging.db"
+    restored = remote_dir / "restored.db"
+    restore_sqlite_snapshot(source=local_backup, target=staging)
+    restore_sqlite_snapshot(source=staging, target=restored)
+    verification_body = {
+        "contract_version": "github_release_backup_verification_v1",
+        "repository": "cavack/wfh-dr",
+        "release_id": 77,
+        "tag_name": "wfh-dr-test",
+        "private_repository": True,
+        "published_at_epoch": observed_now - 15,
+        "asset_ids": {
+            "part-000.enc": 101,
+            "waterfall_registry.manifest.json": 102,
+        },
+        "asset_sha256": {
+            "part-000.enc": "a" * 64,
+            "waterfall_registry.manifest.json": "b" * 64,
+        },
+    }
+    trusted = TrustedRemoteBackupVerification.model_validate(
+        {
+            **verification_body,
+            "verification_report_sha256": canonical_sha256(verification_body),
+        }
+    )
+    source = Path(request["expected_production_database_path"])
+    backup_audit = audit_sqlite_snapshot(staging)
+    remote_backup = build_remote_backup_certification(
+        source=source,
+        source_identity={"device_id": source.stat().st_dev, "inode": source.stat().st_ino},
+        source_failure_domain="production-vda1",
+        destination_failure_domain="github-private-release:cavack/wfh-dr",
+        backup_audit=backup_audit,
+        restored_backup_path=restored,
+        repository="cavack/wfh-dr",
+        release_id=77,
+        tag_name="wfh-dr-test",
+        remote_assets=[
+            {"name": "part-000.enc", "id": 101, "size_bytes": 1234, "sha256": "a" * 64},
+            {"name": "waterfall_registry.manifest.json", "id": 102, "size_bytes": 456, "sha256": "b" * 64},
+        ],
+        remote_verification=trusted,
+        backup_started_at=observed_now - 60,
+        backup_completed_at=observed_now - 30,
+        encryption={
+            "algorithm": "AES-256-GCM",
+            "compression": "zlib",
+            "manifest_asset_name": "waterfall_registry.manifest.json",
+            "manifest_sha256": "b" * 64,
+            "plaintext_sha256": backup_audit["file_sha256"],
+            "ciphertext_sha256": "c" * 64,
+            "chunk_count": 1,
+        },
+    )
+    rehearsal = rehearse_migration_and_rollback(
+        backup_certification=remote_backup,
+        migration_target=(remote_dir / "migration.db").resolve(),
+        rollback_target=(remote_dir / "rollback.db").resolve(),
+        source_revision=REVISION,
+    )
+    request["backup_certification"] = remote_backup
+    request["migration_rollback_rehearsal"] = rehearsal
+    return trusted.model_dump(mode="python")
+
+
+def test_complete_remote_backup_evidence_is_ready_for_owner_approval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, observed_now = _request(tmp_path)
+    trusted = _remoteize_request(tmp_path, request, observed_now)
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "resolve_github_release_backup_verification",
+        lambda **_kwargs: TrustedRemoteBackupVerification.model_validate(trusted),
+        raising=False,
+    )
+
+    report = _evaluate(request, now=observed_now)
+
+    assert report["status"] == "READY_FOR_EXPLICIT_OWNER_APPROVAL"
+    assert report["blocking_reasons"] == []
+    assert report["deployment_allowed"] is False
+    assert report["migration_allowed"] is False
+
+
+def test_complete_remote_backup_with_sequential_rehearsal_is_ready_for_owner_approval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, observed_now = _request(tmp_path)
+    trusted = _remoteize_request(tmp_path, request, observed_now)
+    remote_dir = tmp_path / "remote-proof"
+    sequential = rehearse_migration_and_rollback_sequential(
+        backup_certification=request["backup_certification"],
+        working_target=(remote_dir / "sequential.db").resolve(),
+        source_revision=REVISION,
+    )
+    request["migration_rollback_rehearsal"] = sequential
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "resolve_github_release_backup_verification",
+        lambda **_kwargs: TrustedRemoteBackupVerification.model_validate(trusted),
+        raising=False,
+    )
+
+    report = _evaluate(request, now=observed_now)
+
+    assert report["status"] == "READY_FOR_EXPLICIT_OWNER_APPROVAL"
+    assert report["blocking_reasons"] == []

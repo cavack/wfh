@@ -122,3 +122,32 @@ def test_generated_cutover_db_certificate_is_accepted_by_cleanup_validator(tmp_p
     accepted = cleanup.validate_db_certificate(report)
     assert accepted["status"] == "PASS"
     assert accepted["sha256"] == json.loads(report.read_text())["sha256"]
+
+
+def test_migration_rehearsal_cli_supports_sequential_single_target_mode(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source-sequential.db"
+    backup = tmp_path / "backup-sequential.db"
+    restore = tmp_path / "restore-sequential.db"
+    cert = tmp_path / "cutover-sequential.json"
+    working = tmp_path / "working-sequential.db"
+    rehearsal = tmp_path / "rehearsal-sequential.json"
+    _seed(source)
+    first = subprocess.run([
+        sys.executable, str(SCRIPT), "--source", str(source.resolve()),
+        "--backup", str(backup.resolve()), "--restore-target", str(restore.resolve()),
+        "--report", str(cert.resolve()), "--source-revision", "a" * 40,
+    ], cwd=ROOT, env={**__import__('os').environ, "PYTHONPATH": "backend/src:."}, text=True, capture_output=True)
+    assert first.returncode == 0, first.stderr + first.stdout
+
+    second = subprocess.run([
+        sys.executable, str(REHEARSE), "--backup-certification", str(cert.resolve()),
+        "--sequential-working-target", str(working.resolve()),
+        "--source-revision", "a" * 40, "--report", str(rehearsal.resolve()),
+    ], cwd=ROOT, env={**__import__('os').environ, "PYTHONPATH": "backend/src:."}, text=True, capture_output=True)
+    assert second.returncode == 0, second.stderr + second.stdout
+    data = json.loads(rehearsal.read_text())
+    assert data["contract_version"] == "sqlite_migration_rollback_rehearsal_v2"
+    assert data["rollback_artifact_retained"] is True
+    assert working.is_file()

@@ -302,31 +302,35 @@ def _classify_migrated(path: Path, user_version: int) -> PreflightResult:
             user_version=user_version,
         )
 
+    conn: sqlite3.Connection | None = None
     try:
-        with _open_read_only(path) as conn:
-            if 1 in applied:
-                probe = conn.execute(
-                    "SELECT 1 FROM sqlite_master "
-                    "WHERE type='table' AND name='db_readiness_probe'"
-                ).fetchone()
-                if probe is None:
-                    return _incompatible(
-                        "MIGRATION_SCHEMA_MISMATCH",
-                        user_version=user_version,
-                    )
-
-            schema_valid, unknown = _applied_runtime_schema_valid(conn, applied)
-            if not schema_valid:
+        conn = _open_read_only(path)
+        if 1 in applied:
+            probe = conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='table' AND name='db_readiness_probe'"
+            ).fetchone()
+            if probe is None:
                 return _incompatible(
                     "MIGRATION_SCHEMA_MISMATCH",
                     user_version=user_version,
-                    unknown_user_objects=unknown,
                 )
+
+        schema_valid, unknown = _applied_runtime_schema_valid(conn, applied)
+        if not schema_valid:
+            return _incompatible(
+                "MIGRATION_SCHEMA_MISMATCH",
+                user_version=user_version,
+                unknown_user_objects=unknown,
+            )
     except (sqlite3.Error, SchemaContractError):
         return _incompatible(
             "MIGRATION_SCHEMA_MISMATCH",
             user_version=user_version,
         )
+    finally:
+        if conn is not None:
+            conn.close()
 
     return _result(
         PreflightState.MIGRATED_COMPATIBLE,
