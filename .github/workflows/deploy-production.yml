@@ -15,6 +15,27 @@ on:
       tested_image_bundle_sha256:
         required: true
         type: string
+    secrets:
+      WFH_PROD_HOST:
+        required: false
+      WFH_DEPLOY_HOST:
+        required: false
+      WFH_PROD_PORT:
+        required: false
+      WFH_DEPLOY_PORT:
+        required: false
+      WFH_PROD_USER:
+        required: false
+      WFH_DEPLOY_USER:
+        required: false
+      WFH_PROD_SSH_KEY:
+        required: false
+      WFH_DEPLOY_SSH_KEY:
+        required: false
+      WFH_PROD_KNOWN_HOSTS:
+        required: false
+      WFH_DEPLOY_KNOWN_HOSTS:
+        required: false
 
 concurrency:
   group: waterfallhunter-production
