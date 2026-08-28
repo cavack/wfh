@@ -79,6 +79,7 @@ def test_release_certificate_builder_is_exact_sha_and_signal_only() -> None:
         "backend_endpoints": {"/livez": True, "/readyz": True, "/healthz": True},
         "notification_delivery_ready": True,
         "notification_delivery": {
+            "healthy": True,
             "transport": {
                 "configured": True,
                 "worker_running": True,

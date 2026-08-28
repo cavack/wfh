@@ -122,6 +122,7 @@ def test_generated_release_certificate_is_accepted_by_cleanup_validator(tmp_path
         "backend_endpoints": {"/livez": True, "/readyz": True, "/healthz": True},
         "notification_delivery_ready": True,
         "notification_delivery": {
+            "healthy": True,
             "transport": {
                 "configured": True,
                 "worker_running": True,

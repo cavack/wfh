@@ -169,7 +169,8 @@ def _notification_delivery_ready(snapshot: object) -> bool:
         return False
     probe = transport.get("probe")
     return bool(
-        transport.get("configured") is True
+        snapshot.get("healthy") is True
+        and transport.get("configured") is True
         and transport.get("worker_running") is True
         and isinstance(probe, dict)
         and probe.get("reachable") is True

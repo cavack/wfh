@@ -261,7 +261,7 @@ def test_successful_deploy_removes_secret_environment_rollback_copy() -> None:
     assert certificate_index < cleanup_index
 
 
-def test_host_deploy_orders_backup_migration_telegram_and_runtime_certification() -> None:
+def test_host_deploy_orders_backup_migration_runtime_and_host_certification() -> None:
     text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
     main_sequence = _main_deploy_sequence(text)
     ordered_markers = [
@@ -269,7 +269,6 @@ def test_host_deploy_orders_backup_migration_telegram_and_runtime_certification(
         '[[ "$(git rev-parse origin/main)" == "$WFH_DEPLOY_SHA" ]]',
         "assert_signal_only_runtime_boundary",
         "load_tested_release_artifacts",
-        "install_systemd_units",
         "backup_database",
         "--preflight",
         "MIGRATION_MAY_HAVE_MUTATED=1",
@@ -281,6 +280,12 @@ def test_host_deploy_orders_backup_migration_telegram_and_runtime_certification(
         "wait_for_container_healthy waterfall-frontend",
         "wait_for_container_healthy waterfall-watchdog",
         "org.opencontainers.image.revision",
+        "snapshot_host_integration_state",
+        "install_systemd_units",
+        "install_nginx_site",
+        "verify_public_edge",
+        "prune_database_backups",
+        'cat > "${STATE_DIR}/last-successful-deploy.txt"',
     ]
     positions = [main_sequence.index(marker) for marker in ordered_markers]
     assert positions == sorted(positions)
@@ -388,7 +393,7 @@ def test_schema_changing_rollback_restores_backup_before_previous_schema_preflig
     assert "PRAGMA integrity_check" in restore
 
 
-def test_deploy_installs_and_enables_canonical_systemd_units_before_activation() -> None:
+def test_deploy_installs_and_enables_canonical_systemd_units_after_runtime_health() -> None:
     text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
     assert "install_systemd_units()" in text
     helper = text.split("install_systemd_units() {", maxsplit=1)[1].split("}\n", maxsplit=1)[0]
@@ -400,8 +405,14 @@ def test_deploy_installs_and_enables_canonical_systemd_units_before_activation()
         assert unit in helper
     assert "systemctl daemon-reload" in helper
     assert "systemctl enable waterfallhunter.service waterfallhunter-healthcheck.timer" in helper
+    assert "host integration snapshot missing before systemd install" in helper
     main_sequence = _main_deploy_sequence(text)
-    assert main_sequence.index("install_systemd_units") < main_sequence.index("docker compose up -d")
+    runtime_index = main_sequence.index("docker compose up -d")
+    healthy_index = main_sequence.index("verify_running_signal_only")
+    snapshot_index = main_sequence.index("snapshot_host_integration_state")
+    install_index = main_sequence.index("install_systemd_units")
+    certificate_index = main_sequence.index('cat > "${STATE_DIR}/last-successful-deploy.txt"')
+    assert runtime_index < healthy_index < snapshot_index < install_index < certificate_index
 
 
 def test_main_deploy_loads_ci_tested_images_instead_of_rebuilding_target() -> None:

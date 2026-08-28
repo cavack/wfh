@@ -28,6 +28,9 @@ MIGRATION_MAY_HAVE_MUTATED=0
 RUNTIME_REPLACED=0
 ROLLBACK_ACTIVE=0
 CLEANUP_ACTIVE=0
+HOST_INTEGRATION_BACKUP_DIR=""
+HOST_INTEGRATION_SNAPSHOTTED=0
+HOST_INTEGRATION_MUTATED=0
 
 log() {
   printf '[waterfallhunter-deploy] %s\n' "$*"
@@ -104,16 +107,124 @@ load_tested_release_artifacts() {
   log "loaded exact CI-tested release images for ${WFH_DEPLOY_SHA}"
 }
 
+snapshot_host_integration_state() {
+  local unit target state manifest
+  [[ "$HOST_INTEGRATION_SNAPSHOTTED" -eq 0 ]] || return 0
+  HOST_INTEGRATION_BACKUP_DIR="${STATE_DIR}/host-integration.${PREVIOUS_SHA:-unknown}.${DEPLOY_EPOCH}"
+  install -d -m 0700 \
+    "$HOST_INTEGRATION_BACKUP_DIR/systemd" \
+    "$HOST_INTEGRATION_BACKUP_DIR/nginx"
+  manifest="$HOST_INTEGRATION_BACKUP_DIR/manifest"
+  : > "$manifest"
+  : > "$HOST_INTEGRATION_BACKUP_DIR/systemd-enabled"
+
+  for unit in \
+    waterfallhunter.service \
+    waterfallhunter-healthcheck.service \
+    waterfallhunter-healthcheck.timer; do
+    target="/etc/systemd/system/${unit}"
+    if [[ -e "$target" || -L "$target" ]]; then
+      cp -a -- "$target" "$HOST_INTEGRATION_BACKUP_DIR/systemd/${unit}"
+      printf 'systemd:%s=present\n' "$unit" >> "$manifest"
+    else
+      printf 'systemd:%s=absent\n' "$unit" >> "$manifest"
+    fi
+    state="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
+    printf '%s=%s\n' "$unit" "${state:-unknown}" \
+      >> "$HOST_INTEGRATION_BACKUP_DIR/systemd-enabled"
+  done
+
+  for target in \
+    /etc/nginx/sites-available/waterfallhunter.conf \
+    /etc/nginx/sites-enabled/waterfallhunter.conf; do
+    if [[ -e "$target" || -L "$target" ]]; then
+      cp -a -- "$target" "$HOST_INTEGRATION_BACKUP_DIR/nginx/$(basename "$(dirname "$target")")"
+      printf 'nginx:%s=present\n' "$target" >> "$manifest"
+    else
+      printf 'nginx:%s=absent\n' "$target" >> "$manifest"
+    fi
+  done
+  HOST_INTEGRATION_SNAPSHOTTED=1
+}
+
+restore_host_integration_state() {
+  local unit target presence state status=0 manifest
+  [[ "$HOST_INTEGRATION_SNAPSHOTTED" -eq 1 ]] || return 0
+  manifest="$HOST_INTEGRATION_BACKUP_DIR/manifest"
+
+  for unit in \
+    waterfallhunter.service \
+    waterfallhunter-healthcheck.service \
+    waterfallhunter-healthcheck.timer; do
+    target="/etc/systemd/system/${unit}"
+    presence="$(awk -F= -v key="systemd:${unit}" '$1 == key { print $2 }' "$manifest")"
+    rm -f -- "$target" || status=1
+    if [[ "$presence" == "present" ]]; then
+      cp -a -- "$HOST_INTEGRATION_BACKUP_DIR/systemd/${unit}" "$target" || status=1
+    fi
+  done
+  systemctl daemon-reload || status=1
+  for unit in waterfallhunter.service waterfallhunter-healthcheck.timer; do
+    state="$(awk -F= -v key="$unit" '$1 == key { print $2 }' "$HOST_INTEGRATION_BACKUP_DIR/systemd-enabled")"
+    case "$state" in
+      enabled|enabled-runtime)
+        systemctl enable "$unit" >/dev/null 2>&1 || status=1
+        ;;
+      *)
+        systemctl disable "$unit" >/dev/null 2>&1 || true
+        ;;
+    esac
+  done
+
+  for target in \
+    /etc/nginx/sites-available/waterfallhunter.conf \
+    /etc/nginx/sites-enabled/waterfallhunter.conf; do
+    presence="$(awk -F= -v key="nginx:${target}" '$1 == key { print $2 }' "$manifest")"
+    rm -f -- "$target" || status=1
+    if [[ "$presence" == "present" ]]; then
+      cp -a -- "$HOST_INTEGRATION_BACKUP_DIR/nginx/$(basename "$(dirname "$target")")" "$target" || status=1
+    fi
+  done
+  if command -v nginx >/dev/null 2>&1; then
+    nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || status=1
+  fi
+  HOST_INTEGRATION_MUTATED=0
+  return "$status"
+}
+
 install_systemd_units() {
   local source_dir="${WFH_DEPLOY_ROOT}/deploy/systemd"
+  [[ "$HOST_INTEGRATION_SNAPSHOTTED" -eq 1 ]] || fail "host integration snapshot missing before systemd install"
   [[ -f "$source_dir/waterfallhunter.service" ]] || fail "canonical systemd service missing"
   [[ -f "$source_dir/waterfallhunter-healthcheck.service" ]] || fail "canonical healthcheck service missing"
   [[ -f "$source_dir/waterfallhunter-healthcheck.timer" ]] || fail "canonical healthcheck timer missing"
+  HOST_INTEGRATION_MUTATED=1
   install -m 0644 "$source_dir/waterfallhunter.service" /etc/systemd/system/waterfallhunter.service
   install -m 0644 "$source_dir/waterfallhunter-healthcheck.service" /etc/systemd/system/waterfallhunter-healthcheck.service
   install -m 0644 "$source_dir/waterfallhunter-healthcheck.timer" /etc/systemd/system/waterfallhunter-healthcheck.timer
   systemctl daemon-reload
   systemctl enable waterfallhunter.service waterfallhunter-healthcheck.timer >/dev/null
+}
+
+install_nginx_site() {
+  local source="${WFH_DEPLOY_ROOT}/deploy/nginx/waterfallhunter.conf"
+  local available="/etc/nginx/sites-available/waterfallhunter.conf"
+  local enabled="/etc/nginx/sites-enabled/waterfallhunter.conf"
+  [[ "$HOST_INTEGRATION_SNAPSHOTTED" -eq 1 ]] || fail "host integration snapshot missing before Nginx install"
+  [[ -f "$source" ]] || fail "canonical Nginx site missing: deploy/nginx/waterfallhunter.conf"
+  [[ -d /etc/nginx/sites-available && -d /etc/nginx/sites-enabled ]] \
+    || fail "canonical Nginx site directories are unavailable"
+  HOST_INTEGRATION_MUTATED=1
+  install -m 0644 "$source" "$available"
+  ln -sfn "$available" "$enabled"
+  nginx -t >/dev/null
+  systemctl reload nginx
+}
+
+verify_public_edge() {
+  local public_url="${WFH_PUBLIC_EDGE_URL:-http://waterfall.booksreadlive.online/}"
+  curl --fail --silent --show-error --location --max-time 15 \
+    --output /dev/null "$public_url"
 }
 
 remove_fixed_name_core_containers() {
@@ -383,6 +494,10 @@ terminate_with_cleanup() {
     restore_previous_workspace \
       || log "pre-mutation workspace restoration could not be certified"
   fi
+  if [[ "$HOST_INTEGRATION_MUTATED" -eq 1 ]]; then
+    restore_host_integration_state \
+      || log "host integration restoration could not be certified"
+  fi
   prune_database_backups \
     || log "database backup retention cleanup failed during failure handling"
   exit "$status"
@@ -420,6 +535,8 @@ require_command sort
 require_command sha256sum
 require_command install
 require_command systemctl
+require_command nginx
+require_command curl
 
 [[ "$WFH_DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "WFH_DEPLOY_SHA must be an exact 40-character Git SHA"
 [[ "$WFH_TESTED_IMAGE_BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]] || fail "WFH_TESTED_IMAGE_BUNDLE_SHA256 must be a SHA256"
@@ -456,7 +573,6 @@ docker compose config --quiet
 assert_signal_only_runtime_boundary
 
 load_tested_release_artifacts
-install_systemd_units
 
 backup_database
 
@@ -486,6 +602,11 @@ wait_for_container_healthy waterfall-watchdog 30 3 || fail "watchdog container d
 verify_running_revision "$WFH_DEPLOY_SHA" || fail "running OCI org.opencontainers.image.revision does not match target SHA"
 verify_running_signal_only || fail "running backend violated the SIGNAL_ONLY live-trading boundary"
 
+snapshot_host_integration_state
+install_systemd_units
+install_nginx_site
+verify_public_edge || fail "public WaterfallHunter edge did not become reachable"
+
 prune_database_backups || fail "database backup retention cleanup failed"
 
 install -d -m 0750 "$STATE_DIR"
@@ -507,6 +628,10 @@ EOF
 if [[ -n "$ENV_BACKUP" ]]; then
   rm -f -- "$ENV_BACKUP"
   ENV_BACKUP=""
+fi
+if [[ -n "$HOST_INTEGRATION_BACKUP_DIR" && -d "$HOST_INTEGRATION_BACKUP_DIR" ]]; then
+  rm -rf -- "$HOST_INTEGRATION_BACKUP_DIR"
+  HOST_INTEGRATION_BACKUP_DIR=""
 fi
 
 trap - ERR TERM HUP INT

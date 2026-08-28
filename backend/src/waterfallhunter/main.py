@@ -1784,7 +1784,7 @@ def _apply_deterministic_entry_gate(
     symbol: str, decision_state: str, metrics: dict[str, Any]
 ) -> tuple[str, bool]:
     """Attach the provider-free hard gate before any potentially actionable decision."""
-    if decision_state not in {"PRE-TRIGGER", "ARMED", "TRIGGERED"}:
+    if decision_state not in {"WATCH", "FUEL-RICH", "PRE-TRIGGER", "ARMED", "TRIGGERED"}:
         return decision_state, False
     vetoed, advisory = ai_veto.evaluate_deterministic(
         symbol,

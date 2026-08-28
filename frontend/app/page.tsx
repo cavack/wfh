@@ -271,7 +271,7 @@ export default function Dashboard() {
 
       <div className="px-4 pt-5 sm:px-6 lg:px-8">
         {emptyState}
-        {data !== null && rows.length > 0 ? (
+        {data !== null ? (
           <DecisionTerminal terminal={data.decision_terminal} candidates={data.candidates as Record<string, Candidate>} />
         ) : null}
 
