@@ -20,6 +20,9 @@ WFH_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WFH_REPOSITORY_ROOT))
 sys.path.insert(0, str(WFH_REPOSITORY_ROOT / "backend" / "src"))
 
+TRUSTED_KEY_ROOT = Path("/root/.wfh-dr")
+TRUSTED_KEY_NAME = "wfh-dr-aes256.key"
+
 from scripts.certify_sqlite_backup import _canonical_absolute_path, _write_report_atomic
 from waterfallhunter.core.github_release_backup_verification import (
     TrustedRemoteBackupVerificationError,
@@ -67,14 +70,26 @@ def _tag(value: str) -> str:
 
 
 def _load_key(path: Path) -> bytes:
-    if not path.is_absolute() or path.is_symlink() or not path.is_file():
+    try:
+        trusted_root = TRUSTED_KEY_ROOT.resolve(strict=True)
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise RemoteBackupCLIError("REMOTE_BACKUP_KEY_FILE_INVALID") from error
+    if (
+        not path.is_absolute()
+        or path.is_symlink()
+        or resolved != path
+        or resolved.parent != trusted_root
+        or resolved.name != TRUSTED_KEY_NAME
+        or not resolved.is_file()
+    ):
         raise RemoteBackupCLIError("REMOTE_BACKUP_KEY_FILE_INVALID")
-    stat_result = path.stat()
+    stat_result = resolved.stat()
     if stat_result.st_uid != 0 or stat_result.st_mode & 0o077:
         raise RemoteBackupCLIError("REMOTE_BACKUP_KEY_FILE_PERMISSIONS_INVALID")
     try:
-        key = base64.b64decode(path.read_text(encoding="ascii").strip(), validate=True)
-    except (OSError, UnicodeError, ValueError) as error:
+        key = base64.b64decode(resolved.read_text(encoding="ascii").strip(), validate=True)
+    except (OSError, ValueError) as error:
         raise RemoteBackupCLIError("REMOTE_BACKUP_KEY_INVALID") from error
     if len(key) != 32:
         raise RemoteBackupCLIError("REMOTE_BACKUP_KEY_INVALID")
@@ -182,6 +197,27 @@ def _release_assets(
 def _remove_files(paths: list[Path]) -> None:
     for path in paths:
         path.unlink(missing_ok=True)
+
+
+def _safe_unlink_staging_artifact(
+    path: Path,
+    *,
+    staging_dir: Path,
+    allowed_names: set[str],
+) -> None:
+    try:
+        root = staging_dir.resolve(strict=True)
+        candidate = path.resolve(strict=False)
+    except (OSError, RuntimeError) as error:
+        raise RemoteBackupCLIError("REMOTE_BACKUP_CLEANUP_PATH_INVALID") from error
+    if (
+        staging_dir.is_symlink()
+        or path.is_symlink()
+        or candidate.parent != root
+        or path.name not in allowed_names
+    ):
+        raise RemoteBackupCLIError("REMOTE_BACKUP_CLEANUP_PATH_INVALID")
+    candidate.unlink(missing_ok=True)
 
 
 def main() -> int:
@@ -297,7 +333,11 @@ def main() -> int:
         bundle_dir.rmdir()
         # Off-host publication is now independently verified. Retire the local
         # plaintext staging copy before re-download so disk peak stays bounded.
-        staging_snapshot.unlink()
+        _safe_unlink_staging_artifact(
+            staging_snapshot,
+            staging_dir=args.staging_dir,
+            allowed_names={"remote-staging-backup.db"},
+        )
         download_dir.mkdir(mode=0o700)
         _gh(
             "release",
@@ -407,13 +447,21 @@ def main() -> int:
         )
         return 2
     finally:
-        staging_snapshot.unlink(missing_ok=True)
+        _safe_unlink_staging_artifact(
+            staging_snapshot,
+            staging_dir=args.staging_dir,
+            allowed_names={"remote-staging-backup.db"},
+        )
         if bundle_dir.exists() and not bundle_dir.is_symlink():
             shutil.rmtree(bundle_dir, ignore_errors=True)
         if download_dir.exists() and not download_dir.is_symlink():
             shutil.rmtree(download_dir, ignore_errors=True)
         if not success:
-            args.restore_target.unlink(missing_ok=True)
+            _safe_unlink_staging_artifact(
+                args.restore_target,
+                staging_dir=args.staging_dir,
+                allowed_names={args.restore_target.name},
+            )
 
 
 if __name__ == "__main__":
