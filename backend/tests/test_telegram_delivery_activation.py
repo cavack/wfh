@@ -289,3 +289,41 @@ def test_canonical_entry_probe_only_disables_worker_for_permanent_rejection() ->
     assert main._telegram_probe_allows_worker({"reachable": False, "status_code": 401}) is False
     assert main._telegram_probe_allows_worker({"reachable": False, "status_code": 403}) is False
     assert main._telegram_probe_allows_worker({"reachable": False, "status_code": 404}) is False
+
+
+def test_canonical_notification_loop_pauses_after_rate_limit(monkeypatch) -> None:
+    import asyncio
+    from waterfallhunter import main
+    from waterfallhunter.core.notification_delivery import DispatchOutcome
+
+    calls = []
+    sleeps = []
+
+    class Worker:
+        async def dispatch_once(self, *, now: int):
+            calls.append(now)
+            if len(calls) > 1:
+                main._hunter_running = False
+                return None
+            return DispatchOutcome(
+                event_id="entry:1:ready",
+                state="RETRY_WAIT",
+                attempt_count=1,
+                next_available_at=now + 7,
+                error_code="HTTP_429",
+            )
+
+    async def fake_sleep(delay: float):
+        sleeps.append(delay)
+        main._hunter_running = False
+
+    monkeypatch.setattr(main, "_entry_notification_worker", Worker())
+    monkeypatch.setattr(main.asyncio, "sleep", fake_sleep)
+    main._hunter_running = True
+    try:
+        asyncio.run(main._entry_notification_loop(interval_seconds=2.0))
+    finally:
+        main._hunter_running = False
+
+    assert len(calls) == 1
+    assert sleeps and sleeps[0] >= 7

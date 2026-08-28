@@ -421,3 +421,103 @@ def test_telegram_transport_hydrates_available_ai_advisory_from_decision_event(t
     assert "AI" in text
     assert "SHORT" in text
     assert "88" in text
+
+
+def test_entry_outbox_waits_for_advisory_without_consuming_attempts(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "advisory-gate.db")
+    store = EntryDecisionStore(db_path)
+    event_id = store.append_if_changed("SXT/USDT:USDT", entry_packet())
+    assert event_id == 1
+    with sqlite3.connect(db_path) as conn:
+        created_at = conn.execute(
+            "SELECT created_at FROM entry_notification_outbox"
+        ).fetchone()[0]
+
+    transport = FakeTransport()
+    worker = DurableNotificationWorker(
+        db_path,
+        transport,
+        worker_id="entry-advisory-gate",
+        outbox_table="entry_notification_outbox",
+        advisory_wait_seconds=10,
+    )
+    assert asyncio.run(worker.dispatch_once(now=created_at + 2)) is None
+    with sqlite3.connect(db_path) as conn:
+        state = conn.execute(
+            "SELECT status,attempt_count FROM entry_notification_outbox"
+        ).fetchone()
+    assert state == ("PENDING", 0)
+    assert transport.calls == []
+
+    store.append_advisory(
+        event_id,
+        {
+            "observational_only": True,
+            "decision_mutated": False,
+            "ai_advice": "UNAVAILABLE",
+            "ai_confidence": 0,
+            "ai_reasoning": "provider timed out",
+            "ai_provider": "none",
+            "ai_model": "none",
+            "ai_status": "UNAVAILABLE",
+        },
+        advisory_at=created_at + 3,
+    )
+    delivered = asyncio.run(worker.dispatch_once(now=created_at + 3))
+    assert delivered is not None and delivered.state == "DELIVERED"
+    assert len(transport.calls) == 1
+
+
+def test_entry_outbox_fails_open_to_explicit_unavailable_after_advisory_grace(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "advisory-crash-fallback.db")
+    EntryDecisionStore(db_path).append_if_changed("SXT/USDT:USDT", entry_packet())
+    with sqlite3.connect(db_path) as conn:
+        created_at = conn.execute(
+            "SELECT created_at FROM entry_notification_outbox"
+        ).fetchone()[0]
+    transport = FakeTransport()
+    worker = DurableNotificationWorker(
+        db_path,
+        transport,
+        worker_id="entry-advisory-fallback",
+        outbox_table="entry_notification_outbox",
+        advisory_wait_seconds=10,
+    )
+    assert asyncio.run(worker.dispatch_once(now=created_at + 9)) is None
+    outcome = asyncio.run(worker.dispatch_once(now=created_at + 10))
+    assert outcome is not None and outcome.state == "DELIVERED"
+    assert len(transport.calls) == 1
+    with sqlite3.connect(db_path) as conn:
+        advisory = conn.execute(
+            "SELECT status,provider,model,advisory_json "
+            "FROM entry_decision_advisories WHERE decision_event_id=1"
+        ).fetchone()
+    assert advisory is not None
+    assert advisory[:3] == ("UNAVAILABLE", "none", "none")
+    assert json.loads(advisory[3])["ai_status"] == "UNAVAILABLE"
+
+
+def test_telegram_read_timeout_is_delivery_uncertain_but_connect_timeout_is_retryable() -> None:
+    payload = {
+        "contract_version": "entry_ready_notification_v1",
+        "symbol": "SXT/USDT:USDT",
+        "decision_packet": entry_packet(),
+    }
+    event = {"event_id": "entry:1:ready", "payload_json": json.dumps(payload)}
+
+    async def run(exc):
+        async def handler(request: httpx.Request) -> httpx.Response:
+            raise exc("timeout", request=request)
+        transport = TelegramSignalTransport(
+            "token", "123",
+            max_entry_age_seconds=10_000_000_000,
+            http_transport=httpx.MockTransport(handler),
+        )
+        return await transport.deliver(event)
+
+    read = asyncio.run(run(httpx.ReadTimeout))
+    connect = asyncio.run(run(httpx.ConnectTimeout))
+    assert read.disposition is DeliveryDisposition.DELIVERY_UNCERTAIN
+    assert read.error_code == "TELEGRAM_READ_TIMEOUT_AFTER_SEND_MAY_HAVE_STARTED"
+    assert connect.disposition is DeliveryDisposition.TRANSIENT_FAILURE
+    assert connect.error_code == "TELEGRAM_CONNECT_TIMEOUT"

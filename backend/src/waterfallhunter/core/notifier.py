@@ -760,8 +760,26 @@ class TelegramSignalTransport:
         try:
             async with httpx.AsyncClient(timeout=10.0, transport=self.http_transport) as client:
                 response = await client.post(url, json={"chat_id": self.chat_id, "text": text, "parse_mode": "HTML"})
-        except (httpx.TimeoutException, TimeoutError):
-            return DeliveryResult(DeliveryDisposition.TRANSIENT_FAILURE, "TELEGRAM_TIMEOUT")
+        except httpx.ConnectTimeout:
+            return DeliveryResult(
+                DeliveryDisposition.TRANSIENT_FAILURE,
+                "TELEGRAM_CONNECT_TIMEOUT",
+            )
+        except httpx.PoolTimeout:
+            return DeliveryResult(
+                DeliveryDisposition.TRANSIENT_FAILURE,
+                "TELEGRAM_POOL_TIMEOUT",
+            )
+        except (httpx.ReadTimeout, httpx.WriteTimeout, TimeoutError):
+            return DeliveryResult(
+                DeliveryDisposition.DELIVERY_UNCERTAIN,
+                "TELEGRAM_READ_TIMEOUT_AFTER_SEND_MAY_HAVE_STARTED",
+            )
+        except httpx.TimeoutException:
+            return DeliveryResult(
+                DeliveryDisposition.DELIVERY_UNCERTAIN,
+                "TELEGRAM_TIMEOUT_AFTER_SEND_MAY_HAVE_STARTED",
+            )
         except httpx.HTTPError:
             return DeliveryResult(DeliveryDisposition.TRANSIENT_FAILURE, "TELEGRAM_HTTP_ERROR")
         if 200 <= response.status_code < 300:

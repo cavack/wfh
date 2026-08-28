@@ -38,7 +38,10 @@ from waterfallhunter.core.notification_delivery import (
     NotificationDeliveryError,
     notification_delivery_health,
 )
-from waterfallhunter.core.ai_veto import AIVetoEngine
+from waterfallhunter.core.ai_veto import (
+    AIVetoEngine,
+    CANONICAL_ADVISORY_DELIVERY_GRACE_SECONDS,
+)
 from waterfallhunter.core.risk_manager import get_leverage, recommend_signal_leverage
 from waterfallhunter.core.dashboard import compact_metrics
 from waterfallhunter.core.decision_terminal import build_decision_terminal
@@ -727,6 +730,7 @@ def _build_entry_notification_worker() -> DurableNotificationWorker | None:
         worker_id="canonical-entry-telegram",
         outbox_table="entry_notification_outbox",
         transport_timeout_seconds=10.0,
+        advisory_wait_seconds=CANONICAL_ADVISORY_DELIVERY_GRACE_SECONDS,
         verify_schema=False,
     )
 
@@ -737,7 +741,8 @@ async def _entry_notification_loop(interval_seconds: float = 2.0) -> None:
         if worker is None:
             return
         try:
-            outcome = await worker.dispatch_once(now=int(time.time()))
+            dispatch_now = int(time.time())
+            outcome = await worker.dispatch_once(now=dispatch_now)
             if outcome is None:
                 await asyncio.sleep(interval_seconds)
             elif outcome.state != "DELIVERED":
@@ -745,6 +750,16 @@ async def _entry_notification_loop(interval_seconds: float = 2.0) -> None:
                     "Canonical Telegram delivery %s for %s (%s)",
                     outcome.state, outcome.event_id, outcome.error_code,
                 )
+                if (
+                    outcome.error_code == "HTTP_429"
+                    and outcome.next_available_at is not None
+                ):
+                    await asyncio.sleep(
+                        max(
+                            interval_seconds,
+                            float(outcome.next_available_at - dispatch_now),
+                        )
+                    )
         except NotificationDeliveryError as exc:
             logger.exception("Canonical Telegram delivery worker failed: %s", exc)
             await asyncio.sleep(max(interval_seconds, 5.0))

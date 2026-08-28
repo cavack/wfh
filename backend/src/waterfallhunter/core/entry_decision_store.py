@@ -225,6 +225,73 @@ class EntryDecisionStore:
             )
             return int(cursor.lastrowid)
 
+    def ensure_unavailable_advisory(
+        self,
+        decision_event_id: int,
+        *,
+        advisory_at: int,
+        reason: str,
+    ) -> int:
+        if (
+            isinstance(decision_event_id, bool)
+            or not isinstance(decision_event_id, int)
+            or decision_event_id <= 0
+        ):
+            raise ValueError("decision event id invalid")
+        if (
+            isinstance(advisory_at, bool)
+            or not isinstance(advisory_at, int)
+            or advisory_at < 0
+        ):
+            raise ValueError("advisory timestamp invalid")
+        normalized_reason = str(reason or "").strip()
+        if not normalized_reason:
+            raise ValueError("advisory fallback reason missing")
+        advisory = {
+            "observational_only": True,
+            "decision_mutated": False,
+            "ai_advice": "UNAVAILABLE",
+            "ai_confidence": 0,
+            "ai_reasoning": normalized_reason,
+            "ai_provider": "none",
+            "ai_model": "none",
+            "ai_status": "UNAVAILABLE",
+            "advisory_at": advisory_at,
+        }
+        payload, payload_hash = self._encode(advisory)
+        created_at = int(time.time())
+        with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                "SELECT id FROM entry_decision_advisories "
+                "WHERE decision_event_id=? ORDER BY id DESC LIMIT 1",
+                (decision_event_id,),
+            ).fetchone()
+            if existing is not None:
+                return int(existing[0])
+            decision = conn.execute(
+                "SELECT id FROM entry_decision_events WHERE id=?",
+                (decision_event_id,),
+            ).fetchone()
+            if decision is None:
+                raise ValueError("decision event missing")
+            cursor = conn.execute(
+                "INSERT INTO entry_decision_advisories ("
+                "decision_event_id,advisory_at,provider,model,status,"
+                "advisory_json,advisory_hash,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    decision_event_id,
+                    advisory_at,
+                    "none",
+                    "none",
+                    "UNAVAILABLE",
+                    payload,
+                    payload_hash,
+                    created_at,
+                ),
+            )
+            return int(cursor.lastrowid)
+
     @staticmethod
     def _history_select(where: str = "") -> str:
         return (

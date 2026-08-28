@@ -14,6 +14,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
 
+from waterfallhunter.core.entry_decision_store import EntryDecisionStore
 from waterfallhunter.core.managed_sqlite import connect_managed_sqlite
 from waterfallhunter.core.schema_contract import require_managed_schema
 
@@ -24,6 +25,7 @@ logger = logging.getLogger("WaterfallHunter.NotificationDelivery")
 class DeliveryDisposition(str, Enum):
     DELIVERED = "DELIVERED"
     RATE_LIMITED = "RATE_LIMITED"
+    DELIVERY_UNCERTAIN = "DELIVERY_UNCERTAIN"
     TRANSIENT_FAILURE = "TRANSIENT_FAILURE"
     PERMANENT_FAILURE = "PERMANENT_FAILURE"
 
@@ -87,6 +89,7 @@ class DurableNotificationWorker:
         base_backoff_seconds: int = 5,
         max_backoff_seconds: int = 900,
         transport_timeout_seconds: float | None = None,
+        advisory_wait_seconds: int = 0,
         jitter: Callable[[], float] = random.random,
         outbox_table: str = "domain_outbox_events",
         verify_schema: bool = True,
@@ -110,6 +113,13 @@ class DurableNotificationWorker:
         )
         if not math.isfinite(self.transport_timeout_seconds) or self.transport_timeout_seconds <= 0:
             raise ValueError("transport timeout must be positive and finite")
+        if (
+            isinstance(advisory_wait_seconds, bool)
+            or not isinstance(advisory_wait_seconds, int)
+            or advisory_wait_seconds < 0
+        ):
+            raise ValueError("advisory_wait_seconds must be a non-negative integer")
+        self.advisory_wait_seconds = advisory_wait_seconds
         self.jitter = jitter
         if verify_schema:
             require_managed_schema(
@@ -141,12 +151,62 @@ class DurableNotificationWorker:
         except sqlite3.Error as exc:
             raise NotificationDeliveryError("DELIVERY_LEASE_RECOVERY_FAILED") from exc
 
+    def _ensure_expired_entry_advisory_grace(self, *, now: int) -> None:
+        if (
+            self.outbox_table != "entry_notification_outbox"
+            or self.advisory_wait_seconds <= 0
+        ):
+            return
+        timestamp = self._timestamp(now)
+        with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
+            row = conn.execute(
+                "SELECT outbox.decision_event_id "
+                "FROM entry_notification_outbox outbox "
+                "WHERE outbox.status IN ('PENDING','RETRY_WAIT') "
+                "AND outbox.available_at <= ? "
+                "AND outbox.created_at + ? <= ? "
+                "AND NOT EXISTS ("
+                "SELECT 1 FROM entry_decision_advisories advisory "
+                "WHERE advisory.decision_event_id=outbox.decision_event_id"
+                ") "
+                "ORDER BY outbox.available_at,outbox.created_at,outbox.event_id "
+                "LIMIT 1",
+                (timestamp, self.advisory_wait_seconds, timestamp),
+            ).fetchone()
+        if row is None:
+            return
+        EntryDecisionStore(self.db_path, verify_schema=False).ensure_unavailable_advisory(
+            int(row[0]),
+            advisory_at=timestamp,
+            reason="AI advisory grace elapsed; canonical delivery continued without AI.",
+        )
+
     def claim_next(self, *, now: int) -> ClaimedEvent | None:
         timestamp = self._timestamp(now)
         try:
             with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
                 conn.row_factory = sqlite3.Row
                 conn.execute("BEGIN IMMEDIATE")
+                advisory_clause = ""
+                query_parameters: list[Any] = [timestamp, timestamp]
+                if (
+                    self.outbox_table == "entry_notification_outbox"
+                    and self.advisory_wait_seconds > 0
+                ):
+                    advisory_clause = """
+                        AND (
+                            created_at + ? <= ?
+                            OR EXISTS (
+                                SELECT 1
+                                FROM entry_decision_advisories advisory
+                                WHERE advisory.decision_event_id =
+                                      entry_notification_outbox.decision_event_id
+                            )
+                        )
+                    """
+                    query_parameters.extend(
+                        [self.advisory_wait_seconds, timestamp]
+                    )
                 row = conn.execute(
                     f"""
                     SELECT
@@ -158,10 +218,11 @@ class DurableNotificationWorker:
                         status IN ('PENDING', 'RETRY_WAIT')
                         AND available_at <= ?
                         AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+                        {advisory_clause}
                     ORDER BY available_at, created_at, event_id
                     LIMIT 1
                     """,
-                    (timestamp, timestamp),
+                    tuple(query_parameters),
                 ).fetchone()
                 if row is None:
                     conn.commit()
@@ -208,6 +269,10 @@ class DurableNotificationWorker:
     async def dispatch_once(self, *, now: int) -> DispatchOutcome | None:
         timestamp = self._timestamp(now)
         await asyncio.to_thread(self.recover_expired_leases, now=timestamp)
+        await asyncio.to_thread(
+            self._ensure_expired_entry_advisory_grace,
+            now=timestamp,
+        )
         event = await asyncio.to_thread(self.claim_next, now=timestamp)
         if event is None:
             return None
@@ -227,8 +292,8 @@ class DurableNotificationWorker:
             )
         except (asyncio.TimeoutError, TimeoutError):
             result = DeliveryResult(
-                DeliveryDisposition.TRANSIENT_FAILURE,
-                error_code="TRANSPORT_TIMEOUT",
+                DeliveryDisposition.DELIVERY_UNCERTAIN,
+                error_code="TRANSPORT_TIMEOUT_AFTER_SEND_MAY_HAVE_STARTED",
             )
         except Exception:
             logger.exception(
@@ -304,6 +369,12 @@ class DurableNotificationWorker:
         error_code = self._safe_error_code(result.error_code)
         if result.disposition is DeliveryDisposition.DELIVERED:
             return "DELIVERED", None, None
+        if result.disposition is DeliveryDisposition.DELIVERY_UNCERTAIN:
+            return (
+                "DELIVERY_UNCERTAIN",
+                None,
+                error_code or "DELIVERY_OUTCOME_UNCERTAIN",
+            )
         if result.disposition is DeliveryDisposition.PERMANENT_FAILURE:
             return "DEAD_LETTER", None, error_code or "PERMANENT_FAILURE"
         if event.attempt_count >= self.max_attempts:

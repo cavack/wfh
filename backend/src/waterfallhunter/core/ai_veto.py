@@ -11,6 +11,9 @@ from waterfallhunter.config import settings
 
 logger = logging.getLogger("WaterfallHunter.AIVeto")
 
+CANONICAL_ADVISORY_TIMEOUT_SECONDS = 8
+CANONICAL_ADVISORY_DELIVERY_GRACE_SECONDS = CANONICAL_ADVISORY_TIMEOUT_SECONDS + 2
+
 
 class AIVetoEngine:
     """Deterministic veto plus optional Gemini advisory.
@@ -123,7 +126,10 @@ class AIVetoEngine:
     ) -> Dict[str, Any]:
         prompt = self._canonical_prompt(symbol, metrics, decision)
         try:
-            opinion = await asyncio.wait_for(self._request_canonical_advisory(prompt), timeout=8.0)
+            opinion = await asyncio.wait_for(
+                self._request_canonical_advisory(prompt),
+                timeout=CANONICAL_ADVISORY_TIMEOUT_SECONDS,
+            )
             opinion = self._validated_advisory_opinion(opinion)
         except Exception as exc:
             logger.warning("Canonical AI advisory unavailable for %s: %s", symbol, type(exc).__name__)
