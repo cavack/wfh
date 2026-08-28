@@ -85,7 +85,7 @@ def test_tracked_repository_text_does_not_use_deprecated_product_boundary_terms(
     assert offenders == []
 
 
-def test_production_deploy_is_chained_to_successful_main_push_ci() -> None:
+def test_production_deploy_requires_explicit_main_dispatch_after_ci() -> None:
     ci_text = CI_WORKFLOW.read_text(encoding="utf-8")
     deploy_text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
 
@@ -94,6 +94,11 @@ def test_production_deploy_is_chained_to_successful_main_push_ci() -> None:
     assert "workflow_dispatch" not in deploy_text
     assert "environment: production" in deploy_text
     assert "WFH_DEPLOY_SHA: ${{ github.sha }}" in deploy_text
+
+    assert "workflow_dispatch:" in ci_text
+    assert "deploy_production:" in ci_text
+    assert "type: boolean" in ci_text
+    assert "default: false" in ci_text
 
     deploy_job = ci_text.split("\n  deploy-production:\n", maxsplit=1)[1]
     for dependency in (
@@ -104,8 +109,10 @@ def test_production_deploy_is_chained_to_successful_main_push_ci() -> None:
         "repository-hygiene",
     ):
         assert f"      - {dependency}\n" in deploy_job
-    assert "github.event_name == 'push'" in deploy_job
+    assert "github.event_name == 'workflow_dispatch'" in deploy_job
+    assert "inputs.deploy_production == true" in deploy_job
     assert "github.ref == 'refs/heads/main'" in deploy_job
+    assert "github.event_name == 'push'" not in deploy_job
     assert "uses: ./.github/workflows/deploy-production.yml" in deploy_job
 
     callers = []
@@ -120,7 +127,7 @@ def test_privileged_deploy_does_not_use_workflow_run_head_code() -> None:
     deploy_text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
     assert "workflow_run" not in deploy_text
     assert "github.event.workflow_run" not in deploy_text
-    assert "github.event_name == 'push'" in ci_text
+    assert "github.event_name == 'workflow_dispatch'" in ci_text
     assert "github.ref == 'refs/heads/main'" in ci_text
     deploy_job = deploy_text.split("jobs:\n  deploy:\n", maxsplit=1)[1]
     assert "    permissions:\n      contents: read\n" in deploy_job
