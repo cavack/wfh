@@ -105,7 +105,7 @@ def _empty_database(path: Path) -> None:
 
 
 def _request(tmp_path: Path, *, now: int | None = None) -> tuple[dict, int]:
-    observed_now = int(time.time() if now is None else now)
+    """Build certification evidence before choosing the evaluation timestamp."""
     source_dir = tmp_path / "source"
     destination_dir = tmp_path / "independent"
     source_dir.mkdir()
@@ -139,6 +139,7 @@ def _request(tmp_path: Path, *, now: int | None = None) -> tuple[dict, int]:
         rollback_target=(destination_dir / "rollback.db").resolve(),
         source_revision=REVISION,
     )
+    observed_now = int(time.time() if now is None else now)
     request = {
         "source_revision": REVISION,
         "ci_revision": REVISION,
