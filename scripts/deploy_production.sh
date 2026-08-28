@@ -78,6 +78,7 @@ configure_production_compose_topology() {
   log "using host-owned Production Compose topology override: ${PRODUCTION_COMPOSE_OVERRIDE}"
 }
 
+# Verify the loaded tag carries the exact release revision.
 verify_loaded_image_revision() {
   local image_name="$1" actual_revision
   actual_revision="$(docker image inspect "$image_name" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' 2>/dev/null || true)"
@@ -98,6 +99,7 @@ cleanup_incoming_artifacts() {
   done < <(find "$incoming" -mindepth 1 -maxdepth 1 -type d -print)
 }
 
+# Verify the staged CI bundle before loading any release image.
 load_tested_release_artifacts() {
   local expected_bundle actual_bundle_sha
   expected_bundle="${STATE_DIR}/incoming/${WFH_DEPLOY_SHA}/wfh-tested-images.tar"

@@ -92,3 +92,25 @@ def test_bundle_verifier_rejects_bundle_outside_allowed_root(tmp_path: Path) -> 
     )
     assert result.returncode == 2
     assert "outside allowed root" in result.stdout
+
+
+def test_bundle_verifier_rejects_non_object_nested_config_without_traceback(tmp_path: Path) -> None:
+    """Return the stable failure status for malformed nested config objects."""
+    revision = "a" * 40
+    bundle = tmp_path / "malformed.tar"
+    config = json.dumps({"config": "invalid"}, sort_keys=True, separators=(",", ":")).encode()
+    digest = hashlib.sha256(config).hexdigest()
+    config_name = f"blobs/sha256/{digest}"
+    manifest = [{"Config": config_name, "RepoTags": ["waterfallhunter-waterfall-backend:latest"], "Layers": []}]
+    with tarfile.open(bundle, "w") as archive:
+        info = tarfile.TarInfo(config_name)
+        info.size = len(config)
+        archive.addfile(info, io.BytesIO(config))
+        payload = json.dumps(manifest, separators=(",", ":")).encode()
+        info = tarfile.TarInfo("manifest.json")
+        info.size = len(payload)
+        archive.addfile(info, io.BytesIO(payload))
+    result = _run(bundle, revision, "waterfallhunter-waterfall-backend", f"sha256:{digest}")
+    assert result.returncode == 2
+    assert "bundle_verification=FAIL" in result.stdout
+    assert "Traceback" not in result.stderr

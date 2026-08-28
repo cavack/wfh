@@ -109,7 +109,10 @@ def _verify_image(
     config = json.loads(config_bytes)
     if not isinstance(config, dict):
         raise ValueError(f"bundle config is invalid: {tag}")
-    labels = (config.get("config") or {}).get("Labels") or {}
+    config_section = config.get("config") or {}
+    if not isinstance(config_section, dict):
+        raise ValueError(f"bundle config is invalid: {tag}")
+    labels = config_section.get("Labels") or {}
     if not isinstance(labels, dict) or labels.get("org.opencontainers.image.revision") != revision:
         raise ValueError(f"bundle revision mismatch: {tag}")
 
