@@ -508,11 +508,14 @@ def test_remote_deploy_executes_staged_script_file_not_streamed_stdin() -> None:
     assert "scripts/deploy_production.sh" in stage_step
     assert "local_script_sha256" in stage_step
     assert "remote_script_sha256" in stage_step
+    assert 'test "$remote_script_sha256" = "$local_script_sha256"' in stage_step
     assert 'remote_script="${remote_dir}/deploy_production.sh"' in stage_step
     assert 'remote_script="${remote_dir}/deploy_production.sh"' in deploy_step
     assert "bash -s" not in deploy_step
     assert "< scripts/deploy_production.sh" not in deploy_step
     assert "bash '$remote_script' </dev/null" in deploy_step
+    assert 'rm -f -- \\\"$remote_script\\\"' in deploy_step
+    assert 'rmdir -- \\\"$remote_dir\\\"' in deploy_step
 
 
 def test_public_edge_gate_targets_the_dashboard_base_path() -> None:
