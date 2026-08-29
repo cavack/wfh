@@ -409,9 +409,18 @@ def test_database_backup_runs_as_service_owner_and_promotes_only_after_certifica
     assert '--user 0:0' not in backup
     assert '-v "${staging_dir}:/backup"' in backup
     assert 'mv -- "${staging_dir}/${backup_name}" "$DB_BACKUP"' in backup
+    assert 'sha256sum "${staging_dir}/${backup_name}"' in backup
+    assert '"$actual_staged_sha" != "$DB_BACKUP_SHA256"' in backup
     assert backup.index("PRAGMA integrity_check") < backup.index(
         'mv -- "${staging_dir}/${backup_name}" "$DB_BACKUP"'
     )
+    assert backup.index('"$actual_staged_sha" != "$DB_BACKUP_SHA256"') < backup.index(
+        'mv -- "${staging_dir}/${backup_name}" "$DB_BACKUP"'
+    )
+    assert "staging_created=0" in backup
+    assert backup.count(
+        'rm -f -- "${staging_dir}/${backup_name}" "$DB_BACKUP" "${DB_BACKUP}.sha256"'
+    ) >= 3
 
 
 def test_deploy_clean_worktree_no_longer_depends_on_runtime_files_inside_git() -> None:

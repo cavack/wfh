@@ -382,7 +382,7 @@ resolve_previous_revision() {
 
 backup_database() {
   # backup: this marker is intentionally kept stable for deployment-contract tests.
-  local backend_gid backend_identity backend_uid backup_name staging_dir
+  local actual_staged_sha backend_gid backend_identity backend_uid backup_name backup_output staging_created=0 staging_dir
   backup_name="waterfall_registry.${WFH_DEPLOY_SHA}.${DEPLOY_EPOCH}.db"
   DB_BACKUP="${BACKUP_DIR}/${backup_name}"
   staging_dir="${BACKUP_DIR}/.staging-${WFH_DEPLOY_SHA}-${DEPLOY_EPOCH}"
@@ -397,8 +397,9 @@ backup_database() {
   [[ "$backend_uid" =~ ^[0-9]+$ && "$backend_gid" =~ ^[0-9]+$ ]] \
     || fail "backend service identity is invalid"
   install -d -m 0700 -o "$backend_uid" -g "$backend_gid" "$staging_dir"
+  staging_created=1
 
-  if ! docker compose run --rm --no-deps --interactive=false -T \
+  if ! backup_output="$(docker compose run --rm --no-deps --interactive=false -T \
     -v "${staging_dir}:/backup" \
     waterfall-backend \
     /opt/venv/bin/python -c \
@@ -415,24 +416,35 @@ h=hashlib.sha256()
 with dst.open("rb") as fh:
     for chunk in iter(lambda: fh.read(1024*1024), b""): h.update(chunk)
 print(h.hexdigest())' \
-    "$backup_name" > "${DB_BACKUP}.sha256.tmp"; then
-    rm -f -- "${DB_BACKUP}.sha256.tmp" "${staging_dir}/${backup_name}"
+    "$backup_name")"; then
+    rm -f -- "${staging_dir}/${backup_name}" "$DB_BACKUP" "${DB_BACKUP}.sha256"
     rmdir -- "$staging_dir" 2>/dev/null || true
     fail "database backup snapshot failed"
   fi
 
-  [[ -f "${staging_dir}/${backup_name}" && ! -L "${staging_dir}/${backup_name}" ]] \
-    || fail "database backup staging artifact is invalid"
-  mv -- "${staging_dir}/${backup_name}" "$DB_BACKUP"
-  chown 0:0 "$DB_BACKUP"
-  chmod 0640 "$DB_BACKUP"
-  rmdir -- "$staging_dir"
+  DB_BACKUP_SHA256="$(printf '%s\n' "$backup_output" | tail -n 1 | tr -d '[:space:]')"
+  actual_staged_sha="$(sha256sum "${staging_dir}/${backup_name}" 2>/dev/null | awk '{print $1}')" || true
+  if [[ "$staging_created" -ne 1 \
+    || ! -f "${staging_dir}/${backup_name}" \
+    || -L "${staging_dir}/${backup_name}" \
+    || ! "$DB_BACKUP_SHA256" =~ ^[0-9a-f]{64}$ \
+    || "$actual_staged_sha" != "$DB_BACKUP_SHA256" ]]; then
+    rm -f -- "${staging_dir}/${backup_name}" "$DB_BACKUP" "${DB_BACKUP}.sha256"
+    rmdir -- "$staging_dir" 2>/dev/null || true
+    fail "database backup staging certification failed"
+  fi
 
-  DB_BACKUP_SHA256="$(tail -n 1 "${DB_BACKUP}.sha256.tmp" | tr -d '[:space:]')"
-  rm -f "${DB_BACKUP}.sha256.tmp"
-  [[ "$DB_BACKUP_SHA256" =~ ^[0-9a-f]{64}$ ]] || fail "database backup checksum invalid"
+  if ! mv -- "${staging_dir}/${backup_name}" "$DB_BACKUP" \
+    || ! chown 0:0 "$DB_BACKUP" \
+    || ! chmod 0640 "$DB_BACKUP" \
+    || ! rmdir -- "$staging_dir" \
+    || ! printf '%s  %s\n' "$DB_BACKUP_SHA256" "$(basename "$DB_BACKUP")" > "${DB_BACKUP}.sha256"; then
+    rm -f -- "${staging_dir}/${backup_name}" "$DB_BACKUP" "${DB_BACKUP}.sha256"
+    rmdir -- "$staging_dir" 2>/dev/null || true
+    fail "database backup promotion failed"
+  fi
+
   [[ -s "$DB_BACKUP" ]] || fail "database backup missing after backup step"
-  printf '%s  %s\n' "$DB_BACKUP_SHA256" "$(basename "$DB_BACKUP")" > "${DB_BACKUP}.sha256"
   log "database backup certified: ${DB_BACKUP} sha256=${DB_BACKUP_SHA256}"
 }
 
