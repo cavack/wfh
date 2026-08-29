@@ -247,20 +247,37 @@ def _owned_draft_release_id(
     *, repository: str, tag_name: str, ownership_marker: str
 ) -> int | None:
     try:
-        release = _gh_json(f"repos/{repository}/releases/tags/{tag_name}")
+        releases: list[dict[str, Any]] = [
+            _gh_json(f"repos/{repository}/releases/tags/{tag_name}")
+        ]
     except RemoteBackupCLIError:
-        return None
-    release_id = release.get("id")
-    if (
-        not isinstance(release_id, int)
-        or isinstance(release_id, bool)
-        or release_id < 1
-        or release.get("tag_name") != tag_name
-        or release.get("draft") is not True
-        or release.get("body") != _release_notes(ownership_marker)
-    ):
-        return None
-    return release_id
+        try:
+            payload = json.loads(
+                _gh(
+                    "api",
+                    f"repos/{repository}/releases?per_page=100&page=1",
+                    timeout=60,
+                )
+            )
+        except (RemoteBackupCLIError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, list):
+            return None
+        releases = [item for item in payload if isinstance(item, dict)]
+
+    matches = []
+    for release in releases:
+        release_id = release.get("id")
+        if (
+            isinstance(release_id, int)
+            and not isinstance(release_id, bool)
+            and release_id >= 1
+            and release.get("tag_name") == tag_name
+            and release.get("draft") is True
+            and release.get("body") == _release_notes(ownership_marker)
+        ):
+            matches.append(release_id)
+    return matches[0] if len(matches) == 1 else None
 
 
 def _delete_owned_draft_release_best_effort(
