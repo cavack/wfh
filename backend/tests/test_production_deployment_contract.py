@@ -489,6 +489,25 @@ def test_main_deploy_loads_ci_tested_images_instead_of_rebuilding_target() -> No
     assert "WFH_TESTED_IMAGE_BUNDLE_SHA256" in helper
 
 
+def test_streamed_remote_deploy_does_not_let_compose_consume_script_tail() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    main_sequence = _main_deploy_sequence(text)
+    assert "docker compose up -d --remove-orphans --no-build </dev/null" in main_sequence
+    compose_up_lines = [
+        line.strip() for line in text.splitlines() if line.strip().startswith("docker compose up ")
+    ]
+    assert compose_up_lines
+    assert all("</dev/null" in line for line in compose_up_lines)
+
+
+def test_public_edge_gate_targets_the_dashboard_base_path() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    assert (
+        'local public_url="${WFH_PUBLIC_EDGE_URL:-http://waterfall.booksreadlive.online/dashboard/}"'
+        in text
+    )
+
+
 
 def test_production_reusable_workflow_receives_only_explicit_deploy_secrets() -> None:
     ci_text = CI_WORKFLOW.read_text(encoding="utf-8")

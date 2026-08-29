@@ -251,7 +251,7 @@ install_nginx_site() {
 }
 
 verify_public_edge() {
-  local public_url="${WFH_PUBLIC_EDGE_URL:-http://waterfall.booksreadlive.online/}"
+  local public_url="${WFH_PUBLIC_EDGE_URL:-http://waterfall.booksreadlive.online/dashboard/}"
   curl --fail --silent --show-error --location --max-time 15 \
     --output /dev/null "$public_url"
 }
@@ -553,7 +553,7 @@ rollback_previous_revision() {
   fi
 
   remove_release_containers_before_compose_handoff || return 1
-  docker compose up -d --remove-orphans || return 1
+  docker compose up -d --remove-orphans </dev/null || return 1
   wait_for_backend_endpoint /livez 20 3 || return 1
   wait_for_backend_endpoint /readyz 30 4 || return 1
   wait_for_container_healthy waterfall-backend 30 3 || return 1
@@ -679,7 +679,7 @@ docker compose run --rm --no-deps --interactive=false -T waterfall-backend \
 
 RUNTIME_REPLACED=1
 remove_release_containers_before_compose_handoff
-docker compose up -d --remove-orphans --no-build
+docker compose up -d --remove-orphans --no-build </dev/null
 
 wait_for_backend_endpoint /livez 20 3 || fail "backend /livez did not become healthy"
 wait_for_backend_endpoint /readyz 30 4 || fail "backend /readyz did not become ready"
