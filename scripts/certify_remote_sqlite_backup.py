@@ -23,6 +23,8 @@ sys.path.insert(0, str(WFH_REPOSITORY_ROOT / "backend" / "src"))
 
 TRUSTED_KEY_ROOT = Path("/root/.wfh-dr")
 TRUSTED_KEY_NAME = "wfh-dr-aes256.key"
+DRAFT_VISIBILITY_ATTEMPTS = 8
+DRAFT_VISIBILITY_DELAY_SECONDS = 0.5
 
 from scripts.certify_sqlite_backup import _canonical_absolute_path, _write_report_atomic
 from waterfallhunter.core.github_release_backup_verification import (
@@ -243,6 +245,27 @@ def _tag_exists(*, repository: str, tag_name: str) -> bool:
     )
 
 
+def _matching_owned_draft_ids(
+    releases: list[dict[str, Any]],
+    *,
+    tag_name: str,
+    ownership_marker: str,
+) -> list[int]:
+    matches: list[int] = []
+    for release in releases:
+        release_id = release.get("id")
+        if (
+            isinstance(release_id, int)
+            and not isinstance(release_id, bool)
+            and release_id >= 1
+            and release.get("tag_name") == tag_name
+            and release.get("draft") is True
+            and release.get("body") == _release_notes(ownership_marker)
+        ):
+            matches.append(release_id)
+    return matches
+
+
 def _owned_draft_release_id(
     *, repository: str, tag_name: str, ownership_marker: str
 ) -> int | None:
@@ -250,7 +273,14 @@ def _owned_draft_release_id(
         releases: list[dict[str, Any]] = [
             _gh_json(f"repos/{repository}/releases/tags/{tag_name}")
         ]
+        matches = _matching_owned_draft_ids(
+            releases, tag_name=tag_name, ownership_marker=ownership_marker
+        )
+        return matches[0] if len(matches) == 1 else None
     except RemoteBackupCLIError:
+        pass
+
+    for attempt in range(DRAFT_VISIBILITY_ATTEMPTS):
         try:
             payload = json.loads(
                 _gh(
@@ -264,20 +294,16 @@ def _owned_draft_release_id(
         if not isinstance(payload, list):
             return None
         releases = [item for item in payload if isinstance(item, dict)]
-
-    matches = []
-    for release in releases:
-        release_id = release.get("id")
-        if (
-            isinstance(release_id, int)
-            and not isinstance(release_id, bool)
-            and release_id >= 1
-            and release.get("tag_name") == tag_name
-            and release.get("draft") is True
-            and release.get("body") == _release_notes(ownership_marker)
-        ):
-            matches.append(release_id)
-    return matches[0] if len(matches) == 1 else None
+        matches = _matching_owned_draft_ids(
+            releases, tag_name=tag_name, ownership_marker=ownership_marker
+        )
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            return None
+        if attempt + 1 < DRAFT_VISIBILITY_ATTEMPTS:
+            time.sleep(DRAFT_VISIBILITY_DELAY_SECONDS)
+    return None
 
 
 def _delete_owned_draft_release_best_effort(
