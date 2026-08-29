@@ -257,7 +257,7 @@ verify_public_edge() {
 }
 
 remove_release_containers_before_compose_handoff() {
-  local container service
+  local alertmanager_volume container service
   for container in \
     waterfall-backend \
     waterfall-frontend \
@@ -271,16 +271,23 @@ remove_release_containers_before_compose_handoff() {
   done
 
   # Alertmanager historically had a project-scoped generated name rather than
-  # a fixed container_name. Remove only Alertmanager containers bound to the
-  # canonical persistent volume so Compose can adopt the same state without
-  # running two writers against it.
+  # a fixed container_name. Resolve its actual volume from the effective
+  # Compose topology, including a host-owned external-volume override.
+  alertmanager_volume="$(docker compose config --format json | python3 -c '
+import json, re, sys
+config = json.load(sys.stdin)
+name = config.get("volumes", {}).get("alertmanager_data", {}).get("name", "")
+if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name):
+    raise SystemExit("resolved Alertmanager volume name is missing or unsafe")
+print(name)
+')" || return 1
   while IFS= read -r container; do
     [[ "$container" =~ ^[0-9a-f]{12,64}$ ]] || return 1
     service="$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.service" }}' "$container" 2>/dev/null || true)"
     [[ "$service" == "alertmanager" ]] || continue
     log "removing volume-bound Alertmanager container before Compose handoff: ${container}"
     docker rm -f "$container" >/dev/null || return 1
-  done < <(docker ps -aq --filter volume=waterfallhunter_alertmanager_data)
+  done < <(docker ps -aq --filter "volume=${alertmanager_volume}")
 }
 
 wait_for_backend_endpoint() {
@@ -312,6 +319,15 @@ wait_for_container_healthy() {
     sleep "$sleep_seconds"
   done
   return 1
+}
+
+wait_for_monitoring_containers_healthy() {
+  local alertmanager_container
+  wait_for_container_healthy waterfall-prometheus 30 3 || return 1
+  wait_for_container_healthy waterfall-grafana 30 3 || return 1
+  alertmanager_container="$(docker compose ps -q alertmanager)"
+  [[ "$alertmanager_container" =~ ^[0-9a-f]{12,64}$ ]] || return 1
+  wait_for_container_healthy "$alertmanager_container" 30 3
 }
 
 verify_running_revision() {
@@ -519,6 +535,7 @@ rollback_previous_revision() {
   wait_for_container_healthy waterfall-backend 30 3 || return 1
   wait_for_container_healthy waterfall-frontend 30 3 || return 1
   wait_for_container_healthy waterfall-watchdog 30 3 || return 1
+  wait_for_monitoring_containers_healthy || return 1
   verify_running_revision "$PREVIOUS_SHA" || return 1
   verify_running_signal_only || return 1
   log "rollback certified at ${PREVIOUS_SHA}"
@@ -646,6 +663,7 @@ wait_for_backend_endpoint /readyz 30 4 || fail "backend /readyz did not become r
 wait_for_container_healthy waterfall-backend 30 3 || fail "backend container did not become healthy"
 wait_for_container_healthy waterfall-frontend 30 3 || fail "frontend container did not become healthy"
 wait_for_container_healthy waterfall-watchdog 30 3 || fail "watchdog container did not become healthy"
+wait_for_monitoring_containers_healthy || fail "monitoring containers did not become healthy"
 verify_running_revision "$WFH_DEPLOY_SHA" || fail "running OCI org.opencontainers.image.revision does not match target SHA"
 verify_running_signal_only || fail "running backend violated the SIGNAL_ONLY live-trading boundary"
 

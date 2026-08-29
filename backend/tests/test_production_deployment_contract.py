@@ -211,6 +211,15 @@ def test_host_deploy_certifies_all_release_containers_healthy() -> None:
     assert '[[ "$state" == "running" ]]' not in helper
     assert helper.count("return 0") == 1
 
+    monitoring = text.split("wait_for_monitoring_containers_healthy() {", maxsplit=1)[
+        1
+    ].split("}\n", maxsplit=1)[0]
+    assert "wait_for_container_healthy waterfall-prometheus" in monitoring
+    assert "wait_for_container_healthy waterfall-grafana" in monitoring
+    assert "docker compose ps -q alertmanager" in monitoring
+    assert 'wait_for_container_healthy "$alertmanager_container"' in monitoring
+    assert text.count("wait_for_monitoring_containers_healthy") >= 3
+
 
 def test_host_deploy_keeps_telegram_delivery_fail_closed() -> None:
     text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
@@ -353,7 +362,9 @@ def test_host_deploy_removes_release_containers_before_activation_and_rollback()
     ):
         assert container in helper
     assert "docker rm -f" in helper
-    assert "--filter volume=waterfallhunter_alertmanager_data" in helper
+    assert "docker compose config --format json" in helper
+    assert 'get("volumes", {}).get("alertmanager_data", {}).get("name", "")' in helper
+    assert '--filter "volume=${alertmanager_volume}"' in helper
     assert '[[ "$service" == "alertmanager" ]]' in helper
 
     rollback = text.split("rollback_previous_revision() {", maxsplit=1)[1].split(
