@@ -212,14 +212,16 @@ def test_host_deploy_certifies_all_release_containers_healthy() -> None:
     assert helper.count("return 0") == 1
 
 
-def test_telegram_cutover_is_captured_at_activation_time() -> None:
+def test_host_deploy_keeps_telegram_delivery_fail_closed() -> None:
     text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
-    activation = text.split("activate_telegram_for_release() {", maxsplit=1)[1].split(
+    assertion = text.split("assert_telegram_delivery_disabled() {", maxsplit=1)[1].split(
         "}\n", maxsplit=1
     )[0]
-    assert 'TELEGRAM_CUTOVER_EPOCH="$(date -u +%s)"' in activation
-    assert 'set_env_value TELEGRAM_SIGNAL_DELIVERY_CUTOVER_AT "$TELEGRAM_CUTOVER_EPOCH"' in activation
-    assert "telegram_cutover_at=${TELEGRAM_CUTOVER_EPOCH}" in text
+    assert "TELEGRAM_SIGNAL_DELIVERY_ENABLED" in assertion
+    assert "(true|True|TRUE|1)" in assertion
+    assert "set_env_value TELEGRAM_SIGNAL_DELIVERY_ENABLED true" not in text
+    assert "activate_telegram_for_release" not in text
+    assert "telegram_signal_delivery_enabled=false" in text
 
 
 def test_successful_deploy_prunes_backups_before_publishing_certificate() -> None:
@@ -270,14 +272,6 @@ def test_incompatible_post_migration_runtime_is_quarantined() -> None:
         assert service in incompatible
 
 
-def test_successful_deploy_removes_secret_environment_rollback_copy() -> None:
-    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
-    main_sequence = _main_deploy_sequence(text)
-    certificate_index = main_sequence.index('cat > "${STATE_DIR}/last-successful-deploy.txt"')
-    cleanup_index = main_sequence.index('rm -f -- "$ENV_BACKUP"')
-    assert certificate_index < cleanup_index
-
-
 def test_host_deploy_orders_backup_migration_runtime_and_host_certification() -> None:
     text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
     main_sequence = _main_deploy_sequence(text)
@@ -290,7 +284,7 @@ def test_host_deploy_orders_backup_migration_runtime_and_host_certification() ->
         "--preflight",
         "MIGRATION_MAY_HAVE_MUTATED=1",
         "--apply --source-revision",
-        "activate_telegram_for_release",
+        "assert_telegram_delivery_disabled",
         "docker compose up -d",
         "/livez",
         "/readyz",
@@ -341,25 +335,34 @@ def test_host_deploy_uses_one_canonical_compose_project_with_host_override() -> 
     assert "waterfall-backend" not in helper
 
 
-def test_host_deploy_removes_fixed_name_core_containers_before_activation_and_rollback() -> None:
+def test_host_deploy_removes_release_containers_before_activation_and_rollback() -> None:
     text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
-    assert "remove_fixed_name_core_containers()" in text
-    helper = text.split("remove_fixed_name_core_containers() {", maxsplit=1)[1].split(
+    helper_name = "remove_release_containers_before_compose_handoff"
+    assert f"{helper_name}()" in text
+    helper = text.split(f"{helper_name}() {{", maxsplit=1)[1].split(
         "}\n", maxsplit=1
     )[0]
-    for container in ("waterfall-backend", "waterfall-frontend", "waterfall-watchdog"):
+    for container in (
+        "waterfall-backend",
+        "waterfall-frontend",
+        "waterfall-watchdog",
+        "waterfall-prometheus",
+        "waterfall-grafana",
+    ):
         assert container in helper
     assert "docker rm -f" in helper
+    assert "--filter volume=waterfallhunter_alertmanager_data" in helper
+    assert '[[ "$service" == "alertmanager" ]]' in helper
 
     rollback = text.split("rollback_previous_revision() {", maxsplit=1)[1].split(
         "terminate_with_cleanup() {", maxsplit=1
     )[0]
     rollback_up = rollback.index("docker compose up -d")
-    assert rollback.rfind("remove_fixed_name_core_containers", 0, rollback_up) >= 0
+    assert rollback.rfind(helper_name, 0, rollback_up) >= 0
 
     main_sequence = _main_deploy_sequence(text)
     target_up = main_sequence.index("docker compose up -d")
-    assert main_sequence.rfind("remove_fixed_name_core_containers", 0, target_up) >= 0
+    assert main_sequence.rfind(helper_name, 0, target_up) >= 0
 
 
 def test_failed_deploys_also_enforce_backup_retention() -> None:
@@ -407,6 +410,7 @@ def test_schema_changing_rollback_restores_backup_before_previous_schema_preflig
     )[0]
     assert 'sha256sum "$DB_BACKUP"' in restore
     assert '${BACKUP_DIR}:/backup:ro' in restore
+    assert 'file:{src}?mode=ro&immutable=1' in restore
     assert "docker compose stop waterfall-backend frontend watchdog" in restore
     assert "PRAGMA integrity_check" in restore
 
