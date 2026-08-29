@@ -177,7 +177,7 @@ class ReleaseRecoveryGateRequest(BaseModel):
     expected_production_database_path: str = Field(min_length=1)
     backup_certification: dict[str, Any]
     independent_restore_verification: dict[str, Any] | None = None
-    migration_rollback_rehearsal: dict[str, Any]
+    migration_rollback_rehearsal: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def _identity_shape(self) -> "ReleaseRecoveryGateRequest":
@@ -1149,7 +1149,11 @@ def evaluate_deployment_certification(
         "blocking_reasons": sorted(set(reasons)),
         "artifact_provenance_sha256": provenance["provenance_sha256"],
         "backup_certification_sha256": backup.get("certification_sha256"),
-        "migration_rehearsal_sha256": rehearsal.get("rehearsal_sha256"),
+        "migration_rehearsal_sha256": (
+            rehearsal.get("rehearsal_sha256")
+            if isinstance(rehearsal, dict)
+            else None
+        ),
         "trusted_ci_verification_sha256": (
             trusted_ci.verification_report_sha256 if trusted_ci is not None else None
         ),
@@ -1218,6 +1222,17 @@ def _release_gate_independent_restore(
         return None
 
 
+def _release_gate_schema_change_required(backup: dict[str, Any]) -> bool | None:
+    """Derive migration need from the certified Production snapshot schema."""
+    backup_audit = backup.get("backup_audit")
+    if not isinstance(backup_audit, dict):
+        return None
+    user_version = backup_audit.get("user_version")
+    if not isinstance(user_version, int) or isinstance(user_version, bool):
+        return None
+    return user_version != CURRENT_RUNTIME_SCHEMA_VERSION
+
+
 def _release_gate_reasons(
     *,
     packet: ReleaseRecoveryGateRequest,
@@ -1239,13 +1254,18 @@ def _release_gate_reasons(
         )
     )
     reasons.extend(_independent_remote_restore_reasons(packet, backup))
-    reasons.extend(
-        _rehearsal_reasons(
-            rehearsal,
-            backup=backup,
-            source_revision=packet.source_revision,
-        )
-    )
+    schema_change_required = _release_gate_schema_change_required(backup)
+    if schema_change_required is True:
+        if not isinstance(rehearsal, dict):
+            reasons.append("MIGRATION_REHEARSAL_REQUIRED")
+        else:
+            reasons.extend(
+                _rehearsal_reasons(
+                    rehearsal,
+                    backup=backup,
+                    source_revision=packet.source_revision,
+                )
+            )
     if trusted_ci is None:
         reasons.append(ci_failure or "CI_VERIFICATION_TRUST_FAILED")
     elif trusted_ci.source_revision != packet.source_revision:
@@ -1312,7 +1332,11 @@ def evaluate_release_recovery_gate(
             trusted_ci.tested_image_digest if trusted_ci is not None else None
         ),
         "backup_certification_sha256": backup.get("certification_sha256"),
-        "migration_rehearsal_sha256": rehearsal.get("rehearsal_sha256"),
+        "migration_rehearsal_sha256": (
+            rehearsal.get("rehearsal_sha256")
+            if isinstance(rehearsal, dict)
+            else None
+        ),
         "independent_restore_verification_sha256": (
             independent_restore.verification_report_sha256
             if independent_restore is not None

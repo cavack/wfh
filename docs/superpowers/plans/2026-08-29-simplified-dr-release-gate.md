@@ -44,7 +44,7 @@
 - Create: `scripts/evaluate_release_recovery_gate.py`
 
 **Interfaces:**
-- Consumes: source revision, live Production DB path, backup-certificate file, independent-restore file, migration-rehearsal file, output report path, GitHub repository, exact CI run ID.
+- Consumes: source revision, live Production DB path, backup-certificate file, independent-restore file, optional migration-rehearsal file, output report path, GitHub repository, exact CI run ID. The evaluator decides from certified schema identity whether rehearsal is required.
 - Produces: the minimal request internally plus an atomic JSON report; exit `0` only for `READY_FOR_EXPLICIT_DISPATCH`, otherwise exit `2`.
 
 - [ ] Implement the CLI using the same canonical-path and atomic report-writing helpers as existing certification scripts; do not require a hand-built request JSON.

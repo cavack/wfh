@@ -34,19 +34,18 @@ def main() -> int:
         required=True,
         type=_canonical_absolute_path,
     )
-    parser.add_argument(
-        "--migration-rehearsal", required=True, type=_canonical_absolute_path
-    )
+    parser.add_argument("--migration-rehearsal", type=_canonical_absolute_path)
     parser.add_argument("--report", required=True, type=_canonical_absolute_path)
     parser.add_argument("--github-repository", required=True)
     parser.add_argument("--github-run-id", required=True, type=int)
     args = parser.parse_args()
 
-    evidence_paths = (
+    evidence_paths = [
         args.backup_certification,
         args.independent_restore_verification,
-        args.migration_rehearsal,
-    )
+    ]
+    if args.migration_rehearsal is not None:
+        evidence_paths.append(args.migration_rehearsal)
     if any(path == args.report for path in evidence_paths):
         parser.error("report path must differ from every evidence input")
     if any(path.parent != args.report.parent for path in evidence_paths):
@@ -63,8 +62,10 @@ def main() -> int:
             args.independent_restore_verification,
             label="independent restore verification",
         ),
-        "migration_rollback_rehearsal": _load_object(
-            args.migration_rehearsal, label="migration rehearsal"
+        "migration_rollback_rehearsal": (
+            _load_object(args.migration_rehearsal, label="migration rehearsal")
+            if args.migration_rehearsal is not None
+            else None
         ),
     }
     report = evaluate_release_recovery_gate(

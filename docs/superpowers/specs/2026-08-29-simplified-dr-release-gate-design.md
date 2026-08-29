@@ -27,9 +27,9 @@ Internally, add `release_recovery_gate_request_v1` with only:
 - `expected_production_database_path` — canonical absolute Production DB path;
 - `backup_certification` — existing `sqlite_remote_backup_certification_v1` document;
 - `independent_restore_verification` — existing `github_actions_remote_restore_verification_v1` document;
-- `migration_rollback_rehearsal` — existing migration rehearsal document.
+- `migration_rollback_rehearsal` — existing migration rehearsal document when the certified Production snapshot schema differs from the current runtime schema; otherwise `null`.
 
-The operational CLI accepts the backup certificate, independent-restore report, and migration-rehearsal report as separate files and constructs this request internally; operators do not hand-build JSON. The evaluator receives `github_repository` and `github_run_id` separately and resolves the CI run authoritatively from GitHub. It does not trust caller claims about CI success.
+The operational CLI accepts the backup certificate and independent-restore report, plus a migration-rehearsal report when required, and constructs this request internally; operators do not hand-build JSON. The evaluator derives whether rehearsal is required from the certified backup `user_version` versus the packaged runtime schema version—never from an operator boolean. It receives `github_repository` and `github_run_id` separately and resolves the CI run authoritatively from GitHub. It does not trust caller claims about CI success.
 
 ## Gate semantics
 

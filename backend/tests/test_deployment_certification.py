@@ -956,3 +956,82 @@ def test_simplified_recovery_gate_fails_closed_when_ci_cannot_be_trusted(
 
     assert report["status"] == "NOT_READY"
     assert "GITHUB_CI_RUN_NOT_TRUSTED" in report["blocking_reasons"]
+
+
+def test_simplified_recovery_gate_skips_rehearsal_when_certified_schema_is_current(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_now = int(time.time())
+    production_db = (tmp_path / "production.db").resolve()
+    production_db.write_bytes(b"placeholder")
+    request = {
+        "source_revision": REVISION,
+        "expected_production_database_path": str(production_db),
+        "backup_certification": {
+            "contract_version": "sqlite_remote_backup_certification_v1",
+            "backup_audit": {"user_version": CURRENT_RUNTIME_SCHEMA_VERSION},
+            "backup_completed_at": observed_now - 30,
+        },
+        "independent_restore_verification": None,
+        "migration_rollback_rehearsal": None,
+    }
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "_backup_reasons",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "_independent_remote_restore_reasons",
+        lambda *_args, **_kwargs: [],
+    )
+
+    def rehearsal_must_not_run(*_args, **_kwargs):
+        raise AssertionError("rehearsal validation must be skipped without schema change")
+
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "_rehearsal_reasons",
+        rehearsal_must_not_run,
+    )
+
+    report = _evaluate_recovery_gate(request, now=observed_now)
+
+    assert report["status"] == "READY_FOR_EXPLICIT_DISPATCH"
+    assert report["migration_rehearsal_sha256"] is None
+
+
+def test_simplified_recovery_gate_requires_rehearsal_when_certified_schema_is_old(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_now = int(time.time())
+    production_db = (tmp_path / "production.db").resolve()
+    production_db.write_bytes(b"placeholder")
+    request = {
+        "source_revision": REVISION,
+        "expected_production_database_path": str(production_db),
+        "backup_certification": {
+            "contract_version": "sqlite_remote_backup_certification_v1",
+            "backup_audit": {"user_version": CURRENT_RUNTIME_SCHEMA_VERSION - 1},
+            "backup_completed_at": observed_now - 30,
+        },
+        "independent_restore_verification": None,
+        "migration_rollback_rehearsal": None,
+    }
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "_backup_reasons",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "_independent_remote_restore_reasons",
+        lambda *_args, **_kwargs: [],
+    )
+
+    report = _evaluate_recovery_gate(request, now=observed_now)
+
+    assert report["status"] == "NOT_READY"
+    assert "MIGRATION_REHEARSAL_REQUIRED" in report["blocking_reasons"]

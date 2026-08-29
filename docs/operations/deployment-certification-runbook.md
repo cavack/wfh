@@ -140,9 +140,11 @@ flags false.
 ## 3. Normal pre-dispatch recovery gate
 
 The normal Production pre-dispatch gate is intentionally small. There is no
-operator-assembled request packet. Give the evaluator the three authoritative
-recovery evidence files plus the exact current `main` revision and live SQLite
-path; the CLI constructs `release_recovery_gate_request_v1` internally.
+operator-assembled request packet. Give the evaluator the authoritative backup
+and restore evidence plus the exact current `main` revision and live SQLite
+path; include migration-rehearsal evidence only when the certified Production
+snapshot schema differs from the runtime schema. The CLI constructs
+`release_recovery_gate_request_v1` internally.
 
 The evaluator independently resolves GitHub CI from the supplied repository and
 run ID. Do not add caller-asserted CI booleans, staging readiness, or a 24-hour
@@ -162,6 +164,12 @@ PYTHONPATH=backend/src:. python scripts/evaluate_release_recovery_gate.py \
   --github-repository cavack/wfh \
   --github-run-id <exact-successful-main-ci-run-id>
 ```
+
+For the current v5→v7 release, `--migration-rehearsal` is mandatory because the
+certified Production snapshot is below the runtime schema version. For a future
+release whose certified snapshot already matches the runtime schema, omit that
+argument; the evaluator derives this from certified `backup_audit.user_version`
+rather than trusting an operator boolean.
 
 Success is `READY_FOR_EXPLICIT_DISPATCH`. The report still keeps
 `deployment_allowed=false`, `migration_allowed=false`,

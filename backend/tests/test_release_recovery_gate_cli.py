@@ -6,7 +6,13 @@ import sys
 from scripts import evaluate_release_recovery_gate as cli
 
 
-def _run_cli(tmp_path, monkeypatch, *, status: str) -> tuple[int, dict, dict]:
+def _run_cli(
+    tmp_path,
+    monkeypatch,
+    *,
+    status: str,
+    include_rehearsal: bool = True,
+) -> tuple[int, dict, dict]:
     production_db = tmp_path / "production.db"
     production_db.write_bytes(b"sqlite-placeholder")
     backup_path = tmp_path / "backup-certification.json"
@@ -33,29 +39,30 @@ def _run_cli(tmp_path, monkeypatch, *, status: str) -> tuple[int, dict, dict]:
         return expected
 
     monkeypatch.setattr(cli, "evaluate_release_recovery_gate", fake_evaluate)
-    monkeypatch.setattr(
-        sys,
-        "argv",
+    argv = [
+        "evaluate_release_recovery_gate.py",
+        "--source-revision",
+        "a" * 40,
+        "--production-database",
+        str(production_db),
+        "--backup-certification",
+        str(backup_path),
+        "--independent-restore-verification",
+        str(restore_path),
+    ]
+    if include_rehearsal:
+        argv.extend(["--migration-rehearsal", str(rehearsal_path)])
+    argv.extend(
         [
-            "evaluate_release_recovery_gate.py",
-            "--source-revision",
-            "a" * 40,
-            "--production-database",
-            str(production_db),
-            "--backup-certification",
-            str(backup_path),
-            "--independent-restore-verification",
-            str(restore_path),
-            "--migration-rehearsal",
-            str(rehearsal_path),
             "--report",
             str(report_path),
             "--github-repository",
             "cavack/wfh",
             "--github-run-id",
             "123",
-        ],
+        ]
     )
+    monkeypatch.setattr(sys, "argv", argv)
     exit_code = cli.main()
     return (
         exit_code,
@@ -83,6 +90,18 @@ def test_recovery_gate_cli_builds_minimal_request_and_writes_ready_report(
     assert "readiness" not in payload
     assert "shadow_soak" not in payload
 
+
+
+def test_recovery_gate_cli_allows_rehearsal_to_be_omitted(tmp_path, monkeypatch) -> None:
+    exit_code, report, payload = _run_cli(
+        tmp_path,
+        monkeypatch,
+        status="READY_FOR_EXPLICIT_DISPATCH",
+        include_rehearsal=False,
+    )
+    assert exit_code == 0
+    assert report["status"] == "READY_FOR_EXPLICIT_DISPATCH"
+    assert payload["migration_rollback_rehearsal"] is None
 
 def test_recovery_gate_cli_returns_two_for_not_ready(tmp_path, monkeypatch) -> None:
     exit_code, report, _payload = _run_cli(tmp_path, monkeypatch, status="NOT_READY")
