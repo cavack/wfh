@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import errno
 import json
+import os
 import re
+import stat
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -56,18 +59,57 @@ class TrustedRemoteBackupVerification(BaseModel):
         return self
 
 
+def _path_has_extended_access_acl(path: Path) -> bool:
+    try:
+        os.getxattr(path, "system.posix_acl_access", follow_symlinks=False)
+    except OSError as error:
+        unsupported_or_absent = {
+            errno.ENODATA,
+            errno.ENOTSUP,
+            errno.EOPNOTSUPP,
+        }
+        enoattr = getattr(errno, "ENOATTR", None)
+        if enoattr is not None:
+            unsupported_or_absent.add(enoattr)
+        if error.errno in unsupported_or_absent:
+            return False
+        return True
+    return True
+
+
+def _trusted_path_component(path: Path, *, directory: bool) -> bool:
+    try:
+        stat_result = path.lstat()
+    except OSError:
+        return False
+    if (
+        stat_result.st_uid != 0
+        or stat_result.st_mode & 0o022 != 0
+        or stat.S_ISLNK(stat_result.st_mode)
+        or _path_has_extended_access_acl(path)
+    ):
+        return False
+    return (
+        stat.S_ISDIR(stat_result.st_mode)
+        if directory
+        else stat.S_ISREG(stat_result.st_mode)
+    )
+
+
+def _trusted_executable_path(candidate: Path) -> bool:
+    if not candidate.is_absolute():
+        return False
+    if any(
+        not _trusted_path_component(parent, directory=True)
+        for parent in candidate.parents
+    ):
+        return False
+    return _trusted_path_component(candidate, directory=False)
+
+
 def _gh_executable() -> str:
     for candidate in _GH_CANDIDATES:
-        try:
-            stat_result = candidate.stat()
-        except OSError:
-            continue
-        if (
-            candidate.is_file()
-            and not candidate.is_symlink()
-            and stat_result.st_uid == 0
-            and stat_result.st_mode & 0o022 == 0
-        ):
+        if _trusted_executable_path(candidate):
             return str(candidate)
     raise TrustedRemoteBackupVerificationError("GITHUB_CLI_UNAVAILABLE_OR_UNTRUSTED")
 

@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import errno
+import os
+import stat
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
 
 import waterfallhunter.core.github_release_backup_verification as remote
@@ -70,6 +76,92 @@ def test_remote_backup_verification_rejects_asset_digest_mismatch(monkeypatch: p
             repository="cavack/wfh-dr", release_id=77, tag_name="wfh-dr-test",
             expected_assets=[{"name": "part-000.enc", "id": 101, "size_bytes": 1234, "sha256": "a" * 64}],
         )
+
+
+class _FakePath:
+    def __init__(self, value: str, entries: dict[str, tuple[int, int]]) -> None:
+        self.value = value
+        self.entries = entries
+
+    def stat(self, *_args, **_kwargs):
+        uid, mode = self.entries[self.value]
+        return SimpleNamespace(st_uid=uid, st_mode=mode)
+
+    def lstat(self):
+        return self.stat()
+
+    def is_file(self) -> bool:
+        return stat.S_ISREG(self.stat().st_mode)
+
+    def is_symlink(self) -> bool:
+        return stat.S_ISLNK(self.lstat().st_mode)
+
+    def is_absolute(self) -> bool:
+        return self.value.startswith("/")
+
+    @property
+    def parents(self) -> tuple["_FakePath", ...]:
+        return tuple(
+            _FakePath(str(parent), self.entries)
+            for parent in Path(self.value).parents
+        )
+
+    def __fspath__(self) -> str:
+        return self.value
+
+    def __str__(self) -> str:
+        return self.value
+
+
+def _install_fake_trusted_gh_path(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    writable_parent: bool = False,
+) -> _FakePath:
+    entries = {
+        "/": (0, stat.S_IFDIR | 0o755),
+        "/trusted": (0, stat.S_IFDIR | 0o755),
+        "/trusted/bin": (
+            0,
+            stat.S_IFDIR | (0o777 if writable_parent else 0o755),
+        ),
+        "/trusted/bin/gh": (0, stat.S_IFREG | 0o755),
+    }
+    candidate = _FakePath("/trusted/bin/gh", entries)
+    monkeypatch.setattr(remote, "_GH_CANDIDATES", (candidate,))
+    return candidate
+
+
+def test_gh_executable_rejects_writable_parent_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_trusted_gh_path(monkeypatch, writable_parent=True)
+
+    with pytest.raises(
+        remote.TrustedRemoteBackupVerificationError,
+        match="GITHUB_CLI_UNAVAILABLE_OR_UNTRUSTED",
+    ):
+        remote._gh_executable()
+
+
+def test_gh_executable_rejects_parent_with_extended_access_acl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_trusted_gh_path(monkeypatch)
+
+    def fake_getxattr(path, name, *, follow_symlinks=True):
+        assert name == "system.posix_acl_access"
+        assert follow_symlinks is False
+        if str(path) == "/trusted/bin":
+            return b"extended-acl"
+        raise OSError(errno.ENODATA, "no data")
+
+    monkeypatch.setattr(os, "getxattr", fake_getxattr)
+    with pytest.raises(
+        remote.TrustedRemoteBackupVerificationError,
+        match="GITHUB_CLI_UNAVAILABLE_OR_UNTRUSTED",
+    ):
+        remote._gh_executable()
 
 
 def test_github_api_is_pinned_to_github_dot_com(
