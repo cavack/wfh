@@ -1180,50 +1180,54 @@ def evaluate_deployment_certification(
     return {**body, "report_sha256": canonical_sha256(body)}
 
 
-def evaluate_release_recovery_gate(
-    request: ReleaseRecoveryGateRequest | dict[str, Any],
-    *,
-    now: int | None = None,
-    github_repository: str | None = None,
-    github_run_id: int | None = None,
-) -> dict[str, Any]:
-    """Evaluate the minimal authoritative recovery gate before explicit dispatch."""
-    packet = (
-        request
-        if isinstance(request, ReleaseRecoveryGateRequest)
-        else ReleaseRecoveryGateRequest.model_validate(request)
-    )
-    observed_now = int(time.time() if now is None else now)
-    if observed_now < 1:
-        raise ValueError("recovery gate evaluation time must be a positive UTC epoch")
 
-    trusted_ci: TrustedCIVerification | None = None
-    ci_failure: str | None = None
+def _resolve_release_gate_ci(
+    *,
+    packet: ReleaseRecoveryGateRequest,
+    github_repository: str | None,
+    github_run_id: int | None,
+) -> tuple[TrustedCIVerification | None, str | None]:
+    """Resolve exact CI evidence for the recovery gate without trusting packet claims."""
     if github_repository is None and github_run_id is None:
-        ci_failure = "CI_VERIFICATION_TRUST_UNAVAILABLE"
-    elif github_repository is None or github_run_id is None:
-        ci_failure = "CI_VERIFICATION_TRUST_CONFIGURATION_INVALID"
-    else:
-        try:
-            trusted_ci = resolve_github_ci_verification(
+        return None, "CI_VERIFICATION_TRUST_UNAVAILABLE"
+    if github_repository is None or github_run_id is None:
+        return None, "CI_VERIFICATION_TRUST_CONFIGURATION_INVALID"
+    try:
+        return (
+            resolve_github_ci_verification(
                 repository=github_repository,
                 run_id=github_run_id,
                 expected_revision=packet.source_revision,
-            )
-        except TrustedCIVerificationError as error:
-            ci_failure = str(error) or "CI_VERIFICATION_TRUST_FAILED"
+            ),
+            None,
+        )
+    except TrustedCIVerificationError as error:
+        return None, str(error) or "CI_VERIFICATION_TRUST_FAILED"
 
+
+def _release_gate_independent_restore(
+    packet: ReleaseRecoveryGateRequest,
+) -> TrustedIndependentRestoreVerification | None:
+    """Parse independent restore identity for report binding; trust is rechecked separately."""
+    claimed = packet.independent_restore_verification
+    if not isinstance(claimed, dict):
+        return None
+    try:
+        return TrustedIndependentRestoreVerification.model_validate(claimed)
+    except (TypeError, ValueError):
+        return None
+
+
+def _release_gate_reasons(
+    *,
+    packet: ReleaseRecoveryGateRequest,
+    observed_now: int,
+    trusted_ci: TrustedCIVerification | None,
+    ci_failure: str | None,
+) -> list[str]:
+    """Collect fail-closed reasons from authoritative recovery evidence."""
     backup = packet.backup_certification
     rehearsal = packet.migration_rollback_rehearsal
-    independent_restore: TrustedIndependentRestoreVerification | None = None
-    if isinstance(packet.independent_restore_verification, dict):
-        try:
-            independent_restore = TrustedIndependentRestoreVerification.model_validate(
-                packet.independent_restore_verification
-            )
-        except (TypeError, ValueError):
-            independent_restore = None
-
     reasons: list[str] = []
     if backup.get("contract_version") != "sqlite_remote_backup_certification_v1":
         reasons.append("REMOTE_OFF_HOST_BACKUP_REQUIRED")
@@ -1246,17 +1250,57 @@ def evaluate_release_recovery_gate(
         reasons.append(ci_failure or "CI_VERIFICATION_TRUST_FAILED")
     elif trusted_ci.source_revision != packet.source_revision:
         reasons.append("CI_TRUSTED_REVISION_MISMATCH")
+    return reasons
 
-    validity_deadlines = [observed_now + MAXIMUM_REPORT_VALIDITY_SECONDS]
+
+def _release_gate_valid_until(*, backup: dict[str, Any], observed_now: int) -> int:
+    """Bound a ready report by both report lifetime and backup freshness."""
+    deadlines = [observed_now + MAXIMUM_REPORT_VALIDITY_SECONDS]
     backup_completed_at = backup.get("backup_completed_at")
     if isinstance(backup_completed_at, int) and backup_completed_at >= 1:
-        validity_deadlines.append(backup_completed_at + MAXIMUM_BACKUP_AGE_SECONDS)
-    valid_until = min(validity_deadlines)
+        deadlines.append(backup_completed_at + MAXIMUM_BACKUP_AGE_SECONDS)
+    return min(deadlines)
+
+
+def evaluate_release_recovery_gate(
+    request: ReleaseRecoveryGateRequest | dict[str, Any],
+    *,
+    now: int | None = None,
+    github_repository: str | None = None,
+    github_run_id: int | None = None,
+) -> dict[str, Any]:
+    """Evaluate the minimal authoritative recovery gate before explicit dispatch."""
+    packet = (
+        request
+        if isinstance(request, ReleaseRecoveryGateRequest)
+        else ReleaseRecoveryGateRequest.model_validate(request)
+    )
+    observed_now = int(time.time() if now is None else now)
+    if observed_now < 1:
+        raise ValueError("recovery gate evaluation time must be a positive UTC epoch")
+
+    trusted_ci, ci_failure = _resolve_release_gate_ci(
+        packet=packet,
+        github_repository=github_repository,
+        github_run_id=github_run_id,
+    )
+    independent_restore = _release_gate_independent_restore(packet)
+    reasons = _release_gate_reasons(
+        packet=packet,
+        observed_now=observed_now,
+        trusted_ci=trusted_ci,
+        ci_failure=ci_failure,
+    )
+    backup = packet.backup_certification
+    rehearsal = packet.migration_rollback_rehearsal
 
     body = {
         "contract_version": "release_recovery_gate_report_v1",
         "evaluated_at": observed_now,
-        "valid_until": valid_until,
+        "valid_until": _release_gate_valid_until(
+            backup=backup,
+            observed_now=observed_now,
+        ),
         "source_revision": packet.source_revision,
         "status": "READY_FOR_EXPLICIT_DISPATCH" if not reasons else "NOT_READY",
         "blocking_reasons": sorted(set(reasons)),

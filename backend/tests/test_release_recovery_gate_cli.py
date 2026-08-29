@@ -88,3 +88,23 @@ def test_recovery_gate_cli_returns_two_for_not_ready(tmp_path, monkeypatch) -> N
     exit_code, report, _payload = _run_cli(tmp_path, monkeypatch, status="NOT_READY")
     assert exit_code == 2
     assert report["blocking_reasons"] == ["BLOCKED"]
+
+
+def test_load_object_rejects_noncanonical_path_before_read(monkeypatch) -> None:
+    from pathlib import Path
+
+    touched = False
+
+    def forbidden_read(_self, *args, **kwargs):
+        nonlocal touched
+        touched = True
+        raise AssertionError("read_text must not run for an untrusted path")
+
+    monkeypatch.setattr(Path, "read_text", forbidden_read)
+    try:
+        cli._load_object(Path("relative.json"), label="test evidence")
+    except ValueError as error:
+        assert str(error) == "test evidence path must be canonical and absolute"
+    else:
+        raise AssertionError("relative evidence path was accepted")
+    assert touched is False

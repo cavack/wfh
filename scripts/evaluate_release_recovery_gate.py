@@ -12,6 +12,8 @@ from waterfallhunter.core.deployment_certification import evaluate_release_recov
 
 
 def _load_object(path: Path, *, label: str) -> dict[str, Any]:
+    if not path.is_absolute() or path.resolve(strict=False) != path:
+        raise ValueError(f"{label} path must be canonical and absolute")
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"{label} must be a JSON object")
