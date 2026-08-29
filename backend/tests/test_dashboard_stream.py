@@ -112,7 +112,16 @@ def test_last_event_id_replays_in_order_or_requires_full_snapshot() -> None:
     assert buffer.replay_after(None) is None
     assert buffer.replay_after("invalid") is None
 
-    buffer.publish_heartbeat(generated_at=13.0)
+    fourth = buffer.publish_heartbeat(generated_at=13.0)
+    replay_from_superseded = buffer.replay_after(first.event_id)
+    assert replay_from_superseded is not None
+    assert [event.event_id for event in replay_from_superseded] == [
+        second.event_id,
+        third.event_id,
+        fourth.event_id,
+    ]
+
+    buffer.publish_heartbeat(generated_at=14.0)
     assert buffer.replay_after(first.event_id) is None
 
 
@@ -136,3 +145,37 @@ def test_periodic_snapshot_ignores_nested_entry_decision_evaluation_clock() -> N
 
     assert first is not None
     assert duplicate is None
+
+
+def test_new_snapshot_supersedes_older_full_snapshot_payloads() -> None:
+    buffer = DashboardEventBuffer(replay_limit=8)
+    first = buffer.publish_snapshot(
+        _payload("ONE"), generated_at=10.0, full_snapshot=True
+    )
+    first_heartbeat = buffer.publish_heartbeat(generated_at=11.0)
+    second = buffer.publish_snapshot(
+        _payload("TWO"), generated_at=12.0, full_snapshot=False
+    )
+    second_heartbeat = buffer.publish_heartbeat(generated_at=13.0)
+
+    retained_snapshots = [event for event in buffer._events if event.payload is not None]
+
+    assert [event.event_id for event in retained_snapshots] == [second.event_id]
+    assert [event.event_id for event in buffer._events] == [
+        second.event_id,
+        second_heartbeat.event_id,
+    ]
+    assert buffer.latest_snapshot() == second.payload
+    replay_from_first = buffer.replay_after(first.event_id)
+    replay_from_heartbeat = buffer.replay_after(first_heartbeat.event_id)
+    assert replay_from_first is not None
+    assert replay_from_heartbeat is not None
+    assert [event.event_id for event in replay_from_first] == [
+        second.event_id,
+        second_heartbeat.event_id,
+    ]
+    assert [event.event_id for event in replay_from_heartbeat] == [
+        second.event_id,
+        second_heartbeat.event_id,
+    ]
+    assert all(event.replayed is True for event in replay_from_first)

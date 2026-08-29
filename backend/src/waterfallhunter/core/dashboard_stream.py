@@ -320,6 +320,14 @@ class DashboardEventBuffer:
         payload_hash: str,
         full_snapshot: bool,
     ) -> DashboardStreamEvent:
+        # Snapshot events carry the complete dashboard state. Retaining older
+        # full payloads multiplies memory without adding replay correctness.
+        # Keep replay contiguous from the newest full-state boundary forward;
+        # older reconnects can replay from that complete state or fail closed to
+        # a fresh snapshot after the boundary itself expires.
+        if payload is not None:
+            self._events.clear()
+
         previous = str(self._event_sequence) if self._event_sequence else None
         self._event_sequence += 1
         event = DashboardStreamEvent(
@@ -347,13 +355,34 @@ class DashboardEventBuffer:
         with self._lock:
             if requested == self._event_sequence:
                 return []
-            event_ids = [int(event.event_id) for event in self._events]
-            if requested not in event_ids:
-                return None
+
+            events = list(self._events)
+            event_ids = [int(event.event_id) for event in events]
+            if requested in event_ids:
+                replay_events = [
+                    event for event in events if int(event.event_id) > requested
+                ]
+            else:
+                # Older full snapshots are intentionally superseded to bound
+                # memory. If the requested event predates the retained full
+                # state boundary, replay from that complete snapshot instead
+                # of forcing another multi-megabyte snapshot allocation.
+                replay_start = next(
+                    (
+                        index
+                        for index, event in enumerate(events)
+                        if event.payload is not None
+                        and int(event.event_id) > requested
+                    ),
+                    None,
+                )
+                if replay_start is None:
+                    return None
+                replay_events = events[replay_start:]
+
             return [
                 event.model_copy(update={"replayed": True, "full_snapshot": False})
-                for event in self._events
-                if int(event.event_id) > requested
+                for event in replay_events
             ]
 
     def latest_snapshot(self) -> DashboardSnapshot | None:
