@@ -88,3 +88,8 @@
 - [ ] Run the direct-evidence recovery-gate CLI against the exact successful main CI run; the CLI builds `release_recovery_gate_request_v1` internally.
 - [ ] If `READY_FOR_EXPLICIT_DISPATCH`, explicitly dispatch `CI` on current `main` with `deploy_production=true`; otherwise stop on the returned reason code.
 - [ ] Verify exact deployed SHA, DB v7, integrity/FK, container OCI revisions/health, dashboard/API, Telegram read-only state, `LIVE_TRADING_ENABLED=false`, then perform risk-proportional soak before cleanup.
+
+
+## Exact-dispatch identity hardening
+
+The simplified gate additionally binds evidence to the current protected `main` revision, the live Production DB device/inode, and the current migration executable fingerprint. Invalid schema-version types fail closed. These checks prevent stale or mislabeled evidence without restoring the removed duplicate ceremony.

@@ -52,3 +52,8 @@ No same-disk backup may satisfy the new gate. No real Telegram send, live order 
 ## Operational authorization
 
 The owner has explicitly directed the project to simplify this certification flow and begin operationalization without further confirmation. This design does not encode or manufacture owner approvals; it only removes redundant pre-dispatch evidence. Operations still fail closed on missing or inconsistent technical evidence.
+
+
+## Exact-dispatch identity hardening
+
+The simplified gate additionally binds evidence to the current protected `main` revision, the live Production DB device/inode, and the current migration executable fingerprint. Invalid schema-version types fail closed. These checks prevent stale or mislabeled evidence without restoring the removed duplicate ceremony.

@@ -186,3 +186,37 @@ def test_trusted_ci_rejects_duplicate_required_job(
             run_id=RUN_ID,
             expected_revision=REVISION,
         )
+
+
+
+def test_current_main_revision_is_resolved_authoritatively(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        ci,
+        "_gh_json",
+        lambda endpoint: {
+            "name": "main",
+            "commit": {"sha": REVISION},
+        }
+        if endpoint == "repos/cavack/wfh/branches/main"
+        else {},
+    )
+
+    assert ci.resolve_github_current_main_revision("cavack/wfh") == REVISION
+
+
+def test_current_main_revision_rejects_invalid_branch_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        ci,
+        "_gh_json",
+        lambda _endpoint: {"name": "main", "commit": {"sha": "not-a-sha"}},
+    )
+
+    with pytest.raises(
+        ci.TrustedCIVerificationError,
+        match="GITHUB_CURRENT_MAIN_REVISION_UNTRUSTED",
+    ):
+        ci.resolve_github_current_main_revision("cavack/wfh")

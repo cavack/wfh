@@ -302,3 +302,20 @@ def test_sequential_rehearsal_cleans_working_target_after_migration_failure(
     assert not working.exists()
     assert not Path(f"{working}-wal").exists()
     assert not Path(f"{working}-shm").exists()
+
+
+
+def test_sequential_rehearsal_records_migration_executable_fingerprint(
+    tmp_path: Path,
+) -> None:
+    certification = _certification(tmp_path)
+    report = rehearse_migration_and_rollback_sequential(
+        backup_certification=certification,
+        working_target=(tmp_path / "independent" / "fingerprinted.db").resolve(),
+        source_revision="a" * 40,
+    )
+
+    assert report["migration_executable_sha256"] == (
+        migration_rehearsal_module.migration_executable_sha256()
+    )
+    assert len(report["migration_executable_sha256"]) == 64
