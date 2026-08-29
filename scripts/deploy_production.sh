@@ -382,13 +382,24 @@ resolve_previous_revision() {
 
 backup_database() {
   # backup: this marker is intentionally kept stable for deployment-contract tests.
-  local backup_name
+  local backend_gid backend_identity backend_uid backup_name staging_dir
   backup_name="waterfall_registry.${WFH_DEPLOY_SHA}.${DEPLOY_EPOCH}.db"
   DB_BACKUP="${BACKUP_DIR}/${backup_name}"
+  staging_dir="${BACKUP_DIR}/.staging-${WFH_DEPLOY_SHA}-${DEPLOY_EPOCH}"
   install -d -m 0750 "$BACKUP_DIR"
+  [[ ! -e "$staging_dir" ]] || fail "database backup staging path already exists"
 
-  docker compose run --rm --no-deps --interactive=false -T --user 0:0 \
-    -v "${BACKUP_DIR}:/backup" \
+  backend_identity="$(docker compose run --rm --no-deps --interactive=false -T \
+    waterfall-backend \
+    /opt/venv/bin/python -c 'import os; print(os.getuid(), os.getgid())')" \
+    || fail "unable to resolve backend service identity for database backup"
+  read -r backend_uid backend_gid <<< "$backend_identity"
+  [[ "$backend_uid" =~ ^[0-9]+$ && "$backend_gid" =~ ^[0-9]+$ ]] \
+    || fail "backend service identity is invalid"
+  install -d -m 0700 -o "$backend_uid" -g "$backend_gid" "$staging_dir"
+
+  if ! docker compose run --rm --no-deps --interactive=false -T \
+    -v "${staging_dir}:/backup" \
     waterfall-backend \
     /opt/venv/bin/python -c \
     'import hashlib, pathlib, sqlite3, sys
@@ -404,7 +415,18 @@ h=hashlib.sha256()
 with dst.open("rb") as fh:
     for chunk in iter(lambda: fh.read(1024*1024), b""): h.update(chunk)
 print(h.hexdigest())' \
-    "$backup_name" > "${DB_BACKUP}.sha256.tmp"
+    "$backup_name" > "${DB_BACKUP}.sha256.tmp"; then
+    rm -f -- "${DB_BACKUP}.sha256.tmp" "${staging_dir}/${backup_name}"
+    rmdir -- "$staging_dir" 2>/dev/null || true
+    fail "database backup snapshot failed"
+  fi
+
+  [[ -f "${staging_dir}/${backup_name}" && ! -L "${staging_dir}/${backup_name}" ]] \
+    || fail "database backup staging artifact is invalid"
+  mv -- "${staging_dir}/${backup_name}" "$DB_BACKUP"
+  chown 0:0 "$DB_BACKUP"
+  chmod 0640 "$DB_BACKUP"
+  rmdir -- "$staging_dir"
 
   DB_BACKUP_SHA256="$(tail -n 1 "${DB_BACKUP}.sha256.tmp" | tr -d '[:space:]')"
   rm -f "${DB_BACKUP}.sha256.tmp"
