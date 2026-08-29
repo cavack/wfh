@@ -1120,8 +1120,10 @@ def test_simplified_recovery_gate_revalidates_live_database_identity(
         lambda **_kwargs: TrustedIndependentRestoreVerification.model_validate(independent),
     )
     source = Path(request["expected_production_database_path"])
-    source.unlink()
-    _empty_database(source)
+    replacement = source.with_name("replacement.db")
+    _empty_database(replacement)
+    assert replacement.stat().st_ino != source.stat().st_ino
+    replacement.replace(source)
 
     report = _evaluate_recovery_gate(_recovery_gate_request(request), now=observed_now)
 
