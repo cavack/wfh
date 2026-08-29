@@ -15,7 +15,13 @@ def _asset(name: str, asset_id: int, digest: str, size: int) -> dict:
     }
 
 
-def _install(monkeypatch: pytest.MonkeyPatch, *, private: bool = True, digest: str = "a" * 64) -> None:
+def _install(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    private: bool = True,
+    digest: str = "a" * 64,
+    immutable: bool = True,
+) -> None:
     def fake(endpoint: str) -> dict:
         if endpoint == "repos/cavack/wfh-dr":
             return {"full_name": "cavack/wfh-dr", "private": private, "archived": False}
@@ -26,6 +32,7 @@ def _install(monkeypatch: pytest.MonkeyPatch, *, private: bool = True, digest: s
             "tag_name": "wfh-dr-test",
             "draft": False,
             "prerelease": False,
+            "immutable": immutable,
             "published_at": "2026-08-28T22:00:00Z",
             "assets": [_asset("part-000.enc", 101, digest, 1234)],
         }
@@ -113,6 +120,27 @@ def test_remote_backup_verification_requires_immutable_releases(
     with pytest.raises(
         remote.TrustedRemoteBackupVerificationError,
         match="REMOTE_BACKUP_IMMUTABLE_RELEASES_REQUIRED",
+    ):
+        remote.resolve_github_release_backup_verification(
+            repository="cavack/wfh-dr",
+            release_id=77,
+            tag_name="wfh-dr-test",
+            expected_assets=[{
+                "name": "part-000.enc",
+                "id": 101,
+                "size_bytes": 1234,
+                "sha256": "a" * 64,
+            }],
+        )
+
+
+def test_remote_backup_verification_rejects_mutable_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install(monkeypatch, immutable=False)
+    with pytest.raises(
+        remote.TrustedRemoteBackupVerificationError,
+        match="REMOTE_BACKUP_RELEASE_NOT_IMMUTABLE",
     ):
         remote.resolve_github_release_backup_verification(
             repository="cavack/wfh-dr",

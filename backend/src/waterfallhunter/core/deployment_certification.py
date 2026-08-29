@@ -1052,6 +1052,14 @@ def evaluate_deployment_certification(
     provenance = evaluate_deployment_provenance(packet.artifact_provenance)
     backup = packet.backup_certification
     rehearsal = packet.migration_rollback_rehearsal
+    independent_restore: TrustedIndependentRestoreVerification | None = None
+    if isinstance(packet.independent_restore_verification, dict):
+        try:
+            independent_restore = TrustedIndependentRestoreVerification.model_validate(
+                packet.independent_restore_verification
+            )
+        except (TypeError, ValueError):
+            independent_restore = None
     links = provenance["links"]
     reasons = [
         *_provenance_reasons(packet, provenance),
@@ -1114,6 +1122,22 @@ def evaluate_deployment_certification(
             trusted_ci.verification_report_sha256 if trusted_ci is not None else None
         ),
         "trusted_ci_run_id": trusted_ci.run_id if trusted_ci is not None else None,
+        "independent_restore_verification_sha256": (
+            independent_restore.verification_report_sha256
+            if independent_restore is not None
+            else None
+        ),
+        "independent_restore_run_id": (
+            independent_restore.run_id if independent_restore is not None else None
+        ),
+        "independent_restore_artifact_id": (
+            independent_restore.artifact_id if independent_restore is not None else None
+        ),
+        "independent_restore_workflow_revision": (
+            independent_restore.workflow_revision
+            if independent_restore is not None
+            else None
+        ),
         "deployment_allowed": False,
         "migration_allowed": False,
         "telegram_send_allowed": False,

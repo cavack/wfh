@@ -162,6 +162,10 @@ def _require_release(repository: str, release_id: int, tag_name: str) -> dict[st
         raise TrustedRemoteBackupVerificationError(
             "REMOTE_BACKUP_RELEASE_NOT_TRUSTED"
         )
+    if release.get("immutable") is not True:
+        raise TrustedRemoteBackupVerificationError(
+            "REMOTE_BACKUP_RELEASE_NOT_IMMUTABLE"
+        )
     assets = release.get("assets")
     if not isinstance(assets, list):
         raise TrustedRemoteBackupVerificationError("REMOTE_BACKUP_ASSETS_INVALID")

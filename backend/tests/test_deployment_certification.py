@@ -732,6 +732,18 @@ def test_complete_remote_backup_evidence_is_ready_for_owner_approval(
     assert report["blocking_reasons"] == []
     assert report["deployment_allowed"] is False
     assert report["migration_allowed"] is False
+    assert report["independent_restore_verification_sha256"] == independent[
+        "verification_report_sha256"
+    ]
+    assert report["independent_restore_run_id"] == independent["run_id"]
+    assert report["independent_restore_artifact_id"] == independent["artifact_id"]
+    assert report["independent_restore_workflow_revision"] == independent[
+        "workflow_revision"
+    ]
+    report_body = {
+        key: value for key, value in report.items() if key != "report_sha256"
+    }
+    assert report["report_sha256"] == canonical_sha256(report_body)
 
 
 def test_remote_backup_cannot_be_ready_without_independent_restore_proof(
