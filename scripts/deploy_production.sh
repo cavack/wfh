@@ -18,10 +18,8 @@ WFH_TESTED_WATCHDOG_IMAGE_DIGEST="${WFH_TESTED_WATCHDOG_IMAGE_DIGEST:-}"
 PRODUCTION_COMPOSE_OVERRIDE="${STATE_DIR}/production-volumes.override.yml"
 DB_PATH="/app/data/waterfall_registry.db"
 DEPLOY_EPOCH="$(date -u +%s)"
-TELEGRAM_CUTOVER_EPOCH=""
 BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 PREVIOUS_SHA=""
-ENV_BACKUP=""
 DB_BACKUP=""
 DB_BACKUP_SHA256=""
 MIGRATION_MAY_HAVE_MUTATED=0
@@ -45,18 +43,6 @@ require_command() {
   local command_name="$1"
   command -v "$command_name" >/dev/null 2>&1 \
     || fail "required command missing: $command_name"
-}
-
-set_env_value() {
-  local key="$1"
-  local value="$2"
-  local tmp
-  install -d -m 0750 "$(dirname "$ENV_FILE")"
-  tmp="$(mktemp "$(dirname "$ENV_FILE")/.waterfallhunter.env.deploy.XXXXXX")"
-  awk -v key="$key" 'index($0, key "=") != 1 { print }' "$ENV_FILE" > "$tmp"
-  printf '%s=%s\n' "$key" "$value" >> "$tmp"
-  chmod --reference="$ENV_FILE" "$tmp" 2>/dev/null || chmod 600 "$tmp"
-  mv "$tmp" "$ENV_FILE"
 }
 
 assert_signal_only_runtime_boundary() {
@@ -270,14 +256,38 @@ verify_public_edge() {
     --output /dev/null "$public_url"
 }
 
-remove_fixed_name_core_containers() {
-  local container
-  for container in waterfall-backend waterfall-frontend waterfall-watchdog; do
+remove_release_containers_before_compose_handoff() {
+  local alertmanager_volume container service
+  for container in \
+    waterfall-backend \
+    waterfall-frontend \
+    waterfall-watchdog \
+    waterfall-prometheus \
+    waterfall-grafana; do
     if docker inspect "$container" >/dev/null 2>&1; then
       log "removing fixed-name container before Compose handoff: ${container}"
       docker rm -f "$container" >/dev/null || return 1
     fi
   done
+
+  # Alertmanager historically had a project-scoped generated name rather than
+  # a fixed container_name. Resolve its actual volume from the effective
+  # Compose topology, including a host-owned external-volume override.
+  alertmanager_volume="$(docker compose config --format json | python3 -c '
+import json, re, sys
+config = json.load(sys.stdin)
+name = config.get("volumes", {}).get("alertmanager_data", {}).get("name", "")
+if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name):
+    raise SystemExit("resolved Alertmanager volume name is missing or unsafe")
+print(name)
+')" || return 1
+  while IFS= read -r container; do
+    [[ "$container" =~ ^[0-9a-f]{12,64}$ ]] || return 1
+    service="$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.service" }}' "$container" 2>/dev/null || true)"
+    [[ "$service" == "alertmanager" ]] || continue
+    log "removing volume-bound Alertmanager container before Compose handoff: ${container}"
+    docker rm -f "$container" >/dev/null || return 1
+  done < <(docker ps -aq --filter "volume=${alertmanager_volume}")
 }
 
 wait_for_backend_endpoint() {
@@ -309,6 +319,15 @@ wait_for_container_healthy() {
     sleep "$sleep_seconds"
   done
   return 1
+}
+
+wait_for_monitoring_containers_healthy() {
+  local alertmanager_container
+  wait_for_container_healthy waterfall-prometheus 30 3 || return 1
+  wait_for_container_healthy waterfall-grafana 30 3 || return 1
+  alertmanager_container="$(docker compose ps -q alertmanager)"
+  [[ "$alertmanager_container" =~ ^[0-9a-f]{12,64}$ ]] || return 1
+  wait_for_container_healthy "$alertmanager_container" 30 3
 }
 
 verify_running_revision() {
@@ -418,7 +437,7 @@ h = hashlib.sha256()
 with src.open("rb") as fh:
     for chunk in iter(lambda: fh.read(1024 * 1024), b""): h.update(chunk)
 if h.hexdigest() != expected: raise SystemExit("rollback backup checksum mismatch")
-with sqlite3.connect(f"file:{src}?mode=ro", uri=True) as check:
+with sqlite3.connect(f"file:{src}?mode=ro&immutable=1", uri=True) as check:
     row = check.execute("PRAGMA integrity_check").fetchone()
     if not row or str(row[0]).lower() != "ok": raise SystemExit("rollback backup integrity failure")
 owner = dst.stat() if dst.exists() else dst.parent.stat()
@@ -454,21 +473,12 @@ prune_database_backups() {
   done < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'waterfall_registry.*.db' -printf '%T@ %p\n' | sort -nr)
 }
 
-activate_telegram_for_release() {
-  grep -Eq '^TELEGRAM_TOKEN=.+$' "$ENV_FILE" || fail "TELEGRAM_TOKEN is required for automatic signal delivery"
-  grep -Eq '^TELEGRAM_CHAT_ID=.+$' "$ENV_FILE" || fail "TELEGRAM_CHAT_ID is required for automatic signal delivery"
-  TELEGRAM_CUTOVER_EPOCH="$(date -u +%s)"
-  ENV_BACKUP="${STATE_DIR}/env.${PREVIOUS_SHA:-unknown}.${TELEGRAM_CUTOVER_EPOCH}.bak"
-  install -d -m 0750 "$STATE_DIR"
-  cp -p "$ENV_FILE" "$ENV_BACKUP"
-  set_env_value TELEGRAM_SIGNAL_DELIVERY_ENABLED true
-  set_env_value TELEGRAM_SIGNAL_DELIVERY_CUTOVER_AT "$TELEGRAM_CUTOVER_EPOCH"
-}
-
-restore_previous_env() {
-  if [[ -n "$ENV_BACKUP" && -f "$ENV_BACKUP" ]]; then
-    cp -p "$ENV_BACKUP" "$ENV_FILE"
-  fi
+assert_telegram_delivery_disabled() {
+  docker compose run --rm --no-deps --interactive=false -T waterfall-backend \
+    /opt/venv/bin/python -c \
+    'from waterfallhunter.config import settings; assert settings.telegram_signal_delivery_enabled is False' \
+    >/dev/null 2>&1 \
+    || fail "effective Telegram signal delivery setting must remain disabled without separate operator approval"
 }
 
 restore_previous_workspace() {
@@ -489,7 +499,6 @@ previous_revision_accepts_current_schema() {
 rollback_previous_revision() {
   [[ "$ROLLBACK_ACTIVE" -eq 0 ]] || return 1
   ROLLBACK_ACTIVE=1
-  restore_previous_env
   [[ -n "$PREVIOUS_SHA" ]] || return 1
 
   if [[ "$MIGRATION_MAY_HAVE_MUTATED" -eq 1 ]]; then
@@ -509,13 +518,14 @@ rollback_previous_revision() {
     restore_previous_workspace || return 1
   fi
 
-  remove_fixed_name_core_containers || return 1
+  remove_release_containers_before_compose_handoff || return 1
   docker compose up -d --remove-orphans || return 1
   wait_for_backend_endpoint /livez 20 3 || return 1
   wait_for_backend_endpoint /readyz 30 4 || return 1
   wait_for_container_healthy waterfall-backend 30 3 || return 1
   wait_for_container_healthy waterfall-frontend 30 3 || return 1
   wait_for_container_healthy waterfall-watchdog 30 3 || return 1
+  wait_for_monitoring_containers_healthy || return 1
   verify_running_revision "$PREVIOUS_SHA" || return 1
   verify_running_signal_only || return 1
   log "rollback certified at ${PREVIOUS_SHA}"
@@ -533,7 +543,6 @@ terminate_with_cleanup() {
     rollback_previous_revision \
       || log "automatic rollback could not be certified; backup retained at ${DB_BACKUP:-unavailable}"
   else
-    restore_previous_env || true
     restore_previous_workspace \
       || log "pre-mutation workspace restoration could not be certified"
   fi
@@ -619,6 +628,7 @@ docker compose config --quiet
 assert_signal_only_runtime_boundary
 
 load_tested_release_artifacts
+assert_telegram_delivery_disabled
 
 backup_database
 
@@ -633,11 +643,8 @@ docker compose run --rm --no-deps --interactive=false -T waterfall-backend \
   /opt/venv/bin/python -m waterfallhunter.migrate_database \
   --db-path "$DB_PATH" --apply --source-revision "$WFH_DEPLOY_SHA"
 
-activate_telegram_for_release
-# TELEGRAM_SIGNAL_DELIVERY_ENABLED and TELEGRAM_SIGNAL_DELIVERY_CUTOVER_AT are release-scoped signal-delivery gates.
-
 RUNTIME_REPLACED=1
-remove_fixed_name_core_containers
+remove_release_containers_before_compose_handoff
 docker compose up -d --remove-orphans --no-build
 
 wait_for_backend_endpoint /livez 20 3 || fail "backend /livez did not become healthy"
@@ -645,6 +652,7 @@ wait_for_backend_endpoint /readyz 30 4 || fail "backend /readyz did not become r
 wait_for_container_healthy waterfall-backend 30 3 || fail "backend container did not become healthy"
 wait_for_container_healthy waterfall-frontend 30 3 || fail "frontend container did not become healthy"
 wait_for_container_healthy waterfall-watchdog 30 3 || fail "watchdog container did not become healthy"
+wait_for_monitoring_containers_healthy || fail "monitoring containers did not become healthy"
 verify_running_revision "$WFH_DEPLOY_SHA" || fail "running OCI org.opencontainers.image.revision does not match target SHA"
 verify_running_signal_only || fail "running backend violated the SIGNAL_ONLY live-trading boundary"
 
@@ -668,15 +676,11 @@ tested_backend_image_digest=${WFH_TESTED_BACKEND_IMAGE_DIGEST}
 tested_frontend_image_digest=${WFH_TESTED_FRONTEND_IMAGE_DIGEST}
 tested_watchdog_image_digest=${WFH_TESTED_WATCHDOG_IMAGE_DIGEST}
 tested_image_bundle_sha256=${WFH_TESTED_IMAGE_BUNDLE_SHA256}
-telegram_cutover_at=${TELEGRAM_CUTOVER_EPOCH}
+telegram_signal_delivery_enabled=false
 live_trading_enabled=false
 product_mode=SIGNAL_ONLY
 EOF
 
-if [[ -n "$ENV_BACKUP" ]]; then
-  rm -f -- "$ENV_BACKUP"
-  ENV_BACKUP=""
-fi
 if [[ -n "$HOST_INTEGRATION_BACKUP_DIR" && -d "$HOST_INTEGRATION_BACKUP_DIR" ]]; then
   rm -rf -- "$HOST_INTEGRATION_BACKUP_DIR"
   HOST_INTEGRATION_BACKUP_DIR=""
