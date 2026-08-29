@@ -144,6 +144,28 @@ def test_gh_executable_rejects_writable_parent_directory(
         remote._gh_executable()
 
 
+def test_gh_executable_skips_non_executable_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entries = {
+        "/": (0, stat.S_IFDIR | 0o755),
+        "/trusted": (0, stat.S_IFDIR | 0o755),
+        "/trusted/bin": (0, stat.S_IFDIR | 0o755),
+        "/trusted/sbin": (0, stat.S_IFDIR | 0o755),
+        "/trusted/bin/gh": (0, stat.S_IFREG | 0o644),
+        "/trusted/sbin/gh": (0, stat.S_IFREG | 0o755),
+    }
+    non_executable = _FakePath("/trusted/bin/gh", entries)
+    executable = _FakePath("/trusted/sbin/gh", entries)
+    monkeypatch.setattr(remote, "_GH_CANDIDATES", (non_executable, executable))
+
+    def no_acl(*_args, **_kwargs):
+        raise OSError(errno.ENODATA, "no data")
+
+    monkeypatch.setattr(os, "getxattr", no_acl)
+    assert remote._gh_executable() == "/trusted/sbin/gh"
+
+
 def test_gh_executable_rejects_parent_with_extended_access_acl(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -104,7 +104,12 @@ def _trusted_executable_path(candidate: Path) -> bool:
         for parent in candidate.parents
     ):
         return False
-    return _trusted_path_component(candidate, directory=False)
+    if not _trusted_path_component(candidate, directory=False):
+        return False
+    try:
+        return candidate.lstat().st_mode & 0o111 != 0
+    except OSError:
+        return False
 
 
 def _gh_executable() -> str:
