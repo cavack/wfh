@@ -12,10 +12,11 @@ Prerequisites:
   Production database;
 - enough capacity for the backup, isolated restore, migration clone, rollback
   clone, and reports;
-- a fresh owner message exactly authorizing the source and destination:
-  `APPROVE_BACKUP_EXECUTION: <source> -> <independent destination>`.
+- an operator acting under an authorized release/change window. The technical
+  gate does not require a magic approval phrase; it fails closed on the actual
+  source, destination, identity, restore, and hash evidence.
 
-After that approval only, run from the tested source revision:
+Run from the tested source revision:
 
 ```bash
 PYTHONPATH=backend/src:. python scripts/certify_sqlite_backup.py \
@@ -102,9 +103,9 @@ evidence cannot reach owner approval readiness without this independent proof.
 
 ## 2. Staging migration and rollback rehearsal
 
-This is a separate write to isolated clone files and requires:
-
-`APPROVE_STAGING_MIGRATION: <artifact SHA> on <exact clone paths>`
+This is a write only to isolated clone files. It is part of the authorized
+release-certification operation and does not require a separate chat approval.
+Production is not a target of this rehearsal.
 
 ```bash
 PYTHONPATH=backend/src:. python scripts/rehearse_sqlite_migration.py \
@@ -136,56 +137,66 @@ baseline. Success requires `sqlite_migration_rollback_rehearsal_v2`, retained
 rollback evidence matching the baseline, and both Production authorization
 flags false.
 
-## 3. Artifact, test, readiness, and soak packet
+## 3. Normal pre-dispatch recovery gate
 
-Build one `deployment_certification_request_v1` JSON packet containing:
+The normal Production pre-dispatch gate is intentionally small. There is no
+operator-assembled request packet. Give the evaluator the three authoritative
+recovery evidence files plus the exact current `main` revision and live SQLite
+path; the CLI constructs `release_recovery_gate_request_v1` internally.
 
-- exact Git/CI revision and complete `deployment_provenance_v1` links;
-- the backup and rehearsal reports above;
-- for remote DR, authoritative independent restore evidence from the exact
-  successful `cavack/wfh-dr` workflow run and release tag;
-- backend, frontend, E2E, migration, load, fault, security and secret-scan PASS
-  claims in the packet; these claims cannot authorize certification by themselves;
-- an independently queried GitHub Actions run for the exact source revision, with
-  successful backend/frontend/dependency-audit/container-validation/repository-hygiene
-  jobs and a tested-backend image digest emitted by the same container-validation
-  job after that exact image is tested; the operator derives the verification report
-  hash from this GitHub-controlled run evidence rather than trusting a packet hash;
-- zero blocker review findings;
-- liveness, health, readiness, schema readiness and database readiness bound to
-  source revision, running image digest, runtime fingerprint, staging
-  environment, and `observed_at` (max age one hour);
-- at least 24 hours signal-only shadow soak, request error rate at or below
-  0.1%, zero OOM/schema errors, and zero live-order paths. The soak packet must
-  bind its start/end, staging environment, source revision, built-image digest,
-  and runtime fingerprint to the artifact being certified. Provenance must
-  include the same `runtime_fingerprint_sha256`.
+The evaluator independently resolves GitHub CI from the supplied repository and
+run ID. Do not add caller-asserted CI booleans, staging readiness, or a 24-hour
+shadow-soak packet to this normal gate. Those duplicated authoritative CI and
+recovery evidence and delayed releases without improving recoverability.
 
-Evaluate it offline:
+Evaluate the minimal gate:
 
 ```bash
-PYTHONPATH=backend/src:. python scripts/evaluate_deployment_certification.py \
-  --input /absolute/path/deployment-evidence.json \
-  --report /absolute/path/deployment-certification.json \
+PYTHONPATH=backend/src:. python scripts/evaluate_release_recovery_gate.py \
+  --source-revision <40-character-current-main-sha> \
+  --production-database /absolute/production/waterfall_registry.db \
+  --backup-certification /srv/wfh-release-backups/remote-dr-<utc>-<sha>/backup-certification.json \
+  --independent-restore-verification /srv/wfh-release-backups/remote-dr-<utc>-<sha>/independent-restore-verification.json \
+  --migration-rehearsal /srv/wfh-release-backups/remote-dr-<utc>-<sha>/migration-rehearsal.json \
+  --report /srv/wfh-release-backups/remote-dr-<utc>-<sha>/release-recovery-gate.json \
   --github-repository cavack/wfh \
-  --github-run-id <exact-successful-run-id-for-source-revision>
+  --github-run-id <exact-successful-main-ci-run-id>
 ```
 
-Even a passing report says `READY_FOR_EXPLICIT_OWNER_APPROVAL` and keeps
-`deployment_allowed=false`. It is evidence, not authority.
+Success is `READY_FOR_EXPLICIT_DISPATCH`. The report still keeps
+`deployment_allowed=false`, `migration_allowed=false`,
+`telegram_send_allowed=false`, and `live_trading_allowed=false`: it is
+cryptographically and operationally bound evidence, not a reusable deployment
+credential. A local or same-disk backup can never satisfy this gate.
 
-## 4. Separate Production approvals
+### Optional extended/staging certification
 
-Only after every gate is green, request each operation independently:
+`scripts/evaluate_deployment_certification.py` and
+`deployment_certification_request_v1` remain supported for teams that want the
+older extended staging/readiness/shadow-soak evidence packet. That strict mode is
+backward compatible, but it is not a prerequisite for the normal Production
+dispatch path once the recovery gate above is READY.
+
+## 4. Explicit dispatch and post-deploy verification
+
+After `READY_FOR_EXPLICIT_DISPATCH`, the deployment action boundary is the
+protected GitHub Actions dispatch on the exact current `main` revision:
 
 ```text
-APPROVE_PRODUCTION_MIGRATION: <artifact SHA> on <exact DB/container>
-APPROVE_PRODUCTION_DEPLOYMENT: <image digests> on <exact services>
-APPROVE_TELEGRAM_SEND: <bot/environment/chat scope>
-APPROVE_FEATURE_PROMOTION: <profile/model/version>
+workflow = CI
+branch = main
+deploy_production = true
 ```
 
-Production migration and deployment must use the exact certified artifact,
-preserve `LIVE_TRADING_ENABLED=false`, verify rollback points before mutation,
-recheck schema/readiness after each stage, and stop on any mismatch, OOM,
-readiness regression, or unexpected write. Live trading is outside this version.
+The dispatch reruns the required CI jobs and deploys only the exact CI-tested
+artifact family. Production migration and deployment must preserve the rollback
+point, keep `LIVE_TRADING_ENABLED=false`, recheck schema/readiness after each
+stage, and stop on any mismatch, OOM, readiness regression, or unexpected
+write. No real Telegram message is sent by certification. Live trading remains
+outside this release policy.
+
+After cutover, verify exact deployed SHA, backend/frontend/watchdog OCI revision
+labels, DB schema/integrity/foreign keys, `/livez`, `/readyz`, `/healthz`, key
+Dashboard/API paths, Telegram configuration/outbox read-only state, restart
+counts, resource usage, and a risk-proportional runtime soak. Cleanup remains
+post-certification only.

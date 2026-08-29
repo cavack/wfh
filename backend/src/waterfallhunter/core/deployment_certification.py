@@ -165,6 +165,38 @@ class DeploymentCertificationRequest(BaseModel):
         return self
 
 
+class ReleaseRecoveryGateRequest(BaseModel):
+    """Minimal pre-dispatch recovery evidence for a Production release."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    contract_version: Literal["release_recovery_gate_request_v1"] = (
+        "release_recovery_gate_request_v1"
+    )
+    source_revision: str = Field(min_length=40, max_length=40)
+    expected_production_database_path: str = Field(min_length=1)
+    backup_certification: dict[str, Any]
+    independent_restore_verification: dict[str, Any] | None = None
+    migration_rollback_rehearsal: dict[str, Any]
+
+    @model_validator(mode="after")
+    def _identity_shape(self) -> "ReleaseRecoveryGateRequest":
+        if any(
+            character not in "0123456789abcdef"
+            for character in self.source_revision
+        ):
+            raise ValueError("source revision must be an exact lowercase Git SHA-1")
+        database_path = Path(self.expected_production_database_path)
+        if (
+            not database_path.is_absolute()
+            or database_path.resolve(strict=False) != database_path
+        ):
+            raise ValueError(
+                "expected production database path must be canonical and absolute"
+            )
+        return self
+
+
 def _hash_valid(document: dict[str, Any], hash_field: str) -> bool:
     expected = document.get(hash_field)
     material = {key: value for key, value in document.items() if key != hash_field}
@@ -650,7 +682,7 @@ def _backup_reasons(
 
 
 def _independent_remote_restore_reasons(
-    packet: DeploymentCertificationRequest,
+    packet: DeploymentCertificationRequest | ReleaseRecoveryGateRequest,
     backup: dict[str, Any],
 ) -> list[str]:
     if backup.get("contract_version") != "sqlite_remote_backup_certification_v1":
@@ -1144,5 +1176,120 @@ def evaluate_deployment_certification(
         "feature_promotion_allowed": False,
         "live_trading_allowed": False,
         "required_next_authority": "EXPLICIT_OWNER_APPROVALS",
+    }
+    return {**body, "report_sha256": canonical_sha256(body)}
+
+
+def evaluate_release_recovery_gate(
+    request: ReleaseRecoveryGateRequest | dict[str, Any],
+    *,
+    now: int | None = None,
+    github_repository: str | None = None,
+    github_run_id: int | None = None,
+) -> dict[str, Any]:
+    """Evaluate the minimal authoritative recovery gate before explicit dispatch."""
+    packet = (
+        request
+        if isinstance(request, ReleaseRecoveryGateRequest)
+        else ReleaseRecoveryGateRequest.model_validate(request)
+    )
+    observed_now = int(time.time() if now is None else now)
+    if observed_now < 1:
+        raise ValueError("recovery gate evaluation time must be a positive UTC epoch")
+
+    trusted_ci: TrustedCIVerification | None = None
+    ci_failure: str | None = None
+    if github_repository is None and github_run_id is None:
+        ci_failure = "CI_VERIFICATION_TRUST_UNAVAILABLE"
+    elif github_repository is None or github_run_id is None:
+        ci_failure = "CI_VERIFICATION_TRUST_CONFIGURATION_INVALID"
+    else:
+        try:
+            trusted_ci = resolve_github_ci_verification(
+                repository=github_repository,
+                run_id=github_run_id,
+                expected_revision=packet.source_revision,
+            )
+        except TrustedCIVerificationError as error:
+            ci_failure = str(error) or "CI_VERIFICATION_TRUST_FAILED"
+
+    backup = packet.backup_certification
+    rehearsal = packet.migration_rollback_rehearsal
+    independent_restore: TrustedIndependentRestoreVerification | None = None
+    if isinstance(packet.independent_restore_verification, dict):
+        try:
+            independent_restore = TrustedIndependentRestoreVerification.model_validate(
+                packet.independent_restore_verification
+            )
+        except (TypeError, ValueError):
+            independent_restore = None
+
+    reasons: list[str] = []
+    if backup.get("contract_version") != "sqlite_remote_backup_certification_v1":
+        reasons.append("REMOTE_OFF_HOST_BACKUP_REQUIRED")
+    reasons.extend(
+        _backup_reasons(
+            backup,
+            expected_source_path=packet.expected_production_database_path,
+            now=observed_now,
+        )
+    )
+    reasons.extend(_independent_remote_restore_reasons(packet, backup))
+    reasons.extend(
+        _rehearsal_reasons(
+            rehearsal,
+            backup=backup,
+            source_revision=packet.source_revision,
+        )
+    )
+    if trusted_ci is None:
+        reasons.append(ci_failure or "CI_VERIFICATION_TRUST_FAILED")
+    elif trusted_ci.source_revision != packet.source_revision:
+        reasons.append("CI_TRUSTED_REVISION_MISMATCH")
+
+    validity_deadlines = [observed_now + MAXIMUM_REPORT_VALIDITY_SECONDS]
+    backup_completed_at = backup.get("backup_completed_at")
+    if isinstance(backup_completed_at, int) and backup_completed_at >= 1:
+        validity_deadlines.append(backup_completed_at + MAXIMUM_BACKUP_AGE_SECONDS)
+    valid_until = min(validity_deadlines)
+
+    body = {
+        "contract_version": "release_recovery_gate_report_v1",
+        "evaluated_at": observed_now,
+        "valid_until": valid_until,
+        "source_revision": packet.source_revision,
+        "status": "READY_FOR_EXPLICIT_DISPATCH" if not reasons else "NOT_READY",
+        "blocking_reasons": sorted(set(reasons)),
+        "trusted_ci_verification_sha256": (
+            trusted_ci.verification_report_sha256 if trusted_ci is not None else None
+        ),
+        "trusted_ci_run_id": trusted_ci.run_id if trusted_ci is not None else None,
+        "tested_backend_image_digest": (
+            trusted_ci.tested_image_digest if trusted_ci is not None else None
+        ),
+        "backup_certification_sha256": backup.get("certification_sha256"),
+        "migration_rehearsal_sha256": rehearsal.get("rehearsal_sha256"),
+        "independent_restore_verification_sha256": (
+            independent_restore.verification_report_sha256
+            if independent_restore is not None
+            else None
+        ),
+        "independent_restore_run_id": (
+            independent_restore.run_id if independent_restore is not None else None
+        ),
+        "independent_restore_artifact_id": (
+            independent_restore.artifact_id if independent_restore is not None else None
+        ),
+        "independent_restore_workflow_revision": (
+            independent_restore.workflow_revision
+            if independent_restore is not None
+            else None
+        ),
+        "deployment_allowed": False,
+        "migration_allowed": False,
+        "telegram_send_allowed": False,
+        "feature_promotion_allowed": False,
+        "live_trading_allowed": False,
+        "required_next_authority": "EXPLICIT_WORKFLOW_DISPATCH",
     }
     return {**body, "report_sha256": canonical_sha256(body)}

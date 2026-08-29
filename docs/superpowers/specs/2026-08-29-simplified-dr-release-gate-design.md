@@ -21,7 +21,7 @@ The existing strict `deployment_certification_request_v1` evaluator remains avai
 
 ## New contract
 
-Add `release_recovery_gate_request_v1` with only:
+Internally, add `release_recovery_gate_request_v1` with only:
 
 - `source_revision` — exact lowercase 40-character Git SHA;
 - `expected_production_database_path` — canonical absolute Production DB path;
@@ -29,7 +29,7 @@ Add `release_recovery_gate_request_v1` with only:
 - `independent_restore_verification` — existing `github_actions_remote_restore_verification_v1` document;
 - `migration_rollback_rehearsal` — existing migration rehearsal document.
 
-The evaluator receives `github_repository` and `github_run_id` separately and resolves the CI run authoritatively from GitHub. It does not trust caller claims about CI success.
+The operational CLI accepts the backup certificate, independent-restore report, and migration-rehearsal report as separate files and constructs this request internally; operators do not hand-build JSON. The evaluator receives `github_repository` and `github_run_id` separately and resolves the CI run authoritatively from GitHub. It does not trust caller claims about CI success.
 
 ## Gate semantics
 

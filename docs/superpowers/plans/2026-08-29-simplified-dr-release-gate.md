@@ -44,10 +44,10 @@
 - Create: `scripts/evaluate_release_recovery_gate.py`
 
 **Interfaces:**
-- Consumes: request JSON, output report path, GitHub repository, exact CI run ID.
-- Produces: atomic JSON report; exit `0` only for `READY_FOR_EXPLICIT_DISPATCH`, otherwise exit `2`.
+- Consumes: source revision, live Production DB path, backup-certificate file, independent-restore file, migration-rehearsal file, output report path, GitHub repository, exact CI run ID.
+- Produces: the minimal request internally plus an atomic JSON report; exit `0` only for `READY_FOR_EXPLICIT_DISPATCH`, otherwise exit `2`.
 
-- [ ] Implement the CLI using the same canonical-path and atomic report-writing helpers as existing certification scripts.
+- [ ] Implement the CLI using the same canonical-path and atomic report-writing helpers as existing certification scripts; do not require a hand-built request JSON.
 - [ ] Run `python scripts/evaluate_release_recovery_gate.py --help` and a unit-level invocation against synthetic evidence.
 
 ### Task 3: Make the simplified flow canonical operational guidance
@@ -85,6 +85,6 @@
 - [ ] Create the fresh encrypted off-host SQLite Online Backup and verify its remote immutable release.
 - [ ] Dispatch the pinned private DR restore workflow with plaintext artifact emission disabled and verify the exact successful restore run.
 - [ ] Run sequential v5→v7 migration/rollback rehearsal against the certified restore.
-- [ ] Build the minimal `release_recovery_gate_request_v1` and evaluate it against the exact successful main CI run.
+- [ ] Run the direct-evidence recovery-gate CLI against the exact successful main CI run; the CLI builds `release_recovery_gate_request_v1` internally.
 - [ ] If `READY_FOR_EXPLICIT_DISPATCH`, explicitly dispatch `CI` on current `main` with `deploy_production=true`; otherwise stop on the returned reason code.
 - [ ] Verify exact deployed SHA, DB v7, integrity/FK, container OCI revisions/health, dashboard/API, Telegram read-only state, `LIVE_TRADING_ENABLED=false`, then perform risk-proportional soak before cleanup.
