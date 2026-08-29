@@ -102,6 +102,43 @@ def test_release_create_timeout_cleans_only_the_owned_draft(
     )
 
 
+def test_owned_draft_lookup_falls_back_when_tag_endpoint_hides_draft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = "wfh-backup-run:hidden-draft"
+    calls: list[tuple[str, ...]] = []
+
+    def fake_gh(*arguments: str, timeout: int = 120) -> str:
+        calls.append(tuple(arguments))
+        if arguments[:2] == (
+            "api",
+            "repos/cavack/wfh-dr/releases/tags/hidden-draft",
+        ):
+            raise cli.RemoteBackupCLIError("REMOTE_BACKUP_GITHUB_COMMAND_FAILED:404")
+        if arguments[:2] == (
+            "api",
+            "repos/cavack/wfh-dr/releases?per_page=100&page=1",
+        ):
+            return json.dumps([
+                {
+                    "id": 123,
+                    "tag_name": "hidden-draft",
+                    "draft": True,
+                    "body": cli._release_notes(marker),
+                }
+            ])
+        raise AssertionError(f"unexpected gh call: {arguments!r}")
+
+    monkeypatch.setattr(cli, "_gh", fake_gh)
+
+    assert cli._owned_draft_release_id(
+        repository="cavack/wfh-dr",
+        tag_name="hidden-draft",
+        ownership_marker=marker,
+    ) == 123
+    assert any("releases?per_page=100&page=1" in call[-1] for call in calls)
+
+
 def test_release_create_failure_never_deletes_a_preexisting_release(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
