@@ -474,21 +474,11 @@ prune_database_backups() {
 }
 
 assert_telegram_delivery_disabled() {
-  local assignment value
-  while IFS= read -r assignment; do
-    value="${assignment#*=}"
-    value="${value%%#*}"
-    value="${value#"${value%%[![:space:]]*}"}"
-    value="${value%"${value##*[![:space:]]}"}"
-    if [[ ( "$value" == \"*\" && "$value" == *\" ) || ( "$value" == \'*\' && "$value" == *\' ) ]]; then
-      value="${value:1:${#value}-2}"
-    fi
-    value="${value,,}"
-    [[ "$value" =~ ^(1|on|t|true|y|yes)$ ]] \
-      && fail "TELEGRAM_SIGNAL_DELIVERY_ENABLED must remain disabled without separate operator approval"
-    [[ "$value" =~ ^(0|off|f|false|n|no)$ ]] \
-      || fail "TELEGRAM_SIGNAL_DELIVERY_ENABLED has an unsafe or unrecognized value"
-  done < <(grep -E '^[[:space:]]*TELEGRAM_SIGNAL_DELIVERY_ENABLED[[:space:]]*=' "$ENV_FILE" || true)
+  docker compose run --rm --no-deps --interactive=false -T waterfall-backend \
+    /opt/venv/bin/python -c \
+    'from waterfallhunter.config import settings; assert settings.telegram_signal_delivery_enabled is False' \
+    >/dev/null 2>&1 \
+    || fail "effective Telegram signal delivery setting must remain disabled without separate operator approval"
 }
 
 restore_previous_workspace() {
@@ -638,6 +628,7 @@ docker compose config --quiet
 assert_signal_only_runtime_boundary
 
 load_tested_release_artifacts
+assert_telegram_delivery_disabled
 
 backup_database
 
@@ -651,8 +642,6 @@ MIGRATION_MAY_HAVE_MUTATED=1
 docker compose run --rm --no-deps --interactive=false -T waterfall-backend \
   /opt/venv/bin/python -m waterfallhunter.migrate_database \
   --db-path "$DB_PATH" --apply --source-revision "$WFH_DEPLOY_SHA"
-
-assert_telegram_delivery_disabled
 
 RUNTIME_REPLACED=1
 remove_release_containers_before_compose_handoff

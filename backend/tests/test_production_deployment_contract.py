@@ -226,10 +226,8 @@ def test_host_deploy_keeps_telegram_delivery_fail_closed() -> None:
     assertion = text.split("assert_telegram_delivery_disabled() {", maxsplit=1)[1].split(
         "}\n", maxsplit=1
     )[0]
-    assert "TELEGRAM_SIGNAL_DELIVERY_ENABLED" in assertion
-    assert "^(1|on|t|true|y|yes)$" in assertion
-    assert "^(0|off|f|false|n|no)$" in assertion
-    assert 'value="${value,,}"' in assertion
+    assert "docker compose run --rm --no-deps --interactive=false -T waterfall-backend" in assertion
+    assert "settings.telegram_signal_delivery_enabled is False" in assertion
     assert "set_env_value TELEGRAM_SIGNAL_DELIVERY_ENABLED true" not in text
     assert "activate_telegram_for_release" not in text
     assert "telegram_signal_delivery_enabled=false" in text
@@ -291,11 +289,11 @@ def test_host_deploy_orders_backup_migration_runtime_and_host_certification() ->
         '[[ "$(git rev-parse origin/main)" == "$WFH_DEPLOY_SHA" ]]',
         "assert_signal_only_runtime_boundary",
         "load_tested_release_artifacts",
+        "assert_telegram_delivery_disabled",
         "backup_database",
         "--preflight",
         "MIGRATION_MAY_HAVE_MUTATED=1",
         "--apply --source-revision",
-        "assert_telegram_delivery_disabled",
         "docker compose up -d",
         "/livez",
         "/readyz",
