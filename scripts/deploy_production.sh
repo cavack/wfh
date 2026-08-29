@@ -458,8 +458,21 @@ prune_database_backups() {
 }
 
 assert_telegram_delivery_disabled() {
-  ! grep -Eq '^TELEGRAM_SIGNAL_DELIVERY_ENABLED=(true|True|TRUE|1)$' "$ENV_FILE" \
-    || fail "TELEGRAM_SIGNAL_DELIVERY_ENABLED must remain disabled without separate operator approval"
+  local assignment value
+  while IFS= read -r assignment; do
+    value="${assignment#*=}"
+    value="${value%%#*}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    if [[ ( "$value" == \"*\" && "$value" == *\" ) || ( "$value" == \'*\' && "$value" == *\' ) ]]; then
+      value="${value:1:${#value}-2}"
+    fi
+    value="${value,,}"
+    [[ "$value" =~ ^(1|on|t|true|y|yes)$ ]] \
+      && fail "TELEGRAM_SIGNAL_DELIVERY_ENABLED must remain disabled without separate operator approval"
+    [[ "$value" =~ ^(0|off|f|false|n|no)$ ]] \
+      || fail "TELEGRAM_SIGNAL_DELIVERY_ENABLED has an unsafe or unrecognized value"
+  done < <(grep -E '^[[:space:]]*TELEGRAM_SIGNAL_DELIVERY_ENABLED[[:space:]]*=' "$ENV_FILE" || true)
 }
 
 restore_previous_workspace() {

@@ -218,7 +218,9 @@ def test_host_deploy_keeps_telegram_delivery_fail_closed() -> None:
         "}\n", maxsplit=1
     )[0]
     assert "TELEGRAM_SIGNAL_DELIVERY_ENABLED" in assertion
-    assert "(true|True|TRUE|1)" in assertion
+    assert "^(1|on|t|true|y|yes)$" in assertion
+    assert "^(0|off|f|false|n|no)$" in assertion
+    assert 'value="${value,,}"' in assertion
     assert "set_env_value TELEGRAM_SIGNAL_DELIVERY_ENABLED true" not in text
     assert "activate_telegram_for_release" not in text
     assert "telegram_signal_delivery_enabled=false" in text
