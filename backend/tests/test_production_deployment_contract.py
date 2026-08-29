@@ -500,6 +500,24 @@ def test_streamed_remote_deploy_does_not_let_compose_consume_script_tail() -> No
     assert all("</dev/null" in line for line in compose_up_lines)
 
 
+def test_remote_deploy_executes_staged_script_file_not_streamed_stdin() -> None:
+    text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+    stage_step, deploy_step = text.split(
+        "      - name: Stage exact CI-tested release inputs on Production host\n", maxsplit=1
+    )[1].split("      - name: Deploy exact CI revision\n", maxsplit=1)
+    assert "scripts/deploy_production.sh" in stage_step
+    assert "local_script_sha256" in stage_step
+    assert "remote_script_sha256" in stage_step
+    assert 'test "$remote_script_sha256" = "$local_script_sha256"' in stage_step
+    assert 'remote_script="${remote_dir}/deploy_production.sh"' in stage_step
+    assert 'remote_script="${remote_dir}/deploy_production.sh"' in deploy_step
+    assert "bash -s" not in deploy_step
+    assert "< scripts/deploy_production.sh" not in deploy_step
+    assert "bash '$remote_script' </dev/null" in deploy_step
+    assert 'rm -f -- \\\"$remote_script\\\"' in deploy_step
+    assert 'rmdir -- \\\"$remote_dir\\\"' in deploy_step
+
+
 def test_public_edge_gate_targets_the_dashboard_base_path() -> None:
     text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
     assert (
