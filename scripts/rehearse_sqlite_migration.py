@@ -17,19 +17,27 @@ from waterfallhunter.core.signal_metadata import canonical_sha256
 from waterfallhunter.core.migration_rehearsal import (
     MigrationRehearsalError,
     rehearse_migration_and_rollback,
+    rehearse_migration_and_rollback_sequential,
 )
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--backup-certification", required=True, type=_canonical_absolute_path)
-    parser.add_argument("--migration-target", required=True, type=_canonical_absolute_path)
-    parser.add_argument("--rollback-target", required=True, type=_canonical_absolute_path)
+    parser.add_argument("--migration-target", type=_canonical_absolute_path)
+    parser.add_argument("--rollback-target", type=_canonical_absolute_path)
+    parser.add_argument("--sequential-working-target", type=_canonical_absolute_path)
     parser.add_argument("--source-revision", required=True)
     parser.add_argument("--report", required=True, type=_canonical_absolute_path)
     args = parser.parse_args()
     if args.report.parent != args.backup_certification.parent:
         parser.error("rehearsal report must remain beside the independent backup")
+    sequential = args.sequential_working_target is not None
+    paired = args.migration_target is not None or args.rollback_target is not None
+    if sequential and paired:
+        parser.error("sequential target cannot be combined with migration/rollback targets")
+    if not sequential and (args.migration_target is None or args.rollback_target is None):
+        parser.error("migration-target and rollback-target are required unless sequential mode is used")
     try:
         certification = json.loads(
             args.backup_certification.read_text(encoding="utf-8")
@@ -57,12 +65,19 @@ def main() -> int:
             ):
                 raise MigrationRehearsalError("CUTOVER_BACKUP_CORE_CERTIFICATION_MISMATCH")
             certification = wrapped
-        report = rehearse_migration_and_rollback(
-            backup_certification=certification,
-            migration_target=args.migration_target,
-            rollback_target=args.rollback_target,
-            source_revision=args.source_revision,
-        )
+        if sequential:
+            report = rehearse_migration_and_rollback_sequential(
+                backup_certification=certification,
+                working_target=args.sequential_working_target,
+                source_revision=args.source_revision,
+            )
+        else:
+            report = rehearse_migration_and_rollback(
+                backup_certification=certification,
+                migration_target=args.migration_target,
+                rollback_target=args.rollback_target,
+                source_revision=args.source_revision,
+            )
         _write_report_atomic(
             args.report,
             report,

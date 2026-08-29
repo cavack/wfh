@@ -71,7 +71,8 @@ def _open_read_only_identity_bound(
 
 def audit_sqlite_snapshot(path: Path) -> dict[str, Any]:
     """Audit a closed/restored snapshot without exposing row contents."""
-    with _open_read_only(path) as connection:
+    connection = _open_read_only(path)
+    try:
         integrity = [str(row[0]) for row in connection.execute("PRAGMA integrity_check")]
         foreign_key_violations = connection.execute("PRAGMA foreign_key_check").fetchall()
         objects = connection.execute(
@@ -97,6 +98,8 @@ def audit_sqlite_snapshot(path: Path) -> dict[str, Any]:
         for statement in connection.iterdump():
             logical_digest.update(statement.encode("utf-8"))
             logical_digest.update(b"\n")
+    finally:
+        connection.close()
     if integrity != ["ok"]:
         raise BackupCertificationError("SQLITE_INTEGRITY_CHECK_FAILED")
     if foreign_key_violations:
@@ -161,11 +164,14 @@ def _online_backup(source: Path, destination: Path) -> dict[str, int]:
         descriptor = os.open(partial, flags, 0o600)
         os.close(descriptor)
         source_connection, source_fd, identity = _open_read_only_identity_bound(source)
-        with sqlite3.connect(partial, timeout=30.0) as target_connection:
+        target_connection = sqlite3.connect(partial, timeout=30.0)
+        try:
             source_connection.backup(target_connection, pages=4_096, sleep=0.05)
             journal = target_connection.execute("PRAGMA journal_mode=DELETE").fetchone()
             if str(journal[0] if journal else "").lower() != "delete":
                 raise BackupCertificationError("BACKUP_JOURNAL_FINALIZATION_FAILED")
+        finally:
+            target_connection.close()
         bound_after = _identity_from_stat(os.fstat(source_fd))
         path_after = _identity_from_stat(source.stat())
         if bound_after != identity or path_after != identity:

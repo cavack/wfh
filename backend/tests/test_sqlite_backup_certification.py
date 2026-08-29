@@ -179,3 +179,25 @@ def test_backup_and_restore_targets_must_be_distinct(tmp_path: Path) -> None:
         )
 
     assert not target.exists()
+
+
+def test_snapshot_audit_releases_read_only_handle_for_journal_finalization(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "audit-handle.db"
+    connection = sqlite3.connect(source)
+    try:
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("CREATE TABLE sample(id INTEGER PRIMARY KEY)")
+        connection.commit()
+    finally:
+        connection.close()
+    audit = audit_sqlite_snapshot(source)
+    assert audit["integrity_check"] == "ok"
+
+    connection = sqlite3.connect(source, timeout=1.0, isolation_level=None)
+    try:
+        row = connection.execute("PRAGMA journal_mode=DELETE").fetchone()
+    finally:
+        connection.close()
+    assert str(row[0] if row else "").lower() == "delete"

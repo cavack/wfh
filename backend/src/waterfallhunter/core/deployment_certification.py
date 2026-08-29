@@ -19,6 +19,21 @@ from waterfallhunter.core.github_ci_verification import (
     TrustedCIVerificationError,
     resolve_github_ci_verification,
 )
+from waterfallhunter.core.github_release_backup_verification import (
+    TrustedRemoteBackupVerification,
+    TrustedRemoteBackupVerificationError,
+    resolve_github_release_backup_verification,
+)
+from waterfallhunter.core.github_remote_restore_verification import (
+    TrustedIndependentRestoreVerification,
+    TrustedIndependentRestoreVerificationError,
+    resolve_github_independent_restore_verification,
+    trusted_independent_restore_workflow_revision,
+)
+from waterfallhunter.core.remote_backup_certification import (
+    RemoteBackupCertificationError,
+    validate_remote_encryption_evidence,
+)
 from waterfallhunter.core.signal_metadata import canonical_sha256
 from waterfallhunter.core.schema_contract import CURRENT_RUNTIME_SCHEMA_VERSION
 from waterfallhunter.core.sqlite_backup_certification import (
@@ -33,6 +48,7 @@ MINIMUM_SHADOW_REQUEST_COUNT = 1_000
 MAXIMUM_READINESS_AGE_SECONDS = 3_600
 MAXIMUM_BACKUP_AGE_SECONDS = 604_800
 MAXIMUM_BACKUP_START_BIRTHTIME_SKEW_SECONDS = 300
+MAXIMUM_REMOTE_BACKUP_PUBLISH_SKEW_SECONDS = 21_600
 MAXIMUM_REPORT_VALIDITY_SECONDS = 3_600
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
 IMAGE_DIGEST_PATTERN = r"^sha256:[0-9a-f]{64}$"
@@ -132,6 +148,7 @@ class DeploymentCertificationRequest(BaseModel):
     expected_production_database_path: str = Field(min_length=1)
     artifact_provenance: dict[str, Any]
     backup_certification: dict[str, Any]
+    independent_restore_verification: dict[str, Any] | None = None
     migration_rollback_rehearsal: dict[str, Any]
     verification: VerificationEvidence
     readiness: ReadinessEvidence
@@ -208,11 +225,133 @@ def _audits_match(left: dict[str, Any], right: dict[str, Any]) -> bool:
     return all(left.get(field) == right.get(field) for field in fields)
 
 
+def _complete_remote_backup_contract_valid(
+    backup: dict[str, Any],
+    *,
+    expected_source_path: str,
+) -> bool:
+    required = {
+        "contract_version",
+        "status",
+        "source_path",
+        "source_identity",
+        "source_failure_domain",
+        "destination_failure_domain",
+        "off_host_separation_enforced",
+        "storage_kind",
+        "remote_repository",
+        "remote_release_id",
+        "remote_tag_name",
+        "remote_assets",
+        "remote_verification",
+        "backup_started_at",
+        "backup_completed_at",
+        "backup_audit",
+        "restore_audit",
+        "restore_matches_backup",
+        "local_restore_path",
+        "encryption",
+        "rollback_source_sha256",
+        "production_migration_authorized",
+        "production_deployment_authorized",
+        "certification_sha256",
+    }
+    if not required.issubset(backup):
+        return False
+    source_identity = backup.get("source_identity")
+    backup_audit = backup.get("backup_audit")
+    restore_audit = backup.get("restore_audit")
+    local_restore = Path(str(backup.get("local_restore_path", "")))
+    assets = backup.get("remote_assets")
+    encryption = backup.get("encryption")
+    started_at = backup.get("backup_started_at")
+    completed_at = backup.get("backup_completed_at")
+    try:
+        trusted = TrustedRemoteBackupVerification.model_validate(
+            backup.get("remote_verification")
+        )
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(assets, list) or not assets:
+        return False
+    expected_ids: dict[str, int] = {}
+    expected_sha: dict[str, str] = {}
+    for item in assets:
+        if not isinstance(item, dict):
+            return False
+        name = item.get("name")
+        asset_id = item.get("id")
+        size = item.get("size_bytes")
+        digest = item.get("sha256")
+        if (
+            not isinstance(name, str)
+            or not name
+            or name in expected_ids
+            or not isinstance(asset_id, int)
+            or isinstance(asset_id, bool)
+            or asset_id < 1
+            or not isinstance(size, int)
+            or isinstance(size, bool)
+            or size < 1
+            or not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            return False
+        expected_ids[name] = asset_id
+        expected_sha[name] = digest
+    try:
+        validate_remote_encryption_evidence(
+            encryption=encryption,
+            backup_audit=backup_audit if isinstance(backup_audit, dict) else {},
+            remote_assets=assets,
+        )
+        encryption_valid = True
+    except RemoteBackupCertificationError:
+        encryption_valid = False
+    return (
+        backup.get("contract_version") == "sqlite_remote_backup_certification_v1"
+        and backup.get("status") == "BACKUP_RESTORE_CERTIFIED"
+        and backup.get("source_path") == expected_source_path
+        and isinstance(source_identity, dict)
+        and set(source_identity) == {"device_id", "inode"}
+        and all(isinstance(value, int) and value >= 0 for value in source_identity.values())
+        and isinstance(started_at, int)
+        and isinstance(completed_at, int)
+        and started_at >= 1
+        and completed_at >= started_at
+        and backup.get("source_failure_domain") != backup.get("destination_failure_domain")
+        and backup.get("off_host_separation_enforced") is True
+        and backup.get("storage_kind") == "github_private_release"
+        and local_restore.is_absolute()
+        and _snapshot_audit_valid(backup_audit)
+        and _snapshot_audit_valid(restore_audit)
+        and _audits_match(backup_audit, restore_audit)
+        and backup.get("restore_matches_backup") is True
+        and backup.get("rollback_source_sha256") == backup_audit.get("file_sha256")
+        and isinstance(encryption, dict)
+        and encryption_valid
+        and trusted.repository == backup.get("remote_repository")
+        and trusted.release_id == backup.get("remote_release_id")
+        and trusted.tag_name == backup.get("remote_tag_name")
+        and trusted.private_repository is True
+        and trusted.asset_ids == expected_ids
+        and trusted.asset_sha256 == expected_sha
+        and backup.get("production_migration_authorized") is False
+        and backup.get("production_deployment_authorized") is False
+        and _hash_valid(backup, "certification_sha256")
+    )
+
+
 def _complete_backup_contract_valid(
     backup: dict[str, Any],
     *,
     expected_source_path: str,
 ) -> bool:
+    if backup.get("contract_version") == "sqlite_remote_backup_certification_v1":
+        return _complete_remote_backup_contract_valid(
+            backup, expected_source_path=expected_source_path
+        )
     required = {
         "contract_version",
         "status",
@@ -269,7 +408,55 @@ def _complete_backup_contract_valid(
     )
 
 
+def _remote_backup_artifact_revalidation_reasons(
+    backup: dict[str, Any],
+) -> list[str]:
+    restore_path = Path(str(backup.get("local_restore_path", "")))
+    expected = backup.get("restore_audit")
+    if not isinstance(expected, dict):
+        return ["REMOTE_BACKUP_LOCAL_RESTORE_UNREADABLE"]
+    try:
+        if (
+            not restore_path.is_absolute()
+            or restore_path.is_symlink()
+            or not restore_path.is_file()
+        ):
+            return ["REMOTE_BACKUP_LOCAL_RESTORE_UNREADABLE"]
+        current = audit_sqlite_snapshot(restore_path)
+    except (BackupCertificationError, OSError, ValueError, TypeError, sqlite3.Error):
+        return ["REMOTE_BACKUP_LOCAL_RESTORE_UNREADABLE"]
+    if any(
+        current.get(field) != expected.get(field)
+        for field in _BACKUP_ARTIFACT_COMPARABLE_FIELDS
+    ):
+        return ["REMOTE_BACKUP_LOCAL_RESTORE_TAMPERED"]
+    try:
+        expected_trusted = TrustedRemoteBackupVerification.model_validate(
+            backup.get("remote_verification")
+        )
+        current_trusted = resolve_github_release_backup_verification(
+            repository=str(backup.get("remote_repository", "")),
+            release_id=int(backup.get("remote_release_id", 0)),
+            tag_name=str(backup.get("remote_tag_name", "")),
+            expected_assets=backup.get("remote_assets", []),
+        )
+    except (
+        TrustedRemoteBackupVerificationError,
+        TypeError,
+        ValueError,
+    ):
+        return ["REMOTE_BACKUP_VERIFICATION_FAILED"]
+    if (
+        current_trusted.verification_report_sha256
+        != expected_trusted.verification_report_sha256
+    ):
+        return ["REMOTE_BACKUP_REMOTE_IDENTITY_CHANGED"]
+    return []
+
+
 def _backup_artifact_revalidation_reasons(backup: dict[str, Any]) -> list[str]:
+    if backup.get("contract_version") == "sqlite_remote_backup_certification_v1":
+        return _remote_backup_artifact_revalidation_reasons(backup)
     backup_path = Path(str(backup.get("backup_path", "")))
     expected = backup.get("backup_audit")
     if not isinstance(expected, dict):
@@ -338,11 +525,48 @@ def _filesystem_birthtime_epoch(path: Path) -> int | None:
     return value if value >= 1 else None
 
 
+def _remote_backup_freshness_reasons(
+    backup: dict[str, Any],
+    *,
+    now: int,
+) -> list[str]:
+    started_at = backup.get("backup_started_at")
+    completed_at = backup.get("backup_completed_at")
+    try:
+        trusted = TrustedRemoteBackupVerification.model_validate(
+            backup.get("remote_verification")
+        )
+    except (TypeError, ValueError):
+        return ["BACKUP_FRESHNESS_UNPROVEN"]
+    if (
+        not isinstance(started_at, int)
+        or started_at < 1
+        or not isinstance(completed_at, int)
+        or completed_at < started_at
+    ):
+        return ["BACKUP_FRESHNESS_UNPROVEN"]
+    published_at = trusted.published_at_epoch
+    reasons: list[str] = []
+    if completed_at > now or published_at > now:
+        reasons.append("BACKUP_TIMESTAMP_IN_FUTURE")
+    if published_at < completed_at:
+        reasons.append("REMOTE_BACKUP_PUBLISHED_BEFORE_COMPLETION")
+    elif published_at - completed_at > MAXIMUM_REMOTE_BACKUP_PUBLISH_SKEW_SECONDS:
+        reasons.append("REMOTE_BACKUP_PUBLICATION_SKEW_EXCESSIVE")
+    if now - completed_at > MAXIMUM_BACKUP_AGE_SECONDS:
+        reasons.append("BACKUP_EVIDENCE_STALE")
+    if published_at <= now and now - published_at > MAXIMUM_BACKUP_AGE_SECONDS:
+        reasons.append("REMOTE_BACKUP_ARTIFACT_STALE")
+    return reasons
+
+
 def _backup_freshness_reasons(
     backup: dict[str, Any],
     *,
     now: int,
 ) -> list[str]:
+    if backup.get("contract_version") == "sqlite_remote_backup_certification_v1":
+        return _remote_backup_freshness_reasons(backup, now=now)
     started_at = backup.get("backup_started_at")
     completed_at = backup.get("backup_completed_at")
     backup_path = Path(str(backup.get("backup_path", "")))
@@ -396,19 +620,94 @@ def _backup_reasons(
         backup,
         expected_source_path=expected_source_path,
     )
-    checks = (
+    remote = backup.get("contract_version") == "sqlite_remote_backup_certification_v1"
+    checks = [
         (not _hash_valid(backup, "certification_sha256"), "BACKUP_CERTIFICATION_HASH_INVALID"),
         (backup.get("status") != "BACKUP_RESTORE_CERTIFIED", "INDEPENDENT_BACKUP_RESTORE_NOT_CERTIFIED"),
         (backup.get("source_failure_domain") == backup.get("destination_failure_domain"), "BACKUP_FAILURE_DOMAIN_NOT_INDEPENDENT"),
-        (backup.get("device_separation_enforced") is not True, "BACKUP_DEVICE_SEPARATION_NOT_ENFORCED"),
         (backup.get("source_path") != expected_source_path, "BACKUP_SOURCE_IDENTITY_MISMATCH"),
         (not complete, "BACKUP_CERTIFICATION_CONTRACT_INVALID"),
-    )
+    ]
+    if remote:
+        checks.append(
+            (
+                backup.get("off_host_separation_enforced") is not True,
+                "BACKUP_OFF_HOST_SEPARATION_NOT_ENFORCED",
+            )
+        )
+    else:
+        checks.append(
+            (
+                backup.get("device_separation_enforced") is not True,
+                "BACKUP_DEVICE_SEPARATION_NOT_ENFORCED",
+            )
+        )
     reasons = [reason for failed, reason in checks if failed]
     if not reasons:
         reasons.extend(_backup_freshness_reasons(backup, now=now))
         reasons.extend(_backup_artifact_revalidation_reasons(backup))
     return reasons
+
+
+def _independent_remote_restore_reasons(
+    packet: DeploymentCertificationRequest,
+    backup: dict[str, Any],
+) -> list[str]:
+    if backup.get("contract_version") != "sqlite_remote_backup_certification_v1":
+        return []
+    claimed = packet.independent_restore_verification
+    if not isinstance(claimed, dict):
+        return ["INDEPENDENT_REMOTE_RESTORE_NOT_VERIFIED"]
+    try:
+        expected = TrustedIndependentRestoreVerification.model_validate(claimed)
+    except (TypeError, ValueError):
+        return ["INDEPENDENT_REMOTE_RESTORE_EVIDENCE_INVALID"]
+    backup_audit = backup.get("backup_audit")
+    if not isinstance(backup_audit, dict):
+        return ["INDEPENDENT_REMOTE_RESTORE_BACKUP_IDENTITY_INVALID"]
+    if (
+        expected.repository != backup.get("remote_repository")
+        or expected.release_tag != backup.get("remote_tag_name")
+        or expected.restore_file_sha256 != backup_audit.get("file_sha256")
+        or expected.restore_file_size_bytes != backup_audit.get("file_size_bytes")
+        or expected.user_version != backup_audit.get("user_version")
+    ):
+        return ["INDEPENDENT_REMOTE_RESTORE_BACKUP_IDENTITY_MISMATCH"]
+    try:
+        trusted_workflow_revision = trusted_independent_restore_workflow_revision(
+            expected.repository
+        )
+    except TrustedIndependentRestoreVerificationError:
+        return ["INDEPENDENT_REMOTE_RESTORE_WORKFLOW_REVISION_NOT_TRUSTED"]
+    if expected.workflow_revision != trusted_workflow_revision:
+        return ["INDEPENDENT_REMOTE_RESTORE_WORKFLOW_REVISION_NOT_TRUSTED"]
+    try:
+        current = resolve_github_independent_restore_verification(
+            repository=expected.repository,
+            run_id=expected.run_id,
+            release_tag=expected.release_tag,
+            expected_plaintext_sha256=str(backup_audit.get("file_sha256", "")),
+            expected_plaintext_size_bytes=int(backup_audit.get("file_size_bytes", 0)),
+            expected_user_version=int(backup_audit.get("user_version", -1)),
+        )
+    except (
+        TrustedIndependentRestoreVerificationError,
+        TypeError,
+        ValueError,
+    ):
+        return ["INDEPENDENT_REMOTE_RESTORE_TRUST_FAILED"]
+    if current.verification_report_sha256 != expected.verification_report_sha256:
+        return ["INDEPENDENT_REMOTE_RESTORE_IDENTITY_CHANGED"]
+    backup_completed_at = backup.get("backup_completed_at")
+    if (
+        not isinstance(backup_completed_at, int)
+        or isinstance(backup_completed_at, bool)
+        or backup_completed_at < 1
+    ):
+        return ["INDEPENDENT_REMOTE_RESTORE_BACKUP_IDENTITY_INVALID"]
+    if current.completed_at_epoch < backup_completed_at:
+        return ["INDEPENDENT_REMOTE_RESTORE_PREDATES_BACKUP"]
+    return []
 
 
 def _rehearsal_artifact_revalidation_reasons(
@@ -447,19 +746,104 @@ def _rehearsal_artifact_revalidation_reasons(
     return []
 
 
+def _sequential_rehearsal_reasons(
+    rehearsal: dict[str, Any],
+    *,
+    backup: dict[str, Any],
+    source_revision: str,
+) -> list[str]:
+    remote = backup.get("contract_version") == "sqlite_remote_backup_certification_v1"
+    backup_audit = backup.get("restore_audit" if remote else "backup_audit", {})
+    migration_result = rehearsal.get("migration_result")
+    post_migration_audit = rehearsal.get("post_migration_audit")
+    rollback_audit = rehearsal.get("rollback_audit")
+    working_path = Path(str(rehearsal.get("working_target", "")))
+    backup_location = "local_restore_path" if remote else "backup_path"
+    backup_parent = Path(str(backup.get(backup_location, ""))).parent
+    required = {
+        "contract_version",
+        "status",
+        "source_revision",
+        "backup_certification_sha256",
+        "baseline_audit_sha256",
+        "working_target",
+        "migration_result",
+        "post_migration_audit",
+        "migration_artifact_retained",
+        "rollback_audit",
+        "rollback_matches_baseline",
+        "rollback_artifact_retained",
+        "production_migration_authorized",
+        "production_deployment_authorized",
+        "rehearsal_sha256",
+    }
+    post_migration_schema_aligned = (
+        isinstance(migration_result, dict)
+        and isinstance(post_migration_audit, dict)
+        and migration_result.get("user_version") == CURRENT_RUNTIME_SCHEMA_VERSION
+        and post_migration_audit.get("user_version") == CURRENT_RUNTIME_SCHEMA_VERSION
+        and migration_result.get("user_version") == post_migration_audit.get("user_version")
+    )
+    complete = (
+        required.issubset(rehearsal)
+        and rehearsal.get("contract_version") == "sqlite_migration_rollback_rehearsal_v2"
+        and rehearsal.get("status") == "MIGRATION_AND_ROLLBACK_REHEARSED"
+        and isinstance(migration_result, dict)
+        and migration_result.get("ok") is True
+        and post_migration_schema_aligned
+        and _snapshot_audit_valid(post_migration_audit)
+        and _snapshot_audit_valid(rollback_audit)
+        and _snapshot_audit_valid(backup_audit)
+        and _audits_match(backup_audit, rollback_audit)
+        and rehearsal.get("baseline_audit_sha256") == backup_audit.get("audit_sha256")
+        and rehearsal.get("migration_artifact_retained") is False
+        and rehearsal.get("rollback_artifact_retained") is True
+        and rehearsal.get("rollback_matches_baseline") is True
+        and working_path.is_absolute()
+        and working_path.parent == backup_parent
+        and rehearsal.get("production_migration_authorized") is False
+        and rehearsal.get("production_deployment_authorized") is False
+    )
+    checks = (
+        (not _hash_valid(rehearsal, "rehearsal_sha256"), "MIGRATION_REHEARSAL_HASH_INVALID"),
+        (rehearsal.get("status") != "MIGRATION_AND_ROLLBACK_REHEARSED", "MIGRATION_AND_ROLLBACK_NOT_REHEARSED"),
+        (rehearsal.get("backup_certification_sha256") != backup.get("certification_sha256"), "REHEARSAL_BACKUP_IDENTITY_MISMATCH"),
+        (rehearsal.get("source_revision") != source_revision, "REHEARSAL_REVISION_MISMATCH"),
+        (not post_migration_schema_aligned, "POST_MIGRATION_SCHEMA_VERSION_MISMATCH"),
+        (not complete, "MIGRATION_REHEARSAL_CONTRACT_INVALID"),
+    )
+    reasons = [reason for failed, reason in checks if failed]
+    if not reasons:
+        reasons.extend(
+            _rehearsal_artifact_revalidation_reasons(
+                path=working_path,
+                expected_audit=rollback_audit,
+                unreadable_reason="ROLLBACK_REHEARSAL_ARTIFACT_UNREADABLE",
+                tampered_reason="ROLLBACK_REHEARSAL_ARTIFACT_TAMPERED",
+            )
+        )
+    return reasons
+
+
 def _rehearsal_reasons(
     rehearsal: dict[str, Any],
     *,
     backup: dict[str, Any],
     source_revision: str,
 ) -> list[str]:
-    backup_audit = backup.get("backup_audit", {})
+    if rehearsal.get("contract_version") == "sqlite_migration_rollback_rehearsal_v2":
+        return _sequential_rehearsal_reasons(
+            rehearsal, backup=backup, source_revision=source_revision
+        )
+    remote = backup.get("contract_version") == "sqlite_remote_backup_certification_v1"
+    backup_audit = backup.get("restore_audit" if remote else "backup_audit", {})
     rollback_audit = rehearsal.get("rollback_audit")
     migration_result = rehearsal.get("migration_result")
     post_migration_audit = rehearsal.get("post_migration_audit")
     migration_path = Path(str(rehearsal.get("migration_target", "")))
     rollback_path = Path(str(rehearsal.get("rollback_target", "")))
-    backup_parent = Path(str(backup.get("backup_path", ""))).parent
+    backup_location = "local_restore_path" if remote else "backup_path"
+    backup_parent = Path(str(backup.get(backup_location, ""))).parent
     required = {
         "contract_version",
         "status",
@@ -668,6 +1052,14 @@ def evaluate_deployment_certification(
     provenance = evaluate_deployment_provenance(packet.artifact_provenance)
     backup = packet.backup_certification
     rehearsal = packet.migration_rollback_rehearsal
+    independent_restore: TrustedIndependentRestoreVerification | None = None
+    if isinstance(packet.independent_restore_verification, dict):
+        try:
+            independent_restore = TrustedIndependentRestoreVerification.model_validate(
+                packet.independent_restore_verification
+            )
+        except (TypeError, ValueError):
+            independent_restore = None
     links = provenance["links"]
     reasons = [
         *_provenance_reasons(packet, provenance),
@@ -676,6 +1068,7 @@ def evaluate_deployment_certification(
             expected_source_path=packet.expected_production_database_path,
             now=observed_now,
         ),
+        *_independent_remote_restore_reasons(packet, backup),
         *_rehearsal_reasons(
             rehearsal,
             backup=backup,
@@ -729,6 +1122,22 @@ def evaluate_deployment_certification(
             trusted_ci.verification_report_sha256 if trusted_ci is not None else None
         ),
         "trusted_ci_run_id": trusted_ci.run_id if trusted_ci is not None else None,
+        "independent_restore_verification_sha256": (
+            independent_restore.verification_report_sha256
+            if independent_restore is not None
+            else None
+        ),
+        "independent_restore_run_id": (
+            independent_restore.run_id if independent_restore is not None else None
+        ),
+        "independent_restore_artifact_id": (
+            independent_restore.artifact_id if independent_restore is not None else None
+        ),
+        "independent_restore_workflow_revision": (
+            independent_restore.workflow_revision
+            if independent_restore is not None
+            else None
+        ),
         "deployment_allowed": False,
         "migration_allowed": False,
         "telegram_send_allowed": False,
