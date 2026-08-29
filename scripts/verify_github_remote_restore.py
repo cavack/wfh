@@ -13,6 +13,7 @@ sys.path.insert(0, str(WFH_REPOSITORY_ROOT))
 sys.path.insert(0, str(WFH_REPOSITORY_ROOT / "backend" / "src"))
 
 from scripts.certify_sqlite_backup import _canonical_absolute_path, _write_report_atomic
+from waterfallhunter.core.sqlite_backup_certification import BackupCertificationError
 from waterfallhunter.core.github_remote_restore_verification import (
     TrustedIndependentRestoreVerificationError,
     resolve_github_independent_restore_verification,
@@ -59,6 +60,7 @@ def main() -> int:
         )
     except (
         TrustedIndependentRestoreVerificationError,
+        BackupCertificationError,
         OSError,
         ValueError,
         TypeError,

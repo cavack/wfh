@@ -79,7 +79,10 @@ the private DR workflow with plaintext artifact emission disabled, then seal its
 exact successful run and report artifact:
 
 ```bash
-gh workflow run restore.yml -R cavack/wfh-dr \
+DR_WORKFLOW_REVISION=add3f01cf3b9f3e55d735294dae99d5a5792b5c2
+test "$(gh api repos/cavack/wfh-dr/commits/main --jq .sha)" = "$DR_WORKFLOW_REVISION"
+
+gh workflow run restore.yml -R cavack/wfh-dr --ref main \
   -f release_tag=wfh-production-dr-<utc>-<sha> \
   -f emit_plaintext_artifact=false
 
@@ -92,8 +95,10 @@ PYTHONPATH=backend/src:. python scripts/verify_github_remote_restore.py \
 
 The deployment request must include this
 `github_actions_remote_restore_verification_v1` object as
-`independent_restore_verification`. Remote backup evidence cannot reach owner
-approval readiness without it.
+`independent_restore_verification`. The authoritative verifier also requires the
+GitHub Actions run `head_sha` to equal the reviewed `DR_WORKFLOW_REVISION` above;
+a later or unreviewed DR workflow revision is rejected fail-closed. Remote backup
+evidence cannot reach owner approval readiness without this independent proof.
 
 ## 2. Staging migration and rollback rehearsal
 

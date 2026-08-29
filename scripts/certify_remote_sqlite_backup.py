@@ -50,6 +50,10 @@ class RemoteBackupCLIError(RuntimeError):
     """Raised when orchestration of the off-host backup fails closed."""
 
 
+class RemoteBackupPublicationStateUncertain(RemoteBackupCLIError):
+    """Raised when GitHub may have published the owned release despite a lost response."""
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -219,6 +223,26 @@ def _release_notes(ownership_marker: str) -> str:
     )
 
 
+def _tag_exists(*, repository: str, tag_name: str) -> bool:
+    try:
+        payload = json.loads(
+            _gh(
+                "api",
+                f"repos/{repository}/git/matching-refs/tags/{tag_name}",
+                timeout=60,
+            )
+        )
+    except (RemoteBackupCLIError, json.JSONDecodeError) as error:
+        raise RemoteBackupCLIError("REMOTE_BACKUP_TAG_IDENTITY_UNAVAILABLE") from error
+    if not isinstance(payload, list):
+        raise RemoteBackupCLIError("REMOTE_BACKUP_TAG_IDENTITY_INVALID")
+    expected = f"refs/tags/{tag_name}"
+    return any(
+        isinstance(item, dict) and item.get("ref") == expected
+        for item in payload
+    )
+
+
 def _owned_draft_release_id(
     *, repository: str, tag_name: str, ownership_marker: str
 ) -> int | None:
@@ -240,7 +264,11 @@ def _owned_draft_release_id(
 
 
 def _delete_owned_draft_release_best_effort(
-    *, repository: str, tag_name: str, ownership_marker: str
+    *,
+    repository: str,
+    tag_name: str,
+    ownership_marker: str,
+    delete_tag: bool,
 ) -> None:
     release_id = _owned_draft_release_id(
         repository=repository,
@@ -254,10 +282,11 @@ def _delete_owned_draft_release_best_effort(
             "api", "--method", "DELETE", "--hostname", "github.com",
             f"repos/{repository}/releases/{release_id}", timeout=120,
         )
-        _gh(
-            "api", "--method", "DELETE", "--hostname", "github.com",
-            f"repos/{repository}/git/refs/tags/{tag_name}", timeout=120,
-        )
+        if delete_tag:
+            _gh(
+                "api", "--method", "DELETE", "--hostname", "github.com",
+                f"repos/{repository}/git/refs/tags/{tag_name}", timeout=120,
+            )
     except RemoteBackupCLIError:
         return
 
@@ -270,6 +299,7 @@ def _publish_release_assets(
     ownership_marker: str | None = None,
 ) -> int:
     marker = ownership_marker or f"wfh-backup-run:{secrets.token_hex(16)}"
+    tag_preexisting = _tag_exists(repository=repository, tag_name=tag_name)
     try:
         _gh(
             "release", "create", tag_name, "--repo", repository, "--draft",
@@ -282,6 +312,7 @@ def _publish_release_assets(
             repository=repository,
             tag_name=tag_name,
             ownership_marker=marker,
+            delete_tag=not tag_preexisting,
         )
         raise
     release_id = _owned_draft_release_id(
@@ -294,6 +325,7 @@ def _publish_release_assets(
             repository=repository,
             tag_name=tag_name,
             ownership_marker=marker,
+            delete_tag=not tag_preexisting,
         )
         raise RemoteBackupCLIError("REMOTE_BACKUP_CREATED_RELEASE_IDENTITY_INVALID")
     try:
@@ -301,17 +333,23 @@ def _publish_release_assets(
             "release", "upload", tag_name, *[str(path) for path in upload_paths],
             "--repo", repository, timeout=21_600,
         )
-        _gh(
-            "release", "edit", tag_name, "--repo", repository,
-            "--draft=false", timeout=120,
-        )
     except RemoteBackupCLIError:
         _delete_owned_draft_release_best_effort(
             repository=repository,
             tag_name=tag_name,
             ownership_marker=marker,
+            delete_tag=not tag_preexisting,
         )
         raise
+    try:
+        _gh(
+            "release", "edit", tag_name, "--repo", repository,
+            "--draft=false", timeout=120,
+        )
+    except RemoteBackupCLIError as error:
+        raise RemoteBackupPublicationStateUncertain(
+            "REMOTE_BACKUP_PUBLICATION_STATE_UNCERTAIN"
+        ) from error
     return release_id
 
 
@@ -571,6 +609,16 @@ def main() -> int:
             "production_deployment_authorized": False,
         }, sort_keys=True))
         return 0
+    except RemoteBackupPublicationStateUncertain as error:
+        release_published = True
+        print(json.dumps({
+            "ok": False,
+            "reason": str(error),
+            "published_remote_release_preserved": True,
+            "remote_repository": args.remote_repository,
+            "remote_tag_name": args.release_tag,
+        }, sort_keys=True))
+        return 2
     except (
         BackupCertificationError,
         RemoteBackupBundleError,

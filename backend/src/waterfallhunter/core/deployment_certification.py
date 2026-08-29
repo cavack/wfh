@@ -28,6 +28,7 @@ from waterfallhunter.core.github_remote_restore_verification import (
     TrustedIndependentRestoreVerification,
     TrustedIndependentRestoreVerificationError,
     resolve_github_independent_restore_verification,
+    trusted_independent_restore_workflow_revision,
 )
 from waterfallhunter.core.remote_backup_certification import (
     RemoteBackupCertificationError,
@@ -673,6 +674,14 @@ def _independent_remote_restore_reasons(
     ):
         return ["INDEPENDENT_REMOTE_RESTORE_BACKUP_IDENTITY_MISMATCH"]
     try:
+        trusted_workflow_revision = trusted_independent_restore_workflow_revision(
+            expected.repository
+        )
+    except TrustedIndependentRestoreVerificationError:
+        return ["INDEPENDENT_REMOTE_RESTORE_WORKFLOW_REVISION_NOT_TRUSTED"]
+    if expected.workflow_revision != trusted_workflow_revision:
+        return ["INDEPENDENT_REMOTE_RESTORE_WORKFLOW_REVISION_NOT_TRUSTED"]
+    try:
         current = resolve_github_independent_restore_verification(
             repository=expected.repository,
             run_id=expected.run_id,
@@ -689,7 +698,14 @@ def _independent_remote_restore_reasons(
         return ["INDEPENDENT_REMOTE_RESTORE_TRUST_FAILED"]
     if current.verification_report_sha256 != expected.verification_report_sha256:
         return ["INDEPENDENT_REMOTE_RESTORE_IDENTITY_CHANGED"]
-    if current.completed_at_epoch < int(backup.get("backup_completed_at", 0)):
+    backup_completed_at = backup.get("backup_completed_at")
+    if (
+        not isinstance(backup_completed_at, int)
+        or isinstance(backup_completed_at, bool)
+        or backup_completed_at < 1
+    ):
+        return ["INDEPENDENT_REMOTE_RESTORE_BACKUP_IDENTITY_INVALID"]
+    if current.completed_at_epoch < backup_completed_at:
         return ["INDEPENDENT_REMOTE_RESTORE_PREDATES_BACKUP"]
     return []
 

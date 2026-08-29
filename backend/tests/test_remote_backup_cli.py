@@ -67,6 +67,8 @@ def test_release_create_timeout_cleans_only_the_owned_draft(
 
     def fake_gh(*arguments: str, timeout: int = 120) -> str:
         calls.append(tuple(arguments))
+        if arguments[:2] == ("api", "repos/cavack/wfh-dr/git/matching-refs/tags/wfh-dr-timeout-test"):
+            return "[]"
         if arguments[:2] == ("release", "create"):
             raise cli.RemoteBackupCLIError("SIMULATED_CREATE_TIMEOUT")
         if arguments[:2] == ("api", "repos/cavack/wfh-dr/releases/tags/wfh-dr-timeout-test"):
@@ -107,6 +109,8 @@ def test_release_create_failure_never_deletes_a_preexisting_release(
 
     def fake_gh(*arguments: str, timeout: int = 120) -> str:
         calls.append(tuple(arguments))
+        if arguments[:2] == ("api", "repos/cavack/wfh-dr/git/matching-refs/tags/existing-dr"):
+            return json.dumps([{"ref": "refs/tags/existing-dr"}])
         if arguments[:2] == ("release", "create"):
             raise cli.RemoteBackupCLIError("REMOTE_BACKUP_GITHUB_COMMAND_FAILED:already_exists")
         if arguments[:2] == ("api", "repos/cavack/wfh-dr/releases/tags/existing-dr"):
@@ -130,12 +134,14 @@ def test_release_create_failure_never_deletes_a_preexisting_release(
     assert not any("DELETE" in call for call in calls)
 
 
-def test_publish_failure_cleans_the_owned_draft(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_upload_failure_cleans_the_owned_draft(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str, ...]] = []
     marker = "wfh-backup-run:publish-failure"
 
     def fake_gh(*arguments: str, timeout: int = 120) -> str:
         calls.append(tuple(arguments))
+        if arguments[:2] == ("api", "repos/cavack/wfh-dr/git/matching-refs/tags/publish-failure"):
+            return "[]"
         if arguments[:2] == ("api", "repos/cavack/wfh-dr/releases/tags/publish-failure"):
             return json.dumps({
                 "id": 456,
@@ -143,12 +149,12 @@ def test_publish_failure_cleans_the_owned_draft(monkeypatch: pytest.MonkeyPatch)
                 "draft": True,
                 "body": cli._release_notes(marker),
             })
-        if arguments[:2] == ("release", "edit"):
-            raise cli.RemoteBackupCLIError("SIMULATED_PUBLISH_FAILURE")
+        if arguments[:2] == ("release", "upload"):
+            raise cli.RemoteBackupCLIError("SIMULATED_UPLOAD_FAILURE")
         return ""
 
     monkeypatch.setattr(cli, "_gh", fake_gh)
-    with pytest.raises(cli.RemoteBackupCLIError, match="SIMULATED_PUBLISH_FAILURE"):
+    with pytest.raises(cli.RemoteBackupCLIError, match="SIMULATED_UPLOAD_FAILURE"):
         cli._publish_release_assets(
             repository="cavack/wfh-dr",
             tag_name="publish-failure",
@@ -242,3 +248,123 @@ def test_gh_failure_includes_bounded_stderr(monkeypatch: pytest.MonkeyPatch) -> 
     with pytest.raises(cli.RemoteBackupCLIError, match="authentication failed") as captured:
         cli._gh("api", "user")
     assert len(str(captured.value)) < 700
+
+
+def test_publish_failure_preserves_preexisting_tag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+    marker = "wfh-backup-run:preexisting-tag"
+
+    def fake_gh(*arguments: str, timeout: int = 120) -> str:
+        calls.append(tuple(arguments))
+        if arguments[:2] == ("api", "repos/cavack/wfh-dr/git/matching-refs/tags/preexisting-tag"):
+            return json.dumps([{"ref": "refs/tags/preexisting-tag"}])
+        if arguments[:2] == ("api", "repos/cavack/wfh-dr/releases/tags/preexisting-tag"):
+            return json.dumps({
+                "id": 999,
+                "tag_name": "preexisting-tag",
+                "draft": True,
+                "body": cli._release_notes(marker),
+            })
+        if arguments[:2] == ("release", "upload"):
+            raise cli.RemoteBackupCLIError("SIMULATED_UPLOAD_FAILURE")
+        return ""
+
+    monkeypatch.setattr(cli, "_gh", fake_gh)
+    with pytest.raises(cli.RemoteBackupCLIError, match="SIMULATED_UPLOAD_FAILURE"):
+        cli._publish_release_assets(
+            repository="cavack/wfh-dr",
+            tag_name="preexisting-tag",
+            upload_paths=[Path("/tmp/part.enc")],
+            ownership_marker=marker,
+        )
+
+    assert any(call[-1] == "repos/cavack/wfh-dr/releases/999" for call in calls if "DELETE" in call)
+    assert not any(call[-1] == "repos/cavack/wfh-dr/git/refs/tags/preexisting-tag" for call in calls if "DELETE" in call)
+
+
+def test_lost_publish_response_is_reported_as_preserved_remote_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = tmp_path / "source.db"
+    staging = tmp_path / "staging"
+    restore = staging / "restored.db"
+    report = staging / "report.json"
+    key = tmp_path / "key"
+    staging.mkdir()
+    source.touch()
+    key.touch()
+    monkeypatch.setattr(sys, "argv", [
+        "certify_remote_sqlite_backup.py",
+        "--source", str(source),
+        "--staging-dir", str(staging),
+        "--restore-target", str(restore),
+        "--report", str(report),
+        "--key-file", str(key),
+        "--remote-repository", "cavack/wfh-dr",
+        "--release-tag", "publish-state-unknown",
+        "--source-failure-domain", "production-vda1",
+        "--destination-failure-domain", "github.com:cavack/wfh-dr",
+    ])
+    monkeypatch.setattr(cli, "_validated_layout", lambda *_args: (
+        staging / "remote-staging-backup.db",
+        staging / "bundle",
+        staging / "download",
+    ))
+    monkeypatch.setattr(cli, "_load_key", lambda _path: b"k" * 32)
+    monkeypatch.setattr(cli, "_assert_private_repository", lambda _repository: None)
+    monkeypatch.setattr(cli, "_prepare_encrypted_snapshot", lambda **_kwargs: {
+        "upload_paths": [staging / "manifest.json"],
+        "local_assets": {},
+    })
+    monkeypatch.setattr(
+        cli,
+        "_publish_release_assets",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            cli.RemoteBackupPublicationStateUncertain("REMOTE_BACKUP_PUBLICATION_STATE_UNCERTAIN")
+        ),
+    )
+    monkeypatch.setattr(cli, "_cleanup_staging", lambda **_kwargs: None)
+
+    assert cli.main() == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["published_remote_release_preserved"] is True
+
+
+
+def test_publish_edit_lost_response_becomes_uncertain_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = "wfh-backup-run:lost-publish"
+    release_reads = 0
+
+    def fake_gh(*arguments: str, timeout: int = 120) -> str:
+        nonlocal release_reads
+        if arguments[:2] == ("api", "repos/cavack/wfh-dr/git/matching-refs/tags/lost-publish"):
+            return "[]"
+        if arguments[:2] == ("api", "repos/cavack/wfh-dr/releases/tags/lost-publish"):
+            release_reads += 1
+            return json.dumps({
+                "id": 321,
+                "tag_name": "lost-publish",
+                "draft": release_reads == 1,
+                "body": cli._release_notes(marker),
+            })
+        if arguments[:2] == ("release", "edit"):
+            raise cli.RemoteBackupCLIError("SIMULATED_LOST_PUBLISH_RESPONSE")
+        return ""
+
+    monkeypatch.setattr(cli, "_gh", fake_gh)
+    with pytest.raises(
+        cli.RemoteBackupCLIError,
+        match="REMOTE_BACKUP_PUBLICATION_STATE_UNCERTAIN",
+    ):
+        cli._publish_release_assets(
+            repository="cavack/wfh-dr",
+            tag_name="lost-publish",
+            upload_paths=[Path("/tmp/part.enc")],
+            ownership_marker=marker,
+        )

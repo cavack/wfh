@@ -690,7 +690,7 @@ def _remoteize_request(tmp_path: Path, request: dict, observed_now: int) -> tupl
         "repository": "cavack/wfh-dr",
         "run_id": 123,
         "workflow_path": ".github/workflows/restore.yml",
-        "workflow_revision": "d" * 40,
+        "workflow_revision": "add3f01cf3b9f3e55d735294dae99d5a5792b5c2",
         "release_tag": "wfh-dr-test",
         "artifact_id": 456,
         "artifact_name": "restore-verification-wfh-dr-test",
@@ -783,3 +783,28 @@ def test_complete_remote_backup_with_sequential_rehearsal_is_ready_for_owner_app
 
     assert report["status"] == "READY_FOR_EXPLICIT_OWNER_APPROVAL"
     assert report["blocking_reasons"] == []
+
+
+def test_remote_backup_invalid_completion_time_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, observed_now = _request(tmp_path)
+    trusted, independent = _remoteize_request(tmp_path, request, observed_now)
+    request["backup_certification"]["backup_completed_at"] = None
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "resolve_github_release_backup_verification",
+        lambda **_kwargs: TrustedRemoteBackupVerification.model_validate(trusted),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "resolve_github_independent_restore_verification",
+        lambda **_kwargs: TrustedIndependentRestoreVerification.model_validate(independent),
+    )
+
+    report = _evaluate(request, now=observed_now)
+
+    assert report["status"] == "NOT_READY"
+    assert "INDEPENDENT_REMOTE_RESTORE_BACKUP_IDENTITY_INVALID" in report["blocking_reasons"]

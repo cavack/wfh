@@ -19,6 +19,8 @@ def _install(monkeypatch: pytest.MonkeyPatch, *, private: bool = True, digest: s
     def fake(endpoint: str) -> dict:
         if endpoint == "repos/cavack/wfh-dr":
             return {"full_name": "cavack/wfh-dr", "private": private, "archived": False}
+        if endpoint == "repos/cavack/wfh-dr/immutable-releases":
+            return {"enabled": True, "enforced_by_owner": False}
         return {
             "id": 77,
             "tag_name": "wfh-dr-test",
@@ -80,5 +82,46 @@ def test_github_api_is_pinned_to_github_dot_com(
 
     assert remote._gh_json("repos/cavack/wfh-dr") == {"ok": True}
     assert observed == [
-        "/usr/bin/gh", "api", "--hostname", "github.com", "repos/cavack/wfh-dr"
+        "/usr/bin/gh",
+        "api",
+        "--hostname",
+        "github.com",
+        "-H",
+        "X-GitHub-Api-Version: 2026-03-10",
+        "repos/cavack/wfh-dr",
     ]
+
+
+def test_remote_backup_verification_requires_immutable_releases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake(endpoint: str) -> dict:
+        if endpoint == "repos/cavack/wfh-dr":
+            return {"full_name": "cavack/wfh-dr", "private": True, "archived": False}
+        if endpoint == "repos/cavack/wfh-dr/immutable-releases":
+            return {"enabled": False, "enforced_by_owner": False}
+        return {
+            "id": 77,
+            "tag_name": "wfh-dr-test",
+            "draft": False,
+            "prerelease": False,
+            "published_at": "2026-08-28T22:00:00Z",
+            "assets": [_asset("part-000.enc", 101, "a" * 64, 1234)],
+        }
+
+    monkeypatch.setattr(remote, "_gh_json", fake)
+    with pytest.raises(
+        remote.TrustedRemoteBackupVerificationError,
+        match="REMOTE_BACKUP_IMMUTABLE_RELEASES_REQUIRED",
+    ):
+        remote.resolve_github_release_backup_verification(
+            repository="cavack/wfh-dr",
+            release_id=77,
+            tag_name="wfh-dr-test",
+            expected_assets=[{
+                "name": "part-000.enc",
+                "id": 101,
+                "size_bytes": 1234,
+                "sha256": "a" * 64,
+            }],
+        )

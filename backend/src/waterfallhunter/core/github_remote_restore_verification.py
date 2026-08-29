@@ -13,12 +13,18 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from waterfallhunter.core.github_release_backup_verification import _gh_executable
+from waterfallhunter.core.github_release_backup_verification import (
+    TrustedRemoteBackupVerificationError,
+    _gh_executable,
+)
 from waterfallhunter.core.signal_metadata import canonical_sha256
 
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _WORKFLOW_PATH = ".github/workflows/restore.yml"
+_TRUSTED_WORKFLOW_REVISIONS = {
+    "cavack/wfh-dr": "add3f01cf3b9f3e55d735294dae99d5a5792b5c2",
+}
 
 
 class TrustedIndependentRestoreVerificationError(RuntimeError):
@@ -61,6 +67,25 @@ class TrustedIndependentRestoreVerification(BaseModel):
         return self
 
 
+def trusted_independent_restore_workflow_revision(repository: str) -> str:
+    """Return the reviewed DR workflow revision trusted for one repository."""
+    revision = _TRUSTED_WORKFLOW_REVISIONS.get(repository)
+    if revision is None:
+        raise TrustedIndependentRestoreVerificationError(
+            "INDEPENDENT_RESTORE_WORKFLOW_IDENTITY_NOT_TRUSTED"
+        )
+    return revision
+
+
+def _trusted_gh_executable() -> str:
+    try:
+        return _gh_executable()
+    except TrustedRemoteBackupVerificationError as error:
+        raise TrustedIndependentRestoreVerificationError(
+            "INDEPENDENT_RESTORE_GITHUB_CLI_UNTRUSTED"
+        ) from error
+
+
 def _epoch(value: Any) -> int:
     if not isinstance(value, str) or not value:
         raise TrustedIndependentRestoreVerificationError(
@@ -87,7 +112,7 @@ def _gh_json(endpoint: str) -> dict[str, Any]:
     environment["GH_HOST"] = "github.com"
     try:
         completed = subprocess.run(
-            [_gh_executable(), "api", "--hostname", "github.com", endpoint],
+            [_trusted_gh_executable(), "api", "--hostname", "github.com", endpoint],
             check=True,
             capture_output=True,
             text=True,
@@ -114,7 +139,7 @@ def _download_report(*, repository: str, run_id: int, artifact_name: str) -> dic
         try:
             subprocess.run(
                 [
-                    _gh_executable(),
+                    _trusted_gh_executable(),
                     "run",
                     "download",
                     str(run_id),
@@ -179,6 +204,7 @@ def resolve_github_independent_restore_verification(
             "INDEPENDENT_RESTORE_REQUEST_INVALID"
         )
 
+    trusted_workflow_revision = trusted_independent_restore_workflow_revision(repository)
     run = _gh_json(f"repos/{repository}/actions/runs/{run_id}")
     workflow_revision = run.get("head_sha")
     if (
@@ -196,6 +222,10 @@ def resolve_github_independent_restore_verification(
     ):
         raise TrustedIndependentRestoreVerificationError(
             "INDEPENDENT_RESTORE_RUN_NOT_TRUSTED"
+        )
+    if workflow_revision != trusted_workflow_revision:
+        raise TrustedIndependentRestoreVerificationError(
+            "INDEPENDENT_RESTORE_WORKFLOW_REVISION_NOT_TRUSTED"
         )
 
     artifact_name = f"restore-verification-{release_tag}"

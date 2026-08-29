@@ -16,6 +16,7 @@ from waterfallhunter.core.signal_metadata import canonical_sha256
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _GH_CANDIDATES = (Path("/usr/bin/gh"), Path("/usr/local/bin/gh"))
+_GITHUB_API_VERSION = "2026-03-10"
 
 
 class TrustedRemoteBackupVerificationError(RuntimeError):
@@ -74,7 +75,15 @@ def _gh_executable() -> str:
 def _gh_json(endpoint: str) -> dict[str, Any]:
     try:
         completed = subprocess.run(
-            [_gh_executable(), "api", "--hostname", "github.com", endpoint],
+            [
+                _gh_executable(),
+                "api",
+                "--hostname",
+                "github.com",
+                "-H",
+                f"X-GitHub-Api-Version: {_GITHUB_API_VERSION}",
+                endpoint,
+            ],
             check=True,
             capture_output=True,
             text=True,
@@ -131,6 +140,14 @@ def _require_private_repository(repository: str) -> None:
     ):
         raise TrustedRemoteBackupVerificationError(
             "REMOTE_BACKUP_REPOSITORY_NOT_PRIVATE"
+        )
+
+
+def _require_immutable_releases(repository: str) -> None:
+    settings = _gh_json(f"repos/{repository}/immutable-releases")
+    if settings.get("enabled") is not True:
+        raise TrustedRemoteBackupVerificationError(
+            "REMOTE_BACKUP_IMMUTABLE_RELEASES_REQUIRED"
         )
 
 
@@ -231,6 +248,7 @@ def resolve_github_release_backup_verification(
         expected_assets=expected_assets,
     )
     _require_private_repository(repository)
+    _require_immutable_releases(repository)
     release = _require_release(repository, release_id, tag_name)
     expected_by_name = _normalize_expected_assets(expected_assets)
     asset_ids, asset_sha256 = _verified_asset_maps(
