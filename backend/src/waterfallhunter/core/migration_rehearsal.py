@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import sqlite3
@@ -33,6 +34,37 @@ _ROLLBACK_COMPARABLE_FIELDS = (
     "schema_sha256",
 )
 
+
+
+def migration_executable_sha256() -> str:
+    """Hash the exact migration/rehearsal implementation and packaged SQL."""
+    package_root = Path(__file__).resolve().parents[1]
+    fixed = (
+        package_root / "migrate_database.py",
+        package_root / "core" / "migration_rehearsal.py",
+        package_root / "core" / "migration_preflight.py",
+        package_root / "core" / "migrations.py",
+        package_root / "core" / "schema_contract.py",
+        package_root / "core" / "schema_unique_constraints.py",
+        package_root / "core" / "signal_metadata.py",
+    )
+    migration_dir = package_root / "migrations"
+    sql_files = tuple(sorted(migration_dir.glob("*.sql")))
+    paths = (*fixed, *sql_files)
+    if not sql_files:
+        raise MigrationRehearsalError("MIGRATION_EXECUTABLE_IDENTITY_UNAVAILABLE")
+    material: list[dict[str, str]] = []
+    for path in paths:
+        if path.is_symlink() or not path.is_file():
+            raise MigrationRehearsalError("MIGRATION_EXECUTABLE_IDENTITY_UNAVAILABLE")
+        relative = path.relative_to(package_root).as_posix()
+        material.append(
+            {
+                "path": relative,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    return canonical_sha256(material)
 
 def _verified_backup_path(certification: dict[str, Any]) -> Path:
     claimed_hash = str(certification.get("certification_sha256", ""))
@@ -173,6 +205,7 @@ def rehearse_migration_and_rollback(
         "contract_version": "sqlite_migration_rollback_rehearsal_v1",
         "status": "MIGRATION_AND_ROLLBACK_REHEARSED",
         "source_revision": source_revision,
+        "migration_executable_sha256": migration_executable_sha256(),
         "backup_certification_sha256": backup_certification["certification_sha256"],
         "baseline_audit_sha256": baseline_audit["audit_sha256"],
         "migration_target": str(migration_target),
@@ -247,6 +280,7 @@ def rehearse_migration_and_rollback_sequential(
             "contract_version": "sqlite_migration_rollback_rehearsal_v2",
             "status": "MIGRATION_AND_ROLLBACK_REHEARSED",
             "source_revision": source_revision,
+            "migration_executable_sha256": migration_executable_sha256(),
             "backup_certification_sha256": backup_certification["certification_sha256"],
             "baseline_audit_sha256": baseline_audit["audit_sha256"],
             "working_target": str(target),

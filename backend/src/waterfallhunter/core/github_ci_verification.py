@@ -216,6 +216,23 @@ def _critical_step_material(
     return material
 
 
+
+def resolve_github_current_main_revision(repository: str) -> str:
+    """Resolve the exact current protected ``main`` revision from GitHub."""
+    if not _REPOSITORY.fullmatch(repository):
+        raise TrustedCIVerificationError("GITHUB_REPOSITORY_INVALID")
+    payload = _gh_json(f"repos/{repository}/branches/main")
+    commit = payload.get("commit")
+    revision = commit.get("sha") if isinstance(commit, dict) else None
+    if (
+        payload.get("name") != "main"
+        or payload.get("protected") is not True
+        or not isinstance(revision, str)
+        or _GIT_SHA.fullmatch(revision) is None
+    ):
+        raise TrustedCIVerificationError("GITHUB_CURRENT_MAIN_REVISION_UNTRUSTED")
+    return revision
+
 def resolve_github_ci_verification(
     *,
     repository: str,

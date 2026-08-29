@@ -90,6 +90,12 @@ def _stub_github_ci_verification(
         "resolve_github_ci_verification",
         resolver,
     )
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "resolve_github_current_main_revision",
+        lambda _repository: REVISION,
+        raising=False,
+    )
 
 
 def _evaluate(
@@ -820,3 +826,383 @@ def test_remote_backup_invalid_completion_time_fails_closed(
 
     assert report["status"] == "NOT_READY"
     assert "INDEPENDENT_REMOTE_RESTORE_BACKUP_IDENTITY_INVALID" in report["blocking_reasons"]
+
+
+def _recovery_gate_request(request: dict) -> dict:
+    return {
+        "source_revision": REVISION,
+        "expected_production_database_path": request[
+            "expected_production_database_path"
+        ],
+        "backup_certification": request["backup_certification"],
+        "independent_restore_verification": request.get(
+            "independent_restore_verification"
+        ),
+        "migration_rollback_rehearsal": request["migration_rollback_rehearsal"],
+    }
+
+
+def _evaluate_recovery_gate(
+    request: dict,
+    *,
+    now: int,
+) -> dict:
+    return deployment_certification_module.evaluate_release_recovery_gate(
+        request,
+        now=now,
+        github_repository="cavack/wfh",
+        github_run_id=123,
+    )
+
+
+def test_simplified_recovery_gate_needs_only_trusted_recovery_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, observed_now = _request(tmp_path)
+    trusted, independent = _remoteize_request(tmp_path, request, observed_now)
+    remote_dir = tmp_path / "remote-proof"
+    request["migration_rollback_rehearsal"] = rehearse_migration_and_rollback_sequential(
+        backup_certification=request["backup_certification"],
+        working_target=(remote_dir / "recovery-gate.db").resolve(),
+        source_revision=REVISION,
+    )
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "resolve_github_release_backup_verification",
+        lambda **_kwargs: TrustedRemoteBackupVerification.model_validate(trusted),
+    )
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "resolve_github_independent_restore_verification",
+        lambda **_kwargs: TrustedIndependentRestoreVerification.model_validate(independent),
+    )
+
+    minimal = _recovery_gate_request(request)
+    assert "readiness" not in minimal
+    assert "shadow_soak" not in minimal
+    assert "verification" not in minimal
+    assert "artifact_provenance" not in minimal
+
+    report = _evaluate_recovery_gate(minimal, now=observed_now)
+
+    assert report["status"] == "READY_FOR_EXPLICIT_DISPATCH"
+    assert report["blocking_reasons"] == []
+    assert report["trusted_ci_run_id"] == 123
+    assert report["independent_restore_run_id"] == independent["run_id"]
+    assert report["required_next_authority"] == "EXPLICIT_WORKFLOW_DISPATCH"
+    assert report["deployment_allowed"] is False
+    assert report["migration_allowed"] is False
+    assert report["live_trading_allowed"] is False
+    body = {key: value for key, value in report.items() if key != "report_sha256"}
+    assert report["report_sha256"] == canonical_sha256(body)
+
+
+def test_simplified_recovery_gate_requires_independent_restore(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, observed_now = _request(tmp_path)
+    trusted, _independent = _remoteize_request(tmp_path, request, observed_now)
+    request["independent_restore_verification"] = None
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "resolve_github_release_backup_verification",
+        lambda **_kwargs: TrustedRemoteBackupVerification.model_validate(trusted),
+    )
+
+    report = _evaluate_recovery_gate(
+        _recovery_gate_request(request), now=observed_now
+    )
+
+    assert report["status"] == "NOT_READY"
+    assert "INDEPENDENT_REMOTE_RESTORE_NOT_VERIFIED" in report["blocking_reasons"]
+
+
+def test_simplified_recovery_gate_rejects_local_only_backup(tmp_path: Path) -> None:
+    request, observed_now = _request(tmp_path)
+
+    report = _evaluate_recovery_gate(
+        _recovery_gate_request(request), now=observed_now
+    )
+
+    assert report["status"] == "NOT_READY"
+    assert "REMOTE_OFF_HOST_BACKUP_REQUIRED" in report["blocking_reasons"]
+
+
+def test_simplified_recovery_gate_fails_closed_when_ci_cannot_be_trusted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, observed_now = _request(tmp_path)
+    trusted, independent = _remoteize_request(tmp_path, request, observed_now)
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "resolve_github_release_backup_verification",
+        lambda **_kwargs: TrustedRemoteBackupVerification.model_validate(trusted),
+    )
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "resolve_github_independent_restore_verification",
+        lambda **_kwargs: TrustedIndependentRestoreVerification.model_validate(independent),
+    )
+
+    def fail_ci(**_kwargs: object) -> TrustedCIVerification:
+        raise TrustedCIVerificationError("GITHUB_CI_RUN_NOT_TRUSTED")
+
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "resolve_github_ci_verification",
+        fail_ci,
+    )
+
+    report = _evaluate_recovery_gate(
+        _recovery_gate_request(request), now=observed_now
+    )
+
+    assert report["status"] == "NOT_READY"
+    assert "GITHUB_CI_RUN_NOT_TRUSTED" in report["blocking_reasons"]
+
+
+def test_simplified_recovery_gate_skips_rehearsal_when_certified_schema_is_current(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_now = int(time.time())
+    production_db = (tmp_path / "production.db").resolve()
+    production_db.write_bytes(b"placeholder")
+    request = {
+        "source_revision": REVISION,
+        "expected_production_database_path": str(production_db),
+        "backup_certification": {
+            "contract_version": "sqlite_remote_backup_certification_v1",
+            "source_identity": {
+                "device_id": production_db.stat().st_dev,
+                "inode": production_db.stat().st_ino,
+            },
+            "backup_audit": {"user_version": CURRENT_RUNTIME_SCHEMA_VERSION},
+            "backup_completed_at": observed_now - 30,
+        },
+        "independent_restore_verification": None,
+        "migration_rollback_rehearsal": None,
+    }
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "_backup_reasons",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "_independent_remote_restore_reasons",
+        lambda *_args, **_kwargs: [],
+    )
+
+    def rehearsal_must_not_run(*_args, **_kwargs):
+        raise AssertionError("rehearsal validation must be skipped without schema change")
+
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "_rehearsal_reasons",
+        rehearsal_must_not_run,
+    )
+
+    report = _evaluate_recovery_gate(request, now=observed_now)
+
+    assert report["status"] == "READY_FOR_EXPLICIT_DISPATCH"
+    assert report["migration_rehearsal_sha256"] is None
+
+
+def test_simplified_recovery_gate_requires_rehearsal_when_certified_schema_is_old(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_now = int(time.time())
+    production_db = (tmp_path / "production.db").resolve()
+    production_db.write_bytes(b"placeholder")
+    request = {
+        "source_revision": REVISION,
+        "expected_production_database_path": str(production_db),
+        "backup_certification": {
+            "contract_version": "sqlite_remote_backup_certification_v1",
+            "source_identity": {
+                "device_id": production_db.stat().st_dev,
+                "inode": production_db.stat().st_ino,
+            },
+            "backup_audit": {"user_version": CURRENT_RUNTIME_SCHEMA_VERSION - 1},
+            "backup_completed_at": observed_now - 30,
+        },
+        "independent_restore_verification": None,
+        "migration_rollback_rehearsal": None,
+    }
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "_backup_reasons",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "_independent_remote_restore_reasons",
+        lambda *_args, **_kwargs: [],
+    )
+
+    report = _evaluate_recovery_gate(request, now=observed_now)
+
+    assert report["status"] == "NOT_READY"
+    assert "MIGRATION_REHEARSAL_REQUIRED" in report["blocking_reasons"]
+
+
+
+def test_snapshot_audit_rejects_boolean_user_version(tmp_path: Path) -> None:
+    request, _observed_now = _request(tmp_path)
+    audit = dict(request["backup_certification"]["backup_audit"])
+    audit["user_version"] = True
+    material = {key: value for key, value in audit.items() if key != "audit_sha256"}
+    audit["audit_sha256"] = canonical_sha256(material)
+
+    assert deployment_certification_module._snapshot_audit_valid(audit) is False
+
+
+def test_simplified_recovery_gate_requires_current_main_revision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, observed_now = _request(tmp_path)
+    trusted, independent = _remoteize_request(tmp_path, request, observed_now)
+    remote_dir = tmp_path / "remote-proof"
+    request["migration_rollback_rehearsal"] = rehearse_migration_and_rollback_sequential(
+        backup_certification=request["backup_certification"],
+        working_target=(remote_dir / "current-main.db").resolve(),
+        source_revision=REVISION,
+    )
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "resolve_github_release_backup_verification",
+        lambda **_kwargs: TrustedRemoteBackupVerification.model_validate(trusted),
+    )
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "resolve_github_independent_restore_verification",
+        lambda **_kwargs: TrustedIndependentRestoreVerification.model_validate(independent),
+    )
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "resolve_github_current_main_revision",
+        lambda _repository: "0" * 40,
+        raising=False,
+    )
+
+    report = _evaluate_recovery_gate(_recovery_gate_request(request), now=observed_now)
+
+    assert report["status"] == "NOT_READY"
+    assert "CURRENT_MAIN_REVISION_MISMATCH" in report["blocking_reasons"]
+
+
+def test_simplified_recovery_gate_revalidates_live_database_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, observed_now = _request(tmp_path)
+    trusted, independent = _remoteize_request(tmp_path, request, observed_now)
+    remote_dir = tmp_path / "remote-proof"
+    request["migration_rollback_rehearsal"] = rehearse_migration_and_rollback_sequential(
+        backup_certification=request["backup_certification"],
+        working_target=(remote_dir / "identity.db").resolve(),
+        source_revision=REVISION,
+    )
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "resolve_github_release_backup_verification",
+        lambda **_kwargs: TrustedRemoteBackupVerification.model_validate(trusted),
+    )
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "resolve_github_independent_restore_verification",
+        lambda **_kwargs: TrustedIndependentRestoreVerification.model_validate(independent),
+    )
+    source = Path(request["expected_production_database_path"])
+    replacement = source.with_name("replacement.db")
+    _empty_database(replacement)
+    assert replacement.stat().st_ino != source.stat().st_ino
+    replacement.replace(source)
+
+    report = _evaluate_recovery_gate(_recovery_gate_request(request), now=observed_now)
+
+    assert report["status"] == "NOT_READY"
+    assert "BACKUP_SOURCE_IDENTITY_CHANGED" in report["blocking_reasons"]
+
+
+def test_simplified_recovery_gate_requires_current_migration_executable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, observed_now = _request(tmp_path)
+    trusted, independent = _remoteize_request(tmp_path, request, observed_now)
+    remote_dir = tmp_path / "remote-proof"
+    rehearsal = rehearse_migration_and_rollback_sequential(
+        backup_certification=request["backup_certification"],
+        working_target=(remote_dir / "executable.db").resolve(),
+        source_revision=REVISION,
+    )
+    material = {
+        **{key: value for key, value in rehearsal.items() if key != "rehearsal_sha256"},
+        "migration_executable_sha256": "0" * 64,
+    }
+    request["migration_rollback_rehearsal"] = {
+        **material,
+        "rehearsal_sha256": canonical_sha256(material),
+    }
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "resolve_github_release_backup_verification",
+        lambda **_kwargs: TrustedRemoteBackupVerification.model_validate(trusted),
+    )
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "resolve_github_independent_restore_verification",
+        lambda **_kwargs: TrustedIndependentRestoreVerification.model_validate(independent),
+    )
+
+    report = _evaluate_recovery_gate(_recovery_gate_request(request), now=observed_now)
+
+    assert report["status"] == "NOT_READY"
+    assert "MIGRATION_EXECUTABLE_IDENTITY_MISMATCH" in report["blocking_reasons"]
+
+
+
+def test_simplified_recovery_gate_blocks_invalid_boolean_schema_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_now = int(time.time())
+    production_db = (tmp_path / "production.db").resolve()
+    production_db.write_bytes(b"placeholder")
+    request = {
+        "source_revision": REVISION,
+        "expected_production_database_path": str(production_db),
+        "backup_certification": {
+            "contract_version": "sqlite_remote_backup_certification_v1",
+            "source_identity": {
+                "device_id": production_db.stat().st_dev,
+                "inode": production_db.stat().st_ino,
+            },
+            "backup_audit": {"user_version": True},
+            "backup_completed_at": observed_now - 30,
+        },
+        "independent_restore_verification": None,
+        "migration_rollback_rehearsal": None,
+    }
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "_backup_reasons",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        deployment_certification_module,
+        "_independent_remote_restore_reasons",
+        lambda *_args, **_kwargs: [],
+    )
+
+    report = _evaluate_recovery_gate(request, now=observed_now)
+
+    assert report["status"] == "NOT_READY"
+    assert "BACKUP_SCHEMA_VERSION_INVALID" in report["blocking_reasons"]
