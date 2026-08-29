@@ -226,6 +226,7 @@ def resolve_github_current_main_revision(repository: str) -> str:
     revision = commit.get("sha") if isinstance(commit, dict) else None
     if (
         payload.get("name") != "main"
+        or payload.get("protected") is not True
         or not isinstance(revision, str)
         or _GIT_SHA.fullmatch(revision) is None
     ):

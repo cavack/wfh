@@ -57,3 +57,6 @@ The owner has explicitly directed the project to simplify this certification flo
 ## Exact-dispatch identity hardening
 
 The simplified gate additionally binds evidence to the current protected `main` revision, the live Production DB device/inode, and the current migration executable fingerprint. Invalid schema-version types fail closed. These checks prevent stale or mislabeled evidence without restoring the removed duplicate ceremony.
+
+
+Before dispatch, re-resolve protected `main` and require its SHA to equal the evaluated `source_revision`; any change invalidates the ready report and requires re-certification.
