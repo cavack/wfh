@@ -19,6 +19,7 @@ import {
   blockedOrOtherBreakdown,
   blockedOrOtherCount,
   candidateFreshness,
+  pipelineHealthDegraded,
   tradePlanAvailable,
 } from "@/lib/decision-terminal-ui";
 
@@ -185,8 +186,8 @@ function ZeroEntryDiagnostics({ diagnostics }: Readonly<{ diagnostics: Rec }>) {
   const systemic = Array.isArray(diagnostics.systemic_unavailable_reasons)
     ? diagnostics.systemic_unavailable_reasons.map(record).filter((row) => typeof row.reason === "string")
     : [];
-  const degraded = diagnostics.pipeline_degraded === true && systemic.length > 0;
-  if (diagnostics.entry_ready_zero !== true || rows.length === 0) return null;
+  const degraded = pipelineHealthDegraded(diagnostics);
+  if (!degraded && (diagnostics.entry_ready_zero !== true || rows.length === 0)) return null;
   return (
     <section className={`mt-4 rounded-xl border p-4 ${degraded ? "border-rose-500/30 bg-rose-500/5" : "border-amber-500/20 bg-amber-500/5"}`}>
       <div className={`flex items-center gap-2 text-sm font-semibold ${degraded ? "text-rose-100" : "text-amber-100"}`}>
@@ -245,7 +246,7 @@ function symbols(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
-function CandidateTable({ candidates }: Readonly<{ candidates: Record<string, Candidate> }>) {
+function CandidateTable({ candidates, nowSeconds }: Readonly<{ candidates: Record<string, Candidate>; nowSeconds?: number }>) {
   const [query, setQuery] = useState("");
   const [decisionFilter, setDecisionFilter] = useState("ALL");
   const [page, setPage] = useState(0);
@@ -285,7 +286,7 @@ function CandidateTable({ candidates }: Readonly<{ candidates: Record<string, Ca
               const derivatives = record(evidence.derivatives);
               const flow = record(evidence.order_flow);
               const cascade = record(evidence.cascade);
-              const freshness = candidateFreshness(candidate);
+              const freshness = candidateFreshness(candidate, nowSeconds);
               let freshnessText = "—";
               if (freshness.ageSeconds !== undefined) {
                 freshnessText = `${number(freshness.ageSeconds, 0)}s`;
@@ -379,14 +380,15 @@ function RecentDecisionChanges({ value }: Readonly<{ value: unknown }>) {
   );
 }
 
-export function DecisionTerminal({ terminal, candidates }: Readonly<{
+export function DecisionTerminal({ terminal, candidates, nowSeconds }: Readonly<{
   terminal: unknown;
   candidates: Record<string, Candidate>;
+  nowSeconds?: number;
 }>) {
   const packet = record(terminal);
   const counts = record(packet.counts);
   const diagnostics = record(packet.zero_entry_ready_diagnostics);
-  const pipelineDegraded = diagnostics.pipeline_degraded === true;
+  const pipelineDegraded = pipelineHealthDegraded(diagnostics);
   const ready = symbols(packet.entry_ready);
   const forming = symbols(packet.forming);
   const active = symbols(packet.active);
@@ -429,7 +431,7 @@ export function DecisionTerminal({ terminal, candidates }: Readonly<{
         candidates={candidates}
       />
       <RecentDecisionChanges value={packet.recent_changes} />
-      <CandidateTable candidates={candidates} />
+      <CandidateTable candidates={candidates} nowSeconds={nowSeconds} />
     </section>
   );
 }

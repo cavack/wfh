@@ -5,6 +5,7 @@ import {
   blockedOrOtherBreakdown,
   blockedOrOtherCount,
   candidateFreshness,
+  pipelineHealthDegraded,
   summarizeCandidateFreshness,
   tradePlanAvailable,
 } from "../lib/decision-terminal-ui";
@@ -72,6 +73,42 @@ assert.deepEqual(candidateFreshness(freshnessCandidates.STALE), {
 assert.deepEqual(summarizeCandidateFreshness(freshnessCandidates), {
   total: 2, fresh: 1, stale: 1, unknown: 0, state: "mixed",
 });
+
+
+const referenceStale = {
+  analysis_age_seconds: 30,
+  reference_age_seconds: 70,
+  metrics: { entry_decision: { policy: { max_analysis_age_seconds: 180, max_reference_age_seconds: 60 } } },
+};
+assert.equal(
+  candidateFreshness(referenceStale).state,
+  "stale",
+  "reference freshness must participate in the canonical freshness decision",
+);
+
+const timeProgression = {
+  analysis_observed_at: 850,
+  reference_observed_at: 950,
+  metrics: { entry_decision: { policy: { max_analysis_age_seconds: 180, max_reference_age_seconds: 60 } } },
+};
+assert.equal(candidateFreshness(timeProgression, 1000).state, "fresh");
+assert.equal(
+  candidateFreshness(timeProgression, 1020).state,
+  "stale",
+  "freshness must advance with wall time even when no new snapshot arrives",
+);
+
+assert.equal(
+  pipelineHealthDegraded({
+    entry_ready_zero: false,
+    evaluated_candidates: 1,
+    top_reasons: [],
+    pipeline_degraded: true,
+    systemic_unavailable_reasons: [{ reason: "DERIVATIVES_UNAVAILABLE", count: 1, share_pct: 100 }],
+  }),
+  true,
+  "systemic pipeline degradation must remain visible even with ENTRY_READY candidates",
+);
 
 assert.equal(tradePlanAvailable({
   entry_price: 1, stop_loss: 1.1, take_profit_1: 0.9, take_profit_2: 0.8,

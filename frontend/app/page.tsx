@@ -116,7 +116,15 @@ export default function Dashboard() {
   const [data, setData] = useState<DashboardSnapshot | null>(null);
   const [mode, setMode] = useState<ConnectionMode>("reconnecting");
   const [generatedAt, setGeneratedAt] = useState<number | null>(null);
+  const [freshnessNow, setFreshnessNow] = useState<number | undefined>(undefined);
   const latestVersion = useRef(0);
+
+  useEffect(() => {
+    const refreshClock = () => setFreshnessNow(Date.now() / 1000);
+    refreshClock();
+    const timer = setInterval(refreshClock, 5_000);
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -233,8 +241,8 @@ export default function Dashboard() {
   );
 
   const freshnessSummary = useMemo(
-    () => summarizeCandidateFreshness((data?.candidates ?? {}) as Record<string, unknown>),
-    [data],
+    () => summarizeCandidateFreshness((data?.candidates ?? {}) as Record<string, unknown>, freshnessNow),
+    [data, freshnessNow],
   );
 
   const groups = useMemo(() => {
@@ -310,7 +318,7 @@ export default function Dashboard() {
       <div className="px-4 pt-5 sm:px-6 lg:px-8">
         {emptyState}
         {data !== null ? (
-          <DecisionTerminal terminal={data.decision_terminal} candidates={data.candidates as Record<string, Candidate>} />
+          <DecisionTerminal terminal={data.decision_terminal} candidates={data.candidates as Record<string, Candidate>} nowSeconds={freshnessNow} />
         ) : null}
 
         <details id="research" className="panel mx-auto mt-8 max-w-7xl scroll-mt-32 overflow-hidden">

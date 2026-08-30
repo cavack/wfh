@@ -70,7 +70,15 @@ export function advisoryPresentation(value: unknown): {
   return { status, confidence, reasoning };
 }
 
-export function candidateFreshness(value: unknown): {
+function advancingAge(snapshotAge: unknown, observedAt: unknown, nowSeconds?: number): number | undefined {
+  const observed = finite(observedAt);
+  if (nowSeconds !== undefined && observed !== undefined && nowSeconds >= observed) {
+    return nowSeconds - observed;
+  }
+  return finite(snapshotAge);
+}
+
+export function candidateFreshness(value: unknown, nowSeconds?: number): {
   ageSeconds?: number;
   thresholdSeconds?: number;
   state: FreshnessState;
@@ -79,19 +87,44 @@ export function candidateFreshness(value: unknown): {
   const metrics = record(candidate.metrics);
   const decision = record(metrics.entry_decision);
   const policy = record(decision.policy);
-  const ageSeconds = finite(candidate.analysis_age_seconds);
-  const thresholdSeconds = finite(policy.max_analysis_age_seconds);
-  if (ageSeconds === undefined || thresholdSeconds === undefined || thresholdSeconds <= 0) {
-    return { ageSeconds, thresholdSeconds, state: "unknown" };
+  const analysisAge = advancingAge(
+    candidate.analysis_age_seconds, candidate.analysis_observed_at, nowSeconds,
+  );
+  const analysisThreshold = finite(policy.max_analysis_age_seconds);
+  const referenceThreshold = finite(policy.max_reference_age_seconds);
+  const referenceAge = advancingAge(
+    candidate.reference_age_seconds, candidate.reference_observed_at, nowSeconds,
+  );
+  if (analysisAge === undefined || analysisThreshold === undefined || analysisThreshold <= 0) {
+    return { ageSeconds: analysisAge, thresholdSeconds: analysisThreshold, state: "unknown" };
+  }
+  if (referenceThreshold !== undefined && referenceThreshold > 0) {
+    if (referenceAge === undefined) {
+      return { ageSeconds: analysisAge, thresholdSeconds: analysisThreshold, state: "unknown" };
+    }
+    if (referenceAge > referenceThreshold) {
+      return { ageSeconds: referenceAge, thresholdSeconds: referenceThreshold, state: "stale" };
+    }
   }
   return {
-    ageSeconds,
-    thresholdSeconds,
-    state: ageSeconds <= thresholdSeconds ? "fresh" : "stale",
+    ageSeconds: analysisAge,
+    thresholdSeconds: analysisThreshold,
+    state: analysisAge <= analysisThreshold ? "fresh" : "stale",
   };
 }
 
-export function summarizeCandidateFreshness(candidates: Record<string, unknown>): {
+export function pipelineHealthDegraded(value: unknown): boolean {
+  const diagnostics = record(value);
+  const systemic = Array.isArray(diagnostics.systemic_unavailable_reasons)
+    ? diagnostics.systemic_unavailable_reasons
+    : [];
+  return diagnostics.pipeline_degraded === true && systemic.length > 0;
+}
+
+export function summarizeCandidateFreshness(
+  candidates: Record<string, unknown>,
+  nowSeconds?: number,
+): {
   total: number;
   fresh: number;
   stale: number;
@@ -102,7 +135,7 @@ export function summarizeCandidateFreshness(candidates: Record<string, unknown>)
   let stale = 0;
   let unknown = 0;
   for (const candidate of Object.values(candidates)) {
-    const state = candidateFreshness(candidate).state;
+    const state = candidateFreshness(candidate, nowSeconds).state;
     if (state === "fresh") fresh += 1;
     else if (state === "stale") stale += 1;
     else unknown += 1;
