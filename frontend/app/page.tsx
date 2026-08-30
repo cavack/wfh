@@ -55,13 +55,14 @@ function StreamStatus({ mode }: Readonly<{ mode: ConnectionMode }>) {
 }
 
 function DataFreshnessStatus({ summary }: Readonly<{ summary: ReturnType<typeof summarizeCandidateFreshness> }>) {
-  const tone = summary.state === "fresh"
-    ? "border-emerald-400/25 bg-emerald-500/10 text-emerald-200"
-    : summary.state === "stale"
-      ? "border-rose-400/30 bg-rose-500/10 text-rose-200"
-      : summary.state === "mixed"
-        ? "border-amber-400/25 bg-amber-500/10 text-amber-200"
-        : "border-slate-700 bg-slate-900 text-slate-400";
+  let tone = "border-slate-700 bg-slate-900 text-slate-400";
+  if (summary.state === "fresh") {
+    tone = "border-emerald-400/25 bg-emerald-500/10 text-emerald-200";
+  } else if (summary.state === "stale") {
+    tone = "border-rose-400/30 bg-rose-500/10 text-rose-200";
+  } else if (summary.state === "mixed") {
+    tone = "border-amber-400/25 bg-amber-500/10 text-amber-200";
+  }
   let label = "Freshness unknown";
   if (summary.state === "fresh") label = `Data fresh · ${summary.fresh}/${summary.total}`;
   else if (summary.state === "stale") label = `Candidate data stale · ${summary.stale}`;

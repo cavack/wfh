@@ -285,10 +285,13 @@ function CandidateTable({ candidates }: Readonly<{ candidates: Record<string, Ca
               const flow = record(evidence.order_flow);
               const cascade = record(evidence.cascade);
               const freshness = candidateFreshness(candidate);
-              const freshnessText = freshness.ageSeconds === undefined
-                ? "—"
-                : `${number(freshness.ageSeconds, 0)}s${freshness.state === "stale" ? " · stale" : ""}`;
-              return <tr key={symbol} className="hover:bg-slate-900/60"><td className="px-4 py-3 font-mono text-sky-200">{symbol}</td><td><span className={`status-pill border ${decisionTone(decision)}`}>{decision.replaceAll("_", " ")}</span></td><td className="font-mono">{readiness < 0 ? "—" : readiness.toFixed(1)}</td><td className="font-mono">${price(candidate.last_price)}</td><td>{pct(derivatives.oi_change_1h_pct, 2)}</td><td>{number(flow.taker_buy_sell_ratio, 3)}</td><td>{String(cascade.status ?? "—")}</td><td className={freshness.state === "stale" ? "font-medium text-rose-300" : "text-slate-300"} title={freshness.thresholdSeconds === undefined ? undefined : `Policy freshness limit ${number(freshness.thresholdSeconds, 0)}s`}>{freshnessText}</td></tr>;
+              let freshnessText = "—";
+              if (freshness.ageSeconds !== undefined) {
+                freshnessText = `${number(freshness.ageSeconds, 0)}s`;
+                if (freshness.state === "stale") freshnessText += " · stale";
+              }
+              const cascadeStatus = typeof cascade.status === "string" ? cascade.status : "—";
+              return <tr key={symbol} className="hover:bg-slate-900/60"><td className="px-4 py-3 font-mono text-sky-200">{symbol}</td><td><span className={`status-pill border ${decisionTone(decision)}`}>{decision.replaceAll("_", " ")}</span></td><td className="font-mono">{readiness < 0 ? "—" : readiness.toFixed(1)}</td><td className="font-mono">${price(candidate.last_price)}</td><td>{pct(derivatives.oi_change_1h_pct, 2)}</td><td>{number(flow.taker_buy_sell_ratio, 3)}</td><td>{cascadeStatus}</td><td className={freshness.state === "stale" ? "font-medium text-rose-300" : "text-slate-300"} title={freshness.thresholdSeconds === undefined ? undefined : `Policy freshness limit ${number(freshness.thresholdSeconds, 0)}s`}>{freshnessText}</td></tr>;
             })}
           </tbody>
         </table>

@@ -113,7 +113,7 @@ class ZeroEntryReadyDiagnostics(BaseModel):
         if self.pipeline_degraded != bool(self.systemic_unavailable_reasons):
             raise ValueError("pipeline degraded flag disagrees with systemic unavailable reasons")
         for row in self.systemic_unavailable_reasons:
-            if row.count != self.evaluated_candidates or row.share_pct != 100.0:
+            if row.count != self.evaluated_candidates or row.share_pct < 100.0:
                 raise ValueError("systemic unavailable reason must cover the evaluated universe")
         return self
 
