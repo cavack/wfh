@@ -86,6 +86,18 @@ assert.equal(
   "reference freshness must participate in the canonical freshness decision",
 );
 
+
+const invalidReferenceLimit = {
+  analysis_age_seconds: 30,
+  reference_age_seconds: 10,
+  metrics: { entry_decision: { policy: { max_analysis_age_seconds: 180, max_reference_age_seconds: 0 } } },
+};
+assert.equal(
+  candidateFreshness(invalidReferenceLimit).state,
+  "unknown",
+  "an explicit nonpositive reference freshness limit must fail closed as unknown",
+);
+
 const timeProgression = {
   analysis_observed_at: 850,
   reference_observed_at: 950,

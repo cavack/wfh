@@ -98,7 +98,10 @@ export function candidateFreshness(value: unknown, nowSeconds?: number): {
   if (analysisAge === undefined || analysisThreshold === undefined || analysisThreshold <= 0) {
     return { ageSeconds: analysisAge, thresholdSeconds: analysisThreshold, state: "unknown" };
   }
-  if (referenceThreshold !== undefined && referenceThreshold > 0) {
+  if (referenceThreshold !== undefined) {
+    if (referenceThreshold <= 0) {
+      return { ageSeconds: referenceAge ?? analysisAge, thresholdSeconds: referenceThreshold, state: "unknown" };
+    }
     if (referenceAge === undefined) {
       return { ageSeconds: analysisAge, thresholdSeconds: analysisThreshold, state: "unknown" };
     }
