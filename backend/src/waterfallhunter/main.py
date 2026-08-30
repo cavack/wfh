@@ -1125,6 +1125,24 @@ def _websocket_source(metrics: object) -> tuple[str, str] | None:
     return exchange, mapped_symbol
 
 
+def _sync_websocket_evidence_subscription(
+    previous_source: tuple[str, str] | None,
+    current_source: tuple[str, str] | None,
+    *,
+    state: str,
+) -> None:
+    if previous_source is not None and previous_source != current_source:
+        validator.ws_manager.unsubscribe(*previous_source)
+    if current_source is None:
+        return
+    if state == "PRE-TRIGGER":
+        validator.ws_manager.subscribe_liquidations(*current_source)
+    elif state == "ARMED":
+        validator.ws_manager.subscribe(*current_source)
+    else:
+        validator.ws_manager.unsubscribe(*current_source)
+
+
 def _store_live_metrics(
     symbol: str,
     metrics: dict | None,
@@ -2461,14 +2479,16 @@ async def evaluate_candidate(
                 )
             )
 
-            if (
-                observation_state_aligned
-                and observation_exchange
-                and observation_symbol
-            ):
-                validator.ws_manager.unsubscribe(
-                    observation_exchange,
-                    observation_symbol,
+            if observation_state_aligned:
+                observation_ws_source = (
+                    (observation_exchange, observation_symbol)
+                    if observation_exchange and observation_symbol
+                    else None
+                )
+                _sync_websocket_evidence_subscription(
+                    previous_ws_source,
+                    observation_ws_source,
+                    state=str(observation_status),
                 )
 
         else:
@@ -2636,17 +2656,11 @@ async def evaluate_candidate(
                 return
 
         current_ws_source = _websocket_source(metrics)
-        if (
-            previous_ws_source is not None
-            and previous_ws_source != current_ws_source
-        ):
-            validator.ws_manager.unsubscribe(*previous_ws_source)
-
-        if new_state == "ARMED":
-            if current_ws_source is not None:
-                validator.ws_manager.subscribe(*current_ws_source)
-        elif current_ws_source is not None:
-            validator.ws_manager.unsubscribe(*current_ws_source)
+        _sync_websocket_evidence_subscription(
+            previous_ws_source,
+            current_ws_source,
+            state=str(new_state),
+        )
 
         persist_lifecycle_v2_shadow(str(new_state))
 

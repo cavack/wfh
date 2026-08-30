@@ -53,3 +53,94 @@ def test_subscription_starts_and_unsubscribe_stops_liquidation_stream(monkeypatc
         assert f"binance:{symbol}:liquidations" not in manager.active_tasks
 
     asyncio.run(scenario())
+
+
+def test_liquidation_only_subscription_upgrades_to_full_without_duplicate(monkeypatch) -> None:
+    manager = WebSocketManager()
+    symbol = "PRE/USDT:USDT"
+    monkeypatch.setattr(ws_module, "ccxt_pro", object())
+
+    async def idle(*args, **kwargs):
+        await asyncio.Future()
+
+    monkeypatch.setattr(manager, "watch_orderbook_stream", idle)
+    monkeypatch.setattr(manager, "_watch_stream", idle)
+    monkeypatch.setattr(manager, "_watch_liquidations_stream", idle)
+
+    async def scenario() -> None:
+        manager.subscribe_liquidations("binance", symbol)
+        await asyncio.sleep(0)
+        liquidation_id = f"binance:{symbol}:liquidations"
+        assert set(manager.active_tasks) == {liquidation_id}
+        liquidation_task = manager.active_tasks[liquidation_id]
+
+        manager.subscribe("binance", symbol)
+        await asyncio.sleep(0)
+        assert set(manager.active_tasks) == {
+            f"binance:{symbol}",
+            f"binance:{symbol}:ticker",
+            f"binance:{symbol}:trades",
+            liquidation_id,
+        }
+        assert manager.active_tasks[liquidation_id] is liquidation_task
+
+        manager.unsubscribe("binance", symbol)
+        await asyncio.sleep(0)
+        assert not manager.active_tasks
+
+    asyncio.run(scenario())
+
+
+def test_liquidation_stream_skips_provider_without_declared_support(monkeypatch) -> None:
+    manager = WebSocketManager()
+    symbol = "NOSUPPORT/USDT:USDT"
+    called = False
+
+    class Exchange:
+        has = {"watchLiquidations": None}
+
+        async def watch_liquidations(self, *args, **kwargs):
+            nonlocal called
+            called = True
+            await asyncio.sleep(1.0)
+            return []
+
+    async def get_exchange(_name):
+        return Exchange()
+
+    monkeypatch.setattr(manager, "_get_exchange", get_exchange)
+
+    async def scenario() -> None:
+        task_id = f"bingx:{symbol}:liquidations"
+        manager.active_tasks[task_id] = asyncio.current_task()
+        await asyncio.wait_for(
+            manager._watch_liquidations_stream("bingx", symbol), timeout=0.05
+        )
+        assert task_id not in manager.active_tasks
+
+    asyncio.run(scenario())
+    assert called is False
+
+
+def test_pretrigger_scale_uses_one_liquidation_task_per_symbol(monkeypatch) -> None:
+    manager = WebSocketManager()
+    monkeypatch.setattr(ws_module, "ccxt_pro", object())
+
+    async def idle(*args, **kwargs):
+        await asyncio.Future()
+
+    monkeypatch.setattr(manager, "_watch_liquidations_stream", idle)
+    symbols = [f"PRE{i}/USDT:USDT" for i in range(44)]
+
+    async def scenario() -> None:
+        for symbol in symbols:
+            manager.subscribe_liquidations("binance", symbol)
+        await asyncio.sleep(0)
+        assert len(manager.active_tasks) == 44
+        assert all(task_id.endswith(":liquidations") for task_id in manager.active_tasks)
+        for symbol in symbols:
+            manager.unsubscribe("binance", symbol)
+        await asyncio.sleep(0)
+        assert manager.active_tasks == {}
+
+    asyncio.run(scenario())

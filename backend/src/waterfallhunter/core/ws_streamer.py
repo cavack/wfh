@@ -226,7 +226,7 @@ class WebSocketManager:
             exchange = await self._get_exchange(ex_name)
             watch = getattr(exchange, "watch_liquidations", None)
             supports = getattr(exchange, "has", {}).get("watchLiquidations")
-            if not callable(watch) or supports is False:
+            if not callable(watch) or supports not in {True, "emulated"}:
                 logger.info("Liquidation stream unavailable for %s:%s", ex_name, symbol)
                 return
             breaker = self.circuit_breakers.setdefault(task_id, CircuitBreaker())
@@ -298,6 +298,21 @@ class WebSocketManager:
             "baseline_notional_1m": round(baseline_total, 6),
         }
 
+    def subscribe_liquidations(self, ex_name: str, symbol: str):
+        """Start only the liquidation consumer for early PRE-TRIGGER evidence."""
+        if ccxt_pro is None:
+            logger.warning(
+                "CCXT Pro is unavailable; skipping liquidation subscription for %s:%s",
+                ex_name,
+                symbol,
+            )
+            return
+        liquidation_id = f"{ex_name}:{symbol}:liquidations"
+        if liquidation_id not in self.active_tasks:
+            self.active_tasks[liquidation_id] = asyncio.create_task(
+                self._watch_liquidations_stream(ex_name, symbol)
+            )
+
     def subscribe(self, ex_name: str, symbol: str):
         """الگوی Single-flight: اطمینان از عدم ایجاد Task تکراری برای یک نماد"""
         if ccxt_pro is None:
@@ -306,15 +321,16 @@ class WebSocketManager:
             return
         stream_id = f"{ex_name}:{symbol}"
         if stream_id not in self.active_tasks:
-            task = asyncio.create_task(self.watch_orderbook_stream(ex_name, symbol))
-            self.active_tasks[stream_id] = task
-            for kind in ("ticker", "trades"):
-                child_id = f"{stream_id}:{kind}"
-                self.active_tasks[child_id] = asyncio.create_task(self._watch_stream(ex_name, symbol, kind))
-            liquidation_id = f"{stream_id}:liquidations"
-            self.active_tasks[liquidation_id] = asyncio.create_task(
-                self._watch_liquidations_stream(ex_name, symbol)
+            self.active_tasks[stream_id] = asyncio.create_task(
+                self.watch_orderbook_stream(ex_name, symbol)
             )
+        for kind in ("ticker", "trades"):
+            child_id = f"{stream_id}:{kind}"
+            if child_id not in self.active_tasks:
+                self.active_tasks[child_id] = asyncio.create_task(
+                    self._watch_stream(ex_name, symbol, kind)
+                )
+        self.subscribe_liquidations(ex_name, symbol)
 
     def unsubscribe(self, ex_name: str, symbol: str):
         stream_id = f"{ex_name}:{symbol}"
