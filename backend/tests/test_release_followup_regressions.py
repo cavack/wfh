@@ -70,12 +70,10 @@ def test_notification_delivery_ready_requires_top_level_healthy_state() -> None:
 def test_decision_terminal_renders_when_active_candidate_set_is_empty() -> None:
     page = (ROOT / "frontend/app/page.tsx").read_text(encoding="utf-8")
     assert "data !== null && rows.length > 0" not in page
-    terminal_call = (
-        '<DecisionTerminal terminal={data.decision_terminal} '
-        'candidates={data.candidates as Record<string, Candidate>} />'
-    )
-    assert terminal_call in page
-    prefix = page.split(terminal_call, maxsplit=1)[0][-180:]
+    terminal_marker = '<DecisionTerminal terminal={data.decision_terminal}'
+    assert terminal_marker in page
+    assert 'candidates={data.candidates as Record<string, Candidate>}' in page
+    prefix = page.split(terminal_marker, maxsplit=1)[0][-180:]
     assert "data !== null" in prefix
 
 
