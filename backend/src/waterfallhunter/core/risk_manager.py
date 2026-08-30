@@ -1,3 +1,4 @@
+import copy
 import logging
 import math
 from typing import Dict, Any, Tuple
@@ -51,7 +52,7 @@ def recommend_signal_leverage(
     slippage = _finite_number(micro.get("slippage_pct"))
     exit_slippage = _finite_number(micro.get("exit_slippage_pct"))
 
-    if score is None or score < 85.0 or score > 100.0:
+    if score is None or score < 0.0 or score > 100.0:
         raise LeverageUnavailableError("strict finite score required for leverage")
     if entry is None or stop is None or entry <= 0 or stop <= entry:
         raise LeverageUnavailableError("valid short entry and structural stop required for leverage")
@@ -90,12 +91,16 @@ def recommend_signal_leverage(
         execution_bound = 3
 
     suitability = execution_suitability if isinstance(execution_suitability, dict) else {}
-    suitability_bound = {
-        "SUITABLE": 18,
-        "MARGINAL": 10,
-        "UNKNOWN": 8,
-        "POOR": 4,
-    }.get(str(suitability.get("status") or "UNKNOWN").upper(), 8)
+    suitability_status = str(suitability.get("status") or "UNKNOWN").upper()
+    if suitability.get("available") is False or suitability_status == "UNKNOWN":
+        raise LeverageUnavailableError("execution suitability evidence unavailable for leverage")
+    suitability_bounds = {"SUITABLE": 18, "MARGINAL": 10, "POOR": 4}
+    if suitability_status not in suitability_bounds:
+        raise LeverageUnavailableError("execution suitability status invalid for leverage")
+    suitability_bound = suitability_bounds[suitability_status]
+
+    if score < 85.0:
+        raise LeverageNotRecommendedError("complete evidence score implies leverage below 4x")
 
     constraints = (
         metrics.get("market_constraints")
@@ -118,6 +123,11 @@ def build_signal_leverage_advisory(
     execution_suitability: Dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return the canonical live leverage advisory without fabricating a fallback."""
+    execution_input = (
+        copy.deepcopy(execution_suitability)
+        if isinstance(execution_suitability, dict)
+        else {}
+    )
     base = {
         "policy_version": LEVERAGE_POLICY_VERSION,
         "minimum": 4,
@@ -125,6 +135,7 @@ def build_signal_leverage_advisory(
         "symbol_agnostic": True,
         "signal_only": True,
         "advisory_only": True,
+        "execution_suitability_input": execution_input,
     }
     try:
         leverage = recommend_signal_leverage(metrics, execution_suitability)

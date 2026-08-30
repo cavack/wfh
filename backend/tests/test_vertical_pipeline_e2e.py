@@ -209,8 +209,12 @@ class _FakeWebSocketManager:
 class _ExecutionSuitability:
     def for_symbol(self, _: str) -> dict:
         return {
-            "available": False,
-            "status": "UNKNOWN",
+            "available": True,
+            "status": "SUITABLE",
+            "reason": "deterministic complete execution evidence",
+            "evidence_status": "SUFFICIENT",
+            "observed_samples": 40,
+            "observation_span_hours": 48.0,
             "maximum_leverage": 20,
         }
 
@@ -381,6 +385,8 @@ def test_vertical_success_preserves_identity_plan_leverage_persistence_api_and_s
     assert live_metrics["applied_leverage"] == canonical_leverage
     assert live_metrics["leverage_advisory"]["status"] == "AVAILABLE"
     assert live_metrics["leverage_advisory"]["leverage"] == canonical_leverage
+    assert live_metrics["leverage_advisory"]["execution_suitability_input"]["status"] == "SUITABLE"
+    assert latest["leverage_advisory"]["execution_suitability_input"]["observed_samples"] == 40
     assert latest["trade_plan"]["leverage"] == canonical_leverage
 
     with sqlite3.connect(db.db_path) as connection:

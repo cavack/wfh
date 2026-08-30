@@ -19,6 +19,7 @@ import {
   blockedOrOtherBreakdown,
   blockedOrOtherCount,
   candidateFreshness,
+  canonicalLeverageAdvisory,
   pipelineHealthDegraded,
   tradePlanAvailable,
 } from "@/lib/decision-terminal-ui";
@@ -71,7 +72,7 @@ function evidencePacket(candidate: Candidate) {
     plan: record(decision.trade_plan),
     evidence: record(decision.evidence_summary),
     advisory: record(metrics.ai_advisory),
-    leverageAdvisory: record(metrics.leverage_advisory),
+    leverageAdvisory: canonicalLeverageAdvisory(metrics, decision),
   };
 }
 

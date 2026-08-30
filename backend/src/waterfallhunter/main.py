@@ -1315,6 +1315,16 @@ def _restore_persisted_decision_projection(
         persisted_plan = persisted_decision.get("trade_plan")
         if isinstance(persisted_plan, dict):
             current_decision["trade_plan"] = dict(persisted_plan)
+    leverage_advisory = persisted_decision.get("leverage_advisory")
+    if isinstance(leverage_advisory, dict):
+        canonical_leverage_advisory = dict(leverage_advisory)
+        current_decision["leverage_advisory"] = canonical_leverage_advisory
+        metrics["leverage_advisory"] = dict(canonical_leverage_advisory)
+        metrics["applied_leverage"] = (
+            canonical_leverage_advisory.get("leverage")
+            if canonical_leverage_advisory.get("status") == "AVAILABLE"
+            else None
+        )
     advisory = persisted_decision.get("ai_advisory")
     if isinstance(advisory, dict):
         metrics["ai_advisory"] = dict(advisory)

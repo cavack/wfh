@@ -109,8 +109,8 @@ function candidate({
   };
 }
 
-function snapshot(version: number, swapped = false) {
-  const candidates = swapped ? {
+function snapshot(version: number, swapped = false, omitDelta = false) {
+  const candidates: Record<string, ReturnType<typeof candidate>> = swapped ? {
     "BETA/USDT:USDT": candidate({ decision: "ENTRY_READY", readiness: 96, score: 99, leverageStatus: "AVAILABLE", leverage: 10, coverage: 100, status: "ARMED" }),
     "ALPHA/USDT:USDT": candidate({ decision: "FORMING", readiness: 70, score: 86, leverageStatus: "AVAILABLE", leverage: 6, coverage: 100, status: "PRE-TRIGGER" }),
     "GAMMA/USDT:USDT": candidate({ decision: "LATE", readiness: 84, score: 97, leverageStatus: "NOT_RECOMMENDED", leverage: null, coverage: 98, stale: true, status: "TRIGGERED" }),
@@ -121,24 +121,26 @@ function snapshot(version: number, swapped = false) {
     "GAMMA/USDT:USDT": candidate({ decision: "LATE", readiness: 84, score: 97, leverageStatus: "NOT_RECOMMENDED", leverage: null, coverage: 98, stale: true, status: "TRIGGERED" }),
     "DELTA/USDT:USDT": candidate({ decision: "NO_TRADE", readiness: 10, score: null, leverageStatus: "UNAVAILABLE", leverage: null, coverage: 60, status: "WATCH" }),
   };
+  if (omitDelta) delete candidates["DELTA/USDT:USDT"];
   const entryReady = swapped ? ["BETA/USDT:USDT"] : ["ALPHA/USDT:USDT"];
   const forming = swapped ? ["ALPHA/USDT:USDT"] : ["BETA/USDT:USDT"];
+  const noTradeCount = omitDelta ? 0 : 1;
   return {
     contract_version: "dashboard_snapshot_v2",
     schema_version: "2.0",
     snapshot_version: version,
     generated_at: Date.now() / 1000,
     state: "READY",
-    total: 4,
+    total: Object.keys(candidates).length,
     candidates,
     decision_terminal: {
       contract_version: "decision_terminal_v1",
-      counts: { ENTRY_READY: 1, FORMING: 1, ACTIVE: 0, LATE: 1, INVALIDATED: 0, EXPIRED: 0, NO_TRADE: 1, UNAVAILABLE: 0 },
+      counts: { ENTRY_READY: 1, FORMING: 1, ACTIVE: 0, LATE: 1, INVALIDATED: 0, EXPIRED: 0, NO_TRADE: noTradeCount, UNAVAILABLE: 0 },
       entry_ready: entryReady,
       forming,
       active: [],
       late: ["GAMMA/USDT:USDT"],
-      zero_entry_ready_diagnostics: { entry_ready_zero: false, evaluated_candidates: 4, top_reasons: [], pipeline_degraded: false, systemic_unavailable_reasons: [] },
+      zero_entry_ready_diagnostics: { entry_ready_zero: false, evaluated_candidates: Object.keys(candidates).length, top_reasons: [], pipeline_degraded: false, systemic_unavailable_reasons: [] },
       recent_changes: [],
     },
     final_ranking: {},
@@ -158,7 +160,7 @@ function streamEvent(payload: ReturnType<typeof snapshot>) {
     payload_hash: HASH,
     payload,
     replayed: false,
-    full_snapshot: false,
+    full_snapshot: true,
   };
 }
 
@@ -233,7 +235,7 @@ test("SSE reconnect accepts a newer canonical snapshot and reorders the decision
       return route.fulfill({ status: 200, contentType: "text/event-stream", body: "retry: 50\n\n" });
     }
     await new Promise((resolve) => setTimeout(resolve, 300));
-    const updated = snapshot(2, true);
+    const updated = snapshot(2, true, true);
     const body = `retry: 60000\nid: 2\nevent: snapshot\ndata: ${JSON.stringify(streamEvent(updated))}\n\n`;
     return route.fulfill({ status: 200, contentType: "text/event-stream", body });
   });
@@ -246,6 +248,8 @@ test("SSE reconnect accepts a newer canonical snapshot and reorders the decision
   const firstTableRow = page.locator("#all-candidates tbody tr").first();
   await expect(firstTableRow).toContainText("BETA/USDT:USDT");
   await expect(firstTableRow).toContainText("ENTRY READY");
+  await expect(page.getByText("DELTA/USDT:USDT")).toHaveCount(0);
+  await expect(page.locator("#all-candidates tbody")).not.toContainText("DELTA/USDT:USDT");
   expect(streamRequests).toBeGreaterThanOrEqual(2);
   expect(errors).toEqual([]);
 });

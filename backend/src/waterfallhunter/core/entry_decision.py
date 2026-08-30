@@ -321,6 +321,9 @@ def _leverage_advisory(metrics: dict[str, Any]) -> dict[str, Any] | None:
         "policy_version": str(advisory.get("policy_version") or ""),
         "reason": advisory.get("reason") if isinstance(advisory.get("reason"), str) else None,
     }
+    execution_input = advisory.get("execution_suitability_input")
+    if isinstance(execution_input, dict):
+        packet["execution_suitability_input"] = dict(execution_input)
     return packet
 
 

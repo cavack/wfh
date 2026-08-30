@@ -308,3 +308,27 @@ def test_canonical_advisory_rejects_invalid_gemini_enum_and_confidence(monkeypat
     assert advisory["ai_provider"] == "none"
     assert advisory["ai_advice"] == "UNAVAILABLE"
     assert advisory["ai_confidence"] == 0
+
+
+def test_stable_projection_restores_persisted_canonical_leverage_consistently() -> None:
+    persisted = {
+        "decision": "ENTRY_READY",
+        "event_id": 9,
+        "trade_plan": {"entry_price": 1.0, "stop_loss": 1.05, "take_profit_1": 0.95, "take_profit_2": 0.90, "leverage": 8},
+        "leverage_advisory": {
+            "status": "AVAILABLE", "leverage": 8,
+            "policy_version": "adaptive_signal_leverage_v1", "reason": None,
+            "execution_suitability_input": {"status": "SUITABLE", "observed_samples": 37},
+        },
+    }
+    current = {
+        "decision": "ENTRY_READY",
+        "trade_plan": {"entry_price": 1.01, "stop_loss": 1.06, "take_profit_1": 0.96, "take_profit_2": 0.91, "leverage": 10},
+        "leverage_advisory": {"status": "AVAILABLE", "leverage": 10, "policy_version": "adaptive_signal_leverage_v1"},
+    }
+    metrics = {"leverage_advisory": dict(current["leverage_advisory"]), "applied_leverage": 10}
+    main._restore_persisted_decision_projection(current, metrics, persisted)
+    assert current["trade_plan"]["leverage"] == 8
+    assert current["leverage_advisory"]["leverage"] == 8
+    assert metrics["leverage_advisory"]["leverage"] == 8
+    assert metrics["applied_leverage"] == 8

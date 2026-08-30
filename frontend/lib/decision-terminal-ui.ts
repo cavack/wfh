@@ -150,3 +150,11 @@ export function summarizeCandidateFreshness(
   else if (total > 0 && (fresh > 0 || stale > 0)) state = "mixed";
   return { total, fresh, stale, unknown, state };
 }
+
+export function canonicalLeverageAdvisory(metricsValue: unknown, decisionValue: unknown): Rec {
+  const metrics = record(metricsValue);
+  const decision = record(decisionValue);
+  const live = record(metrics.leverage_advisory);
+  if (Object.keys(live).length > 0) return live;
+  return record(decision.leverage_advisory);
+}

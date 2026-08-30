@@ -5,6 +5,7 @@ import {
   blockedOrOtherBreakdown,
   blockedOrOtherCount,
   candidateFreshness,
+  canonicalLeverageAdvisory,
   pipelineHealthDegraded,
   summarizeCandidateFreshness,
   tradePlanAvailable,
@@ -133,3 +134,9 @@ assert.deepEqual(advisoryPresentation({
 assert.deepEqual(advisoryPresentation({
   ai_advice: "AVOID", ai_confidence: 82, ai_reasoning: "late cascade",
 }), { status: "AVOID", confidence: 82, reasoning: "late cascade" });
+
+assert.deepEqual(
+  canonicalLeverageAdvisory({}, { leverage_advisory: { status: "NOT_RECOMMENDED", leverage: null, policy_version: "adaptive_signal_leverage_v1" } }),
+  { status: "NOT_RECOMMENDED", leverage: null, policy_version: "adaptive_signal_leverage_v1" },
+  "persisted decision leverage advisory must remain canonical when the live metric copy is absent",
+);

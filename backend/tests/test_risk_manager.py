@@ -145,3 +145,41 @@ def test_unexpected_adaptive_calculator_failure_is_explicitly_unavailable(monkey
     assert advisory["leverage"] is None
     assert advisory["reason"] == "adaptive leverage calculation unavailable"
     assert advisory["error_type"] == "RuntimeError"
+
+
+def test_complete_low_score_is_not_recommended_not_unavailable():
+    advisory = build_signal_leverage_advisory(
+        _metrics(score=84.0),
+        {"status": "SUITABLE", "evidence_status": "SUFFICIENT", "observed_samples": 40},
+    )
+    assert advisory["status"] == "NOT_RECOMMENDED"
+    assert advisory["leverage"] is None
+
+
+def test_unknown_execution_suitability_is_unavailable_not_fabricated_eight_x():
+    advisory = build_signal_leverage_advisory(
+        _metrics(score=100.0),
+        {"status": "UNKNOWN", "reason": "required execution metrics missing"},
+    )
+    assert advisory["status"] == "UNAVAILABLE"
+    assert advisory["leverage"] is None
+
+
+def test_leverage_advisory_persists_normalized_execution_suitability_input():
+    execution = {
+        "symbol": "TEST/USDT:USDT",
+        "status": "MARGINAL",
+        "reason": "usable",
+        "evidence_status": "SUFFICIENT",
+        "observed_samples": 37,
+        "observation_span_hours": 38.0,
+        "availability_rate": 0.97,
+        "cost_100_p90_pct": 0.11,
+        "spread_p90_pct": 0.09,
+        "depth_25bps_p50_usdt": 5000.0,
+        "failed_checks": ["spread_p90"],
+        "observational_only": True,
+        "trade_eligible": None,
+    }
+    advisory = build_signal_leverage_advisory(_metrics(score=95.0), execution)
+    assert advisory["execution_suitability_input"] == execution
