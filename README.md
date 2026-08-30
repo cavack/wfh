@@ -12,6 +12,7 @@
 
 [Live Decision Terminal](https://waterfall.booksreadlive.online/dashboard) ·
 [Architecture](docs/ARCHITECTURE.md) ·
+[Architecture diagram suite](docs/diagrams/README.md) ·
 [Decision contract](docs/DECISION_ENGINE.md) ·
 [Developer onboarding](docs/DEVELOPER_ONBOARDING.md) ·
 [Operations](docs/OPERATIONS.md)
