@@ -19,3 +19,7 @@ Examples include stale/missing mandatory market reference, invalid contract iden
 `ENTRY_READY` is an immutable event. It does not silently disappear. Later transitions are explicit (`ACTIVE`, `LATE`, `INVALIDATED`, `EXPIRED`) with timestamp, reason codes, evidence/model version, and provenance.
 
 There is one user-facing readiness score. Research scores may exist internally but cannot become parallel actionable rankings.
+
+## Decision diagrams
+
+See [D04 Canonical Decision Flow](diagrams/04-canonical-decision-flow.md), [D05 Lifecycle State Machine](diagrams/05-lifecycle-state-machine.md), [D06 EntryDecision State Machine](diagrams/06-entry-decision-state-machine.md), [D08 Entry Decision Transaction Sequence](diagrams/08-entry-decision-transaction-sequence.md), and [D09 TradePlan / Risk Flow](diagrams/09-tradeplan-risk-flow.md).
