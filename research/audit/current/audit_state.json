@@ -1,0 +1,75 @@
+{
+  "schema_version": "waterfallhunter_audit_state_v1",
+  "updated_at": "2026-08-30T15:44:39Z",
+  "base_main_sha": "c8a8fc4ea64af9cd3354ae2d68fb73f11a7d5a6c",
+  "production": {
+    "sha": "52fc7dd44868f53b8a6575f0fc6b3c536cbb70e5",
+    "git_state": "detached_clean",
+    "health": "healthy",
+    "live_trading_enabled": false,
+    "db_user_version": 7,
+    "db_journal_mode": "wal",
+    "deploy_lock_held": false,
+    "mutation_performed": false
+  },
+  "routing": {
+    "router_file": "UNAVAILABLE_ON_BASE_SHA",
+    "catalog_file": "UNAVAILABLE_ON_BASE_SHA",
+    "loaded_from_base_sha": [
+      "engineering-orchestrator",
+      "market-data-evidence-quality",
+      "strategy-score-lifecycle",
+      "verification-regression"
+    ]
+  },
+  "active_work": {
+    "worktree": "/srv/wfh-v9",
+    "branch": "research/production-evidence-v9-20260830",
+    "head_sha": "7b84660781a869cb595ae6984be0b79b4cdfc317",
+    "tested_code_commit": "7b84660781a869cb595ae6984be0b79b4cdfc317",
+    "artifact_commit_note": "audit artifacts are documentation-only updates on top of the tested code commit; code content is identical between tested_code_commit and pushed PR head",
+    "pull_request": 96,
+    "pull_request_state": "OPEN",
+    "pull_request_checks": "PENDING_REFRESH_AT_7b84660781a869cb595ae6984be0b79b4cdfc317",
+    "working_tree_dirty": false,
+    "working_tree_code_and_test_diff_sha256": null
+  },
+  "active_branches_and_worktrees": [
+    {"path": "/srv/wfh-worktrees/evidence-v9-20260830", "branch": "research/production-evidence-v9-20260830", "head": "RESOLVE_FROM_GIT_HEAD", "dirty": false},
+    {"path": "/srv/wfh-worktrees/entry-proximity-20260830", "branch": "feature/entry-proximity-observational-20260830", "head": "c8a8fc4ea64af9cd3354ae2d68fb73f11a7d5a6c", "dirty": false},
+    {"path": "/srv/wfh-worktrees/calibration-round16-20260830", "branch": "research/calibration-round16-20260830", "head": "c8a8fc4ea64af9cd3354ae2d68fb73f11a7d5a6c", "dirty": true},
+    {"path": "/srv/wfh-worktrees/fix-stale-entry-actionability-20260830", "branch": "fix/stale-entry-actionability-20260830", "head": "bb51eb63fb37da41cc685316e1c0cea4ebae11ef", "dirty": false},
+    {"path": "/srv/wfh-worktrees/fix-runtime-memory-amplification-20260829", "branch": "fix/runtime-memory-amplification-20260829", "head": "5d5e00f4ab59a96db1f506600ad67b6434201e25", "dirty": false},
+    {"path": "/srv/wfh-worktrees/fix/decision-terminal-contract-20260830", "branch": "fix/decision-terminal-contract-20260830", "head": "38f1e27f845c5110be3edf9df3e34b547ee7894c", "dirty": false},
+    {"path": "/srv/wfh-worktrees/remote-dr-backup-certification-20260828", "branch": "fix/remote-dr-backup-certification-local", "head": "12e762a6fd685994cdd4e43248ac1c457fdf4f9a", "dirty": false}
+  ],
+  "open_defects": [
+    {"id": "V9-001", "priority": "P2", "layer": "PERSISTENCE_REPLAY", "taxonomy": "FIXED_AT_7b84660781a869cb595ae6984be0b79b4cdfc317_PENDING_EXACT_HEAD_CI", "symptom": "v9 rows without replay_context lack explicit replay completeness and unavailable reason", "fix": "persist explicit replay completeness fields and queue every v9 row for EQUIVALENT, MISMATCH, or NOT_REPLAYABLE classification", "verification": "focused plus neighboring and full backend green", "production_status": "NOT_DEPLOYED"},
+    {"id": "V9-002", "priority": "P1", "layer": "TIMESTAMPS_FRESHNESS", "taxonomy": "FIXED_AT_7b84660781a869cb595ae6984be0b79b4cdfc317_PENDING_EXACT_HEAD_CI", "symptom": "future evidence is clamped to age zero and can pass freshness; non-finite and negative timestamps are not uniformly fail-closed", "fix": "canonical causal-age helper with negative/non-finite rejection, full-precision decision_clock_at for causal comparison with integer packet timestamp preserved, negative-age EntryDecision block, strict derivatives timestamps, provider packet receive-time binding", "verification": "focused plus neighboring and full backend green (1161 passed)", "production_status": "NOT_DEPLOYED"},
+    {"id": "V9-003", "priority": "P1", "layer": "TECHNICAL_TRADE_PLAN", "taxonomy": "FIXED_AT_7b84660781a869cb595ae6984be0b79b4cdfc317_PENDING_EXACT_HEAD_CI", "symptom": "missing causal inputs can be classified through calculator fallback as feasible or infeasible instead of unavailable", "fix": "prevalidate every causal input and expose FEASIBLE, INFEASIBLE, and UNAVAILABLE as distinct statuses; partially invalid captured candle windows no longer reach the calculator", "verification": "focused plus neighboring and full backend green", "production_status": "NOT_DEPLOYED"},
+    {"id": "V9-004", "priority": "P2", "layer": "PERSISTENCE_REPLAY", "taxonomy": "FIXED_AT_7b84660781a869cb595ae6984be0b79b4cdfc317_PENDING_EXACT_HEAD_CI", "symptom": "replay hashes accepted any 64-char strings without verifying them against the embedded canonical decision and stored contract", "fix": "recompute canonical_entry_decision_sha256 and decision_contract_sha256 in _replay_status; mismatch yields REPLAY_CONTEXT_HASH_MISMATCH and replay_complete=false", "verification": "new fail-closed regression tests green", "production_status": "NOT_DEPLOYED"},
+    {"id": "V9-005", "priority": "P2", "layer": "PERSISTENCE_REPLAY", "taxonomy": "FIXED_AT_7b84660781a869cb595ae6984be0b79b4cdfc317_PENDING_EXACT_HEAD_CI", "symptom": "empty freshness or empty trade_plan_feasibility_shadow dictionaries satisfied replay-context completeness", "fix": "require v9 fields (policy version, age limits, measured ages, pass flags; shadow version/available/feasible/status/trade_eligible) inside nested sections", "verification": "parameterized regression tests green", "production_status": "NOT_DEPLOYED"},
+    {"id": "V9-006", "priority": "P1", "layer": "TIMESTAMPS_FRESHNESS", "taxonomy": "FIXED_AT_7b84660781a869cb595ae6984be0b79b4cdfc317_PENDING_EXACT_HEAD_CI", "symptom": "fractional reference_observed_at in the same wall-clock second as the int-truncated decision clock was treated as future and hard-blocked with STALE_REFERENCE", "fix": "full-precision decision_clock_at used for all causal comparisons and replay freshness while decision_evaluated_at keeps the integer packet timestamp", "verification": "precision regression tests green including fail-closed integer-only counter-case", "production_status": "NOT_DEPLOYED"},
+    {"id": "V9-007", "priority": "P2", "layer": "PERSISTENCE_REPLAY", "taxonomy": "FIXED_AT_7b84660781a869cb595ae6984be0b79b4cdfc317_PENDING_EXACT_HEAD_CI", "symptom": "reference-failure rows were recorded before the canonical invalidation decision existed, so their v9 schema omitted lifecycle id, canonical decision, freshness results and hashes", "fix": "build the invalidation decision and a complete replay context (UNAVAILABLE technical shadow, decision contract hash) BEFORE recording; rows without a canonical decision remain explicitly REPLAY_CONTEXT_ABSENT", "verification": "existing reference-failure regression green; reordering verified", "production_status": "NOT_DEPLOYED"},
+    {"id": "V9-008", "priority": "P2", "layer": "TECHNICAL_TRADE_PLAN", "taxonomy": "FIXED_AT_7b84660781a869cb595ae6984be0b79b4cdfc317_PENDING_EXACT_HEAD_CI", "symptom": "captured candle windows with partially invalid (NaN/non-positive high) rows could propagate NaN into recent_high and reach the calculator as valid evidence", "fix": "require every row in the evaluated window to have a finite positive high for the technical shadow; recent_high computation filters non-finite rows; all-invalid windows stay UNAVAILABLE", "verification": "fail-closed behavior covered by validator tests and full backend green", "production_status": "NOT_DEPLOYED"},
+    {"id": "V9-009", "priority": "P2", "layer": "DERIVATIVES_EVIDENCE", "taxonomy": "FIXED_AT_7b84660781a869cb595ae6984be0b79b4cdfc317_PENDING_EXACT_HEAD_CI", "symptom": "future-timestamp rejection was only proven through the funding domain; taker, top-trader and OI domains were not independently tested", "fix": "parameterized test on a valid baseline proves independent rejection for funding, taker, top trader and open interest; taker history future row proven excluded from causal change", "verification": "parameterized derivatives tests green", "production_status": "NOT_DEPLOYED"}
+  ],
+  "completed_investigations": [
+    "fresh canonical main, Production, runtime, DB, deploy-lock, open PR and worktree inventory",
+    "PR 96 exact-head diff and ordinary CI status refresh",
+    "canonical WFH skill routing from base main SHA",
+    "source inspection locating the three V9 root causes",
+    "regression-first fixes for v9 replay completeness, strict timestamp causality, and technical TradePlan tri-state semantics",
+    "full backend, frontend typecheck/build, repository hygiene, runtime parity, WFH skill validation, and diff-check on the exact working tree",
+    "Sonar review remediation for technical-plan complexity, duplicated test fixtures, and test assertion structure",
+    "2026-08-30 round 2: fetched current PR 96 head ce047a7 and all 12 review threads (10 unresolved); verified each finding against current code; fixed 8 valid findings (hash verification, nested context validation, negative timestamps, full-precision decision clock, reference-failure replay context, partial candle windows, per-domain derivatives tests, provenance binding); classified multi_exchange_validator missing-plan-inputs finding STALE (causal prevalidation already present); RED-GREEN with focused 62 and full backend 1161 on exact clean commit 7b84660781a869cb595ae6984be0b79b4cdfc317"
+  ],
+  "artifacts": [
+    {"path": "research/audit/current/v9_red_green_evidence.json", "sha256": "ea9c3517941992c524403abd5d4a859c4a6dbc48f9a57e96a4eb0fb8ab820788", "bound_to": "7b84660781a869cb595ae6984be0b79b4cdfc317"}
+  ],
+  "tests_on_exact_sha": [
+    {"sha": "7b84660781a869cb595ae6984be0b79b4cdfc317", "environment": "LOCAL_ISOLATED_VENV_PYTHON_3_12", "result": "backend_1161_passed_git_diff_check_clean_repository_hygiene_pass_skill_validation_pass_runtime_parity_pass", "qualification": "EXACT_COMMITTED_CLEAN_TREE"},
+    {"sha": "6b9a8b454a69224cbd3b39abe0b911cf54dfe44d", "environment": "GITHUB_ACTIONS", "result": "backend_frontend_dependency_container_hygiene_codeql_sonar_green", "qualification": "REMOTE_ORDINARY_CI_ONLY_HISTORICAL"}
+  ],
+  "next_executable_action": "Push commits 7b84660781a869cb595ae6984be0b79b4cdfc317 (code) plus artifact commit to PR 96, wait for exact-head CI and independent review, resolve review threads only after verifying current code, then release-production-certification. No deploy without release gate."
+}

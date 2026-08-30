@@ -664,6 +664,10 @@ class MultiExchangeGateway:
                 },
             ),
         )
+        # Bind freshness to the completed provider packet, not request start.
+        # This keeps locally received timestamps causal without accepting a
+        # genuinely future-dated exchange observation.
+        retrieved_at = time.time()
 
         result = analyzer.evaluate_binance_rows(
             mapped_symbol=mapped_symbol,
