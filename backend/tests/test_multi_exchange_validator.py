@@ -474,3 +474,61 @@ async def test_cross_check_preserves_entry_decision_candle_contract(monkeypatch)
     )
     assert "STRUCTURE_UNAVAILABLE" not in decision["reason_codes"]
     assert "TIMING_UNAVAILABLE" not in decision["reason_codes"]
+
+
+@pytest.mark.asyncio
+async def test_cross_check_rejects_bad_microstructure_before_fetching_candles():
+    instance = validator()
+    instance.max_cross_exchange_deviation_pct = 5.0
+
+    class FakeExchange:
+        markets = {
+            "TEST/USDT:USDT": {
+                "precision": {"price": 0.01, "amount": 0.001},
+                "contractSize": 1.0,
+                "limits": {"cost": {"min": 5.0}},
+            }
+        }
+
+    exchange = FakeExchange()
+
+    class FakeGateway:
+        async def compatible_market_sources(self, symbol, reference_price, max_deviation_pct):
+            yield {
+                "data": {"last": 100.0, "vwap": 101.0, "quoteVolume": 1_000_000.0},
+                "exchange": "binance",
+                "mapped_symbol": "TEST/USDT:USDT",
+                "exchange_instance": exchange,
+            }
+
+        async def get_confirmation_exchange(self, *args, **kwargs):
+            raise AssertionError("confirmation lookup must not run for a rejected microstructure source")
+
+    class FakeWebsocket:
+        @staticmethod
+        def get_realtime_orderbook(exchange_name, symbol):
+            return {"bids": [[99.9, 10.0]], "asks": [[100.1, 10.0]]}
+
+    class FakeMicrostructure:
+        async def analyze(self, *args, **kwargs):
+            return {"approved": False, "reason": "stale orderbook snapshot"}
+
+    class FakeCandleAnalyzer:
+        timeframes = ("4h", "1h", "15m", "5m")
+
+        async def analyze_candles(self, *args, **kwargs):
+            raise AssertionError("candle collection must not run for a rejected microstructure source")
+
+    instance.gateway = FakeGateway()
+    instance.ws_manager = FakeWebsocket()
+    instance.microstructure = FakeMicrostructure()
+    instance.candle_analyzer = FakeCandleAnalyzer()
+
+    result = await instance.cross_check_symbol(
+        "TEST/USDT:USDT", reference_price=100.0, reference_source="test"
+    )
+
+    assert result["is_valid"] is False
+    assert result["metrics"]["source_failures"] == [
+        {"exchange": "binance", "reason": "stale orderbook snapshot"}
+    ]

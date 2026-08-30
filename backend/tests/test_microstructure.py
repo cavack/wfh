@@ -117,3 +117,79 @@ def test_source_capture_keeps_every_orderbook_level_consumed_by_production():
     assert result["ask_depth_usdt"] == pytest.approx(
         MicrostructureAnalyzer._depth(captured[-1]["asks"])
     )
+
+
+def test_trade_fetch_starts_before_delayed_orderbook_sampling():
+    events = []
+
+    class ConcurrentExchange:
+        def __init__(self):
+            self.book_calls = 0
+
+        async def fetch_order_book(self, symbol, limit):
+            self.book_calls += 1
+            events.append(f"book_{self.book_calls}")
+            now = int(time.time() * 1000)
+            return {"timestamp": now, "bids": [[10.0, 100.0]], "asks": [[10.1, 100.0]]}
+
+        async def fetch_trades(self, symbol, limit):
+            events.append("trades_started")
+            now = int(time.time() * 1000)
+            return [
+                {"timestamp": now, "side": "sell", "price": 10.0, "amount": 1.0}
+                for _ in range(20)
+            ]
+
+    now = int(time.time() * 1000)
+    first = {"timestamp": now, "bids": [[10.0, 100.0]], "asks": [[10.1, 100.0]]}
+    result = asyncio.run(
+        MicrostructureAnalyzer(snapshot_delay_seconds=0.0).analyze(
+            ConcurrentExchange(),
+            "TEST/USDT:USDT",
+            first,
+            {
+                "limits": {"amount": {"min": 0.01}, "cost": {"min": 1.0}},
+                "contractSize": 1.0,
+            },
+        )
+    )
+
+    assert result["source_capture"]["raw_trades_captured"] is True
+    assert events.index("trades_started") < events.index("book_1")
+
+
+def test_microstructure_cancels_parallel_trade_fetch_when_analysis_is_cancelled():
+    async def scenario():
+        trade_started = asyncio.Event()
+        trade_cancelled = asyncio.Event()
+
+        class SlowExchange:
+            async def fetch_order_book(self, symbol, limit):
+                await asyncio.sleep(10)
+
+            async def fetch_trades(self, symbol, limit):
+                trade_started.set()
+                try:
+                    await asyncio.sleep(10)
+                except asyncio.CancelledError:
+                    trade_cancelled.set()
+                    raise
+
+        now = int(time.time() * 1000)
+        first = {"timestamp": now, "bids": [[10.0, 100.0]], "asks": [[10.1, 100.0]]}
+        task = asyncio.create_task(
+            MicrostructureAnalyzer(snapshot_delay_seconds=0.0).analyze(
+                SlowExchange(),
+                "TEST/USDT:USDT",
+                first,
+                {"limits": {}, "contractSize": 1.0},
+            )
+        )
+        await trade_started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+        assert trade_cancelled.is_set()
+
+    asyncio.run(scenario())

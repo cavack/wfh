@@ -166,3 +166,19 @@ def test_deploy_cleans_staged_image_bundle_on_success_and_failure() -> None:
     cleanup_index = main_sequence.index("cleanup_incoming_artifacts", edge)
     certificate = main_sequence.index('cat > "${STATE_DIR}/last-successful-deploy.txt"')
     assert edge < cleanup_index < certificate
+
+
+def test_collapsed_research_diagnostics_are_lazy_mounted() -> None:
+    page = (ROOT / "frontend/app/page.tsx").read_text(encoding="utf-8")
+    assert "const [researchOpen, setResearchOpen] = useState(false);" in page
+    details = page.split('<details id="research"', maxsplit=1)[1]
+    details = details.split('</details>', maxsplit=1)[0]
+    assert "onToggle={(event) => setResearchOpen(event.currentTarget.open)}" in details
+    assert "{researchOpen ? (" in details
+    conditional = details.split("{researchOpen ? (", maxsplit=1)[1]
+    assert "<OutcomeEvidence />" in conditional
+    assert "<RecentSignals />" in conditional
+    assert "<HistoricalOutcomes />" in conditional
+    assert "<ProductionEvidence />" in conditional
+    assert "<FeatureReplay />" in conditional
+    assert "<LifecycleShadow />" in conditional
