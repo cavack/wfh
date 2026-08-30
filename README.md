@@ -235,10 +235,14 @@ docker compose config --quiet
 # Build the backend image, then bootstrap the managed SQLite schema
 # in the persistent waterfall_data volume before runtime startup.
 docker compose build waterfall-backend
-docker compose run --rm waterfall-backend \
-  python -m waterfallhunter.migrate_database \
-  --db-path /app/data/waterfall_registry.db \
-  --apply --source-revision "$(git rev-parse HEAD)"
+docker compose run --rm \
+  -e SOURCE_REVISION="$(git rev-parse HEAD)" \
+  waterfall-backend sh -ec '
+    python -m waterfallhunter.migrate_database \
+      --db-path "$REGISTRY_DB_PATH" \
+      --apply \
+      --source-revision "$SOURCE_REVISION"
+  '
 
 # Build the remaining images and start the local SIGNAL_ONLY stack.
 docker compose up --build -d
