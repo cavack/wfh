@@ -18,3 +18,7 @@ Replay, recorder health, historical outcomes, lifecycle shadow, funnel diagnosti
 ## Failure semantics
 
 When no entry is ready the terminal reports `NO ENTRY READY SIGNALS` and dominant blockers instead of presenting a Top-3 observational list as an entry cue.
+
+## Transport diagrams
+
+See [D11 Dashboard / API / SSE](diagrams/11-dashboard-api-sse.md) for bootstrap, stream, replay, fallback, and lazy research loading, and [D12 Notification Delivery](diagrams/12-notification-delivery.md) for the downstream durable notification boundary.
