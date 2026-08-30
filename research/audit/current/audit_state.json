@@ -1,6 +1,6 @@
 {
   "schema_version": "waterfallhunter_audit_state_v1",
-  "updated_at": "2026-08-30T18:31:25Z",
+  "updated_at": "2026-08-30T19:12:08Z",
   "base_main_sha": "65c063ffea6209ecd84b224656bbc627ff811898",
   "production": {
     "sha": "65c063ffea6209ecd84b224656bbc627ff811898",
@@ -36,7 +36,8 @@
     "working_tree_dirty": false,
     "working_tree_code_and_test_diff_sha256": null
   },
-  "continuation_work": {"worktree":"/srv/wfh-worktrees/vertical-e2e-20260830","branch":"test/vertical-e2e-20260830","base_sha":"65c063ffea6209ecd84b224656bbc627ff811898","phase":"POST_DEPLOY_V9_VALIDATION_AND_VERTICAL_E2E"},
+  "continuation_work": {"worktree":"/srv/wfh-worktrees/vertical-e2e-20260830","branch":"test/vertical-e2e-20260830","base_sha":"65c063ffea6209ecd84b224656bbc627ff811898","head_sha":"df35bf041685ac43a4edb8c08892897fccd378c9","phase":"VERTICAL_E2E_GREEN_BROWSER_E2E_PENDING"},
+  "vertical_e2e_leverage_checkpoint": {"code_sha":"df35bf041685ac43a4edb8c08892897fccd378c9","leverage_root_cause":"legacy get_leverage(symbol) populated applied_leverage before canonical EntryDecision while adaptive leverage ran only later in TRIGGERED","canonical_live_leverage":"build_signal_leverage_advisory -> recommend_signal_leverage","leverage_states":["AVAILABLE","UNAVAILABLE","NOT_RECOMMENDED"],"advisory_only":true,"vertical_e2e":"GREEN","vertical_paths":["deterministic_success","missing_market_fail_closed","advisory_unavailable_non_gating","advisory_not_recommended_non_gating"],"exact_sha_verification":{"targeted_neighboring":"129 passed","full_backend":"1170 passed, 2 warnings","frontend_typecheck":"PASS","frontend_build":"PASS","frontend_contract":"PASS","repository_hygiene":"PASS tracked_files=448","runtime_parity":"PASS","skill_validation":"PASS","git_diff_check":"PASS"},"production_mutation":false},
   "active_branches_and_worktrees": [
     {"path": "/srv/wfh-worktrees/evidence-v9-20260830", "branch": "research/production-evidence-v9-20260830", "head": "RESOLVE_FROM_GIT_HEAD", "dirty": false},
     {"path": "/srv/wfh-worktrees/entry-proximity-20260830", "branch": "feature/entry-proximity-observational-20260830", "head": "c8a8fc4ea64af9cd3354ae2d68fb73f11a7d5a6c", "dirty": false},
@@ -69,11 +70,14 @@
   ],
   "artifacts": [
     {"path": "research/audit/current/v9_red_green_evidence.json", "sha256": "ea9c3517941992c524403abd5d4a859c4a6dbc48f9a57e96a4eb0fb8ab820788", "bound_to": "7b84660781a869cb595ae6984be0b79b4cdfc317"},
-    {"path":"research/audit/current/post_deploy_v9_validation.json","sha256":"b7c56ac481a7a685d3b6dbccbc7dc022a0619aca1df99cddc4f3ac084bdbf679","bound_to":"65c063ffea6209ecd84b224656bbc627ff811898"}
+    {"path":"research/audit/current/post_deploy_v9_validation.json","sha256":"b7c56ac481a7a685d3b6dbccbc7dc022a0619aca1df99cddc4f3ac084bdbf679","bound_to":"65c063ffea6209ecd84b224656bbc627ff811898"},
+    {"path":"research/audit/current/leverage_vertical_e2e_evidence.json","sha256":"5d570fe6801341e74e802628a90c3ad1dfff594b5fed4c23e38b509a968bc790","bound_to":"df35bf041685ac43a4edb8c08892897fccd378c9"},
+    {"path":"research/audit/current/replay_scientific_semantics.json","sha256":"ecfb8c6567403b533fe7e9b3d392b49e94f6678a146202fe990ae484f44550d0","bound_to":"65c063ffea6209ecd84b224656bbc627ff811898"}
   ],
   "tests_on_exact_sha": [
     {"sha": "7b84660781a869cb595ae6984be0b79b4cdfc317", "environment": "LOCAL_ISOLATED_VENV_PYTHON_3_12", "result": "backend_1161_passed_git_diff_check_clean_repository_hygiene_pass_skill_validation_pass_runtime_parity_pass", "qualification": "EXACT_COMMITTED_CLEAN_TREE"},
-    {"sha": "6b9a8b454a69224cbd3b39abe0b911cf54dfe44d", "environment": "GITHUB_ACTIONS", "result": "backend_frontend_dependency_container_hygiene_codeql_sonar_green", "qualification": "REMOTE_ORDINARY_CI_ONLY_HISTORICAL"}
+    {"sha": "6b9a8b454a69224cbd3b39abe0b911cf54dfe44d", "environment": "GITHUB_ACTIONS", "result": "backend_frontend_dependency_container_hygiene_codeql_sonar_green", "qualification": "REMOTE_ORDINARY_CI_ONLY_HISTORICAL"},
+    {"sha":"df35bf041685ac43a4edb8c08892897fccd378c9","environment":"LOCAL_EXACT_COMMIT_DOCKER_PLUS_FRONTEND_NODE","result":"backend_1170_passed_targeted_neighbors_129_passed_frontend_typecheck_build_contract_pass_repository_hygiene_runtime_parity_skill_validation_diff_check_pass","qualification":"EXACT_COMMITTED_CODE_SHA"}
   ],
-  "next_executable_action": "Convert the proven deterministic vertical calculation prototype into success/fail-closed umbrella regressions in /srv/wfh-worktrees/vertical-e2e-20260830, then add deterministic browser E2E. Do not repeat merge/deploy and keep LIVE_TRADING_ENABLED=false."
+  "next_executable_action": "Implement deterministic Playwright browser E2E against the now-green vertical baseline, then run the operational TP/SL, score/rank, LATE, Evidence≈98%, and leverage consistency audit. Keep LIVE_TRADING_ENABLED=false and do not merge/deploy before exact-head CI/review."
 }

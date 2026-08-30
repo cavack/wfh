@@ -1,0 +1,36 @@
+{
+  "schema_version": "waterfallhunter_replay_scientific_semantics_v1",
+  "source_sha": "65c063ffea6209ecd84b224656bbc627ff811898",
+  "checkpoint_post_deploy_v9_rows": 315,
+  "dimensions": {
+    "REPLAY_COMPLETE": {
+      "meaning": "The persisted canonical decision can be deterministically reconstructed from its recorded causal context and verified hashes.",
+      "true_count_at_checkpoint": 315,
+      "false_count_at_checkpoint": 0,
+      "does_not_imply": ["MARKET_EVIDENCE_FULLY_OBSERVED", "SCIENTIFICALLY_EVALUABLE"]
+    },
+    "MARKET_EVIDENCE_FULLY_OBSERVED": {
+      "meaning": "All market-evidence families required by the chosen scientific question were actually observed rather than represented by an explicit unavailable state.",
+      "strict_all_families_true_count_at_checkpoint": 0,
+      "evidence": {
+        "explicit_liquidation_flow_unavailable_rows": 254,
+        "upstream_market_source_unavailable_rows": 61
+      }
+    },
+    "SCIENTIFICALLY_EVALUABLE": {
+      "meaning": "Eligibility for a scientific analysis is analysis-specific and must be established from point-in-time evidence availability, provenance, sample rules, and the predeclared study protocol.",
+      "global_count": null,
+      "classification": "ANALYSIS_SPECIFIC_NOT_INFERRED_FROM_REPLAY_COMPLETE",
+      "default_exclusion": {
+        "upstream_market_source_unavailable_rows": 61,
+        "reason": "These rows may be deterministic replay-complete NO_TRADE decisions, but incomplete market observation must not be treated as a fully observed scientific sample."
+      },
+      "qualification": "The 254 rows with explicit liquidation-flow unavailability also require analysis-specific treatment; replay completeness does not fill the missing liquidation evidence."
+    }
+  },
+  "v9_semantics_change_required": false,
+  "notes": [
+    "Do not force replay_complete=false merely because a market evidence family was unavailable when the NO_TRADE decision is deterministically reconstructable.",
+    "Unavailable evidence remains unavailable; it is never converted to zero, pass, fail, or directional evidence."
+  ]
+}
