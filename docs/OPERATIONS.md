@@ -25,6 +25,10 @@ journalctl -u waterfallhunter.service -n 200 --no-pager
 
 Backend `/livez` is process liveness. `/api/health`/readiness verifies scanner/hunter/database/runtime progress. Frontend and monitoring services have container healthchecks.
 
+## Operations diagrams
+
+See [D02 Runtime Deployment Topology](diagrams/02-runtime-deployment-topology.md), [D14 Observability / Incident Flow](diagrams/14-observability-incident-flow.md), and [D15 CI / Release / Production Certification](diagrams/15-ci-release-production-certification.md).
+
 ## Safety
 
 Do not use `docker compose down -v`. Persistent database state must survive runtime replacement. `LIVE_TRADING_ENABLED=false` must remain visible in runtime certification.
