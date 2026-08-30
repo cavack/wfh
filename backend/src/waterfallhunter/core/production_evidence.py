@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import json
 import logging
@@ -10,15 +11,68 @@ from typing import Any
 
 from waterfallhunter.core.managed_sqlite import connect_managed_sqlite
 from waterfallhunter.core.schema_contract import require_managed_schema
+from waterfallhunter.core.signal_metadata import canonical_sha256
 
 
 logger = logging.getLogger("WaterfallHunter.ProductionEvidence")
 
 
+def build_production_replay_context(
+    *,
+    lifecycle_id: int,
+    entry_decision: dict[str, Any],
+    decision_evaluated_at: int,
+    analysis_observed_at: int | float,
+    reference_observed_at: int | float | None,
+    policy_version: str,
+    max_analysis_age_seconds: float,
+    max_reference_age_seconds: float,
+    trade_plan_feasibility_shadow: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Freeze observational replay context without changing decision semantics."""
+    decision_at = float(decision_evaluated_at)
+    analysis_at = float(analysis_observed_at)
+    reference_at = (
+        float(reference_observed_at)
+        if isinstance(reference_observed_at, (int, float))
+        and not isinstance(reference_observed_at, bool)
+        else None
+    )
+    analysis_age = max(0.0, decision_at - analysis_at)
+    reference_age = (
+        max(0.0, decision_at - reference_at)
+        if reference_at is not None
+        else None
+    )
+    return {
+        "canonical_lifecycle_id": int(lifecycle_id),
+        "canonical_entry_decision": copy.deepcopy(entry_decision),
+        "canonical_entry_decision_sha256": canonical_sha256(entry_decision),
+        "decision_evaluated_at": int(decision_evaluated_at),
+        "analysis_observed_at": analysis_observed_at,
+        "reference_observed_at": reference_observed_at,
+        "freshness": {
+            "policy_version": str(policy_version),
+            "max_analysis_age_seconds": float(max_analysis_age_seconds),
+            "max_reference_age_seconds": float(max_reference_age_seconds),
+            "analysis_age_seconds": analysis_age,
+            "reference_age_seconds": reference_age,
+            "analysis_pass": analysis_age <= float(max_analysis_age_seconds),
+            "reference_pass": (
+                reference_age is not None
+                and reference_age <= float(max_reference_age_seconds)
+            ),
+        },
+        "trade_plan_feasibility_shadow": copy.deepcopy(
+            trade_plan_feasibility_shadow or {}
+        ),
+    }
+
+
 class ProductionEvidenceRecorder:
     """Fail-open, immutable recorder for real production decision packets."""
 
-    SCHEMA_VERSION = "production_decision_evidence_v8"
+    SCHEMA_VERSION = "production_decision_evidence_v9"
     CAPTURE_MODE = "versioned_experimental_profile_plus_final_events"
 
     def __init__(
@@ -106,6 +160,7 @@ class ProductionEvidenceRecorder:
         reference_price: Any,
         result: dict,
         decision_contract: dict | None,
+        replay_context: dict | None,
     ) -> dict:
         metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
         metric_fields = (
@@ -119,7 +174,7 @@ class ProductionEvidenceRecorder:
             "experimental_trigger_threshold",
             "error", "source_failures", "selected_quote_volume_usdt",
             "relative_weakness_features", "dex_context", "onchain_context",
-            "source_capture",
+            "liquidation_flow", "cascade_intelligence", "source_capture",
         )
         captured_metrics = {
             key: cls._safe(metrics.get(key))
@@ -268,6 +323,7 @@ class ProductionEvidenceRecorder:
                 "decision_reason": cls._safe(decision_reason),
             },
             "decision_contract": cls._safe(contract),
+            "replay_context": cls._safe(replay_context or {}),
             "metrics": captured_metrics,
             "capture_limitations": {
                 "raw_ohlcv_captured": raw_ohlcv,
@@ -308,6 +364,7 @@ class ProductionEvidenceRecorder:
         result: dict,
         decision_contract: dict | None = None,
         observed_at: float | None = None,
+        replay_context: dict | None = None,
     ) -> bool:
         try:
             timestamp = float(time.time() if observed_at is None else observed_at)
@@ -339,6 +396,7 @@ class ProductionEvidenceRecorder:
                 reference_price=reference_price,
                 result=safe_result,
                 decision_contract=decision_contract,
+                replay_context=replay_context,
             )
             raw = json.dumps(payload, allow_nan=False, sort_keys=True, separators=(",", ":")).encode()
             compressed = zlib.compress(raw, level=6)

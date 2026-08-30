@@ -192,6 +192,55 @@ class MultiExchangeValidator:
         )
         return setup, capture, reference
 
+    def build_technical_trade_plan_shadow(
+        self,
+        metrics: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Calculate an observational plan with the canonical calculator only."""
+        candle_results = metrics.get("candle_analysis")
+        ticker = metrics.get("ticker")
+        microstructure = metrics.get("microstructure")
+        if not all(
+            isinstance(packet, dict)
+            for packet in (candle_results, ticker, microstructure)
+        ):
+            return {
+                "version": "technical_trade_plan_shadow_v1",
+                "observational_only": True,
+                "hard_gating_allowed": False,
+                "trade_eligible": False,
+                "available": False,
+                "feasible": None,
+                "status": "UNAVAILABLE",
+                "reason": "required causal plan inputs unavailable",
+            }
+        source_capture = microstructure.get("source_capture")
+        market_info = (
+            source_capture.get("market")
+            if isinstance(source_capture, dict)
+            and isinstance(source_capture.get("market"), dict)
+            else {}
+        )
+        setup, _, reference = self._position_setup_from_candle_capture(
+            candle_results=candle_results,
+            ticker=ticker,
+            microstructure=microstructure,
+            market_info=market_info,
+        )
+        status = str(setup.get("status") or "UNAVAILABLE")
+        feasible = not status.upper().startswith("REJECTED")
+        return {
+            "version": "technical_trade_plan_shadow_v1",
+            "observational_only": True,
+            "hard_gating_allowed": False,
+            "trade_eligible": False,
+            "available": True,
+            "feasible": feasible,
+            "status": status,
+            "setup": setup,
+            "reference": reference,
+        }
+
     def _attach_position_setup_from_capture(
         self,
         metrics: dict[str, Any],

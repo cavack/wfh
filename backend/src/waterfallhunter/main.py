@@ -64,7 +64,10 @@ from waterfallhunter.core.lifecycle_v2_shadow_store import (
     LifecycleV2ShadowStoreError,
 )
 from waterfallhunter.core.historical_outcome_store import HistoricalOutcomeStore
-from waterfallhunter.core.production_evidence import ProductionEvidenceRecorder
+from waterfallhunter.core.production_evidence import (
+    ProductionEvidenceRecorder,
+    build_production_replay_context,
+)
 from waterfallhunter.core.decision_provenance import (
     build_decision_contract,
     decision_contract_sha256,
@@ -2127,6 +2130,46 @@ async def evaluate_candidate(
             persisted_decision,
         )
     result_metrics["entry_decision"] = entry_decision
+
+    try:
+        technical_trade_plan_shadow = validator.build_technical_trade_plan_shadow(
+            result_metrics
+        )
+    except Exception as exc:
+        logger.warning(
+            "Technical TradePlan shadow unavailable for %s: %s",
+            symbol,
+            type(exc).__name__,
+        )
+        technical_trade_plan_shadow = {
+            "version": "technical_trade_plan_shadow_v1",
+            "observational_only": True,
+            "hard_gating_allowed": False,
+            "trade_eligible": False,
+            "available": False,
+            "feasible": None,
+            "status": "UNAVAILABLE",
+            "reason": type(exc).__name__,
+        }
+    replay_policy = EntryDecisionPolicy()
+    replay_context = build_production_replay_context(
+        lifecycle_id=int(data.get("lifecycle_id") or 1),
+        entry_decision=entry_decision,
+        decision_evaluated_at=int(entry_decision.get("evaluated_at") or decision_now),
+        analysis_observed_at=analysis_observed_at,
+        reference_observed_at=(
+            float(reference_observed_at)
+            if isinstance(reference_observed_at, (int, float))
+            and not isinstance(reference_observed_at, bool)
+            else None
+        ),
+        policy_version=replay_policy.version,
+        max_analysis_age_seconds=replay_policy.max_analysis_age_seconds,
+        max_reference_age_seconds=replay_policy.max_reference_age_seconds,
+        trade_plan_feasibility_shadow=technical_trade_plan_shadow,
+    )
+    replay_context["decision_contract_sha256"] = decision_contract_hash
+
     if event_id is not None and entry_decision.get("decision") in {"ENTRY_READY", "FORMING"}:
         _start_background_task(
             _refresh_canonical_ai_advisory(
@@ -2216,6 +2259,7 @@ async def evaluate_candidate(
             reference_price=lbank_price,
             result=result,
             decision_contract=decision_contract,
+            replay_context=replay_context,
         )
 
     production_evidence_recorder.record(
@@ -2225,6 +2269,7 @@ async def evaluate_candidate(
         reference_price=lbank_price,
         result=result,
         decision_contract=decision_contract,
+        replay_context=replay_context,
     )
 
     _record_derivative_packet_outcome(

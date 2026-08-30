@@ -447,7 +447,7 @@ class FeatureReplayStore:
                 LEFT JOIN production_feature_replay_results_v2 r
                   ON r.snapshot_id = s.id AND r.replay_version = ?
                 WHERE r.snapshot_id IS NULL
-                  AND s.schema_version = 'production_decision_evidence_v8'
+                  AND s.schema_version IN ('production_decision_evidence_v8','production_decision_evidence_v9')
                   AND s.production_evidence_complete_v5 = 1
                   AND s.code_sha256_v5 = ?
                   AND s.decision_packet_complete = 1

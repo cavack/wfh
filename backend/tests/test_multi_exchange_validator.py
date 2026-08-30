@@ -1,3 +1,5 @@
+import copy
+
 import pytest
 
 from waterfallhunter.core.multi_exchange_validator import MultiExchangeValidator
@@ -279,6 +281,44 @@ def test_position_setup_reuses_captured_5m_candles_without_a_new_fetch():
     assert capture["reused_existing_capture"] is True
     assert capture["sample_count"] == 30
     assert reference == {"price": 100.0, "source": "ticker.last"}
+
+
+def test_technical_trade_plan_shadow_reuses_canonical_calculator_without_mutating_metrics():
+    instance = validator()
+    instance.position_calculator = PositionCalculator()
+    history = [
+        [1_788_000_000_000 + i * 300_000, 100.0, 101.0, 99.0, 100.0, 1_000.0]
+        for i in range(30)
+    ]
+    market = {
+        "precision": {"price": 0.01, "amount": 0.001},
+        "contractSize": 1.0,
+        "limits": {"cost": {"min": 5.0}},
+    }
+    metrics = {
+        "candle_analysis": {"source_capture": {"primary_closed_ohlcv": {"5m": history}}},
+        "ticker": {"last": 100.0},
+        "microstructure": {
+            "best_bid": 100.0,
+            "best_ask": 100.1,
+            "entry_slippage_pct": 0.05,
+            "exit_slippage_pct": 0.05,
+            "source_capture": {"market": market},
+        },
+    }
+    before = copy.deepcopy(metrics)
+    canonical, _, _ = instance._position_setup_from_candle_capture(
+        candle_results=metrics["candle_analysis"],
+        ticker=metrics["ticker"],
+        microstructure=metrics["microstructure"],
+        market_info=market,
+    )
+    shadow = instance.build_technical_trade_plan_shadow(metrics)
+    assert metrics == before
+    assert shadow["observational_only"] is True
+    assert shadow["hard_gating_allowed"] is False
+    assert shadow["setup"] == canonical
+    assert shadow["status"] == canonical["status"]
 
 
 def test_live_position_setup_does_not_invent_trade_plan_expiry(monkeypatch):
