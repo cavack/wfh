@@ -75,6 +75,28 @@ def test_adaptive_leverage_requires_strict_finite_signal_inputs():
         recommend_signal_leverage({"score": None}, {"status": "SUITABLE"})
 
 
+def test_supplied_invalid_exit_slippage_is_unavailable_not_silently_fallback():
+    for invalid in (-0.01, float("nan")):
+        advisory = build_signal_leverage_advisory(
+            _metrics(exit_slippage=invalid),
+            {"available": True, "status": "SUITABLE", "maximum_leverage": 18},
+        )
+        assert advisory["status"] == "UNAVAILABLE"
+        assert advisory["leverage"] is None
+        assert "execution friction" in advisory["reason"]
+
+
+def test_absent_exit_slippage_uses_entry_slippage_fallback():
+    metrics = _metrics(slippage=0.12)
+    metrics["microstructure"].pop("exit_slippage_pct")
+    advisory = build_signal_leverage_advisory(
+        metrics,
+        {"available": True, "status": "SUITABLE", "maximum_leverage": 18},
+    )
+    assert advisory["status"] == "AVAILABLE"
+    assert advisory["leverage"] == 12
+
+
 def test_adaptive_leverage_uses_exit_side_slippage_ceiling():
     leverage = recommend_signal_leverage(
         _metrics(slippage=0.03, exit_slippage=0.29),

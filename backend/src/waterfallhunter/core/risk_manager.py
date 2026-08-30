@@ -50,13 +50,23 @@ def recommend_signal_leverage(
     micro = metrics.get("microstructure") if isinstance(metrics.get("microstructure"), dict) else {}
     spread = _finite_number(micro.get("spread_pct"))
     slippage = _finite_number(micro.get("slippage_pct"))
-    exit_slippage = _finite_number(micro.get("exit_slippage_pct"))
+    raw_exit_slippage = micro.get("exit_slippage_pct")
+    exit_slippage = _finite_number(raw_exit_slippage)
 
     if score is None or score < 0.0 or score > 100.0:
         raise LeverageUnavailableError("strict finite score required for leverage")
     if entry is None or stop is None or entry <= 0 or stop <= entry:
         raise LeverageUnavailableError("valid short entry and structural stop required for leverage")
-    if spread is None or slippage is None or spread < 0 or slippage < 0:
+    if (
+        spread is None
+        or slippage is None
+        or spread < 0
+        or slippage < 0
+        or (
+            raw_exit_slippage is not None
+            and (exit_slippage is None or exit_slippage < 0)
+        )
+    ):
         raise LeverageUnavailableError("finite execution friction required for leverage")
 
     features = metrics.get("candle_features") if isinstance(metrics.get("candle_features"), dict) else {}
