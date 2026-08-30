@@ -19,6 +19,7 @@ import {
   blockedOrOtherBreakdown,
   blockedOrOtherCount,
   candidateFreshness,
+  evidenceCoverageWeightText,
   pipelineHealthDegraded,
   tradePlanAvailable,
 } from "@/lib/decision-terminal-ui";
@@ -130,7 +131,7 @@ function DecisionCard({ symbol, candidate }: Readonly<{ symbol: string; candidat
         </div>
         <div className="mt-4 flex flex-wrap items-end justify-between gap-3">
           <div><p className="text-xs uppercase tracking-wider text-slate-500">Entry readiness</p><p className="text-4xl font-semibold tabular-nums">{readiness === undefined ? "—" : readiness.toFixed(1)}<span className="text-base text-slate-500">/100</span></p></div>
-          <div className="text-right text-xs text-slate-400"><p>Evidence {coverage === undefined ? "—" : `${coverage.toFixed(0)}%`}</p><p>Leverage {finite(plan.leverage) === undefined ? "—" : `${number(plan.leverage, 0)}×`}</p></div>
+          <div className="text-right text-xs text-slate-400"><p>Evidence weight {evidenceCoverageWeightText(coverage)}</p><p>Leverage {finite(plan.leverage) === undefined ? "—" : `${number(plan.leverage, 0)}×`}</p></div>
         </div>
         {hasPlan ? (
           <>

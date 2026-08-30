@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { History, ShieldCheck } from "lucide-react";
+import { evidenceCoverageWeightText } from "@/lib/decision-terminal-ui";
 
 type DecisionRow = {
   event_id?: number;
@@ -81,7 +82,7 @@ export function RecentSignals() {
       {!report ? <p className="mt-5 text-sm text-slate-500">{failed ? "Recent decision history is unavailable; no rows are inferred." : "Loading immutable decision history…"}</p> : rows.length === 0 ? <p className="mt-5 text-sm text-slate-500">No persisted decisions are available.</p> : (
         <div className="table-scroll mt-5">
           <table className="data-table min-w-[980px]">
-            <thead><tr><th>Changed</th><th>Symbol</th><th>Previous</th><th>Decision</th><th>Readiness</th><th>Data</th><th>Entry</th><th>SL</th><th>TP1</th><th>TP2</th><th>Expiry</th><th>AI</th></tr></thead>
+            <thead><tr><th>Changed</th><th>Symbol</th><th>Previous</th><th>Decision</th><th>Readiness</th><th>Evidence weight</th><th>Entry</th><th>SL</th><th>TP1</th><th>TP2</th><th>Expiry</th><th>AI</th></tr></thead>
             <tbody>{rows.map((row) => {
               const plan = row.trade_plan ?? {};
               const advisory = row.ai_advisory ?? {};
@@ -91,7 +92,7 @@ export function RecentSignals() {
               <td>{row.previous_decision ?? "—"}</td>
               <td className="font-medium text-cyan-100">{row.decision ?? "UNAVAILABLE"}</td>
               <td className="font-mono">{n(row.entry_readiness, 1)}%</td>
-              <td className="font-mono">{n(row.evidence_coverage_pct, 1)}%</td>
+              <td className="font-mono">{evidenceCoverageWeightText(row.evidence_coverage_pct)}</td>
               <td className="font-mono">{n(plan.entry_price, 8)}</td>
               <td className="font-mono">{n(plan.stop_loss, 8)}</td>
               <td className="font-mono">{n(plan.take_profit_1, 8)}</td>

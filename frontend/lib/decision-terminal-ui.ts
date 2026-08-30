@@ -150,3 +150,12 @@ export function summarizeCandidateFreshness(
   else if (total > 0 && (fresh > 0 || stale > 0)) state = "mixed";
   return { total, fresh, stale, unknown, state };
 }
+
+export const EVIDENCE_COVERAGE_WEIGHT_MAX = 98;
+
+export function evidenceCoverageWeightText(value: unknown): string {
+  const parsed = finite(value);
+  if (parsed === undefined) return "—";
+  const text = Number.isInteger(parsed) ? parsed.toFixed(0) : parsed.toFixed(1);
+  return `${text}/${EVIDENCE_COVERAGE_WEIGHT_MAX}`;
+}

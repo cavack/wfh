@@ -5,6 +5,7 @@ import {
   blockedOrOtherBreakdown,
   blockedOrOtherCount,
   candidateFreshness,
+  evidenceCoverageWeightText,
   pipelineHealthDegraded,
   summarizeCandidateFreshness,
   tradePlanAvailable,
@@ -133,3 +134,7 @@ assert.deepEqual(advisoryPresentation({
 assert.deepEqual(advisoryPresentation({
   ai_advice: "AVOID", ai_confidence: 82, ai_reasoning: "late cascade",
 }), { status: "AVOID", confidence: 82, reasoning: "late cascade" });
+
+assert.equal(evidenceCoverageWeightText(98), "98/98");
+assert.equal(evidenceCoverageWeightText(63), "63/98");
+assert.equal(evidenceCoverageWeightText(undefined), "—");
