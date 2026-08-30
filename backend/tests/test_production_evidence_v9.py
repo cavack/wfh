@@ -67,7 +67,8 @@ def test_v9_records_replay_context_and_exact_liquidation_without_mutating_input(
     assert result == before
     payload = recorder.read_payload(1)
     assert payload["schema_version"] == "production_decision_evidence_v9"
-    assert payload["observational_only"] is True and payload["hard_gating_allowed"] is False
+    assert payload["observational_only"] is True
+    assert payload["hard_gating_allowed"] is False
     assert payload["replay_complete"] is True
     assert payload["replay_unavailable_reason"] is None
     assert payload["replay_context"] == context
@@ -217,11 +218,12 @@ def test_runtime_passes_canonical_replay_context_to_v9_recorder(monkeypatch):
         raise RuntimeError("stop-after-v9-capture")
 
     monkeypatch.setattr(main.production_evidence_recorder, "record", capture_record)
+    evaluation = main.evaluate_candidate(symbol, {
+        "status":"PRE-TRIGGER", "lifecycle_id":lifecycle_id,
+        "scan_eligible":True, "quote_volume":3_000_000.0, "last_price":1.0,
+    })
     with pytest.raises(RuntimeError, match="stop-after-v9-capture"):
-        asyncio.run(main.evaluate_candidate(symbol, {
-            "status":"PRE-TRIGGER", "lifecycle_id":lifecycle_id,
-            "scan_eligible":True, "quote_volume":3_000_000.0, "last_price":1.0,
-        }))
+        asyncio.run(evaluation)
 
     assert len(captured) == 1
     context = captured[0]

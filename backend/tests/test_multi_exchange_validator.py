@@ -283,9 +283,7 @@ def test_position_setup_reuses_captured_5m_candles_without_a_new_fetch():
     assert reference == {"price": 100.0, "source": "ticker.last"}
 
 
-def test_technical_trade_plan_shadow_reuses_canonical_calculator_without_mutating_metrics():
-    instance = validator()
-    instance.position_calculator = PositionCalculator()
+def _technical_shadow_metrics():
     history = [
         [1_788_000_000_000 + i * 300_000, 100.0, 101.0, 99.0, 100.0, 1_000.0]
         for i in range(30)
@@ -295,7 +293,7 @@ def test_technical_trade_plan_shadow_reuses_canonical_calculator_without_mutatin
         "contractSize": 1.0,
         "limits": {"cost": {"min": 5.0}},
     }
-    metrics = {
+    return {
         "candle_analysis": {"source_capture": {"primary_closed_ohlcv": {"5m": history}}},
         "ticker": {"last": 100.0},
         "microstructure": {
@@ -306,6 +304,13 @@ def test_technical_trade_plan_shadow_reuses_canonical_calculator_without_mutatin
             "source_capture": {"market": market},
         },
     }
+
+
+def test_technical_trade_plan_shadow_reuses_canonical_calculator_without_mutating_metrics():
+    instance = validator()
+    instance.position_calculator = PositionCalculator()
+    metrics = _technical_shadow_metrics()
+    market = metrics["microstructure"]["source_capture"]["market"]
     before = copy.deepcopy(metrics)
     canonical, _, _ = instance._position_setup_from_candle_capture(
         candle_results=metrics["candle_analysis"],
@@ -337,25 +342,7 @@ def test_technical_trade_plan_shadow_reuses_canonical_calculator_without_mutatin
 def test_technical_trade_plan_shadow_missing_causal_input_is_unavailable(missing_path):
     instance = validator()
     instance.position_calculator = PositionCalculator()
-    history = [
-        [1_788_000_000_000 + i * 300_000, 100.0, 101.0, 99.0, 100.0, 1_000.0]
-        for i in range(30)
-    ]
-    metrics = {
-        "candle_analysis": {"source_capture": {"primary_closed_ohlcv": {"5m": history}}},
-        "ticker": {"last": 100.0},
-        "microstructure": {
-            "best_bid": 100.0,
-            "best_ask": 100.1,
-            "entry_slippage_pct": 0.05,
-            "exit_slippage_pct": 0.05,
-            "source_capture": {"market": {
-                "precision": {"price": 0.01, "amount": 0.001},
-                "contractSize": 1.0,
-                "limits": {"cost": {"min": 5.0}},
-            }},
-        },
-    }
+    metrics = _technical_shadow_metrics()
     if missing_path == "history":
         metrics["candle_analysis"]["source_capture"]["primary_closed_ohlcv"].pop("5m")
     elif missing_path == "entry_price":
@@ -386,25 +373,7 @@ def test_technical_trade_plan_shadow_calculator_rejection_is_infeasible(monkeypa
         "calculate_short_position",
         lambda *args, **kwargs: {"status": "REJECTED: Invalid take-profit geometry"},
     )
-    history = [
-        [1_788_000_000_000 + i * 300_000, 100.0, 101.0, 99.0, 100.0, 1_000.0]
-        for i in range(30)
-    ]
-    metrics = {
-        "candle_analysis": {"source_capture": {"primary_closed_ohlcv": {"5m": history}}},
-        "ticker": {"last": 100.0},
-        "microstructure": {
-            "best_bid": 100.0,
-            "best_ask": 100.1,
-            "entry_slippage_pct": 0.05,
-            "exit_slippage_pct": 0.05,
-            "source_capture": {"market": {
-                "precision": {"price": 0.01, "amount": 0.001},
-                "contractSize": 1.0,
-                "limits": {"cost": {"min": 5.0}},
-            }},
-        },
-    }
+    metrics = _technical_shadow_metrics()
 
     shadow = instance.build_technical_trade_plan_shadow(metrics)
 

@@ -1,6 +1,6 @@
 {
   "schema_version": "waterfallhunter_audit_state_v1",
-  "updated_at": "2026-08-30T15:38:01Z",
+  "updated_at": "2026-08-30T15:44:39Z",
   "base_main_sha": "c8a8fc4ea64af9cd3354ae2d68fb73f11a7d5a6c",
   "production": {
     "sha": "52fc7dd44868f53b8a6575f0fc6b3c536cbb70e5",
@@ -30,7 +30,7 @@
     "pull_request_state": "OPEN",
     "pull_request_checks": "ORDINARY_CHECKS_GREEN_AT_6b9a8b454a69224cbd3b39abe0b911cf54dfe44d",
     "working_tree_dirty": false,
-    "working_tree_code_and_test_diff_sha256": "c5b11af0371de63e0d7a20c4d3bf52bb8d7fd4ba933b2a4c69969bcddc97215a"
+    "working_tree_code_and_test_diff_sha256": "764173a51d41f6f90ff636e35d8253eb1a43e8e4d3e2796383f64a79595f3a9a"
   },
   "active_branches_and_worktrees": [
     {"path": "/srv/wfh-worktrees/evidence-v9-20260830", "branch": "research/production-evidence-v9-20260830", "head": "RESOLVE_FROM_GIT_HEAD", "dirty": false},
@@ -52,14 +52,15 @@
     "canonical WFH skill routing from base main SHA",
     "source inspection locating the three V9 root causes",
     "regression-first fixes for v9 replay completeness, strict timestamp causality, and technical TradePlan tri-state semantics",
-    "full backend, frontend typecheck/build, repository hygiene, runtime parity, WFH skill validation, and diff-check on the exact working tree"
+    "full backend, frontend typecheck/build, repository hygiene, runtime parity, WFH skill validation, and diff-check on the exact working tree",
+    "Sonar review remediation for technical-plan complexity, duplicated test fixtures, and test assertion structure"
   ],
   "artifacts": [
-    {"path": "research/audit/current/v9_red_green_evidence.json", "sha256": "0c83fd3bf6c46dcc3203dc157e6827cca0340104a78958b650a03be6d871451a"}
+    {"path": "research/audit/current/v9_red_green_evidence.json", "sha256": "173e096b3e48a0a0db917095f17f5ff0216ece0cc42c5386743e44acd6d43f8b"}
   ],
   "tests_on_exact_sha": [
     {"sha": "6b9a8b454a69224cbd3b39abe0b911cf54dfe44d", "environment": "GITHUB_ACTIONS", "result": "backend_frontend_dependency_container_hygiene_codeql_sonar_green", "qualification": "REMOTE_ORDINARY_CI_ONLY"},
-    {"sha": "6b9a8b454a69224cbd3b39abe0b911cf54dfe44d+diff:c5b11af0371de63e0d7a20c4d3bf52bb8d7fd4ba933b2a4c69969bcddc97215a", "environment": "ISOLATED_LOCAL_CONTAINERS", "result": "1150_backend_passed_frontend_typecheck_build_gates_passed", "qualification": "UNCOMMITTED_EXACT_WORKING_TREE"}
+    {"sha": "524cf70dc11340ec8d3eb037dea6029d01a0e026+diff:764173a51d41f6f90ff636e35d8253eb1a43e8e4d3e2796383f64a79595f3a9a", "environment": "ISOLATED_LOCAL_CONTAINERS", "result": "1150_backend_passed_frontend_typecheck_build_gates_passed", "qualification": "UNCOMMITTED_EXACT_WORKING_TREE_AFTER_REVIEW_REMEDIATION"}
   ],
   "next_executable_action": "Push the verified V9 fix set to PR 96, then refresh exact-head CI and independent review before release certification."
 }

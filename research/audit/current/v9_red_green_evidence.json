@@ -1,8 +1,8 @@
 {
   "schema_version": "wfh_v9_red_green_evidence_v1",
-  "recorded_at": "2026-08-30T15:38:01Z",
+  "recorded_at": "2026-08-30T15:44:39Z",
   "base_head": "6b9a8b454a69224cbd3b39abe0b911cf54dfe44d",
-  "code_and_test_diff_sha256": "c5b11af0371de63e0d7a20c4d3bf52bb8d7fd4ba933b2a4c69969bcddc97215a",
+  "code_and_test_diff_sha256": "764173a51d41f6f90ff636e35d8253eb1a43e8e4d3e2796383f64a79595f3a9a",
   "red": [
     {
       "scope": "v9 replay completeness, causal freshness, technical TradePlan tri-state, canonical EntryDecision",
@@ -32,8 +32,9 @@
     {"scope": "frontend typecheck using lock-identical dependencies", "result": "PASS"},
     {"scope": "frontend production build using lock-identical dependencies", "result": "PASS"},
     {"scope": "runtime declaration parity", "result": "PASS"},
-    {"scope": "repository hygiene", "result": "PASS, 444 tracked files"},
-    {"scope": "WFH skill validation and git diff check", "result": "PASS"}
+    {"scope": "repository hygiene", "result": "PASS, 446 tracked files"},
+    {"scope": "WFH skill validation and git diff check", "result": "PASS"},
+    {"scope": "Sonar review remediation", "result": "technical-plan validation decomposed, duplicated fixtures consolidated, two test smells removed; targeted 36 passed and full backend 1150 passed"}
   ],
   "environment_notes": [
     "The first full-backend container run had only five repository-canonicalization environment failures because the source manifest was not mounted; the corrected full run used the same git-generated manifest contract as CI.",

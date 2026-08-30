@@ -192,6 +192,71 @@ class MultiExchangeValidator:
         )
         return setup, capture, reference
 
+    @staticmethod
+    def _technical_trade_plan_unavailable(reasons: list[str]) -> dict[str, Any]:
+        return {
+            "version": "technical_trade_plan_shadow_v1",
+            "observational_only": True,
+            "hard_gating_allowed": False,
+            "trade_eligible": False,
+            "available": False,
+            "feasible": None,
+            "status": "UNAVAILABLE",
+            "reason": "required causal plan inputs unavailable",
+            "unavailable_reasons": sorted(set(reasons)),
+        }
+
+    @classmethod
+    def _captured_technical_history(
+        cls,
+        candle_results: dict[str, Any],
+    ) -> list:
+        source = candle_results.get("source_capture")
+        primary = (
+            source.get("primary_closed_ohlcv")
+            if isinstance(source, dict)
+            and isinstance(source.get("primary_closed_ohlcv"), dict)
+            else {}
+        )
+        history = primary.get("5m")
+        if not isinstance(history, list):
+            return []
+        return history if any(
+            isinstance(row, (list, tuple))
+            and len(row) >= 6
+            and cls._finite_positive(row[2])
+            for row in history[-24:]
+        ) else []
+
+    @classmethod
+    def _captured_technical_market(
+        cls,
+        microstructure: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        source = microstructure.get("source_capture")
+        market = source.get("market") if isinstance(source, dict) else None
+        if not isinstance(market, dict):
+            return None
+        precision = market.get("precision")
+        limits = market.get("limits")
+        cost = limits.get("cost") if isinstance(limits, dict) else None
+        required_values = (
+            precision.get("price") if isinstance(precision, dict) else None,
+            precision.get("amount") if isinstance(precision, dict) else None,
+            market.get("contractSize"),
+            cost.get("min") if isinstance(cost, dict) else None,
+        )
+        return market if all(cls._finite_positive(value) for value in required_values) else None
+
+    @staticmethod
+    def _finite_nonnegative(value: Any) -> bool:
+        return bool(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+            and float(value) >= 0
+        )
+
     def build_technical_trade_plan_shadow(
         self,
         metrics: dict[str, Any],
@@ -200,90 +265,33 @@ class MultiExchangeValidator:
         candle_results = metrics.get("candle_analysis")
         ticker = metrics.get("ticker")
         microstructure = metrics.get("microstructure")
-        unavailable_reasons = []
-        if not isinstance(candle_results, dict):
-            unavailable_reasons.append("CANDLE_PACKET")
-        if not isinstance(ticker, dict):
-            unavailable_reasons.append("TICKER_PACKET")
-        if not isinstance(microstructure, dict):
-            unavailable_reasons.append("MICROSTRUCTURE_PACKET")
-        if unavailable_reasons:
-            return {
-                "version": "technical_trade_plan_shadow_v1",
-                "observational_only": True,
-                "hard_gating_allowed": False,
-                "trade_eligible": False,
-                "available": False,
-                "feasible": None,
-                "status": "UNAVAILABLE",
-                "reason": "required causal plan inputs unavailable",
-                "unavailable_reasons": unavailable_reasons,
-            }
-        candle_source = candle_results.get("source_capture")
-        primary = (
-            candle_source.get("primary_closed_ohlcv")
-            if isinstance(candle_source, dict)
-            and isinstance(candle_source.get("primary_closed_ohlcv"), dict)
-            else {}
+        packet_checks = (
+            ("CANDLE_PACKET", candle_results),
+            ("TICKER_PACKET", ticker),
+            ("MICROSTRUCTURE_PACKET", microstructure),
         )
-        history = primary.get("5m") if isinstance(primary.get("5m"), list) else []
-        if not history or not any(
-            isinstance(row, (list, tuple))
-            and len(row) >= 6
-            and self._finite_positive(row[2])
-            for row in history[-24:]
-        ):
-            unavailable_reasons.append("HISTORY")
-        if not self._finite_positive(microstructure.get("best_bid")):
-            unavailable_reasons.append("ENTRY_PRICE")
+        packet_reasons = [
+            reason for reason, packet in packet_checks if not isinstance(packet, dict)
+        ]
+        if packet_reasons:
+            return self._technical_trade_plan_unavailable(packet_reasons)
+
+        history = self._captured_technical_history(candle_results)
         reference_price, _ = self._position_reference_price(ticker, microstructure)
-        if not self._finite_positive(reference_price):
-            unavailable_reasons.append("REFERENCE_PRICE")
-        for field, reason in (
-            ("entry_slippage_pct", "ENTRY_SLIPPAGE"),
-            ("exit_slippage_pct", "EXIT_SLIPPAGE"),
-        ):
-            value = microstructure.get(field)
-            if (
-                isinstance(value, bool)
-                or not isinstance(value, (int, float))
-                or not math.isfinite(float(value))
-                or float(value) < 0
-            ):
-                unavailable_reasons.append(reason)
-        source_capture = microstructure.get("source_capture")
-        market_info = (
-            source_capture.get("market")
-            if isinstance(source_capture, dict)
-            and isinstance(source_capture.get("market"), dict)
-            else None
+        market_info = self._captured_technical_market(microstructure)
+        causal_checks = (
+            ("HISTORY", bool(history)),
+            ("ENTRY_PRICE", self._finite_positive(microstructure.get("best_bid"))),
+            ("REFERENCE_PRICE", self._finite_positive(reference_price)),
+            ("ENTRY_SLIPPAGE", self._finite_nonnegative(microstructure.get("entry_slippage_pct"))),
+            ("EXIT_SLIPPAGE", self._finite_nonnegative(microstructure.get("exit_slippage_pct"))),
+            ("MARKET_FILTERS", market_info is not None),
         )
-        if not isinstance(market_info, dict):
-            unavailable_reasons.append("MARKET_FILTERS")
-        else:
-            precision = market_info.get("precision")
-            limits = market_info.get("limits")
-            cost_limits = limits.get("cost") if isinstance(limits, dict) else None
-            required_market_values = (
-                precision.get("price") if isinstance(precision, dict) else None,
-                precision.get("amount") if isinstance(precision, dict) else None,
-                market_info.get("contractSize"),
-                cost_limits.get("min") if isinstance(cost_limits, dict) else None,
-            )
-            if not all(self._finite_positive(value) for value in required_market_values):
-                unavailable_reasons.append("MARKET_FILTERS")
+        unavailable_reasons = [
+            reason for reason, available in causal_checks if not available
+        ]
         if unavailable_reasons:
-            return {
-                "version": "technical_trade_plan_shadow_v1",
-                "observational_only": True,
-                "hard_gating_allowed": False,
-                "trade_eligible": False,
-                "available": False,
-                "feasible": None,
-                "status": "UNAVAILABLE",
-                "reason": "required causal plan inputs unavailable",
-                "unavailable_reasons": sorted(set(unavailable_reasons)),
-            }
+            return self._technical_trade_plan_unavailable(unavailable_reasons)
         setup, _, reference = self._position_setup_from_candle_capture(
             candle_results=candle_results,
             ticker=ticker,
