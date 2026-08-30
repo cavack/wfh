@@ -20,7 +20,7 @@
 
 > [!IMPORTANT]
 > WaterfallHunter is `SIGNAL_ONLY`. `LIVE_TRADING_ENABLED=false` is mandatory, and the supported runtime does not place or cancel exchange orders. Only canonical `ENTRY_READY` is a proactive signal state. Research rankings, lifecycle labels, replay results, execution observations, historical outcomes, and AI output are non-actionable evidence surfaces.
-
+<!-- alert-separator -->
 > [!CAUTION]
 > This repository is research software, not financial advice. `entry_readiness` is a versioned evidence score—not a probability, promise, or expected return.
 
@@ -232,7 +232,15 @@ cp .env.example .env
 # Validate the resolved configuration before starting anything.
 docker compose config --quiet
 
-# Build and start the local SIGNAL_ONLY stack.
+# Build the backend image, then bootstrap the managed SQLite schema
+# in the persistent waterfall_data volume before runtime startup.
+docker compose build waterfall-backend
+docker compose run --rm waterfall-backend \
+  python -m waterfallhunter.migrate_database \
+  --db-path /app/data/waterfall_registry.db \
+  --apply --source-revision "$(git rev-parse HEAD)"
+
+# Build the remaining images and start the local SIGNAL_ONLY stack.
 docker compose up --build -d
 docker compose ps
 ```
@@ -270,7 +278,7 @@ make typecheck
 make build
 ```
 
-Equivalent direct checks:
+A partial direct sequence for backend/frontend tests and build is:
 
 ```bash
 python -m pip install --only-binary=:all: --require-hashes -r backend/requirements.lock
@@ -354,7 +362,7 @@ The `CI` workflow runs:
 - backend tests and migration smoke tests inside the exact backend artifact;
 - OCI revision-label verification;
 - repository hygiene and credential-pattern checks;
-- upload of the exact tested backend/frontend/watchdog image bundle.
+- upload of the exact built, digest-recorded, revision-labelled backend/frontend/watchdog image bundle; the backend artifact is additionally exercised by backend tests and migration smoke.
 
 Production deployment is deliberately separate from an ordinary push:
 
@@ -364,7 +372,7 @@ protected main
   → backup / migration / rollback / recovery gates
   → explicit workflow_dispatch with deploy_production=true
   → repeated required checks
-  → exact tested artifact bundle
+  → exact CI-built, digest-recorded artifact bundle
   → guarded host deployment
   → health, schema, safety, and OCI revision certification
 ```
