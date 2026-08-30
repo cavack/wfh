@@ -50,6 +50,7 @@ def recommend_signal_leverage(
     micro = metrics.get("microstructure") if isinstance(metrics.get("microstructure"), dict) else {}
     spread = _finite_number(micro.get("spread_pct"))
     slippage = _finite_number(micro.get("slippage_pct"))
+    has_exit_slippage = "exit_slippage_pct" in micro
     raw_exit_slippage = micro.get("exit_slippage_pct")
     exit_slippage = _finite_number(raw_exit_slippage)
 
@@ -63,7 +64,7 @@ def recommend_signal_leverage(
         or spread < 0
         or slippage < 0
         or (
-            raw_exit_slippage is not None
+            has_exit_slippage
             and (exit_slippage is None or exit_slippage < 0)
         )
     ):

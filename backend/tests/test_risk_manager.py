@@ -86,6 +86,18 @@ def test_supplied_invalid_exit_slippage_is_unavailable_not_silently_fallback():
         assert "execution friction" in advisory["reason"]
 
 
+def test_explicit_null_exit_slippage_is_unavailable_not_absent_fallback():
+    metrics = _metrics(slippage=0.12)
+    metrics["microstructure"]["exit_slippage_pct"] = None
+    advisory = build_signal_leverage_advisory(
+        metrics,
+        {"available": True, "status": "SUITABLE", "maximum_leverage": 18},
+    )
+    assert advisory["status"] == "UNAVAILABLE"
+    assert advisory["leverage"] is None
+    assert "execution friction" in advisory["reason"]
+
+
 def test_absent_exit_slippage_uses_entry_slippage_fallback():
     metrics = _metrics(slippage=0.12)
     metrics["microstructure"].pop("exit_slippage_pct")
