@@ -1519,6 +1519,47 @@ class MultiExchangeValidator:
                 )
                 continue
 
+            market_info = (
+                ex_instance
+                .markets
+                .get(
+                    mapped_sym,
+                    {},
+                )
+            )
+
+            microstructure = (
+                await self
+                .microstructure
+                .analyze(
+                    ex_instance,
+                    mapped_sym,
+                    orderbook,
+                    market_info,
+                )
+            )
+
+            if (
+                self
+                ._requires_source_fallback(
+                    microstructure
+                )
+            ):
+                source_failures.append(
+                    {
+                        "exchange": (
+                            ex_name
+                        ),
+                        "reason": (
+                            microstructure
+                            .get(
+                                "reason"
+                            )
+                        ),
+                    }
+                )
+                continue
+
             (
                 confirmation_exchange,
                 confirmation_symbol,
@@ -1587,47 +1628,6 @@ class MultiExchangeValidator:
                         "reason": (
                             "incomplete completed "
                             "OHLCV"
-                        ),
-                    }
-                )
-                continue
-
-            market_info = (
-                ex_instance
-                .markets
-                .get(
-                    mapped_sym,
-                    {},
-                )
-            )
-
-            microstructure = (
-                await self
-                .microstructure
-                .analyze(
-                    ex_instance,
-                    mapped_sym,
-                    orderbook,
-                    market_info,
-                )
-            )
-
-            if (
-                self
-                ._requires_source_fallback(
-                    microstructure
-                )
-            ):
-                source_failures.append(
-                    {
-                        "exchange": (
-                            ex_name
-                        ),
-                        "reason": (
-                            microstructure
-                            .get(
-                                "reason"
-                            )
                         ),
                     }
                 )

@@ -117,6 +117,7 @@ export default function Dashboard() {
   const [mode, setMode] = useState<ConnectionMode>("reconnecting");
   const [generatedAt, setGeneratedAt] = useState<number | null>(null);
   const [freshnessNow, setFreshnessNow] = useState<number | undefined>(undefined);
+  const [researchOpen, setResearchOpen] = useState(false);
   const latestVersion = useRef(0);
 
   useEffect(() => {
@@ -321,32 +322,33 @@ export default function Dashboard() {
           <DecisionTerminal terminal={data.decision_terminal} candidates={data.candidates as Record<string, Candidate>} nowSeconds={freshnessNow} />
         ) : null}
 
-        <details id="research" className="panel mx-auto mt-8 max-w-7xl scroll-mt-32 overflow-hidden">
+        <details id="research" onToggle={(event) => setResearchOpen(event.currentTarget.open)} className="panel mx-auto mt-8 max-w-7xl scroll-mt-32 overflow-hidden">
           <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-4 text-sm font-semibold text-slate-200">
             <span className="flex items-center gap-2"><ShieldCheck size={16} className="text-slate-400" />Research, validation & raw diagnostics</span>
             <span className="text-xs font-normal text-slate-500">Secondary · never an entry command</span>
           </summary>
-          <div className="border-t border-slate-800 px-4 py-5 sm:px-5">
-            <OutcomeEvidence />
-            <RecentSignals />
-            <HistoricalOutcomes />
-            <ProductionEvidence />
-            <FeatureReplay />
-            <LifecycleShadow />
-            <BacktestLab />
-            <SignalFunnel funnel={data?.signal_funnel as SignalFunnelData | undefined} />
-            <FinalRanking ranking={data?.final_ranking} />
-            <details className="mt-6 rounded-xl border border-slate-800 bg-slate-950/30 p-4">
-              <summary className="cursor-pointer text-sm font-semibold text-slate-300">Raw candidate cards</summary>
-              <div className="mt-5">
-                {renderGroup("Confirmed STRICT diagnostics", groups.strictConfirmed)}
-                {renderGroup("STRICT setup diagnostics", groups.setupPipeline)}
-                {renderGroup("Experimental research", groups.experimental, "experimental")}
-                {renderGroup("Watch and discovery", groups.discovery)}
-              </div>
-
-            </details>
-          </div>
+          {researchOpen ? (
+            <div className="border-t border-slate-800 px-4 py-5 sm:px-5">
+              <OutcomeEvidence />
+              <RecentSignals />
+              <HistoricalOutcomes />
+              <ProductionEvidence />
+              <FeatureReplay />
+              <LifecycleShadow />
+              <BacktestLab />
+              <SignalFunnel funnel={data?.signal_funnel as SignalFunnelData | undefined} />
+              <FinalRanking ranking={data?.final_ranking} />
+              <details className="mt-6 rounded-xl border border-slate-800 bg-slate-950/30 p-4">
+                <summary className="cursor-pointer text-sm font-semibold text-slate-300">Raw candidate cards</summary>
+                <div className="mt-5">
+                  {renderGroup("Confirmed STRICT diagnostics", groups.strictConfirmed)}
+                  {renderGroup("STRICT setup diagnostics", groups.setupPipeline)}
+                  {renderGroup("Experimental research", groups.experimental, "experimental")}
+                  {renderGroup("Watch and discovery", groups.discovery)}
+                </div>
+              </details>
+            </div>
+          ) : null}
         </details>
 
       </div>

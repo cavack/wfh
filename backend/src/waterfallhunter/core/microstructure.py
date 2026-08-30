@@ -45,14 +45,22 @@ class MicrostructureAnalyzer:
             return {"approved": False, "reason": "invalid exchange filters: contract size unavailable"}
         first.setdefault("_received_at", time.time())
         snapshots = [first]
+        trades_task = asyncio.create_task(exchange.fetch_trades(symbol, limit=100))
         try:
             for _ in range(2):
                 await asyncio.sleep(self.snapshot_delay_seconds)
                 snapshot = await exchange.fetch_order_book(symbol, limit=20)
                 snapshot["_received_at"] = time.time()
                 snapshots.append(snapshot)
-            trades = await exchange.fetch_trades(symbol, limit=100)
+            trades = await trades_task
+        except asyncio.CancelledError:
+            trades_task.cancel()
+            await asyncio.gather(trades_task, return_exceptions=True)
+            raise
         except Exception:
+            if not trades_task.done():
+                trades_task.cancel()
+            await asyncio.gather(trades_task, return_exceptions=True)
             return {"approved": False, "reason": "missing live orderbook snapshots or trades"}
         if any(not item.get("bids") or not item.get("asks") for item in snapshots):
             return {"approved": False, "reason": "empty live orderbook"}
