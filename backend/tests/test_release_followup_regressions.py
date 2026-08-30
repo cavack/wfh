@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import importlib.util
 from pathlib import Path
 
@@ -70,12 +71,14 @@ def test_notification_delivery_ready_requires_top_level_healthy_state() -> None:
 def test_decision_terminal_renders_when_active_candidate_set_is_empty() -> None:
     page = (ROOT / "frontend/app/page.tsx").read_text(encoding="utf-8")
     assert "data !== null && rows.length > 0" not in page
-    terminal_call = (
-        '<DecisionTerminal terminal={data.decision_terminal} '
-        'candidates={data.candidates as Record<string, Candidate>} />'
+    terminal_call = re.search(
+        r"<DecisionTerminal\s+terminal=\{data\.decision_terminal\}\s+"
+        r"candidates=\{data\.candidates as Record<string, Candidate>\}"
+        r"(?:\s+nowSeconds=\{freshnessNow\})?\s*/>",
+        page,
     )
-    assert terminal_call in page
-    prefix = page.split(terminal_call, maxsplit=1)[0][-180:]
+    assert terminal_call is not None
+    prefix = page[:terminal_call.start()][-180:]
     assert "data !== null" in prefix
 
 

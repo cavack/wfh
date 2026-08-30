@@ -34,6 +34,8 @@ export interface ZeroEntryReadyDiagnostics {
   entry_ready_zero: boolean;
   evaluated_candidates: number;
   top_reasons: DecisionDiagnosticReason[];
+  pipeline_degraded?: boolean;
+  systemic_unavailable_reasons?: DecisionDiagnosticReason[];
 }
 
 export interface DashboardSnapshot {

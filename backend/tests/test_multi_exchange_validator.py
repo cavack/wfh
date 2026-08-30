@@ -1,4 +1,7 @@
+import pytest
+
 from waterfallhunter.core.multi_exchange_validator import MultiExchangeValidator
+from waterfallhunter.core.entry_decision import build_entry_decision
 from waterfallhunter.core.multi_exchange import MultiExchangeGateway
 from waterfallhunter.core.position_calculator import PositionCalculator
 
@@ -348,3 +351,126 @@ def test_validator_drops_stale_liquidation_flow_when_cache_is_unavailable():
     )
     assert "liquidation_flow" not in metrics
     assert "liquidations" not in metrics["data_sources"]
+
+
+@pytest.mark.asyncio
+async def test_cross_check_preserves_entry_decision_candle_contract(monkeypatch):
+    instance = validator()
+    instance.max_cross_exchange_deviation_pct = 5.0
+
+    class FakeExchange:
+        markets = {
+            "TEST/USDT:USDT": {
+                "precision": {"price": 0.01, "amount": 0.001},
+                "contractSize": 1.0,
+                "limits": {"cost": {"min": 5.0}},
+            }
+        }
+
+        async def fetch_order_book(self, symbol, limit=20):
+            return {"bids": [[99.9, 10.0]], "asks": [[100.1, 10.0]]}
+
+    exchange = FakeExchange()
+
+    class FakeGateway:
+        async def compatible_market_sources(self, symbol, reference_price, max_deviation_pct):
+            yield {
+                "data": {"last": 100.0, "vwap": 101.0, "quoteVolume": 1_000_000.0},
+                "exchange": "binance",
+                "mapped_symbol": "TEST/USDT:USDT",
+                "exchange_instance": exchange,
+            }
+
+        async def get_confirmation_exchange(self, symbol, exchange_name, reference_price, max_deviation_pct):
+            return None, None
+
+    class FakeWebsocket:
+        @staticmethod
+        def get_realtime_orderbook(exchange_name, symbol):
+            return {"bids": [[99.9, 10.0]], "asks": [[100.1, 10.0]]}
+
+        @staticmethod
+        def get_realtime_liquidation_flow(exchange_name, symbol, now=None):
+            return None
+
+    details = _complete_candles()
+    candle_results = {
+        "details": details,
+        "breakdown_score": 0,
+        "cross_exchange_confirmed": True,
+        "is_breakdown_confirmed": False,
+    }
+
+    class FakeCandleAnalyzer:
+        timeframes = ("4h", "1h", "15m", "5m")
+
+        async def analyze_candles(self, *args, **kwargs):
+            return candle_results
+
+        @staticmethod
+        def channel_stages(candles):
+            return {
+                "hype": False,
+                "damage": False,
+                "setup": False,
+                "trigger": False,
+                "passed": False,
+            }
+
+    class FakeMicrostructure:
+        async def analyze(self, *args, **kwargs):
+            return _complete_microstructure()
+
+    async def unavailable_derivatives(*args, **kwargs):
+        return {"available": False, "reason": "test derivatives unavailable"}
+
+    async def unavailable_benchmark(*args, **kwargs):
+        return {"available": False, "reason": "test benchmark unavailable"}
+
+    async def no_stage_lifecycle(*args, **kwargs):
+        return None, False
+
+    instance.gateway = FakeGateway()
+    instance.ws_manager = FakeWebsocket()
+    instance.candle_analyzer = FakeCandleAnalyzer()
+    instance.microstructure = FakeMicrostructure()
+    instance._derivatives_context = unavailable_derivatives
+    instance._benchmark_context = unavailable_benchmark
+    instance._advance_stage_lifecycle = no_stage_lifecycle
+    monkeypatch.setattr(
+        "waterfallhunter.core.multi_exchange_validator.build_cascade_evidence",
+        lambda metrics, evaluated_at: {
+            "status": "UNAVAILABLE",
+            "readiness_points": None,
+            "maximum_available": None,
+        },
+    )
+
+    result = await instance.cross_check_symbol(
+        "TEST/USDT:USDT",
+        reference_price=100.0,
+        reference_source="test",
+    )
+    features = result["metrics"]["candle_features"]
+
+    assert features["4h"]["valid"] is True
+    assert features["4h"]["hype_context"] is True
+    assert features["4h"]["bearish_close"] is True
+    assert features["4h"]["volume_acceleration"] is True
+    for timeframe in ("1h", "15m", "5m"):
+        assert features[timeframe]["valid"] is True
+        assert features[timeframe]["reclaim"] is True
+        assert features[timeframe]["repump"] is False
+        assert features[timeframe]["rsi_rollover"] is True
+        assert features[timeframe]["bearish_close"] is True
+        assert features[timeframe]["volume_acceleration"] is True
+
+    decision = build_entry_decision(
+        result["metrics"],
+        "WATCH",
+        evaluated_at=1_788_000_000,
+        analysis_age_seconds=1.0,
+        reference_age_seconds=1.0,
+    )
+    assert "STRUCTURE_UNAVAILABLE" not in decision["reason_codes"]
+    assert "TIMING_UNAVAILABLE" not in decision["reason_codes"]

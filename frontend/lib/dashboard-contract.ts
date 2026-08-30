@@ -23,6 +23,20 @@ function stringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string" && item.length > 0);
 }
 
+function diagnosticReasonArray(value: unknown): boolean {
+  return Array.isArray(value) && value.every((item) => {
+    const row = record(item);
+    return row !== undefined
+      && typeof row.reason === "string"
+      && row.reason.length > 0
+      && Number.isInteger(row.count)
+      && (row.count as number) >= 0
+      && finite(row.share_pct)
+      && (row.share_pct as number) >= 0
+      && (row.share_pct as number) <= 100;
+  });
+}
+
 export function decisionTerminal(value: unknown): DecisionTerminal | undefined {
   const packet = record(value);
   if (!packet || packet.contract_version !== "decision_terminal_v1") return undefined;
@@ -43,7 +57,18 @@ export function decisionTerminal(value: unknown): DecisionTerminal | undefined {
     || typeof diagnostics.entry_ready_zero !== "boolean"
     || !Number.isInteger(diagnostics.evaluated_candidates)
     || (diagnostics.evaluated_candidates as number) < 0
-    || !Array.isArray(diagnostics.top_reasons)) return undefined;
+    || !diagnosticReasonArray(diagnostics.top_reasons)) return undefined;
+  const hasPipelineHealth = diagnostics.pipeline_degraded !== undefined
+    || diagnostics.systemic_unavailable_reasons !== undefined;
+  if (hasPipelineHealth) {
+    if (typeof diagnostics.pipeline_degraded !== "boolean"
+      || !diagnosticReasonArray(diagnostics.systemic_unavailable_reasons)) return undefined;
+    const systemicUnavailable = diagnostics.systemic_unavailable_reasons as JsonObject[];
+    if (diagnostics.pipeline_degraded !== (systemicUnavailable.length > 0)
+      || systemicUnavailable.some((row) => row.count !== diagnostics.evaluated_candidates || row.share_pct !== 100)) {
+      return undefined;
+    }
+  }
   if (packet.entry_ready.length !== Math.min(counts.ENTRY_READY as number, 3)
     || packet.forming.length !== Math.min(counts.FORMING as number, 6)
     || packet.active.length !== Math.min(counts.ACTIVE as number, 6)

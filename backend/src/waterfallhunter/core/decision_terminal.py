@@ -15,6 +15,16 @@ _DIAGNOSTIC_REASONS = frozenset({
     "TRADE_PLAN_UNAVAILABLE",
 })
 
+_SYSTEMIC_UNAVAILABLE_REASONS = frozenset({
+    "STRUCTURE_UNAVAILABLE",
+    "TIMING_UNAVAILABLE",
+    "DERIVATIVES_UNAVAILABLE",
+    "EXECUTION_UNAVAILABLE",
+    "CROSS_EXCHANGE_UNAVAILABLE",
+    "PRICE_LOCATION_UNAVAILABLE",
+    "CASCADE_EVIDENCE_UNAVAILABLE",
+})
+
 _DECISIONS = (
     "ENTRY_READY",
     "FORMING",
@@ -67,14 +77,22 @@ def _zero_entry_ready_diagnostics(
     for candidate in candidates.values():
         counts.update(_diagnostic_reasons(candidate))
     total = len(candidates)
+    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
     top = [
         {"reason": reason, "count": count, "share_pct": round(100.0 * count / total, 1) if total else 0.0}
-        for reason, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:8]
+        for reason, count in ordered[:8]
     ] if entry_ready_count == 0 else []
+    systemic = [
+        {"reason": reason, "count": count, "share_pct": 100.0}
+        for reason, count in ordered
+        if total > 0 and count == total and reason in _SYSTEMIC_UNAVAILABLE_REASONS
+    ]
     return {
         "entry_ready_zero": entry_ready_count == 0,
         "evaluated_candidates": total,
         "top_reasons": top,
+        "pipeline_degraded": bool(systemic),
+        "systemic_unavailable_reasons": systemic,
     }
 
 

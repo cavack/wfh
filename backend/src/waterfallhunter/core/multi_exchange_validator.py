@@ -1871,6 +1871,13 @@ class MultiExchangeValidator:
             "candle_features"
         ] = {
             timeframe: {
+                "valid": context.get("valid"),
+                "hype_context": context.get("hype_context"),
+                "reclaim": context.get("reclaim"),
+                "repump": context.get("repump"),
+                "rsi_rollover": context.get("rsi_rollover"),
+                "bearish_close": context.get("bearish_close"),
+                "volume_acceleration": context.get("volume_acceleration"),
                 "atr_14": (
                     context.get(
                         "atr_14"
