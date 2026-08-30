@@ -20,6 +20,10 @@ Lifecycle (`WATCH`, `FUEL-RICH`, `PRE-TRIGGER`, `ARMED`, `TRIGGERED`, `EXHAUSTED
 - `deploy/`: systemd, nginx, Prometheus, Grafana, and Alertmanager configuration.
 - `scripts/`: validation, migration, backup, calibration, replay, and deployment tooling.
 
+## Architecture diagrams
+
+See the [Architecture Diagram Suite](diagrams/README.md), especially [D01 System Context](diagrams/01-system-context.md), [D02 Runtime Deployment Topology](diagrams/02-runtime-deployment-topology.md), [D03 End-to-End Data Pipeline](diagrams/03-end-to-end-data-pipeline.md), and [D17 Master Architecture Map](diagrams/17-master-architecture-map.md).
+
 ## Safety boundary
 
 `LIVE_TRADING_ENABLED=false` is mandatory. AI is advisory only. Missing or stale evidence is unavailable, never silently bullish or bearish.
