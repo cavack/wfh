@@ -74,13 +74,14 @@ function evidencePacket(candidate: Candidate) {
 }
 
 function SignalLevels({ plan }: Readonly<{ plan: Rec }>) {
+  const hasTp3 = finite(plan.take_profit_3) !== undefined;
   return (
-    <dl className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-5">
+    <dl className={`mt-4 grid grid-cols-2 gap-2 ${hasTp3 ? "sm:grid-cols-5" : "sm:grid-cols-4"}`}>
       <div className="metric-card"><dt>Entry</dt><dd className="mt-1 font-mono">${price(plan.entry_price)}</dd></div>
       <div className="metric-card"><dt>Stop</dt><dd className="mt-1 font-mono text-rose-200">${price(plan.stop_loss)}</dd></div>
       <div className="metric-card"><dt>TP1</dt><dd className="mt-1 font-mono text-emerald-200">${price(plan.take_profit_1)}</dd></div>
       <div className="metric-card"><dt>TP2</dt><dd className="mt-1 font-mono text-emerald-200">${price(plan.take_profit_2)}</dd></div>
-      <div className="metric-card"><dt>TP3</dt><dd className="mt-1 font-mono text-emerald-200">${price(plan.take_profit_3)}</dd></div>
+      {hasTp3 ? <div className="metric-card"><dt>TP3</dt><dd className="mt-1 font-mono text-emerald-200">${price(plan.take_profit_3)}</dd></div> : null}
     </dl>
   );
 }
