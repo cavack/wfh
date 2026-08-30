@@ -9,7 +9,12 @@ import time
 import pytest
 
 from schema_test_support import migrate_test_database
-from waterfallhunter.core.production_evidence import ProductionEvidenceRecorder
+from waterfallhunter.core.production_evidence import (
+    ProductionEvidenceRecorder,
+    build_production_replay_context,
+    causal_age_seconds,
+)
+from waterfallhunter.core.signal_metadata import canonical_sha256
 
 
 def _contract():
@@ -19,6 +24,45 @@ def _contract():
         "strategy": {}, "microstructure": {}, "derivatives": {},
         "position": {}, "recorder": {}, "runtime_settings": {},
     }
+
+
+def _valid_replay_context(**overrides):
+    decision = {
+        "contract_version": "entry_decision_v1",
+        "decision": "FORMING",
+        "entry_readiness": 61.0,
+        "block_reasons": [],
+    }
+    context = {
+        "canonical_lifecycle_id": 7,
+        "canonical_entry_decision": decision,
+        "canonical_entry_decision_sha256": canonical_sha256(decision),
+        "decision_evaluated_at": 110,
+        "decision_clock_at": 110.5,
+        "analysis_observed_at": 100,
+        "reference_observed_at": 105.0,
+        "freshness": {
+            "policy_version": "entry_decision_v1",
+            "max_analysis_age_seconds": 180.0,
+            "max_reference_age_seconds": 60.0,
+            "analysis_age_seconds": 10.0,
+            "reference_age_seconds": 5.0,
+            "analysis_pass": True,
+            "reference_pass": True,
+        },
+        "trade_plan_feasibility_shadow": {
+            "version": "technical_trade_plan_shadow_v1",
+            "observational_only": True,
+            "hard_gating_allowed": False,
+            "trade_eligible": False,
+            "available": True,
+            "feasible": True,
+            "status": "FEASIBLE",
+        },
+        "decision_contract_sha256": canonical_sha256(_contract()),
+    }
+    context.update(overrides)
+    return context
 
 
 def _result():
@@ -52,17 +96,7 @@ def test_v9_records_replay_context_and_exact_liquidation_without_mutating_input(
     recorder = ProductionEvidenceRecorder(db_path)
     result = _result()
     before = copy.deepcopy(result)
-    context = {
-        "canonical_lifecycle_id": 7,
-        "canonical_entry_decision": {"contract_version":"entry_decision_v1","decision":"FORMING","entry_readiness":61.0,"block_reasons":[]},
-        "canonical_entry_decision_sha256": "b" * 64,
-        "decision_evaluated_at": 110,
-        "analysis_observed_at": 100,
-        "reference_observed_at": 105.0,
-        "freshness": {"policy_version":"entry_decision_v1","analysis_age_seconds":10.0,"reference_age_seconds":5.0,"analysis_pass":True,"reference_pass":True},
-        "trade_plan_feasibility_shadow": {"status":"FEASIBLE","entry_price":1.0,"stop_loss":1.02,"take_profit_1":.98,"take_profit_2":.96},
-        "decision_contract_sha256": "c" * 64,
-    }
+    context = _valid_replay_context()
     assert recorder.record("TEST/USDT:USDT", candidate_state="PRE-TRIGGER", reference_source="lbank", reference_price=1.0, result=result, decision_contract=_contract(), observed_at=110.0, replay_context=context)
     assert result == before
     payload = recorder.read_payload(1)
@@ -82,7 +116,6 @@ def test_v9_records_replay_context_and_exact_liquidation_without_mutating_input(
 
 
 def test_replay_context_freezes_freshness_policy_and_canonical_decision():
-    from waterfallhunter.core.production_evidence import build_production_replay_context
 
     decision = {"contract_version":"entry_decision_v1","decision":"ENTRY_READY","entry_readiness":82.0,"block_reasons":[],"lifecycle_id":9}
     context = build_production_replay_context(
@@ -146,7 +179,6 @@ def test_replay_context_never_marks_future_or_nonfinite_evidence_fresh(
     analysis_observed_at,
     reference_observed_at,
 ):
-    from waterfallhunter.core.production_evidence import build_production_replay_context
 
     context = build_production_replay_context(
         lifecycle_id=9,
@@ -235,3 +267,146 @@ def test_runtime_passes_canonical_replay_context_to_v9_recorder(monkeypatch):
     assert context["trade_plan_feasibility_shadow"]["status"] == "FEASIBLE"
     assert isinstance(context["decision_contract_sha256"], str)
     assert len(context["decision_contract_sha256"]) == 64
+
+
+def test_v9_rejects_tampered_replay_hashes_as_fail_closed(tmp_path):
+    db_path = str(migrate_test_database(tmp_path / "evidence.db"))
+
+    recorder = ProductionEvidenceRecorder(db_path)
+    assert recorder.record(
+        "TEST/USDT:USDT",
+        candidate_state="PRE-TRIGGER",
+        reference_source="lbank",
+        reference_price=1.0,
+        result=_result(),
+        decision_contract=_contract(),
+        observed_at=110.0,
+        replay_context=_valid_replay_context(
+            canonical_entry_decision_sha256="b" * 64,
+        ),
+    )
+    payload = recorder.read_payload(1)
+    assert payload["replay_complete"] is False
+    assert payload["replay_unavailable_reason"] == "REPLAY_CONTEXT_HASH_MISMATCH"
+
+    recorder = ProductionEvidenceRecorder(
+        str(migrate_test_database(tmp_path / "evidence2.db"))
+    )
+    assert recorder.record(
+        "TEST/USDT:USDT",
+        candidate_state="PRE-TRIGGER",
+        reference_source="lbank",
+        reference_price=1.0,
+        result=_result(),
+        decision_contract=_contract(),
+        observed_at=110.0,
+        replay_context=_valid_replay_context(
+            decision_contract_sha256="c" * 64,
+        ),
+    )
+    payload = recorder.read_payload(1)
+    assert payload["replay_complete"] is False
+    assert payload["replay_unavailable_reason"] == "REPLAY_CONTEXT_HASH_MISMATCH"
+
+
+def test_v9_rejects_contract_hash_that_does_not_match_stored_contract(tmp_path):
+    db_path = str(migrate_test_database(tmp_path / "evidence.db"))
+    other_contract = _contract()
+    other_contract["application"]["app_version"] = "tampered"
+
+    recorder = ProductionEvidenceRecorder(db_path)
+    assert recorder.record(
+        "TEST/USDT:USDT",
+        candidate_state="PRE-TRIGGER",
+        reference_source="lbank",
+        reference_price=1.0,
+        result=_result(),
+        decision_contract=other_contract,
+        observed_at=110.0,
+        replay_context=_valid_replay_context(),
+    )
+    payload = recorder.read_payload(1)
+    assert payload["replay_complete"] is False
+    assert payload["replay_unavailable_reason"] == "REPLAY_CONTEXT_HASH_MISMATCH"
+
+
+@pytest.mark.parametrize("section", ["freshness", "trade_plan_feasibility_shadow"])
+def test_v9_empty_nested_replay_sections_are_not_replay_complete(tmp_path, section):
+    db_path = str(migrate_test_database(tmp_path / "evidence.db"))
+    context = _valid_replay_context(**{section: {}})
+
+    recorder = ProductionEvidenceRecorder(db_path)
+    assert recorder.record(
+        "TEST/USDT:USDT",
+        candidate_state="PRE-TRIGGER",
+        reference_source="lbank",
+        reference_price=1.0,
+        result=_result(),
+        decision_contract=_contract(),
+        observed_at=110.0,
+        replay_context=context,
+    )
+    payload = recorder.read_payload(1)
+    assert payload["replay_complete"] is False
+    assert payload["replay_unavailable_reason"] == "REPLAY_CONTEXT_INCOMPLETE"
+
+
+def test_causal_age_rejects_negative_and_nonfinite_timestamps():
+    assert causal_age_seconds(-1, -2) is None
+    assert causal_age_seconds(100, -1) is None
+    assert causal_age_seconds(-1, 100) is None
+    assert causal_age_seconds(math.nan, 1.0) is None
+    assert causal_age_seconds(math.inf, 1.0) is None
+    assert causal_age_seconds(100, math.nan) is None
+    assert causal_age_seconds(100, -math.inf) is None
+    assert causal_age_seconds(100, 90.0) == 10.0
+
+
+def test_full_precision_decision_clock_keeps_same_second_reference_causal():
+    context = build_production_replay_context(
+        lifecycle_id=9,
+        entry_decision={"decision": "FORMING"},
+        decision_evaluated_at=200,
+        decision_clock_at=200.9,
+        analysis_observed_at=190,
+        reference_observed_at=200.5,
+        policy_version="entry_policy_v1",
+        max_analysis_age_seconds=180.0,
+        max_reference_age_seconds=60.0,
+        trade_plan_feasibility_shadow={
+            "version": "technical_trade_plan_shadow_v1",
+            "available": True,
+            "feasible": True,
+            "status": "FEASIBLE",
+            "trade_eligible": False,
+        },
+    )
+
+    assert context["decision_evaluated_at"] == 200
+    assert context["decision_clock_at"] == 200.9
+    assert context["freshness"]["reference_age_seconds"] == pytest.approx(0.4)
+    assert context["freshness"]["reference_pass"] is True
+
+
+def test_integer_only_decision_clock_preserves_fail_closed_future_reference():
+    context = build_production_replay_context(
+        lifecycle_id=9,
+        entry_decision={"decision": "FORMING"},
+        decision_evaluated_at=200,
+        analysis_observed_at=190,
+        reference_observed_at=200.5,
+        policy_version="entry_policy_v1",
+        max_analysis_age_seconds=180.0,
+        max_reference_age_seconds=60.0,
+        trade_plan_feasibility_shadow={
+            "version": "technical_trade_plan_shadow_v1",
+            "available": True,
+            "feasible": True,
+            "status": "FEASIBLE",
+            "trade_eligible": False,
+        },
+    )
+
+    assert context["decision_clock_at"] == 200
+    assert context["freshness"]["reference_age_seconds"] is None
+    assert context["freshness"]["reference_pass"] is False

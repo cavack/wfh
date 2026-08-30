@@ -28,7 +28,13 @@ def causal_age_seconds(decision_at: Any, observed_at: Any) -> float | None:
     """Return a finite non-negative age only for causal timestamps."""
     decision = _finite_number(decision_at)
     observed = _finite_number(observed_at)
-    if decision is None or observed is None or observed > decision:
+    if (
+        decision is None
+        or observed is None
+        or decision < 0
+        or observed < 0
+        or observed > decision
+    ):
         return None
     return decision - observed
 
@@ -44,13 +50,23 @@ def build_production_replay_context(
     max_analysis_age_seconds: float,
     max_reference_age_seconds: float,
     trade_plan_feasibility_shadow: dict[str, Any] | None,
+    decision_clock_at: int | float | None = None,
 ) -> dict[str, Any]:
-    """Freeze observational replay context without changing decision semantics."""
+    """Freeze observational replay context without changing decision semantics.
+
+    ``decision_evaluated_at`` stays the integer packet timestamp while
+    ``decision_clock_at`` carries the full-precision decision clock used for
+    causal freshness comparison, so a fractional reference observation inside
+    the same wall-clock second is never misclassified as future.
+    """
     normalized_decision_at = _finite_number(decision_evaluated_at)
+    clock = _finite_number(decision_clock_at)
+    if clock is None:
+        clock = normalized_decision_at
     analysis_at = _finite_number(analysis_observed_at)
     reference_at = _finite_number(reference_observed_at)
-    analysis_age = causal_age_seconds(normalized_decision_at, analysis_at)
-    reference_age = causal_age_seconds(normalized_decision_at, reference_at)
+    analysis_age = causal_age_seconds(clock, analysis_at)
+    reference_age = causal_age_seconds(clock, reference_at)
     analysis_limit = _finite_number(max_analysis_age_seconds)
     reference_limit = _finite_number(max_reference_age_seconds)
     analysis_limit = analysis_limit if analysis_limit is not None and analysis_limit >= 0 else None
@@ -64,6 +80,7 @@ def build_production_replay_context(
             if normalized_decision_at is not None
             else None
         ),
+        "decision_clock_at": clock,
         "analysis_observed_at": analysis_at,
         "reference_observed_at": reference_at,
         "freshness": {
@@ -170,7 +187,11 @@ class ProductionEvidenceRecorder:
         )
 
     @classmethod
-    def _replay_status(cls, replay_context: Any) -> tuple[bool, str | None]:
+    def _replay_status(
+        cls,
+        replay_context: Any,
+        decision_contract: Any,
+    ) -> tuple[bool, str | None]:
         if not isinstance(replay_context, dict) or not replay_context:
             return False, "REPLAY_CONTEXT_ABSENT"
         required = (
@@ -178,6 +199,7 @@ class ProductionEvidenceRecorder:
             "canonical_entry_decision",
             "canonical_entry_decision_sha256",
             "decision_evaluated_at",
+            "decision_clock_at",
             "analysis_observed_at",
             "reference_observed_at",
             "freshness",
@@ -186,12 +208,27 @@ class ProductionEvidenceRecorder:
         )
         if any(key not in replay_context for key in required):
             return False, "REPLAY_CONTEXT_INCOMPLETE"
+        freshness = replay_context.get("freshness")
+        shadow = replay_context.get("trade_plan_feasibility_shadow")
         if (
             not isinstance(replay_context.get("canonical_lifecycle_id"), int)
             or isinstance(replay_context.get("canonical_lifecycle_id"), bool)
             or not isinstance(replay_context.get("canonical_entry_decision"), dict)
-            or not isinstance(replay_context.get("freshness"), dict)
-            or not isinstance(replay_context.get("trade_plan_feasibility_shadow"), dict)
+            or not isinstance(freshness, dict)
+            or not isinstance(shadow, dict)
+            or not isinstance(freshness.get("policy_version"), str)
+            or not isinstance(freshness.get("analysis_pass"), bool)
+            or not isinstance(freshness.get("reference_pass"), bool)
+            or "max_analysis_age_seconds" not in freshness
+            or "max_reference_age_seconds" not in freshness
+            or "analysis_age_seconds" not in freshness
+            or "reference_age_seconds" not in freshness
+            or not isinstance(shadow.get("version"), str)
+            or not isinstance(shadow.get("available"), bool)
+            or not isinstance(shadow.get("trade_eligible"), bool)
+            or not isinstance(shadow.get("status"), str)
+            or not shadow.get("status")
+            or "feasible" not in shadow
             or any(
                 not isinstance(replay_context.get(key), str)
                 or len(replay_context[key]) != 64
@@ -202,14 +239,36 @@ class ProductionEvidenceRecorder:
             )
         ):
             return False, "REPLAY_CONTEXT_INCOMPLETE"
+        clock = replay_context.get("decision_clock_at")
+        if _finite_number(clock) is None:
+            clock = replay_context.get("decision_evaluated_at")
         decision_at = replay_context.get("decision_evaluated_at")
         if (
-            causal_age_seconds(decision_at, replay_context.get("analysis_observed_at"))
+            causal_age_seconds(clock, replay_context.get("analysis_observed_at"))
             is None
-            or causal_age_seconds(decision_at, replay_context.get("reference_observed_at"))
+            or causal_age_seconds(clock, replay_context.get("reference_observed_at"))
             is None
         ):
             return False, "REPLAY_CONTEXT_INVALID_TIMESTAMPS"
+        if (
+            not isinstance(decision_at, int)
+            or isinstance(decision_at, bool)
+            or decision_at < 0
+        ):
+            return False, "REPLAY_CONTEXT_INVALID_TIMESTAMPS"
+        try:
+            decision_hash = canonical_sha256(
+                replay_context.get("canonical_entry_decision")
+            )
+            contract_hash = canonical_sha256(decision_contract)
+        except (TypeError, ValueError):
+            return False, "REPLAY_CONTEXT_HASH_MISMATCH"
+        if (
+            replay_context["canonical_entry_decision_sha256"] != decision_hash
+            or not isinstance(decision_contract, dict)
+            or replay_context["decision_contract_sha256"] != contract_hash
+        ):
+            return False, "REPLAY_CONTEXT_HASH_MISMATCH"
         return True, None
 
     @classmethod
@@ -367,7 +426,10 @@ class ProductionEvidenceRecorder:
                 else "evaluation rejected without a complete decision packet"
             )
         )
-        replay_complete, replay_unavailable_reason = cls._replay_status(replay_context)
+        replay_complete, replay_unavailable_reason = cls._replay_status(
+            replay_context,
+            contract,
+        )
         return {
             "schema_version": cls.SCHEMA_VERSION,
             "capture_mode": cls.CAPTURE_MODE,

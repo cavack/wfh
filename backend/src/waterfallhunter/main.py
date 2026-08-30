@@ -1903,35 +1903,12 @@ async def evaluate_candidate(
         )
 
         if not fallback_reference:
-            production_evidence_recorder.record(
-                symbol,
-                candidate_state=str(current_state),
-                reference_source=None,
-                reference_price=None,
-                result={
-                    "is_valid": False,
-                    "score": None,
-                    "suggested_status": "REJECTED",
-                    "metrics": {"error": "no fresh reference price in exchange waterfall"},
-                },
-                decision_contract=decision_contract,
-            )
-            scanner.active_candidates.setdefault(
-                symbol,
-                {},
-            )[
-                "score"
-            ] = None
-
-            scanner.active_candidates[
-                symbol
-            ][
-                "analysis_status"
-            ] = "unavailable"
-
+            replay_policy = EntryDecisionPolicy()
             reference_failure_metrics = {
                 "error": "no fresh reference price in exchange waterfall",
             }
+            failure_replay_context = None
+
             try:
                 previous_entry_decision = entry_decision_store.latest_for_symbol(symbol)
             except Exception:
@@ -1971,6 +1948,61 @@ async def evaluate_candidate(
                 if decision_event_id is not None:
                     invalidated_decision["event_id"] = decision_event_id
                 reference_failure_metrics["entry_decision"] = invalidated_decision
+                failure_replay_context = build_production_replay_context(
+                    lifecycle_id=int(data.get("lifecycle_id") or 1),
+                    entry_decision=invalidated_decision,
+                    decision_evaluated_at=int(
+                        invalidated_decision.get("evaluated_at") or decision_now
+                    ),
+                    analysis_observed_at=analysis_observed_at,
+                    reference_observed_at=None,
+                    policy_version=replay_policy.version,
+                    max_analysis_age_seconds=replay_policy.max_analysis_age_seconds,
+                    max_reference_age_seconds=replay_policy.max_reference_age_seconds,
+                    trade_plan_feasibility_shadow={
+                        "version": "technical_trade_plan_shadow_v1",
+                        "observational_only": True,
+                        "hard_gating_allowed": False,
+                        "trade_eligible": False,
+                        "available": False,
+                        "feasible": None,
+                        "status": "UNAVAILABLE",
+                        "reason": (
+                            "reference failure: no fresh reference price "
+                            "in exchange waterfall"
+                        ),
+                    },
+                )
+                failure_replay_context["decision_contract_sha256"] = (
+                    decision_contract_hash
+                )
+
+            production_evidence_recorder.record(
+                symbol,
+                candidate_state=str(current_state),
+                reference_source=None,
+                reference_price=None,
+                result={
+                    "is_valid": False,
+                    "score": None,
+                    "suggested_status": "REJECTED",
+                    "metrics": dict(reference_failure_metrics),
+                },
+                decision_contract=decision_contract,
+                replay_context=failure_replay_context,
+            )
+            scanner.active_candidates.setdefault(
+                symbol,
+                {},
+            )[
+                "score"
+            ] = None
+
+            scanner.active_candidates[
+                symbol
+            ][
+                "analysis_status"
+            ] = "unavailable"
 
             _store_live_metrics(
                 symbol,
@@ -2077,6 +2109,7 @@ async def evaluate_candidate(
             )
 
     decision_now = int(time.time())
+    decision_now_precise = time.time()
     try:
         result_metrics.setdefault("applied_leverage", get_leverage(symbol))
     except Exception:
@@ -2094,13 +2127,13 @@ async def evaluate_candidate(
         symbol, decision_state, result_metrics
     )
 
-    reference_age = causal_age_seconds(decision_now, reference_observed_at)
+    reference_age = causal_age_seconds(decision_now_precise, reference_observed_at)
     previous_entry_decision = entry_decision_store.latest_for_symbol(symbol)
     entry_decision = build_entry_decision(
         result_metrics,
         decision_state,
         evaluated_at=decision_now,
-        analysis_age_seconds=causal_age_seconds(decision_now, analysis_observed_at),
+        analysis_age_seconds=causal_age_seconds(decision_now_precise, analysis_observed_at),
         reference_age_seconds=reference_age,
         lifecycle_id=int(data.get("lifecycle_id") or 1),
         previous_decision=previous_entry_decision,
@@ -2155,6 +2188,7 @@ async def evaluate_candidate(
         lifecycle_id=int(data.get("lifecycle_id") or 1),
         entry_decision=entry_decision,
         decision_evaluated_at=int(entry_decision.get("evaluated_at") or decision_now),
+        decision_clock_at=decision_now_precise,
         analysis_observed_at=analysis_observed_at,
         reference_observed_at=(
             float(reference_observed_at)

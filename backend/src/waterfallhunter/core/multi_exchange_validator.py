@@ -177,7 +177,12 @@ class MultiExchangeValidator:
             recent_high = max(
                 float(row[2])
                 for row in history[-24:]
-                if isinstance(row, (list, tuple)) and len(row) >= 6
+                if isinstance(row, (list, tuple))
+                and len(row) >= 6
+                and isinstance(row[2], (int, float))
+                and not isinstance(row[2], bool)
+                and math.isfinite(float(row[2]))
+                and float(row[2]) > 0
             )
         except (TypeError, ValueError, IndexError):
             recent_high = None
@@ -221,11 +226,14 @@ class MultiExchangeValidator:
         history = primary.get("5m")
         if not isinstance(history, list):
             return []
-        return history if any(
+        window = history[-24:]
+        if not window:
+            return []
+        return history if all(
             isinstance(row, (list, tuple))
             and len(row) >= 6
             and cls._finite_positive(row[2])
-            for row in history[-24:]
+            for row in window
         ) else []
 
     @classmethod
