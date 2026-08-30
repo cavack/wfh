@@ -1,63 +1,94 @@
 {
-  "schema_version": "waterfallhunter_audit_state_v1",
-  "updated_at": "2026-08-30T19:12:08Z",
-  "base_main_sha": "65c063ffea6209ecd84b224656bbc627ff811898",
-  "production": {
-    "sha": "65c063ffea6209ecd84b224656bbc627ff811898",
-    "git_state": "detached_clean",
-    "health": "healthy",
-    "live_trading_enabled": false,
-    "telegram_signal_delivery_enabled": false,
-    "db_user_version": 7,
-    "db_journal_mode": "wal",
-    "deploy_lock_held": false,
-    "mutation_performed": false
+  "active_branches_and_worktrees": [
+    {
+      "branch": "research/production-evidence-v9-20260830",
+      "dirty": false,
+      "head": "RESOLVE_FROM_GIT_HEAD",
+      "path": "/srv/wfh-worktrees/evidence-v9-20260830"
+    },
+    {
+      "branch": "feature/entry-proximity-observational-20260830",
+      "dirty": false,
+      "head": "c8a8fc4ea64af9cd3354ae2d68fb73f11a7d5a6c",
+      "path": "/srv/wfh-worktrees/entry-proximity-20260830"
+    },
+    {
+      "branch": "research/calibration-round16-20260830",
+      "dirty": true,
+      "head": "c8a8fc4ea64af9cd3354ae2d68fb73f11a7d5a6c",
+      "path": "/srv/wfh-worktrees/calibration-round16-20260830"
+    },
+    {
+      "branch": "fix/stale-entry-actionability-20260830",
+      "dirty": false,
+      "head": "bb51eb63fb37da41cc685316e1c0cea4ebae11ef",
+      "path": "/srv/wfh-worktrees/fix-stale-entry-actionability-20260830"
+    },
+    {
+      "branch": "fix/runtime-memory-amplification-20260829",
+      "dirty": false,
+      "head": "5d5e00f4ab59a96db1f506600ad67b6434201e25",
+      "path": "/srv/wfh-worktrees/fix-runtime-memory-amplification-20260829"
+    },
+    {
+      "branch": "fix/decision-terminal-contract-20260830",
+      "dirty": false,
+      "head": "38f1e27f845c5110be3edf9df3e34b547ee7894c",
+      "path": "/srv/wfh-worktrees/fix/decision-terminal-contract-20260830"
+    },
+    {
+      "branch": "fix/remote-dr-backup-certification-local",
+      "dirty": false,
+      "head": "12e762a6fd685994cdd4e43248ac1c457fdf4f9a",
+      "path": "/srv/wfh-worktrees/remote-dr-backup-certification-20260828"
+    }
+  ],
+  "active_work": {
+    "base_main_sha": "65c063ffea6209ecd84b224656bbc627ff811898",
+    "branch": "test/vertical-e2e-20260830",
+    "production_mutation": false,
+    "pull_request": 97,
+    "pull_request_state": "OPEN",
+    "scope": "correctness leverage canonicalization + deterministic vertical/browser E2E; no calibration changes",
+    "tested_code_commit": "bc18bdd9b3bccdfaae03e87862db9dfe34d855f2",
+    "working_tree_dirty": false,
+    "worktree": "/srv/wfh-worktrees/vertical-e2e-20260830"
   },
-  "post_deploy_v9": {"SOURCE_SHA":"65c063ffea6209ecd84b224656bbc627ff811898","DEPLOY_WORKFLOW":33326151899,"DEPLOYED_ARTIFACT_ID":9736306403,"DEPLOYED_IMAGE_DIGESTS":{"backend":"sha256:46e065678d4114b3b9e9246b3b7056bcf19c21735d71bc78e5367f2ddf824b3f","frontend":"sha256:168b6cecb90e34ef257a7b98c9c433f5dc09faeffe041c43f52d073339de994e","watchdog":"sha256:ddebcede2d3c99c3e506d9e080e28ffaf67e2b65be84511a13e3671d2fc3bd96"},"BUNDLE_SHA":"b307f418573d01b0c47127a91464bbddcb770dd69b3af7e51070cf1a8349ca47","PRODUCTION_REVISION":"65c063ffea6209ecd84b224656bbc627ff811898","POST_DEPLOY_VALIDATION":{"status":"PASS_BASELINE_READ_ONLY","runtime_local_image_ids":{"backend":"sha256:48af7de95c9f3a8a1203fee2f06618e5d71ee924933177816cd99f732f3f4969","frontend":"sha256:0a800f89d931315026a99fc229f33de6209192f1347a79ab698b626f95a46cbe","watchdog":"sha256:1206906869722df1d56c7ba5b9858e21ea23e2c420a949f0b378edd55dc1977d"},"backend_health":"healthy","db_foreign_key_violations":0,"db_integrity":"ok","db_journal_mode":"wal","db_user_version":7,"frontend_dashboard_http":200,"git_revision_exact":true,"git_worktree_clean":true,"hunter_progress_age_seconds_observed":10.3,"live_trading_enabled":false,"telegram_signal_delivery_enabled":false},"V9_EVIDENCE_T0":{"bucket_started_at":1788111900,"cascade_status":"PARTIAL","contract_sha256":"d048bd7e9344ba5055ca74d89108fbc6cd951e203ce5ecdabbebdc98ec20b9c0","decision_sha256":"73d2589c147f181aaa432172e8b2ecaa419aa505d9211b9d45b65932c9078490","evidence_sha256":"f66d70d13aedb02347c7b56b2c82a2394043125bc19988ad489cbdef1160024e","freshness":{"analysis_age_seconds":18.382525205612183,"analysis_pass":true,"max_analysis_age_seconds":180.0,"max_reference_age_seconds":60.0,"policy_version":"entry_policy_v1","reference_age_seconds":26.784871101379395,"reference_pass":true},"lifecycle_id":8,"liquidation_context":{"available":false,"maximum":0.0,"points":0.0,"reason":"observed liquidation flow unavailable"},"observed_at":1788112672.3887885,"observed_at_utc":"2026-08-30T17:57:52.388788+00:00","snapshot_id":482207,"symbol":"IOTA/USDT:USDT","technical_trade_plan_shadow_status":"FEASIBLE"},"evidence_artifact":"research/audit/current/post_deploy_v9_validation.json"},
-  "routing": {
-    "router_file": "UNAVAILABLE_ON_BASE_SHA",
-    "catalog_file": "UNAVAILABLE_ON_BASE_SHA",
-    "loaded_from_base_sha": [
-      "engineering-orchestrator",
-      "market-data-evidence-quality",
-      "strategy-score-lifecycle",
-      "verification-regression"
+  "artifacts": [
+    {
+      "bound_to": "7b84660781a869cb595ae6984be0b79b4cdfc317",
+      "path": "research/audit/current/v9_red_green_evidence.json",
+      "sha256": "ea9c3517941992c524403abd5d4a859c4a6dbc48f9a57e96a4eb0fb8ab820788"
+    },
+    {
+      "bound_to": "65c063ffea6209ecd84b224656bbc627ff811898",
+      "path": "research/audit/current/post_deploy_v9_validation.json",
+      "sha256": "b7c56ac481a7a685d3b6dbccbc7dc022a0619aca1df99cddc4f3ac084bdbf679"
+    },
+    {
+      "bound_to": "df35bf041685ac43a4edb8c08892897fccd378c9",
+      "path": "research/audit/current/leverage_vertical_e2e_evidence.json",
+      "sha256": "5d570fe6801341e74e802628a90c3ad1dfff594b5fed4c23e38b509a968bc790"
+    },
+    {
+      "bound_to": "65c063ffea6209ecd84b224656bbc627ff811898",
+      "path": "research/audit/current/replay_scientific_semantics.json",
+      "sha256": "ecfb8c6567403b533fe7e9b3d392b49e94f6678a146202fe990ae484f44550d0"
+    }
+  ],
+  "base_main_sha": "65c063ffea6209ecd84b224656bbc627ff811898",
+  "browser_e2e_checkpoint": {
+    "ci_gate_added": true,
+    "code_sha": "bc18bdd9b3bccdfaae03e87862db9dfe34d855f2",
+    "isolated_port": 3100,
+    "result": "4 passed / 0 failed",
+    "scenarios": [
+      "canonical decision/plan/tri-state leverage/freshness",
+      "SSE full-snapshot replacement removes stale candidate",
+      "API+SSE failure fail-closed",
+      "mobile no page-level horizontal overflow"
     ]
   },
-  "active_work": {
-    "worktree": "/srv/wfh-v9",
-    "branch": "research/production-evidence-v9-20260830",
-    "head_sha": "7b84660781a869cb595ae6984be0b79b4cdfc317",
-    "tested_code_commit": "7b84660781a869cb595ae6984be0b79b4cdfc317",
-    "artifact_commit_note": "audit artifacts are documentation-only updates on top of the tested code commit; code content is identical between tested_code_commit and pushed PR head",
-    "pull_request": 96,
-    "pull_request_state": "OPEN",
-    "pull_request_checks": "PENDING_REFRESH_AT_7b84660781a869cb595ae6984be0b79b4cdfc317",
-    "working_tree_dirty": false,
-    "working_tree_code_and_test_diff_sha256": null
-  },
-  "continuation_work": {"worktree":"/srv/wfh-worktrees/vertical-e2e-20260830","branch":"test/vertical-e2e-20260830","base_sha":"65c063ffea6209ecd84b224656bbc627ff811898","head_sha":"df35bf041685ac43a4edb8c08892897fccd378c9","phase":"VERTICAL_E2E_GREEN_BROWSER_E2E_PENDING"},
-  "vertical_e2e_leverage_checkpoint": {"code_sha":"df35bf041685ac43a4edb8c08892897fccd378c9","leverage_root_cause":"legacy get_leverage(symbol) populated applied_leverage before canonical EntryDecision while adaptive leverage ran only later in TRIGGERED","canonical_live_leverage":"build_signal_leverage_advisory -> recommend_signal_leverage","leverage_states":["AVAILABLE","UNAVAILABLE","NOT_RECOMMENDED"],"advisory_only":true,"vertical_e2e":"GREEN","vertical_paths":["deterministic_success","missing_market_fail_closed","advisory_unavailable_non_gating","advisory_not_recommended_non_gating"],"exact_sha_verification":{"targeted_neighboring":"129 passed","full_backend":"1170 passed, 2 warnings","frontend_typecheck":"PASS","frontend_build":"PASS","frontend_contract":"PASS","repository_hygiene":"PASS tracked_files=448","runtime_parity":"PASS","skill_validation":"PASS","git_diff_check":"PASS"},"production_mutation":false},
-  "active_branches_and_worktrees": [
-    {"path": "/srv/wfh-worktrees/evidence-v9-20260830", "branch": "research/production-evidence-v9-20260830", "head": "RESOLVE_FROM_GIT_HEAD", "dirty": false},
-    {"path": "/srv/wfh-worktrees/entry-proximity-20260830", "branch": "feature/entry-proximity-observational-20260830", "head": "c8a8fc4ea64af9cd3354ae2d68fb73f11a7d5a6c", "dirty": false},
-    {"path": "/srv/wfh-worktrees/calibration-round16-20260830", "branch": "research/calibration-round16-20260830", "head": "c8a8fc4ea64af9cd3354ae2d68fb73f11a7d5a6c", "dirty": true},
-    {"path": "/srv/wfh-worktrees/fix-stale-entry-actionability-20260830", "branch": "fix/stale-entry-actionability-20260830", "head": "bb51eb63fb37da41cc685316e1c0cea4ebae11ef", "dirty": false},
-    {"path": "/srv/wfh-worktrees/fix-runtime-memory-amplification-20260829", "branch": "fix/runtime-memory-amplification-20260829", "head": "5d5e00f4ab59a96db1f506600ad67b6434201e25", "dirty": false},
-    {"path": "/srv/wfh-worktrees/fix/decision-terminal-contract-20260830", "branch": "fix/decision-terminal-contract-20260830", "head": "38f1e27f845c5110be3edf9df3e34b547ee7894c", "dirty": false},
-    {"path": "/srv/wfh-worktrees/remote-dr-backup-certification-20260828", "branch": "fix/remote-dr-backup-certification-local", "head": "12e762a6fd685994cdd4e43248ac1c457fdf4f9a", "dirty": false}
-  ],
-  "open_defects": [
-    {"id": "V9-001", "priority": "P2", "layer": "PERSISTENCE_REPLAY", "taxonomy": "FIXED_AT_7b84660781a869cb595ae6984be0b79b4cdfc317_PENDING_EXACT_HEAD_CI", "symptom": "v9 rows without replay_context lack explicit replay completeness and unavailable reason", "fix": "persist explicit replay completeness fields and queue every v9 row for EQUIVALENT, MISMATCH, or NOT_REPLAYABLE classification", "verification": "focused plus neighboring and full backend green", "production_status": "NOT_DEPLOYED"},
-    {"id": "V9-002", "priority": "P1", "layer": "TIMESTAMPS_FRESHNESS", "taxonomy": "FIXED_AT_7b84660781a869cb595ae6984be0b79b4cdfc317_PENDING_EXACT_HEAD_CI", "symptom": "future evidence is clamped to age zero and can pass freshness; non-finite and negative timestamps are not uniformly fail-closed", "fix": "canonical causal-age helper with negative/non-finite rejection, full-precision decision_clock_at for causal comparison with integer packet timestamp preserved, negative-age EntryDecision block, strict derivatives timestamps, provider packet receive-time binding", "verification": "focused plus neighboring and full backend green (1161 passed)", "production_status": "NOT_DEPLOYED"},
-    {"id": "V9-003", "priority": "P1", "layer": "TECHNICAL_TRADE_PLAN", "taxonomy": "FIXED_AT_7b84660781a869cb595ae6984be0b79b4cdfc317_PENDING_EXACT_HEAD_CI", "symptom": "missing causal inputs can be classified through calculator fallback as feasible or infeasible instead of unavailable", "fix": "prevalidate every causal input and expose FEASIBLE, INFEASIBLE, and UNAVAILABLE as distinct statuses; partially invalid captured candle windows no longer reach the calculator", "verification": "focused plus neighboring and full backend green", "production_status": "NOT_DEPLOYED"},
-    {"id": "V9-004", "priority": "P2", "layer": "PERSISTENCE_REPLAY", "taxonomy": "FIXED_AT_7b84660781a869cb595ae6984be0b79b4cdfc317_PENDING_EXACT_HEAD_CI", "symptom": "replay hashes accepted any 64-char strings without verifying them against the embedded canonical decision and stored contract", "fix": "recompute canonical_entry_decision_sha256 and decision_contract_sha256 in _replay_status; mismatch yields REPLAY_CONTEXT_HASH_MISMATCH and replay_complete=false", "verification": "new fail-closed regression tests green", "production_status": "NOT_DEPLOYED"},
-    {"id": "V9-005", "priority": "P2", "layer": "PERSISTENCE_REPLAY", "taxonomy": "FIXED_AT_7b84660781a869cb595ae6984be0b79b4cdfc317_PENDING_EXACT_HEAD_CI", "symptom": "empty freshness or empty trade_plan_feasibility_shadow dictionaries satisfied replay-context completeness", "fix": "require v9 fields (policy version, age limits, measured ages, pass flags; shadow version/available/feasible/status/trade_eligible) inside nested sections", "verification": "parameterized regression tests green", "production_status": "NOT_DEPLOYED"},
-    {"id": "V9-006", "priority": "P1", "layer": "TIMESTAMPS_FRESHNESS", "taxonomy": "FIXED_AT_7b84660781a869cb595ae6984be0b79b4cdfc317_PENDING_EXACT_HEAD_CI", "symptom": "fractional reference_observed_at in the same wall-clock second as the int-truncated decision clock was treated as future and hard-blocked with STALE_REFERENCE", "fix": "full-precision decision_clock_at used for all causal comparisons and replay freshness while decision_evaluated_at keeps the integer packet timestamp", "verification": "precision regression tests green including fail-closed integer-only counter-case", "production_status": "NOT_DEPLOYED"},
-    {"id": "V9-007", "priority": "P2", "layer": "PERSISTENCE_REPLAY", "taxonomy": "FIXED_AT_7b84660781a869cb595ae6984be0b79b4cdfc317_PENDING_EXACT_HEAD_CI", "symptom": "reference-failure rows were recorded before the canonical invalidation decision existed, so their v9 schema omitted lifecycle id, canonical decision, freshness results and hashes", "fix": "build the invalidation decision and a complete replay context (UNAVAILABLE technical shadow, decision contract hash) BEFORE recording; rows without a canonical decision remain explicitly REPLAY_CONTEXT_ABSENT", "verification": "existing reference-failure regression green; reordering verified", "production_status": "NOT_DEPLOYED"},
-    {"id": "V9-008", "priority": "P2", "layer": "TECHNICAL_TRADE_PLAN", "taxonomy": "FIXED_AT_7b84660781a869cb595ae6984be0b79b4cdfc317_PENDING_EXACT_HEAD_CI", "symptom": "captured candle windows with partially invalid (NaN/non-positive high) rows could propagate NaN into recent_high and reach the calculator as valid evidence", "fix": "require every row in the evaluated window to have a finite positive high for the technical shadow; recent_high computation filters non-finite rows; all-invalid windows stay UNAVAILABLE", "verification": "fail-closed behavior covered by validator tests and full backend green", "production_status": "NOT_DEPLOYED"},
-    {"id": "V9-009", "priority": "P2", "layer": "DERIVATIVES_EVIDENCE", "taxonomy": "FIXED_AT_7b84660781a869cb595ae6984be0b79b4cdfc317_PENDING_EXACT_HEAD_CI", "symptom": "future-timestamp rejection was only proven through the funding domain; taker, top-trader and OI domains were not independently tested", "fix": "parameterized test on a valid baseline proves independent rejection for funding, taker, top trader and open interest; taker history future row proven excluded from causal change", "verification": "parameterized derivatives tests green", "production_status": "NOT_DEPLOYED"}
-  ],
   "completed_investigations": [
     "fresh canonical main, Production, runtime, DB, deploy-lock, open PR and worktree inventory",
     "PR 96 exact-head diff and ordinary CI status refresh",
@@ -68,16 +99,260 @@
     "Sonar review remediation for technical-plan complexity, duplicated test fixtures, and test assertion structure",
     "2026-08-30 round 2: fetched current PR 96 head ce047a7 and all 12 review threads (10 unresolved); verified each finding against current code; fixed 8 valid findings (hash verification, nested context validation, negative timestamps, full-precision decision clock, reference-failure replay context, partial candle windows, per-domain derivatives tests, provenance binding); classified multi_exchange_validator missing-plan-inputs finding STALE (causal prevalidation already present); RED-GREEN with focused 62 and full backend 1161 on exact clean commit 7b84660781a869cb595ae6984be0b79b4cdfc317"
   ],
-  "artifacts": [
-    {"path": "research/audit/current/v9_red_green_evidence.json", "sha256": "ea9c3517941992c524403abd5d4a859c4a6dbc48f9a57e96a4eb0fb8ab820788", "bound_to": "7b84660781a869cb595ae6984be0b79b4cdfc317"},
-    {"path":"research/audit/current/post_deploy_v9_validation.json","sha256":"b7c56ac481a7a685d3b6dbccbc7dc022a0619aca1df99cddc4f3ac084bdbf679","bound_to":"65c063ffea6209ecd84b224656bbc627ff811898"},
-    {"path":"research/audit/current/leverage_vertical_e2e_evidence.json","sha256":"5d570fe6801341e74e802628a90c3ad1dfff594b5fed4c23e38b509a968bc790","bound_to":"df35bf041685ac43a4edb8c08892897fccd378c9"},
-    {"path":"research/audit/current/replay_scientific_semantics.json","sha256":"ecfb8c6567403b533fe7e9b3d392b49e94f6678a146202fe990ae484f44550d0","bound_to":"65c063ffea6209ecd84b224656bbc627ff811898"}
+  "continuation_work": {
+    "base_sha": "65c063ffea6209ecd84b224656bbc627ff811898",
+    "branch": "test/vertical-e2e-20260830",
+    "phase": "REVIEW_FIXES_GREEN_BROWSER_E2E_COMPLETE_PENDING_REMOTE_EXACT_HEAD_CI_REVIEW",
+    "tested_code_commit": "bc18bdd9b3bccdfaae03e87862db9dfe34d855f2",
+    "worktree": "/srv/wfh-worktrees/vertical-e2e-20260830"
+  },
+  "next_executable_action": "Push PR #97 review-fix and audit commits; require exact-head CI and all review threads resolved. In a separate correctness branch, reproduce and fix the P1 liquidation-flow subscription lifecycle gap (PRE-TRIGGER evidence acquisition) without changing production thresholds/gates. Keep LIVE_TRADING_ENABLED=false.",
+  "open_defects": [
+    {
+      "fix": "persist explicit replay completeness fields and queue every v9 row for EQUIVALENT, MISMATCH, or NOT_REPLAYABLE classification",
+      "id": "V9-001",
+      "layer": "PERSISTENCE_REPLAY",
+      "priority": "P2",
+      "production_status": "NOT_DEPLOYED",
+      "symptom": "v9 rows without replay_context lack explicit replay completeness and unavailable reason",
+      "taxonomy": "FIXED_AT_7b84660781a869cb595ae6984be0b79b4cdfc317_PENDING_EXACT_HEAD_CI",
+      "verification": "focused plus neighboring and full backend green"
+    },
+    {
+      "fix": "canonical causal-age helper with negative/non-finite rejection, full-precision decision_clock_at for causal comparison with integer packet timestamp preserved, negative-age EntryDecision block, strict derivatives timestamps, provider packet receive-time binding",
+      "id": "V9-002",
+      "layer": "TIMESTAMPS_FRESHNESS",
+      "priority": "P1",
+      "production_status": "NOT_DEPLOYED",
+      "symptom": "future evidence is clamped to age zero and can pass freshness; non-finite and negative timestamps are not uniformly fail-closed",
+      "taxonomy": "FIXED_AT_7b84660781a869cb595ae6984be0b79b4cdfc317_PENDING_EXACT_HEAD_CI",
+      "verification": "focused plus neighboring and full backend green (1161 passed)"
+    },
+    {
+      "fix": "prevalidate every causal input and expose FEASIBLE, INFEASIBLE, and UNAVAILABLE as distinct statuses; partially invalid captured candle windows no longer reach the calculator",
+      "id": "V9-003",
+      "layer": "TECHNICAL_TRADE_PLAN",
+      "priority": "P1",
+      "production_status": "NOT_DEPLOYED",
+      "symptom": "missing causal inputs can be classified through calculator fallback as feasible or infeasible instead of unavailable",
+      "taxonomy": "FIXED_AT_7b84660781a869cb595ae6984be0b79b4cdfc317_PENDING_EXACT_HEAD_CI",
+      "verification": "focused plus neighboring and full backend green"
+    },
+    {
+      "fix": "recompute canonical_entry_decision_sha256 and decision_contract_sha256 in _replay_status; mismatch yields REPLAY_CONTEXT_HASH_MISMATCH and replay_complete=false",
+      "id": "V9-004",
+      "layer": "PERSISTENCE_REPLAY",
+      "priority": "P2",
+      "production_status": "NOT_DEPLOYED",
+      "symptom": "replay hashes accepted any 64-char strings without verifying them against the embedded canonical decision and stored contract",
+      "taxonomy": "FIXED_AT_7b84660781a869cb595ae6984be0b79b4cdfc317_PENDING_EXACT_HEAD_CI",
+      "verification": "new fail-closed regression tests green"
+    },
+    {
+      "fix": "require v9 fields (policy version, age limits, measured ages, pass flags; shadow version/available/feasible/status/trade_eligible) inside nested sections",
+      "id": "V9-005",
+      "layer": "PERSISTENCE_REPLAY",
+      "priority": "P2",
+      "production_status": "NOT_DEPLOYED",
+      "symptom": "empty freshness or empty trade_plan_feasibility_shadow dictionaries satisfied replay-context completeness",
+      "taxonomy": "FIXED_AT_7b84660781a869cb595ae6984be0b79b4cdfc317_PENDING_EXACT_HEAD_CI",
+      "verification": "parameterized regression tests green"
+    },
+    {
+      "fix": "full-precision decision_clock_at used for all causal comparisons and replay freshness while decision_evaluated_at keeps the integer packet timestamp",
+      "id": "V9-006",
+      "layer": "TIMESTAMPS_FRESHNESS",
+      "priority": "P1",
+      "production_status": "NOT_DEPLOYED",
+      "symptom": "fractional reference_observed_at in the same wall-clock second as the int-truncated decision clock was treated as future and hard-blocked with STALE_REFERENCE",
+      "taxonomy": "FIXED_AT_7b84660781a869cb595ae6984be0b79b4cdfc317_PENDING_EXACT_HEAD_CI",
+      "verification": "precision regression tests green including fail-closed integer-only counter-case"
+    },
+    {
+      "fix": "build the invalidation decision and a complete replay context (UNAVAILABLE technical shadow, decision contract hash) BEFORE recording; rows without a canonical decision remain explicitly REPLAY_CONTEXT_ABSENT",
+      "id": "V9-007",
+      "layer": "PERSISTENCE_REPLAY",
+      "priority": "P2",
+      "production_status": "NOT_DEPLOYED",
+      "symptom": "reference-failure rows were recorded before the canonical invalidation decision existed, so their v9 schema omitted lifecycle id, canonical decision, freshness results and hashes",
+      "taxonomy": "FIXED_AT_7b84660781a869cb595ae6984be0b79b4cdfc317_PENDING_EXACT_HEAD_CI",
+      "verification": "existing reference-failure regression green; reordering verified"
+    },
+    {
+      "fix": "require every row in the evaluated window to have a finite positive high for the technical shadow; recent_high computation filters non-finite rows; all-invalid windows stay UNAVAILABLE",
+      "id": "V9-008",
+      "layer": "TECHNICAL_TRADE_PLAN",
+      "priority": "P2",
+      "production_status": "NOT_DEPLOYED",
+      "symptom": "captured candle windows with partially invalid (NaN/non-positive high) rows could propagate NaN into recent_high and reach the calculator as valid evidence",
+      "taxonomy": "FIXED_AT_7b84660781a869cb595ae6984be0b79b4cdfc317_PENDING_EXACT_HEAD_CI",
+      "verification": "fail-closed behavior covered by validator tests and full backend green"
+    },
+    {
+      "fix": "parameterized test on a valid baseline proves independent rejection for funding, taker, top trader and open interest; taker history future row proven excluded from causal change",
+      "id": "V9-009",
+      "layer": "DERIVATIVES_EVIDENCE",
+      "priority": "P2",
+      "production_status": "NOT_DEPLOYED",
+      "symptom": "future-timestamp rejection was only proven through the funding domain; taker, top-trader and OI domains were not independently tested",
+      "taxonomy": "FIXED_AT_7b84660781a869cb595ae6984be0b79b4cdfc317_PENDING_EXACT_HEAD_CI",
+      "verification": "parameterized derivatives tests green"
+    }
   ],
+  "post_deploy_v9": {
+    "BUNDLE_SHA": "b307f418573d01b0c47127a91464bbddcb770dd69b3af7e51070cf1a8349ca47",
+    "DEPLOYED_ARTIFACT_ID": 9736306403,
+    "DEPLOYED_IMAGE_DIGESTS": {
+      "backend": "sha256:46e065678d4114b3b9e9246b3b7056bcf19c21735d71bc78e5367f2ddf824b3f",
+      "frontend": "sha256:168b6cecb90e34ef257a7b98c9c433f5dc09faeffe041c43f52d073339de994e",
+      "watchdog": "sha256:ddebcede2d3c99c3e506d9e080e28ffaf67e2b65be84511a13e3671d2fc3bd96"
+    },
+    "DEPLOY_WORKFLOW": 33326151899,
+    "POST_DEPLOY_VALIDATION": {
+      "backend_health": "healthy",
+      "db_foreign_key_violations": 0,
+      "db_integrity": "ok",
+      "db_journal_mode": "wal",
+      "db_user_version": 7,
+      "frontend_dashboard_http": 200,
+      "git_revision_exact": true,
+      "git_worktree_clean": true,
+      "hunter_progress_age_seconds_observed": 10.3,
+      "live_trading_enabled": false,
+      "runtime_local_image_ids": {
+        "backend": "sha256:48af7de95c9f3a8a1203fee2f06618e5d71ee924933177816cd99f732f3f4969",
+        "frontend": "sha256:0a800f89d931315026a99fc229f33de6209192f1347a79ab698b626f95a46cbe",
+        "watchdog": "sha256:1206906869722df1d56c7ba5b9858e21ea23e2c420a949f0b378edd55dc1977d"
+      },
+      "status": "PASS_BASELINE_READ_ONLY",
+      "telegram_signal_delivery_enabled": false
+    },
+    "PRODUCTION_REVISION": "65c063ffea6209ecd84b224656bbc627ff811898",
+    "SOURCE_SHA": "65c063ffea6209ecd84b224656bbc627ff811898",
+    "V9_EVIDENCE_T0": {
+      "bucket_started_at": 1788111900,
+      "cascade_status": "PARTIAL",
+      "contract_sha256": "d048bd7e9344ba5055ca74d89108fbc6cd951e203ce5ecdabbebdc98ec20b9c0",
+      "decision_sha256": "73d2589c147f181aaa432172e8b2ecaa419aa505d9211b9d45b65932c9078490",
+      "evidence_sha256": "f66d70d13aedb02347c7b56b2c82a2394043125bc19988ad489cbdef1160024e",
+      "freshness": {
+        "analysis_age_seconds": 18.382525205612183,
+        "analysis_pass": true,
+        "max_analysis_age_seconds": 180.0,
+        "max_reference_age_seconds": 60.0,
+        "policy_version": "entry_policy_v1",
+        "reference_age_seconds": 26.784871101379395,
+        "reference_pass": true
+      },
+      "lifecycle_id": 8,
+      "liquidation_context": {
+        "available": false,
+        "maximum": 0.0,
+        "points": 0.0,
+        "reason": "observed liquidation flow unavailable"
+      },
+      "observed_at": 1788112672.3887885,
+      "observed_at_utc": "2026-08-30T17:57:52.388788+00:00",
+      "snapshot_id": 482207,
+      "symbol": "IOTA/USDT:USDT",
+      "technical_trade_plan_shadow_status": "FEASIBLE"
+    },
+    "evidence_artifact": "research/audit/current/post_deploy_v9_validation.json"
+  },
+  "production": {
+    "db_journal_mode": "wal",
+    "db_user_version": 7,
+    "deploy_lock_held": false,
+    "git_state": "detached_clean",
+    "health": "healthy",
+    "live_trading_enabled": false,
+    "mutation_performed": false,
+    "sha": "65c063ffea6209ecd84b224656bbc627ff811898",
+    "telegram_signal_delivery_enabled": false
+  },
+  "review_97_checkpoint": {
+    "code_sha": "bc18bdd9b3bccdfaae03e87862db9dfe34d855f2",
+    "fixture_defects_fixed": [
+      "vertical success execution-suitability fixture now supplies complete SUITABLE evidence"
+    ],
+    "non_blocking_review_note": "CodeRabbit docstring-coverage warning is style-only and not expanded into broad unrelated documentation churn.",
+    "valid_findings_fixed": [
+      "same-state canonical leverage persistence/restore consistency",
+      "complete score<85 tri-state classification",
+      "UNKNOWN execution evidence no fabricated 8x",
+      "persist exact execution-suitability input in leverage advisory",
+      "dashboard fallback to persisted decision leverage advisory",
+      "Playwright clean-workspace build contract",
+      "SSE full snapshot replacement assertion",
+      "browser suite added to required frontend CI"
+    ]
+  },
+  "routing": {
+    "catalog_file": "UNAVAILABLE_ON_BASE_SHA",
+    "loaded_from_base_sha": [
+      "engineering-orchestrator",
+      "market-data-evidence-quality",
+      "strategy-score-lifecycle",
+      "verification-regression"
+    ],
+    "router_file": "UNAVAILABLE_ON_BASE_SHA"
+  },
+  "schema_version": "waterfallhunter_audit_state_v1",
   "tests_on_exact_sha": [
-    {"sha": "7b84660781a869cb595ae6984be0b79b4cdfc317", "environment": "LOCAL_ISOLATED_VENV_PYTHON_3_12", "result": "backend_1161_passed_git_diff_check_clean_repository_hygiene_pass_skill_validation_pass_runtime_parity_pass", "qualification": "EXACT_COMMITTED_CLEAN_TREE"},
-    {"sha": "6b9a8b454a69224cbd3b39abe0b911cf54dfe44d", "environment": "GITHUB_ACTIONS", "result": "backend_frontend_dependency_container_hygiene_codeql_sonar_green", "qualification": "REMOTE_ORDINARY_CI_ONLY_HISTORICAL"},
-    {"sha":"df35bf041685ac43a4edb8c08892897fccd378c9","environment":"LOCAL_EXACT_COMMIT_DOCKER_PLUS_FRONTEND_NODE","result":"backend_1170_passed_targeted_neighbors_129_passed_frontend_typecheck_build_contract_pass_repository_hygiene_runtime_parity_skill_validation_diff_check_pass","qualification":"EXACT_COMMITTED_CODE_SHA"}
+    {
+      "environment": "LOCAL_ISOLATED_VENV_PYTHON_3_12",
+      "qualification": "EXACT_COMMITTED_CLEAN_TREE",
+      "result": "backend_1161_passed_git_diff_check_clean_repository_hygiene_pass_skill_validation_pass_runtime_parity_pass",
+      "sha": "7b84660781a869cb595ae6984be0b79b4cdfc317"
+    },
+    {
+      "environment": "GITHUB_ACTIONS",
+      "qualification": "REMOTE_ORDINARY_CI_ONLY_HISTORICAL",
+      "result": "backend_frontend_dependency_container_hygiene_codeql_sonar_green",
+      "sha": "6b9a8b454a69224cbd3b39abe0b911cf54dfe44d"
+    },
+    {
+      "environment": "LOCAL_EXACT_COMMIT_DOCKER_PLUS_FRONTEND_NODE",
+      "qualification": "EXACT_COMMITTED_CODE_SHA",
+      "result": "backend_1170_passed_targeted_neighbors_129_passed_frontend_typecheck_build_contract_pass_repository_hygiene_runtime_parity_skill_validation_diff_check_pass",
+      "sha": "df35bf041685ac43a4edb8c08892897fccd378c9"
+    },
+    {
+      "environment": "LOCAL_ISOLATED_VENV_PYTHON_3_12_PLUS_NODE_PLAYWRIGHT",
+      "qualification": "EXACT_COMMITTED_CODE_SHA",
+      "result": "backend_1177_passed_1_existing_warning_skill_validation_pass_runtime_parity_pass_npm_ci_zero_vulns_frontend_contract_typecheck_build_pass_playwright_4_passed_diff_check_pass_clean_tree",
+      "sha": "bc18bdd9b3bccdfaae03e87862db9dfe34d855f2"
+    }
   ],
-  "next_executable_action": "Implement deterministic Playwright browser E2E against the now-green vertical baseline, then run the operational TP/SL, score/rank, LATE, Evidence≈98%, and leverage consistency audit. Keep LIVE_TRADING_ENABLED=false and do not merge/deploy before exact-head CI/review."
+  "updated_at": "2026-08-30T22:30:59Z",
+  "vertical_e2e_leverage_checkpoint": {
+    "advisory_only": true,
+    "canonical_live_leverage": "build_signal_leverage_advisory -> recommend_signal_leverage",
+    "code_sha": "df35bf041685ac43a4edb8c08892897fccd378c9",
+    "exact_sha_verification": {
+      "frontend_build": "PASS",
+      "frontend_contract": "PASS",
+      "frontend_typecheck": "PASS",
+      "full_backend": "1170 passed, 2 warnings",
+      "git_diff_check": "PASS",
+      "repository_hygiene": "PASS tracked_files=448",
+      "runtime_parity": "PASS",
+      "skill_validation": "PASS",
+      "targeted_neighboring": "129 passed"
+    },
+    "leverage_root_cause": "legacy get_leverage(symbol) populated applied_leverage before canonical EntryDecision while adaptive leverage ran only later in TRIGGERED",
+    "leverage_states": [
+      "AVAILABLE",
+      "UNAVAILABLE",
+      "NOT_RECOMMENDED"
+    ],
+    "production_mutation": false,
+    "vertical_e2e": "GREEN",
+    "vertical_paths": [
+      "deterministic_success",
+      "missing_market_fail_closed",
+      "advisory_unavailable_non_gating",
+      "advisory_not_recommended_non_gating"
+    ]
+  }
 }
