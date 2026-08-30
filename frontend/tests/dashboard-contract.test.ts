@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
-import { dashboardSnapshot } from "../lib/dashboard-contract";
+import { dashboardSnapshot, decisionTerminal } from "../lib/dashboard-contract";
+import {
+  advisoryPresentation,
+  blockedOrOtherBreakdown,
+  blockedOrOtherCount,
+  candidateFreshness,
+  summarizeCandidateFreshness,
+  tradePlanAvailable,
+} from "../lib/decision-terminal-ui";
 
 const counts = { ENTRY_READY: 0, FORMING: 0, ACTIVE: 0, LATE: 0, INVALIDATED: 0, EXPIRED: 0, NO_TRADE: 1, UNAVAILABLE: 0 };
 const snapshot = {
@@ -7,9 +15,72 @@ const snapshot = {
   generated_at: 1, state: "READY", total: 1, candidates: { BAD: null },
   decision_terminal: {
     contract_version: "decision_terminal_v1", counts, entry_ready: [], forming: [], active: [], late: [],
-    zero_entry_ready_diagnostics: { entry_ready_zero: true, evaluated_candidates: 1, top_reasons: [] },
+    zero_entry_ready_diagnostics: { entry_ready_zero: true, evaluated_candidates: 1, top_reasons: [], pipeline_degraded: false, systemic_unavailable_reasons: [] },
     recent_changes: [],
   },
   final_ranking: {}, signal_funnel: {},
 };
 assert.equal(dashboardSnapshot(snapshot), undefined, "null candidate values must be rejected");
+
+const legacyTerminalWithoutPipelineHealth = {
+  contract_version: "decision_terminal_v1", counts, entry_ready: [], forming: [], active: [], late: [],
+  zero_entry_ready_diagnostics: { entry_ready_zero: true, evaluated_candidates: 1, top_reasons: [] },
+  recent_changes: [],
+};
+assert.notEqual(
+  decisionTerminal(legacyTerminalWithoutPipelineHealth),
+  undefined,
+  "additive pipeline health fields must remain backward compatible with decision_terminal_v1",
+);
+const partialPipelineHealth = {
+  ...legacyTerminalWithoutPipelineHealth,
+  zero_entry_ready_diagnostics: {
+    ...legacyTerminalWithoutPipelineHealth.zero_entry_ready_diagnostics,
+    pipeline_degraded: true,
+  },
+};
+assert.equal(
+  decisionTerminal(partialPipelineHealth),
+  undefined,
+  "partial pipeline health diagnostics must be rejected",
+);
+
+
+const productionLikeCounts = {
+  ENTRY_READY: 0, FORMING: 0, ACTIVE: 0, LATE: 129,
+  INVALIDATED: 0, EXPIRED: 0, NO_TRADE: 15, UNAVAILABLE: 0,
+};
+assert.equal(blockedOrOtherCount(productionLikeCounts), 144);
+assert.equal(blockedOrOtherBreakdown(productionLikeCounts), "129 late · 15 no trade");
+
+const freshnessCandidates = {
+  FRESH: {
+    analysis_age_seconds: 45,
+    metrics: { entry_decision: { policy: { max_analysis_age_seconds: 180 } } },
+  },
+  STALE: {
+    analysis_age_seconds: 360,
+    metrics: { entry_decision: { policy: { max_analysis_age_seconds: 180 } } },
+  },
+};
+assert.deepEqual(candidateFreshness(freshnessCandidates.FRESH), {
+  ageSeconds: 45, thresholdSeconds: 180, state: "fresh",
+});
+assert.deepEqual(candidateFreshness(freshnessCandidates.STALE), {
+  ageSeconds: 360, thresholdSeconds: 180, state: "stale",
+});
+assert.deepEqual(summarizeCandidateFreshness(freshnessCandidates), {
+  total: 2, fresh: 1, stale: 1, unknown: 0, state: "mixed",
+});
+
+assert.equal(tradePlanAvailable({
+  entry_price: 1, stop_loss: 1.1, take_profit_1: 0.9, take_profit_2: 0.8,
+}), true);
+assert.equal(tradePlanAvailable({ entry_price: 1 }), false);
+
+assert.deepEqual(advisoryPresentation({
+  ai_advice: "PENDING", ai_confidence: 0, ai_reasoning: "queued",
+}), { status: "PENDING", reasoning: "queued" });
+assert.deepEqual(advisoryPresentation({
+  ai_advice: "AVOID", ai_confidence: 82, ai_reasoning: "late cascade",
+}), { status: "AVOID", confidence: 82, reasoning: "late cascade" });

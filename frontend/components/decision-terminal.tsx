@@ -14,6 +14,13 @@ import {
   TrendingDown,
 } from "lucide-react";
 import type { Candidate } from "@/components/score-card";
+import {
+  advisoryPresentation,
+  blockedOrOtherBreakdown,
+  blockedOrOtherCount,
+  candidateFreshness,
+  tradePlanAvailable,
+} from "@/lib/decision-terminal-ui";
 
 type Rec = Record<string, unknown>;
 
@@ -104,6 +111,8 @@ function DecisionCard({ symbol, candidate }: Readonly<{ symbol: string; candidat
   const state = String(decision.decision ?? "UNAVAILABLE");
   const readiness = finite(decision.entry_readiness);
   const coverage = finite(decision.evidence_coverage_pct);
+  const hasPlan = tradePlanAvailable(plan);
+  const advisoryView = advisoryPresentation(advisory);
   const blocks = Array.isArray(decision.block_reasons)
     ? decision.block_reasons.filter((value): value is string => typeof value === "string")
     : [];
@@ -121,7 +130,18 @@ function DecisionCard({ symbol, candidate }: Readonly<{ symbol: string; candidat
           <div><p className="text-xs uppercase tracking-wider text-slate-500">Entry readiness</p><p className="text-4xl font-semibold tabular-nums">{readiness === undefined ? "—" : readiness.toFixed(1)}<span className="text-base text-slate-500">/100</span></p></div>
           <div className="text-right text-xs text-slate-400"><p>Evidence {coverage === undefined ? "—" : `${coverage.toFixed(0)}%`}</p><p>Leverage {finite(plan.leverage) === undefined ? "—" : `${number(plan.leverage, 0)}×`}</p></div>
         </div>
-        <SignalLevels plan={plan} />
+        {hasPlan ? (
+          <>
+            {state !== "ENTRY_READY" ? (
+              <p className="mt-4 text-xs font-medium text-amber-200/90">Reference plan · not an entry command</p>
+            ) : null}
+            <SignalLevels plan={plan} />
+          </>
+        ) : (
+          <div className="mt-4 rounded-lg border border-slate-700 bg-slate-950/45 px-3 py-2 text-xs text-slate-400">
+            No canonical trade plan for this state. Entry, stop and take-profit levels are intentionally unavailable.
+          </div>
+        )}
         <EvidenceGrid evidence={evidence} />
         {blocks.length > 0 ? (
           <div className="mt-4 flex gap-2 rounded-lg border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">
@@ -131,14 +151,23 @@ function DecisionCard({ symbol, candidate }: Readonly<{ symbol: string; candidat
         ) : null}
         {reasons.length > 0 ? <p className="mt-3 text-xs leading-5 text-slate-400">{reasons.join(" · ").replaceAll("_", " ")}</p> : null}
         <div className="mt-4 border-t border-slate-800 pt-3 text-xs text-slate-400">
-          <p className="flex items-start gap-2"><BrainCircuit size={14} className="mt-0.5 shrink-0" /><span><b className="text-slate-300">AI advisory:</b> {String(advisory.ai_advice ?? "UNAVAILABLE")}{finite(advisory.ai_confidence) === undefined ? "" : ` · ${number(advisory.ai_confidence, 0)}%`} · {String(advisory.ai_reasoning ?? "No advisory available")}</span></p>
+          <p className="flex items-start gap-2"><BrainCircuit size={14} className="mt-0.5 shrink-0" /><span><b className="text-slate-300">AI advisory:</b> {advisoryView.status}{advisoryView.confidence === undefined ? "" : ` · ${number(advisoryView.confidence, 0)}%`} · {advisoryView.reasoning}</span></p>
         </div>
       </div>
     </article>
   );
 }
 
-function EmptyReady() {
+function EmptyReady({ pipelineDegraded }: Readonly<{ pipelineDegraded: boolean }>) {
+  if (pipelineDegraded) {
+    return (
+      <div className="panel border border-rose-500/30 bg-rose-500/5 px-5 py-8 text-center">
+        <ShieldAlert className="mx-auto text-rose-300" size={28} />
+        <p className="mt-3 text-base font-semibold text-rose-100">ENTRY READY cannot be evaluated reliably</p>
+        <p className="mt-1 text-sm text-slate-400">Required decision evidence is systemically unavailable. Treat zero ENTRY READY as unavailable, not as a market no-signal conclusion.</p>
+      </div>
+    );
+  }
   return (
     <div className="panel border border-slate-800 px-5 py-8 text-center">
       <Target className="mx-auto text-slate-500" size={28} />
@@ -152,16 +181,33 @@ function ZeroEntryDiagnostics({ diagnostics }: Readonly<{ diagnostics: Rec }>) {
   const rows = Array.isArray(diagnostics.top_reasons)
     ? diagnostics.top_reasons.map(record).filter((row) => typeof row.reason === "string")
     : [];
+  const systemic = Array.isArray(diagnostics.systemic_unavailable_reasons)
+    ? diagnostics.systemic_unavailable_reasons.map(record).filter((row) => typeof row.reason === "string")
+    : [];
+  const degraded = diagnostics.pipeline_degraded === true && systemic.length > 0;
   if (diagnostics.entry_ready_zero !== true || rows.length === 0) return null;
   return (
-    <section className="mt-4 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
-      <div className="flex items-center gap-2 text-sm font-semibold text-amber-100">
-        <AlertTriangle size={16} /> Why ENTRY READY is zero
+    <section className={`mt-4 rounded-xl border p-4 ${degraded ? "border-rose-500/30 bg-rose-500/5" : "border-amber-500/20 bg-amber-500/5"}`}>
+      <div className={`flex items-center gap-2 text-sm font-semibold ${degraded ? "text-rose-100" : "text-amber-100"}`}>
+        <AlertTriangle size={16} /> {degraded ? "Decision pipeline degraded" : "Why ENTRY READY is zero"}
       </div>
-      <p className="mt-1 text-xs text-slate-400">Dominant canonical gate failures across {number(diagnostics.evaluated_candidates, 0)} evaluated candidates.</p>
+      <p className="mt-1 text-xs text-slate-400">
+        {degraded
+          ? `Required evidence is unavailable across all ${number(diagnostics.evaluated_candidates, 0)} evaluated candidates. This is a system/data availability failure, not a market gate conclusion.`
+          : `Dominant canonical gate failures across ${number(diagnostics.evaluated_candidates, 0)} evaluated candidates.`}
+      </p>
+      {degraded ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {systemic.map((row) => (
+            <span key={`systemic-${String(row.reason)}`} className="rounded-full border border-rose-500/25 bg-rose-950/30 px-2.5 py-1 text-xs text-rose-100">
+              {String(row.reason).replaceAll("_", " ")} · systemic
+            </span>
+          ))}
+        </div>
+      ) : null}
       <div className="mt-3 flex flex-wrap gap-2">
         {rows.map((row) => (
-          <span key={String(row.reason)} className="rounded-full border border-amber-500/20 bg-slate-950/50 px-2.5 py-1 text-xs text-slate-300">
+          <span key={String(row.reason)} className={`rounded-full border px-2.5 py-1 text-xs ${degraded ? "border-slate-700 bg-slate-950/50 text-slate-300" : "border-amber-500/20 bg-slate-950/50 text-slate-300"}`}>
             {String(row.reason).replaceAll("_", " ")} · {number(row.count, 0)} ({pct(row.share_pct, 1)})
           </span>
         ))}
@@ -171,20 +217,23 @@ function ZeroEntryDiagnostics({ diagnostics }: Readonly<{ diagnostics: Rec }>) {
 }
 
 function TerminalKpis({ counts }: Readonly<{ counts: Rec }>) {
+  const blocked = blockedOrOtherCount(counts);
+  const blockedDetail = blockedOrOtherBreakdown(counts);
   const cards = [
-    ["ENTRY READY", counts.ENTRY_READY, "text-emerald-300"],
-    ["FORMING", counts.FORMING, "text-amber-300"],
-    ["ACTIVE", counts.ACTIVE, "text-sky-300"],
-    ["LATE / BLOCKED", (finite(counts.LATE) ?? 0) + (finite(counts.INVALIDATED) ?? 0), "text-orange-300"],
+    { label: "ENTRY READY", value: counts.ENTRY_READY, tone: "text-emerald-300" },
+    { label: "FORMING", value: counts.FORMING, tone: "text-amber-300" },
+    { label: "ACTIVE", value: counts.ACTIVE, tone: "text-sky-300" },
+    { label: "BLOCKED / OTHER", value: blocked, tone: "text-orange-300", detail: blockedDetail },
   ] as const;
   return (
     <dl className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-      {cards.map(([label, value, tone]) => (
+      {cards.map(({ label, value, tone, ...rest }) => (
         <div key={label} className="panel px-4 py-3.5">
           <dt className="text-xs font-medium text-slate-400">{label}</dt>
           <dd className={`mt-1 text-2xl font-semibold tabular-nums sm:text-3xl ${tone}`}>
             {finite(value) === undefined ? "—" : number(value, 0)}
           </dd>
+          {"detail" in rest && rest.detail ? <p className="mt-1 text-[11px] text-slate-500">{rest.detail}</p> : null}
         </div>
       ))}
     </dl>
@@ -235,7 +284,11 @@ function CandidateTable({ candidates }: Readonly<{ candidates: Record<string, Ca
               const derivatives = record(evidence.derivatives);
               const flow = record(evidence.order_flow);
               const cascade = record(evidence.cascade);
-              return <tr key={symbol} className="hover:bg-slate-900/60"><td className="px-4 py-3 font-mono text-sky-200">{symbol}</td><td><span className={`status-pill border ${decisionTone(decision)}`}>{decision.replaceAll("_", " ")}</span></td><td className="font-mono">{readiness < 0 ? "—" : readiness.toFixed(1)}</td><td className="font-mono">${price(candidate.last_price)}</td><td>{pct(derivatives.oi_change_1h_pct, 2)}</td><td>{number(flow.taker_buy_sell_ratio, 3)}</td><td>{String(cascade.status ?? "—")}</td><td>{finite(candidate.analysis_age_seconds) === undefined ? "—" : `${number(candidate.analysis_age_seconds, 0)}s`}</td></tr>;
+              const freshness = candidateFreshness(candidate);
+              const freshnessText = freshness.ageSeconds === undefined
+                ? "—"
+                : `${number(freshness.ageSeconds, 0)}s${freshness.state === "stale" ? " · stale" : ""}`;
+              return <tr key={symbol} className="hover:bg-slate-900/60"><td className="px-4 py-3 font-mono text-sky-200">{symbol}</td><td><span className={`status-pill border ${decisionTone(decision)}`}>{decision.replaceAll("_", " ")}</span></td><td className="font-mono">{readiness < 0 ? "—" : readiness.toFixed(1)}</td><td className="font-mono">${price(candidate.last_price)}</td><td>{pct(derivatives.oi_change_1h_pct, 2)}</td><td>{number(flow.taker_buy_sell_ratio, 3)}</td><td>{String(cascade.status ?? "—")}</td><td className={freshness.state === "stale" ? "font-medium text-rose-300" : "text-slate-300"} title={freshness.thresholdSeconds === undefined ? undefined : `Policy freshness limit ${number(freshness.thresholdSeconds, 0)}s`}>{freshnessText}</td></tr>;
             })}
           </tbody>
         </table>
@@ -329,6 +382,7 @@ export function DecisionTerminal({ terminal, candidates }: Readonly<{
   const packet = record(terminal);
   const counts = record(packet.counts);
   const diagnostics = record(packet.zero_entry_ready_diagnostics);
+  const pipelineDegraded = diagnostics.pipeline_degraded === true;
   const ready = symbols(packet.entry_ready);
   const forming = symbols(packet.forming);
   const active = symbols(packet.active);
@@ -344,7 +398,7 @@ export function DecisionTerminal({ terminal, candidates }: Readonly<{
         <span className="status-pill border border-slate-700 bg-slate-900 text-slate-300">SIGNAL ONLY</span>
       </div>
       <TerminalKpis counts={counts} />
-      <div className="mt-4">{ready.length === 0 ? <EmptyReady /> : null}</div>
+      <div className="mt-4">{ready.length === 0 ? <EmptyReady pipelineDegraded={pipelineDegraded} /> : null}</div>
       <ZeroEntryDiagnostics diagnostics={diagnostics} />
       <DecisionSection
         title="ENTRY READY"

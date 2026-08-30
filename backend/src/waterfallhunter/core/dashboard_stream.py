@@ -105,6 +105,17 @@ class ZeroEntryReadyDiagnostics(BaseModel):
     entry_ready_zero: bool
     evaluated_candidates: int = Field(ge=0)
     top_reasons: list[DecisionDiagnosticReason]
+    pipeline_degraded: bool = False
+    systemic_unavailable_reasons: list[DecisionDiagnosticReason] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_pipeline_health(self) -> "ZeroEntryReadyDiagnostics":
+        if self.pipeline_degraded != bool(self.systemic_unavailable_reasons):
+            raise ValueError("pipeline degraded flag disagrees with systemic unavailable reasons")
+        for row in self.systemic_unavailable_reasons:
+            if row.count != self.evaluated_candidates or row.share_pct != 100.0:
+                raise ValueError("systemic unavailable reason must cover the evaluated universe")
+        return self
 
 
 class DecisionTerminalCounts(BaseModel):

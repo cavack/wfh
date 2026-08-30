@@ -83,3 +83,49 @@ def test_terminal_explains_systemic_zero_entry_ready() -> None:
 def test_terminal_rejects_empty_candidate_symbol() -> None:
     with pytest.raises(ValueError, match="candidate symbol"):
         build_decision_terminal({"": candidate("NO_TRADE", 20)}, recent_changes=[])
+
+
+
+def test_terminal_flags_systemic_evidence_unavailability_as_pipeline_degraded() -> None:
+    first = candidate("NO_TRADE", 40)
+    first["metrics"]["entry_decision"].update({
+        "block_reasons": [],
+        "reason_codes": ["STRUCTURE_UNAVAILABLE", "TIMING_UNAVAILABLE", "BUYERS_ACTIVE"],
+    })
+    second = candidate("LATE", 45)
+    second["metrics"]["entry_decision"].update({
+        "block_reasons": ["ANTI_CHASE_HARD_BLOCK"],
+        "reason_codes": ["STRUCTURE_UNAVAILABLE", "TIMING_UNAVAILABLE", "CASCADE_PARTIAL"],
+    })
+
+    diagnostics = build_decision_terminal(
+        {"A": first, "B": second},
+        recent_changes=[],
+    )["zero_entry_ready_diagnostics"]
+
+    assert diagnostics["pipeline_degraded"] is True
+    assert diagnostics["systemic_unavailable_reasons"] == [
+        {"reason": "STRUCTURE_UNAVAILABLE", "count": 2, "share_pct": 100.0},
+        {"reason": "TIMING_UNAVAILABLE", "count": 2, "share_pct": 100.0},
+    ]
+
+
+def test_terminal_does_not_call_partial_unavailability_a_systemic_pipeline_failure() -> None:
+    first = candidate("NO_TRADE", 40)
+    first["metrics"]["entry_decision"].update({
+        "block_reasons": [],
+        "reason_codes": ["DERIVATIVES_UNAVAILABLE"],
+    })
+    second = candidate("NO_TRADE", 35)
+    second["metrics"]["entry_decision"].update({
+        "block_reasons": [],
+        "reason_codes": ["BUYERS_ACTIVE"],
+    })
+
+    diagnostics = build_decision_terminal(
+        {"A": first, "B": second},
+        recent_changes=[],
+    )["zero_entry_ready_diagnostics"]
+
+    assert diagnostics["pipeline_degraded"] is False
+    assert diagnostics["systemic_unavailable_reasons"] == []

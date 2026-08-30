@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Activity, FlaskConical, LayoutDashboard, Radio, ShieldCheck, Wifi, WifiOff } from "lucide-react";
+import { Activity, Clock3, FlaskConical, LayoutDashboard, Radio, ShieldCheck, Wifi, WifiOff } from "lucide-react";
 import { MarketContext } from "@/components/market-context";
 import { OutcomeEvidence } from "@/components/outcome-evidence";
 import { Candidate, ScoreCard } from "@/components/score-card";
@@ -19,6 +19,7 @@ import { RecentSignals } from "@/components/recent-signals";
 
 import type { DashboardSnapshot } from "@/generated/dashboard-contract";
 import { dashboardSnapshot, dashboardStreamEvent } from "@/lib/dashboard-contract";
+import { summarizeCandidateFreshness } from "@/lib/decision-terminal-ui";
 
 type ConnectionMode = "stream" | "polling" | "reconnecting";
 
@@ -49,6 +50,36 @@ function StreamStatus({ mode }: Readonly<{ mode: ConnectionMode }>) {
     >
       {connected ? <Wifi size={13} /> : <WifiOff size={13} />}
       {connectionLabel(mode)}
+    </span>
+  );
+}
+
+function DataFreshnessStatus({ summary }: Readonly<{ summary: ReturnType<typeof summarizeCandidateFreshness> }>) {
+  const tone = summary.state === "fresh"
+    ? "border-emerald-400/25 bg-emerald-500/10 text-emerald-200"
+    : summary.state === "stale"
+      ? "border-rose-400/30 bg-rose-500/10 text-rose-200"
+      : summary.state === "mixed"
+        ? "border-amber-400/25 bg-amber-500/10 text-amber-200"
+        : "border-slate-700 bg-slate-900 text-slate-400";
+  let label = "Freshness unknown";
+  if (summary.state === "fresh") label = `Data fresh · ${summary.fresh}/${summary.total}`;
+  else if (summary.state === "stale") label = `Candidate data stale · ${summary.stale}`;
+  else if (summary.state === "mixed") {
+    label = summary.stale > 0
+      ? `${summary.stale} stale · ${summary.fresh} fresh`
+      : `${summary.unknown} unknown · ${summary.fresh} fresh`;
+  }
+  return (
+    <span
+      className={`status-pill border ${tone}`}
+      role="status"
+      aria-live="polite"
+      aria-label={label}
+      title={label}
+    >
+      <Clock3 size={13} aria-hidden="true" />
+      <span className="hidden sm:inline">{label}</span>
     </span>
   );
 }
@@ -200,6 +231,11 @@ export default function Dashboard() {
     [data],
   );
 
+  const freshnessSummary = useMemo(
+    () => summarizeCandidateFreshness((data?.candidates ?? {}) as Record<string, unknown>),
+    [data],
+  );
+
   const groups = useMemo(() => {
     const strictConfirmed = rows.filter(([, candidate]) => candidate.signal_class === "STRICT" && candidate.status === "TRIGGERED");
     const experimental = rows.filter(([, candidate]) => candidate.signal_class === "EXPERIMENTAL");
@@ -254,6 +290,7 @@ export default function Dashboard() {
                 updated {new Date(generatedAt).toLocaleTimeString()}
               </time>
             )}
+            <DataFreshnessStatus summary={freshnessSummary} />
             <StreamStatus mode={mode} />
           </div>
         </div>
