@@ -17,6 +17,22 @@ from waterfallhunter.core.signal_metadata import canonical_sha256
 logger = logging.getLogger("WaterfallHunter.ProductionEvidence")
 
 
+def _finite_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def causal_age_seconds(decision_at: Any, observed_at: Any) -> float | None:
+    """Return a finite non-negative age only for causal timestamps."""
+    decision = _finite_number(decision_at)
+    observed = _finite_number(observed_at)
+    if decision is None or observed is None or observed > decision:
+        return None
+    return decision - observed
+
+
 def build_production_replay_context(
     *,
     lifecycle_id: int,
@@ -30,37 +46,41 @@ def build_production_replay_context(
     trade_plan_feasibility_shadow: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Freeze observational replay context without changing decision semantics."""
-    decision_at = float(decision_evaluated_at)
-    analysis_at = float(analysis_observed_at)
-    reference_at = (
-        float(reference_observed_at)
-        if isinstance(reference_observed_at, (int, float))
-        and not isinstance(reference_observed_at, bool)
-        else None
-    )
-    analysis_age = max(0.0, decision_at - analysis_at)
-    reference_age = (
-        max(0.0, decision_at - reference_at)
-        if reference_at is not None
-        else None
-    )
+    normalized_decision_at = _finite_number(decision_evaluated_at)
+    analysis_at = _finite_number(analysis_observed_at)
+    reference_at = _finite_number(reference_observed_at)
+    analysis_age = causal_age_seconds(normalized_decision_at, analysis_at)
+    reference_age = causal_age_seconds(normalized_decision_at, reference_at)
+    analysis_limit = _finite_number(max_analysis_age_seconds)
+    reference_limit = _finite_number(max_reference_age_seconds)
+    analysis_limit = analysis_limit if analysis_limit is not None and analysis_limit >= 0 else None
+    reference_limit = reference_limit if reference_limit is not None and reference_limit >= 0 else None
     return {
         "canonical_lifecycle_id": int(lifecycle_id),
         "canonical_entry_decision": copy.deepcopy(entry_decision),
         "canonical_entry_decision_sha256": canonical_sha256(entry_decision),
-        "decision_evaluated_at": int(decision_evaluated_at),
-        "analysis_observed_at": analysis_observed_at,
-        "reference_observed_at": reference_observed_at,
+        "decision_evaluated_at": (
+            int(normalized_decision_at)
+            if normalized_decision_at is not None
+            else None
+        ),
+        "analysis_observed_at": analysis_at,
+        "reference_observed_at": reference_at,
         "freshness": {
             "policy_version": str(policy_version),
-            "max_analysis_age_seconds": float(max_analysis_age_seconds),
-            "max_reference_age_seconds": float(max_reference_age_seconds),
+            "max_analysis_age_seconds": analysis_limit,
+            "max_reference_age_seconds": reference_limit,
             "analysis_age_seconds": analysis_age,
             "reference_age_seconds": reference_age,
-            "analysis_pass": analysis_age <= float(max_analysis_age_seconds),
+            "analysis_pass": (
+                analysis_age is not None
+                and analysis_limit is not None
+                and analysis_age <= analysis_limit
+            ),
             "reference_pass": (
                 reference_age is not None
-                and reference_age <= float(max_reference_age_seconds)
+                and reference_limit is not None
+                and reference_age <= reference_limit
             ),
         },
         "trade_plan_feasibility_shadow": copy.deepcopy(
@@ -148,6 +168,49 @@ class ProductionEvidenceRecorder:
             and len(application["source_tree_sha256"]) == 64
             and all(isinstance(contract.get(name), dict) for name in required_sections)
         )
+
+    @classmethod
+    def _replay_status(cls, replay_context: Any) -> tuple[bool, str | None]:
+        if not isinstance(replay_context, dict) or not replay_context:
+            return False, "REPLAY_CONTEXT_ABSENT"
+        required = (
+            "canonical_lifecycle_id",
+            "canonical_entry_decision",
+            "canonical_entry_decision_sha256",
+            "decision_evaluated_at",
+            "analysis_observed_at",
+            "reference_observed_at",
+            "freshness",
+            "trade_plan_feasibility_shadow",
+            "decision_contract_sha256",
+        )
+        if any(key not in replay_context for key in required):
+            return False, "REPLAY_CONTEXT_INCOMPLETE"
+        if (
+            not isinstance(replay_context.get("canonical_lifecycle_id"), int)
+            or isinstance(replay_context.get("canonical_lifecycle_id"), bool)
+            or not isinstance(replay_context.get("canonical_entry_decision"), dict)
+            or not isinstance(replay_context.get("freshness"), dict)
+            or not isinstance(replay_context.get("trade_plan_feasibility_shadow"), dict)
+            or any(
+                not isinstance(replay_context.get(key), str)
+                or len(replay_context[key]) != 64
+                for key in (
+                    "canonical_entry_decision_sha256",
+                    "decision_contract_sha256",
+                )
+            )
+        ):
+            return False, "REPLAY_CONTEXT_INCOMPLETE"
+        decision_at = replay_context.get("decision_evaluated_at")
+        if (
+            causal_age_seconds(decision_at, replay_context.get("analysis_observed_at"))
+            is None
+            or causal_age_seconds(decision_at, replay_context.get("reference_observed_at"))
+            is None
+        ):
+            return False, "REPLAY_CONTEXT_INVALID_TIMESTAMPS"
+        return True, None
 
     @classmethod
     def _payload(
@@ -304,6 +367,7 @@ class ProductionEvidenceRecorder:
                 else "evaluation rejected without a complete decision packet"
             )
         )
+        replay_complete, replay_unavailable_reason = cls._replay_status(replay_context)
         return {
             "schema_version": cls.SCHEMA_VERSION,
             "capture_mode": cls.CAPTURE_MODE,
@@ -323,6 +387,8 @@ class ProductionEvidenceRecorder:
                 "decision_reason": cls._safe(decision_reason),
             },
             "decision_contract": cls._safe(contract),
+            "replay_complete": replay_complete,
+            "replay_unavailable_reason": replay_unavailable_reason,
             "replay_context": cls._safe(replay_context or {}),
             "metrics": captured_metrics,
             "capture_limitations": {

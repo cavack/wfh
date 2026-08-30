@@ -23,7 +23,7 @@ class DerivativesAnalyzer:
         if not isinstance(timestamp, (int, float)) or timestamp <= 0:
             return False
         age_seconds = retrieved_at - float(timestamp) / 1000.0
-        return -60.0 <= age_seconds <= self.max_data_age_seconds
+        return 0.0 <= age_seconds <= self.max_data_age_seconds
 
     @staticmethod
     def _provenance(exchange: str, mapped_symbol: str, market_id: str, retrieved_at: float) -> dict[str, Any]:
@@ -98,7 +98,7 @@ class DerivativesAnalyzer:
                     parsed_funding = []
                     break
                 age_seconds = retrieved_at - timestamp / 1000.0
-                if not -60.0 <= age_seconds <= self.max_funding_history_age_seconds:
+                if not 0.0 <= age_seconds <= self.max_funding_history_age_seconds:
                     parsed_funding = []
                     break
                 parsed_funding.append((timestamp, rate))
@@ -134,7 +134,7 @@ class DerivativesAnalyzer:
                         or ratio is None
                         or ratio <= 0
                         or not self._matches_market(history_row, market_id)
-                        or timestamp > int((retrieved_at + 60.0) * 1000)
+                        or timestamp > int(retrieved_at * 1000)
                     ):
                         parsed_taker = []
                         break
@@ -177,7 +177,7 @@ class DerivativesAnalyzer:
                     parsed_oi = []
                     break
                 age_seconds = retrieved_at - timestamp / 1000.0
-                if not -60.0 <= age_seconds <= self.max_oi_span_seconds:
+                if not 0.0 <= age_seconds <= self.max_oi_span_seconds:
                     parsed_oi = []
                     break
                 parsed_oi.append((timestamp, value))

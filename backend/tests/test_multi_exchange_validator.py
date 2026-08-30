@@ -318,7 +318,100 @@ def test_technical_trade_plan_shadow_reuses_canonical_calculator_without_mutatin
     assert shadow["observational_only"] is True
     assert shadow["hard_gating_allowed"] is False
     assert shadow["setup"] == canonical
-    assert shadow["status"] == canonical["status"]
+    assert shadow["available"] is True
+    assert shadow["feasible"] is True
+    assert shadow["status"] == "FEASIBLE"
+
+
+@pytest.mark.parametrize(
+    "missing_path",
+    [
+        "history",
+        "entry_price",
+        "reference_price",
+        "entry_slippage",
+        "exit_slippage",
+        "market_filters",
+    ],
+)
+def test_technical_trade_plan_shadow_missing_causal_input_is_unavailable(missing_path):
+    instance = validator()
+    instance.position_calculator = PositionCalculator()
+    history = [
+        [1_788_000_000_000 + i * 300_000, 100.0, 101.0, 99.0, 100.0, 1_000.0]
+        for i in range(30)
+    ]
+    metrics = {
+        "candle_analysis": {"source_capture": {"primary_closed_ohlcv": {"5m": history}}},
+        "ticker": {"last": 100.0},
+        "microstructure": {
+            "best_bid": 100.0,
+            "best_ask": 100.1,
+            "entry_slippage_pct": 0.05,
+            "exit_slippage_pct": 0.05,
+            "source_capture": {"market": {
+                "precision": {"price": 0.01, "amount": 0.001},
+                "contractSize": 1.0,
+                "limits": {"cost": {"min": 5.0}},
+            }},
+        },
+    }
+    if missing_path == "history":
+        metrics["candle_analysis"]["source_capture"]["primary_closed_ohlcv"].pop("5m")
+    elif missing_path == "entry_price":
+        metrics["microstructure"].pop("best_bid")
+    elif missing_path == "reference_price":
+        metrics["ticker"].clear()
+        metrics["microstructure"].pop("best_ask")
+    elif missing_path == "entry_slippage":
+        metrics["microstructure"].pop("entry_slippage_pct")
+    elif missing_path == "exit_slippage":
+        metrics["microstructure"].pop("exit_slippage_pct")
+    elif missing_path == "market_filters":
+        metrics["microstructure"]["source_capture"].pop("market")
+
+    shadow = instance.build_technical_trade_plan_shadow(metrics)
+
+    assert shadow["available"] is False
+    assert shadow["feasible"] is None
+    assert shadow["status"] == "UNAVAILABLE"
+    assert missing_path.upper() in shadow["unavailable_reasons"]
+
+
+def test_technical_trade_plan_shadow_calculator_rejection_is_infeasible(monkeypatch):
+    instance = validator()
+    instance.position_calculator = PositionCalculator()
+    monkeypatch.setattr(
+        instance.position_calculator,
+        "calculate_short_position",
+        lambda *args, **kwargs: {"status": "REJECTED: Invalid take-profit geometry"},
+    )
+    history = [
+        [1_788_000_000_000 + i * 300_000, 100.0, 101.0, 99.0, 100.0, 1_000.0]
+        for i in range(30)
+    ]
+    metrics = {
+        "candle_analysis": {"source_capture": {"primary_closed_ohlcv": {"5m": history}}},
+        "ticker": {"last": 100.0},
+        "microstructure": {
+            "best_bid": 100.0,
+            "best_ask": 100.1,
+            "entry_slippage_pct": 0.05,
+            "exit_slippage_pct": 0.05,
+            "source_capture": {"market": {
+                "precision": {"price": 0.01, "amount": 0.001},
+                "contractSize": 1.0,
+                "limits": {"cost": {"min": 5.0}},
+            }},
+        },
+    }
+
+    shadow = instance.build_technical_trade_plan_shadow(metrics)
+
+    assert shadow["available"] is True
+    assert shadow["feasible"] is False
+    assert shadow["status"] == "INFEASIBLE"
+    assert shadow["setup"]["status"].startswith("REJECTED")
 
 
 def test_live_position_setup_does_not_invent_trade_plan_expiry(monkeypatch):

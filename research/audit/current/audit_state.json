@@ -1,0 +1,65 @@
+{
+  "schema_version": "waterfallhunter_audit_state_v1",
+  "updated_at": "2026-08-30T15:38:01Z",
+  "base_main_sha": "c8a8fc4ea64af9cd3354ae2d68fb73f11a7d5a6c",
+  "production": {
+    "sha": "52fc7dd44868f53b8a6575f0fc6b3c536cbb70e5",
+    "git_state": "detached_clean",
+    "health": "healthy",
+    "live_trading_enabled": false,
+    "db_user_version": 7,
+    "db_journal_mode": "wal",
+    "deploy_lock_held": false,
+    "mutation_performed": false
+  },
+  "routing": {
+    "router_file": "UNAVAILABLE_ON_BASE_SHA",
+    "catalog_file": "UNAVAILABLE_ON_BASE_SHA",
+    "loaded_from_base_sha": [
+      "engineering-orchestrator",
+      "market-data-evidence-quality",
+      "strategy-score-lifecycle",
+      "verification-regression"
+    ]
+  },
+  "active_work": {
+    "worktree": "/srv/wfh-worktrees/evidence-v9-20260830",
+    "branch": "research/production-evidence-v9-20260830",
+    "head_sha": "RESOLVE_FROM_GIT_HEAD",
+    "pull_request": 96,
+    "pull_request_state": "OPEN",
+    "pull_request_checks": "ORDINARY_CHECKS_GREEN_AT_6b9a8b454a69224cbd3b39abe0b911cf54dfe44d",
+    "working_tree_dirty": false,
+    "working_tree_code_and_test_diff_sha256": "c5b11af0371de63e0d7a20c4d3bf52bb8d7fd4ba933b2a4c69969bcddc97215a"
+  },
+  "active_branches_and_worktrees": [
+    {"path": "/srv/wfh-worktrees/evidence-v9-20260830", "branch": "research/production-evidence-v9-20260830", "head": "RESOLVE_FROM_GIT_HEAD", "dirty": false},
+    {"path": "/srv/wfh-worktrees/entry-proximity-20260830", "branch": "feature/entry-proximity-observational-20260830", "head": "c8a8fc4ea64af9cd3354ae2d68fb73f11a7d5a6c", "dirty": false},
+    {"path": "/srv/wfh-worktrees/calibration-round16-20260830", "branch": "research/calibration-round16-20260830", "head": "c8a8fc4ea64af9cd3354ae2d68fb73f11a7d5a6c", "dirty": true},
+    {"path": "/srv/wfh-worktrees/fix-stale-entry-actionability-20260830", "branch": "fix/stale-entry-actionability-20260830", "head": "bb51eb63fb37da41cc685316e1c0cea4ebae11ef", "dirty": false},
+    {"path": "/srv/wfh-worktrees/fix-runtime-memory-amplification-20260829", "branch": "fix/runtime-memory-amplification-20260829", "head": "5d5e00f4ab59a96db1f506600ad67b6434201e25", "dirty": false},
+    {"path": "/srv/wfh-worktrees/fix/decision-terminal-contract-20260830", "branch": "fix/decision-terminal-contract-20260830", "head": "38f1e27f845c5110be3edf9df3e34b547ee7894c", "dirty": false},
+    {"path": "/srv/wfh-worktrees/remote-dr-backup-certification-20260828", "branch": "fix/remote-dr-backup-certification-local", "head": "12e762a6fd685994cdd4e43248ac1c457fdf4f9a", "dirty": false}
+  ],
+  "open_defects": [
+    {"id": "V9-001", "priority": "P2", "layer": "PERSISTENCE_REPLAY", "taxonomy": "FIXED_PENDING_EXACT_HEAD_CI_AND_RUNTIME", "symptom": "v9 rows without replay_context lack explicit replay completeness and unavailable reason", "fix": "persist explicit replay completeness fields and queue every v9 row for EQUIVALENT, MISMATCH, or NOT_REPLAYABLE classification", "verification": "focused plus neighboring and full backend green", "production_status": "NOT_DEPLOYED"},
+    {"id": "V9-002", "priority": "P1", "layer": "TIMESTAMPS_FRESHNESS", "taxonomy": "FIXED_PENDING_EXACT_HEAD_CI_AND_RUNTIME", "symptom": "future evidence is clamped to age zero and can pass freshness; non-finite timestamps are not uniformly fail-closed", "fix": "canonical causal-age helper, negative-age EntryDecision block, strict derivatives timestamps, provider packet receive-time binding", "verification": "focused plus neighboring and full backend green", "production_status": "NOT_DEPLOYED"},
+    {"id": "V9-003", "priority": "P1", "layer": "TECHNICAL_TRADE_PLAN", "taxonomy": "FIXED_PENDING_EXACT_HEAD_CI_AND_RUNTIME", "symptom": "missing causal inputs can be classified through calculator fallback as feasible or infeasible instead of unavailable", "fix": "prevalidate every causal input and expose FEASIBLE, INFEASIBLE, and UNAVAILABLE as distinct statuses", "verification": "focused plus neighboring and full backend green", "production_status": "NOT_DEPLOYED"}
+  ],
+  "completed_investigations": [
+    "fresh canonical main, Production, runtime, DB, deploy-lock, open PR and worktree inventory",
+    "PR 96 exact-head diff and ordinary CI status refresh",
+    "canonical WFH skill routing from base main SHA",
+    "source inspection locating the three V9 root causes",
+    "regression-first fixes for v9 replay completeness, strict timestamp causality, and technical TradePlan tri-state semantics",
+    "full backend, frontend typecheck/build, repository hygiene, runtime parity, WFH skill validation, and diff-check on the exact working tree"
+  ],
+  "artifacts": [
+    {"path": "research/audit/current/v9_red_green_evidence.json", "sha256": "0c83fd3bf6c46dcc3203dc157e6827cca0340104a78958b650a03be6d871451a"}
+  ],
+  "tests_on_exact_sha": [
+    {"sha": "6b9a8b454a69224cbd3b39abe0b911cf54dfe44d", "environment": "GITHUB_ACTIONS", "result": "backend_frontend_dependency_container_hygiene_codeql_sonar_green", "qualification": "REMOTE_ORDINARY_CI_ONLY"},
+    {"sha": "6b9a8b454a69224cbd3b39abe0b911cf54dfe44d+diff:c5b11af0371de63e0d7a20c4d3bf52bb8d7fd4ba933b2a4c69969bcddc97215a", "environment": "ISOLATED_LOCAL_CONTAINERS", "result": "1150_backend_passed_frontend_typecheck_build_gates_passed", "qualification": "UNCOMMITTED_EXACT_WORKING_TREE"}
+  ],
+  "next_executable_action": "Push the verified V9 fix set to PR 96, then refresh exact-head CI and independent review before release certification."
+}

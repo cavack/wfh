@@ -50,6 +50,15 @@ def test_stale_analysis_is_hard_blocked_no_trade() -> None:
     assert "STALE_ANALYSIS" in packet["block_reasons"]
 
 
+def test_future_evidence_ages_are_hard_blocked_no_trade() -> None:
+    packet = decide(strong_metrics(), analysis_age=-1.0, reference_age=-2.0)
+
+    assert packet["decision"] == "NO_TRADE"
+    assert packet["hard_blocked"] is True
+    assert "STALE_ANALYSIS" in packet["block_reasons"]
+    assert "STALE_REFERENCE" in packet["block_reasons"]
+
+
 def test_moderate_setup_is_forming_instead_of_zeroed_by_one_missing_family() -> None:
     metrics = strong_metrics()
     metrics["breakdown_confirmation"] = {}

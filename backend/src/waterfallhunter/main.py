@@ -67,6 +67,7 @@ from waterfallhunter.core.historical_outcome_store import HistoricalOutcomeStore
 from waterfallhunter.core.production_evidence import (
     ProductionEvidenceRecorder,
     build_production_replay_context,
+    causal_age_seconds,
 )
 from waterfallhunter.core.decision_provenance import (
     build_decision_contract,
@@ -1946,7 +1947,10 @@ async def evaluate_candidate(
                     reference_failure_metrics,
                     "WATCH",
                     evaluated_at=decision_now,
-                    analysis_age_seconds=max(0.0, decision_now - analysis_observed_at),
+                    analysis_age_seconds=causal_age_seconds(
+                        decision_now,
+                        analysis_observed_at,
+                    ),
                     reference_age_seconds=None,
                     lifecycle_id=int(data.get("lifecycle_id") or 1),
                     previous_decision=previous_entry_decision,
@@ -2090,18 +2094,13 @@ async def evaluate_candidate(
         symbol, decision_state, result_metrics
     )
 
-    reference_age = (
-        max(0.0, decision_now - float(reference_observed_at))
-        if isinstance(reference_observed_at, (int, float))
-        and not isinstance(reference_observed_at, bool)
-        else None
-    )
+    reference_age = causal_age_seconds(decision_now, reference_observed_at)
     previous_entry_decision = entry_decision_store.latest_for_symbol(symbol)
     entry_decision = build_entry_decision(
         result_metrics,
         decision_state,
         evaluated_at=decision_now,
-        analysis_age_seconds=max(0.0, decision_now - analysis_observed_at),
+        analysis_age_seconds=causal_age_seconds(decision_now, analysis_observed_at),
         reference_age_seconds=reference_age,
         lifecycle_id=int(data.get("lifecycle_id") or 1),
         previous_decision=previous_entry_decision,

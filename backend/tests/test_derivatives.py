@@ -56,3 +56,35 @@ def test_taker_ratio_change_is_emitted_only_when_real_history_is_supplied():
 
     assert result["available"] is True
     assert result["taker_ratio_change_1h"] == -0.45
+
+
+def test_binance_packet_rejects_future_timestamped_evidence_domains():
+    retrieved_at = 1_700_000_000.0
+    market_id = "TESTUSDT"
+
+    def timestamp(seconds_from_retrieval: int) -> int:
+        return int((retrieved_at + seconds_from_retrieval) * 1000)
+
+    result = DerivativesAnalyzer().evaluate_binance_rows(
+        mapped_symbol="TEST/USDT:USDT",
+        market_id=market_id,
+        funding_rows=[
+            {"symbol": market_id, "fundingTime": timestamp(-16 * 3600), "fundingRate": "0.0001"},
+            {"symbol": market_id, "fundingTime": timestamp(-8 * 3600), "fundingRate": "0.0002"},
+            {"symbol": market_id, "fundingTime": timestamp(1), "fundingRate": "0.0003"},
+        ],
+        taker_rows=[
+            {"symbol": market_id, "timestamp": timestamp(-3600), "buySellRatio": "1.1"},
+            {"symbol": market_id, "timestamp": timestamp(1), "buySellRatio": "0.8"},
+        ],
+        top_trader_rows=[
+            {"symbol": market_id, "timestamp": timestamp(1), "longShortRatio": "1.4"},
+        ],
+        open_interest_rows=[
+            {"symbol": market_id, "timestamp": timestamp(-3600), "sumOpenInterestValue": "1000", "sumOpenInterest": "10"},
+            {"symbol": market_id, "timestamp": timestamp(1), "sumOpenInterestValue": "1100", "sumOpenInterest": "11"},
+        ],
+        retrieved_at=retrieved_at,
+    )
+
+    assert result["available"] is False

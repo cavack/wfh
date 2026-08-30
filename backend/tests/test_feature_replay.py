@@ -17,6 +17,7 @@ from waterfallhunter.core.feature_replay import (
 from waterfallhunter.core.microstructure import MicrostructureAnalyzer
 from waterfallhunter.core.multi_exchange_validator import MultiExchangeValidator
 from waterfallhunter.core.position_calculator import PositionCalculator
+from waterfallhunter.core.production_evidence import ProductionEvidenceRecorder
 
 
 class Exchange:
@@ -262,3 +263,37 @@ def test_replay_results_are_idempotent_immutable_and_not_promotable(tmp_path):
     assert report["promotion_allowed"] is False
     with store._connect() as conn, pytest.raises(sqlite3.IntegrityError, match="immutable"):
         conn.execute("DELETE FROM production_feature_replay_results_v2")
+
+
+def test_v9_unavailable_replay_row_is_queued_and_reported_not_replayable(tmp_path):
+    db_path = migrate_test_database(tmp_path / "replay-unavailable.db")
+    recorder = ProductionEvidenceRecorder(str(db_path))
+    contract = {
+        "contract_schema_version": "production_decision_contract_v2",
+        "application": {"source_tree_sha256": "a" * 64},
+        "strategy": {},
+        "microstructure": {},
+        "derivatives": {},
+        "position": {},
+        "recorder": {},
+        "runtime_settings": {},
+    }
+    assert recorder.record(
+        "TEST/USDT:USDT",
+        candidate_state="WATCH",
+        reference_source=None,
+        reference_price=None,
+        result={"is_valid": False, "metrics": {"error": "reference unavailable"}},
+        decision_contract=contract,
+        observed_at=110.0,
+        replay_context=None,
+    )
+
+    pending = FeatureReplayStore(str(db_path)).pending(limit=10)
+
+    assert len(pending) == 1
+    result = asyncio.run(FeatureReplayEngine().replay(pending[0]["payload"]))
+    assert result["status"] == NOT_REPLAYABLE
+    assert result["differences"] == {
+        "replay_context": "REPLAY_CONTEXT_ABSENT",
+    }

@@ -470,9 +470,17 @@ def _initial_block_reasons(
     reasons: list[str] = []
     analysis_age = _finite(analysis_age_seconds)
     reference_age = _finite(reference_age_seconds)
-    if analysis_age is None or analysis_age > policy.max_analysis_age_seconds:
+    if (
+        analysis_age is None
+        or analysis_age < 0
+        or analysis_age > policy.max_analysis_age_seconds
+    ):
         reasons.append("STALE_ANALYSIS")
-    if reference_age is None or reference_age > policy.max_reference_age_seconds:
+    if (
+        reference_age is None
+        or reference_age < 0
+        or reference_age > policy.max_reference_age_seconds
+    ):
         reasons.append("STALE_REFERENCE")
     if status == "INVALIDATED":
         reasons.append("STRUCTURE_INVALIDATED")

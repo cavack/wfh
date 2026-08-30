@@ -44,7 +44,7 @@ class _CapturedExchange:
 
 
 class FeatureReplayEngine:
-    VERSION = "feature_equivalent_replay_v10"
+    VERSION = "feature_equivalent_replay_v11"
 
     def __init__(self, *, audited_compatible_code_hashes: set[str] | None = None):
         self.audited_compatible_code_hashes = frozenset(
@@ -173,6 +173,22 @@ class FeatureReplayEngine:
                 else str((payload.get("result") or {}).get("suggested_status") or "UNKNOWN")
             )
         )
+        if (
+            payload.get("schema_version") == "production_decision_evidence_v9"
+            and payload.get("replay_complete") is not True
+        ):
+            unavailable_reason = payload.get("replay_unavailable_reason")
+            if not isinstance(unavailable_reason, str) or not unavailable_reason:
+                unavailable_reason = (
+                    "REPLAY_CONTEXT_ABSENT"
+                    if not payload.get("replay_context")
+                    else "REPLAY_COMPLETENESS_UNDECLARED"
+                )
+            return self._packet(
+                NOT_REPLAYABLE,
+                {"replay_context": unavailable_reason},
+                decision_path,
+            )
         limitations = payload.get("capture_limitations") or {}
         evidence_code = str(
             (payload.get("decision_contract") or {})
@@ -447,10 +463,15 @@ class FeatureReplayStore:
                 LEFT JOIN production_feature_replay_results_v2 r
                   ON r.snapshot_id = s.id AND r.replay_version = ?
                 WHERE r.snapshot_id IS NULL
-                  AND s.schema_version IN ('production_decision_evidence_v8','production_decision_evidence_v9')
-                  AND s.production_evidence_complete_v5 = 1
-                  AND s.code_sha256_v5 = ?
-                  AND s.decision_packet_complete = 1
+                  AND (
+                    s.schema_version = 'production_decision_evidence_v9'
+                    OR (
+                      s.schema_version = 'production_decision_evidence_v8'
+                      AND s.production_evidence_complete_v5 = 1
+                      AND s.code_sha256_v5 = ?
+                      AND s.decision_packet_complete = 1
+                    )
+                  )
                 ORDER BY s.id LIMIT ?
                 """,
                 (
