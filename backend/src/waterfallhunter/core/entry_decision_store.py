@@ -73,6 +73,17 @@ class EntryDecisionStore:
     def _material_projection(packet: dict[str, Any]) -> dict[str, Any]:
         advisory = packet.get("leverage_advisory")
         leverage_advisory = advisory if isinstance(advisory, dict) else None
+        execution_input = (
+            leverage_advisory.get("execution_suitability_input")
+            if leverage_advisory is not None
+            and isinstance(leverage_advisory.get("execution_suitability_input"), dict)
+            else {}
+        )
+        material_execution_input = {
+            "available": execution_input.get("available"),
+            "status": execution_input.get("status"),
+            "maximum_leverage": execution_input.get("maximum_leverage"),
+        }
         plan = packet.get("trade_plan")
         plan_leverage = plan.get("leverage") if isinstance(plan, dict) else None
         return {
@@ -83,7 +94,8 @@ class EntryDecisionStore:
                 "status": leverage_advisory.get("status"),
                 "leverage": leverage_advisory.get("leverage"),
                 "policy_version": leverage_advisory.get("policy_version"),
-                "execution_suitability_input": leverage_advisory.get("execution_suitability_input"),
+                "reason": leverage_advisory.get("reason"),
+                "execution_suitability_input": material_execution_input,
             },
             "trade_plan_leverage": plan_leverage,
         }

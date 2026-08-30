@@ -156,6 +156,18 @@ def test_complete_low_score_is_not_recommended_not_unavailable():
     assert advisory["leverage"] is None
 
 
+def test_rejected_position_setup_is_not_recommended_not_available():
+    metrics = _metrics(score=100.0)
+    metrics["position_setup"]["status"] = "REJECTED: Minimum notional requirement failed (5 USDT)"
+    advisory = build_signal_leverage_advisory(
+        metrics,
+        {"available": True, "status": "SUITABLE", "maximum_leverage": 18},
+    )
+    assert advisory["status"] == "NOT_RECOMMENDED"
+    assert advisory["leverage"] is None
+    assert "position setup rejected" in advisory["reason"].lower()
+
+
 def test_unknown_execution_suitability_is_unavailable_not_fabricated_eight_x():
     advisory = build_signal_leverage_advisory(
         _metrics(score=100.0),

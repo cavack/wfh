@@ -338,6 +338,39 @@ def test_same_entry_ready_persists_execution_suitability_provenance_change(tmp_p
     assert latest["leverage_advisory"]["execution_suitability_input"]["status"] == "MARGINAL"
 
 
+def test_same_entry_ready_persists_leverage_reason_change(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    first = _actionable_packet(leverage=8, now=100)
+    second = _actionable_packet(leverage=8, now=110)
+    first["leverage_advisory"].update({"status": "NOT_RECOMMENDED", "leverage": None, "reason": "score bound"})
+    second["leverage_advisory"].update({"status": "NOT_RECOMMENDED", "leverage": None, "reason": "position setup rejected"})
+    first["trade_plan"]["leverage"] = None
+    second["trade_plan"]["leverage"] = None
+    assert store.append_if_changed("SXT/USDT:USDT", first) is not None
+    changed = store.append_if_changed("SXT/USDT:USDT", second)
+    assert changed is not None
+    latest = store.latest_for_symbol("SXT/USDT:USDT")
+    assert latest["leverage_advisory"]["reason"] == "position setup rejected"
+
+
+def test_same_entry_ready_ignores_volatile_execution_suitability_counters(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    first = _actionable_packet(leverage=8, now=100)
+    second = _actionable_packet(leverage=8, now=110)
+    first["leverage_advisory"]["execution_suitability_input"] = {
+        "available": True, "status": "SUITABLE", "maximum_leverage": 12,
+        "observed_samples": 40, "observation_span_hours": 24.0, "availability_rate": 0.95,
+    }
+    second["leverage_advisory"]["execution_suitability_input"] = {
+        "available": True, "status": "SUITABLE", "maximum_leverage": 12,
+        "observed_samples": 55, "observation_span_hours": 36.0, "availability_rate": 0.97,
+    }
+    assert store.append_if_changed("SXT/USDT:USDT", first) is not None
+    assert store.append_if_changed("SXT/USDT:USDT", second) is None
+
+
 def test_same_entry_ready_same_material_projection_remains_deduplicated(tmp_path) -> None:
     db_path = migrate_test_database(tmp_path / "registry.db")
     store = EntryDecisionStore(db_path)

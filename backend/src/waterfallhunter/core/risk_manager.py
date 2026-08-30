@@ -99,6 +99,9 @@ def recommend_signal_leverage(
         raise LeverageUnavailableError("execution suitability status invalid for leverage")
     suitability_bound = suitability_bounds[suitability_status]
 
+    position_status = str(position.get("status") or "").upper()
+    if position_status.startswith("REJECTED"):
+        raise LeverageNotRecommendedError("position setup rejected by execution constraints")
     if score < 85.0:
         raise LeverageNotRecommendedError("complete evidence score implies leverage below 4x")
 
