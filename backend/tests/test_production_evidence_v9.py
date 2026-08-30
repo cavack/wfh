@@ -49,7 +49,8 @@ def _result():
 def test_v9_records_replay_context_and_exact_liquidation_without_mutating_input(tmp_path):
     db_path = str(migrate_test_database(tmp_path / "evidence.db"))
     recorder = ProductionEvidenceRecorder(db_path)
-    result = _result(); before = copy.deepcopy(result)
+    result = _result()
+    before = copy.deepcopy(result)
     context = {
         "canonical_lifecycle_id": 7,
         "canonical_entry_decision": {"contract_version":"entry_decision_v1","decision":"FORMING","entry_readiness":61.0,"block_reasons":[]},
