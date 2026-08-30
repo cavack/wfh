@@ -1,17 +1,19 @@
 {
   "schema_version": "waterfallhunter_audit_state_v1",
-  "updated_at": "2026-08-30T15:44:39Z",
-  "base_main_sha": "c8a8fc4ea64af9cd3354ae2d68fb73f11a7d5a6c",
+  "updated_at": "2026-08-30T18:31:25Z",
+  "base_main_sha": "65c063ffea6209ecd84b224656bbc627ff811898",
   "production": {
-    "sha": "52fc7dd44868f53b8a6575f0fc6b3c536cbb70e5",
+    "sha": "65c063ffea6209ecd84b224656bbc627ff811898",
     "git_state": "detached_clean",
     "health": "healthy",
     "live_trading_enabled": false,
+    "telegram_signal_delivery_enabled": false,
     "db_user_version": 7,
     "db_journal_mode": "wal",
     "deploy_lock_held": false,
     "mutation_performed": false
   },
+  "post_deploy_v9": {"SOURCE_SHA":"65c063ffea6209ecd84b224656bbc627ff811898","DEPLOY_WORKFLOW":33326151899,"DEPLOYED_ARTIFACT_ID":9736306403,"DEPLOYED_IMAGE_DIGESTS":{"backend":"sha256:46e065678d4114b3b9e9246b3b7056bcf19c21735d71bc78e5367f2ddf824b3f","frontend":"sha256:168b6cecb90e34ef257a7b98c9c433f5dc09faeffe041c43f52d073339de994e","watchdog":"sha256:ddebcede2d3c99c3e506d9e080e28ffaf67e2b65be84511a13e3671d2fc3bd96"},"BUNDLE_SHA":"b307f418573d01b0c47127a91464bbddcb770dd69b3af7e51070cf1a8349ca47","PRODUCTION_REVISION":"65c063ffea6209ecd84b224656bbc627ff811898","POST_DEPLOY_VALIDATION":{"status":"PASS_BASELINE_READ_ONLY","runtime_local_image_ids":{"backend":"sha256:48af7de95c9f3a8a1203fee2f06618e5d71ee924933177816cd99f732f3f4969","frontend":"sha256:0a800f89d931315026a99fc229f33de6209192f1347a79ab698b626f95a46cbe","watchdog":"sha256:1206906869722df1d56c7ba5b9858e21ea23e2c420a949f0b378edd55dc1977d"},"backend_health":"healthy","db_foreign_key_violations":0,"db_integrity":"ok","db_journal_mode":"wal","db_user_version":7,"frontend_dashboard_http":200,"git_revision_exact":true,"git_worktree_clean":true,"hunter_progress_age_seconds_observed":10.3,"live_trading_enabled":false,"telegram_signal_delivery_enabled":false},"V9_EVIDENCE_T0":{"bucket_started_at":1788111900,"cascade_status":"PARTIAL","contract_sha256":"d048bd7e9344ba5055ca74d89108fbc6cd951e203ce5ecdabbebdc98ec20b9c0","decision_sha256":"73d2589c147f181aaa432172e8b2ecaa419aa505d9211b9d45b65932c9078490","evidence_sha256":"f66d70d13aedb02347c7b56b2c82a2394043125bc19988ad489cbdef1160024e","freshness":{"analysis_age_seconds":18.382525205612183,"analysis_pass":true,"max_analysis_age_seconds":180.0,"max_reference_age_seconds":60.0,"policy_version":"entry_policy_v1","reference_age_seconds":26.784871101379395,"reference_pass":true},"lifecycle_id":8,"liquidation_context":{"available":false,"maximum":0.0,"points":0.0,"reason":"observed liquidation flow unavailable"},"observed_at":1788112672.3887885,"observed_at_utc":"2026-08-30T17:57:52.388788+00:00","snapshot_id":482207,"symbol":"IOTA/USDT:USDT","technical_trade_plan_shadow_status":"FEASIBLE"},"evidence_artifact":"research/audit/current/post_deploy_v9_validation.json"},
   "routing": {
     "router_file": "UNAVAILABLE_ON_BASE_SHA",
     "catalog_file": "UNAVAILABLE_ON_BASE_SHA",
@@ -34,6 +36,7 @@
     "working_tree_dirty": false,
     "working_tree_code_and_test_diff_sha256": null
   },
+  "continuation_work": {"worktree":"/srv/wfh-worktrees/vertical-e2e-20260830","branch":"test/vertical-e2e-20260830","base_sha":"65c063ffea6209ecd84b224656bbc627ff811898","phase":"POST_DEPLOY_V9_VALIDATION_AND_VERTICAL_E2E"},
   "active_branches_and_worktrees": [
     {"path": "/srv/wfh-worktrees/evidence-v9-20260830", "branch": "research/production-evidence-v9-20260830", "head": "RESOLVE_FROM_GIT_HEAD", "dirty": false},
     {"path": "/srv/wfh-worktrees/entry-proximity-20260830", "branch": "feature/entry-proximity-observational-20260830", "head": "c8a8fc4ea64af9cd3354ae2d68fb73f11a7d5a6c", "dirty": false},
@@ -65,11 +68,12 @@
     "2026-08-30 round 2: fetched current PR 96 head ce047a7 and all 12 review threads (10 unresolved); verified each finding against current code; fixed 8 valid findings (hash verification, nested context validation, negative timestamps, full-precision decision clock, reference-failure replay context, partial candle windows, per-domain derivatives tests, provenance binding); classified multi_exchange_validator missing-plan-inputs finding STALE (causal prevalidation already present); RED-GREEN with focused 62 and full backend 1161 on exact clean commit 7b84660781a869cb595ae6984be0b79b4cdfc317"
   ],
   "artifacts": [
-    {"path": "research/audit/current/v9_red_green_evidence.json", "sha256": "ea9c3517941992c524403abd5d4a859c4a6dbc48f9a57e96a4eb0fb8ab820788", "bound_to": "7b84660781a869cb595ae6984be0b79b4cdfc317"}
+    {"path": "research/audit/current/v9_red_green_evidence.json", "sha256": "ea9c3517941992c524403abd5d4a859c4a6dbc48f9a57e96a4eb0fb8ab820788", "bound_to": "7b84660781a869cb595ae6984be0b79b4cdfc317"},
+    {"path":"research/audit/current/post_deploy_v9_validation.json","sha256":"b7c56ac481a7a685d3b6dbccbc7dc022a0619aca1df99cddc4f3ac084bdbf679","bound_to":"65c063ffea6209ecd84b224656bbc627ff811898"}
   ],
   "tests_on_exact_sha": [
     {"sha": "7b84660781a869cb595ae6984be0b79b4cdfc317", "environment": "LOCAL_ISOLATED_VENV_PYTHON_3_12", "result": "backend_1161_passed_git_diff_check_clean_repository_hygiene_pass_skill_validation_pass_runtime_parity_pass", "qualification": "EXACT_COMMITTED_CLEAN_TREE"},
     {"sha": "6b9a8b454a69224cbd3b39abe0b911cf54dfe44d", "environment": "GITHUB_ACTIONS", "result": "backend_frontend_dependency_container_hygiene_codeql_sonar_green", "qualification": "REMOTE_ORDINARY_CI_ONLY_HISTORICAL"}
   ],
-  "next_executable_action": "Push commits 7b84660781a869cb595ae6984be0b79b4cdfc317 (code) plus artifact commit to PR 96, wait for exact-head CI and independent review, resolve review threads only after verifying current code, then release-production-certification. No deploy without release gate."
+  "next_executable_action": "Convert the proven deterministic vertical calculation prototype into success/fail-closed umbrella regressions in /srv/wfh-worktrees/vertical-e2e-20260830, then add deterministic browser E2E. Do not repeat merge/deploy and keep LIVE_TRADING_ENABLED=false."
 }
