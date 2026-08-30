@@ -42,7 +42,7 @@ from waterfallhunter.core.ai_veto import (
     AIVetoEngine,
     CANONICAL_ADVISORY_DELIVERY_GRACE_SECONDS,
 )
-from waterfallhunter.core.risk_manager import get_leverage, recommend_signal_leverage
+from waterfallhunter.core.risk_manager import build_signal_leverage_advisory
 from waterfallhunter.core.dashboard import compact_metrics
 from waterfallhunter.core.decision_terminal import build_decision_terminal
 from waterfallhunter.core.dashboard_stream import (
@@ -2110,10 +2110,6 @@ async def evaluate_candidate(
 
     decision_now = int(time.time())
     decision_now_precise = time.time()
-    try:
-        result_metrics.setdefault("applied_leverage", get_leverage(symbol))
-    except Exception:
-        result_metrics.setdefault("applied_leverage", None)
 
     decision_state = str(
         result.get("suggested_status")
@@ -2125,6 +2121,39 @@ async def evaluate_candidate(
 
     decision_state, deterministic_vetoed = _apply_deterministic_entry_gate(
         symbol, decision_state, result_metrics
+    )
+
+    try:
+        execution_suitability = execution_suitability_enricher.for_symbol(symbol)
+    except Exception as exc:
+        logger.warning(
+            "Execution suitability unavailable for leverage advisory %s: %s",
+            symbol,
+            type(exc).__name__,
+        )
+        execution_suitability = {
+            "available": False,
+            "status": "UNKNOWN",
+            "reason": "execution suitability unavailable",
+        }
+
+    leverage_advisory = build_signal_leverage_advisory(
+        result_metrics,
+        execution_suitability,
+    )
+    result_metrics["leverage_advisory"] = leverage_advisory
+    result_metrics["leverage_policy"] = {
+        "version": leverage_advisory["policy_version"],
+        "minimum": leverage_advisory["minimum"],
+        "maximum": leverage_advisory["maximum"],
+        "symbol_agnostic": leverage_advisory["symbol_agnostic"],
+        "paper_only": True,
+        "advisory_only": True,
+    }
+    result_metrics["applied_leverage"] = (
+        leverage_advisory.get("leverage")
+        if leverage_advisory.get("status") == "AVAILABLE"
+        else None
     )
 
     reference_age = causal_age_seconds(decision_now_precise, reference_observed_at)
@@ -2676,42 +2705,13 @@ async def evaluate_candidate(
             return
 
 
-        execution_suitability = (
-            execution_suitability_enricher
-            .for_symbol(symbol)
-        )
-
-        try:
-            metrics[
-                "applied_leverage"
-            ] = recommend_signal_leverage(
-                metrics,
-                execution_suitability,
-            )
-            metrics["leverage_policy"] = {
-                "version": "adaptive_signal_leverage_v1",
-                "minimum": 4,
-                "maximum": 18,
-                "symbol_agnostic": True,
-                "paper_only": True,
-            }
-
-        except Exception as exc:
-            persist_lifecycle_v2_shadow(str(current_state))
-            record_final_production_decision(
-                "LEVERAGE_REJECTED",
-                "adaptive leverage calculation failed",
-                error_type=type(exc).__name__,
-                error=str(exc),
-            )
-
-            logger.warning(
-                "Adaptive leverage calculation failed "
-                "for %s: %s",
+        if leverage_advisory.get("status") != "AVAILABLE":
+            logger.info(
+                "Leverage advisory for %s is %s: %s",
                 symbol,
-                exc,
+                leverage_advisory.get("status"),
+                leverage_advisory.get("reason"),
             )
-            return
 
         quote_volume = data.get(
             "quote_volume"

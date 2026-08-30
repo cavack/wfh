@@ -1,6 +1,11 @@
 import pytest
 
-from waterfallhunter.core.risk_manager import get_leverage, recommend_signal_leverage
+import waterfallhunter.core.risk_manager as risk_manager
+from waterfallhunter.core.risk_manager import (
+    build_signal_leverage_advisory,
+    get_leverage,
+    recommend_signal_leverage,
+)
 
 
 def _metrics(
@@ -94,3 +99,49 @@ def test_adaptive_leverage_falls_back_to_suitability_maximum_when_constraint_is_
         {"status": "SUITABLE", "maximum_leverage": 5},
     )
     assert leverage == 5
+
+
+def test_adaptive_leverage_advisory_available_uses_canonical_policy():
+    advisory = build_signal_leverage_advisory(_metrics(), {"status": "SUITABLE"})
+    assert advisory["status"] == "AVAILABLE"
+    assert advisory["leverage"] == 18
+    assert advisory["policy_version"] == "adaptive_signal_leverage_v1"
+
+
+def test_adaptive_leverage_advisory_missing_inputs_is_unavailable_without_fallback():
+    advisory = build_signal_leverage_advisory({"score": None}, {"status": "SUITABLE"})
+    assert advisory["status"] == "UNAVAILABLE"
+    assert advisory["leverage"] is None
+    assert "strict finite score" in advisory["reason"]
+
+
+def test_adaptive_leverage_advisory_below_four_is_not_recommended_without_clamp():
+    advisory = build_signal_leverage_advisory(
+        _metrics(score=86.0, stop=112.0, atr_pct=6.0, spread=0.28, slippage=0.29),
+        {"status": "POOR"},
+    )
+    assert advisory["status"] == "NOT_RECOMMENDED"
+    assert advisory["leverage"] is None
+    assert "below 4x" in advisory["reason"]
+
+
+def test_btc_legacy_two_x_cannot_influence_symbol_agnostic_live_advisory():
+    assert get_leverage("BTC/USDT:USDT") == 2
+    advisory = build_signal_leverage_advisory(_metrics(), {"status": "SUITABLE"})
+    assert advisory["status"] == "AVAILABLE"
+    assert advisory["leverage"] == 18
+    assert advisory["symbol_agnostic"] is True
+
+
+def test_unexpected_adaptive_calculator_failure_is_explicitly_unavailable(monkeypatch):
+    def fail(*args, **kwargs):
+        raise RuntimeError("calculator offline")
+
+    monkeypatch.setattr(risk_manager, "recommend_signal_leverage", fail)
+    advisory = risk_manager.build_signal_leverage_advisory(
+        _metrics(), {"status": "SUITABLE"}
+    )
+    assert advisory["status"] == "UNAVAILABLE"
+    assert advisory["leverage"] is None
+    assert advisory["reason"] == "adaptive leverage calculation unavailable"
+    assert advisory["error_type"] == "RuntimeError"

@@ -95,7 +95,12 @@ def test_runtime_applies_deterministic_gate_before_canonical_decision(monkeypatc
         }
 
     monkeypatch.setattr(main.validator, "cross_check_symbol", cross_check_symbol)
-    monkeypatch.setattr(main, "get_leverage", lambda _symbol: 1)
+    monkeypatch.setattr(main, "build_signal_leverage_advisory", lambda metrics, execution_suitability=None: {
+        "policy_version": "adaptive_signal_leverage_v1",
+        "minimum": 4, "maximum": 18, "symbol_agnostic": True,
+        "signal_only": True, "advisory_only": True,
+        "status": "UNAVAILABLE", "leverage": None, "reason": "test unavailable",
+    })
     monkeypatch.setattr(main.entry_decision_store, "latest_for_symbol", lambda _symbol: None)
 
     def gate(_symbol, state, _metrics):

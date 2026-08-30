@@ -17,6 +17,17 @@ def _finite_number(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
+class LeverageUnavailableError(ValueError):
+    """Required causal inputs are unavailable for an adaptive leverage advisory."""
+
+
+class LeverageNotRecommendedError(ValueError):
+    """Complete inputs imply that leverage of at least 4x is not recommended."""
+
+
+LEVERAGE_POLICY_VERSION = "adaptive_signal_leverage_v1"
+
+
 def recommend_signal_leverage(
     metrics: Dict[str, Any],
     execution_suitability: Dict[str, Any] | None = None,
@@ -24,12 +35,12 @@ def recommend_signal_leverage(
     """Return an evidence-bound SIGNAL_ONLY leverage recommendation from 4x to 18x.
 
     The recommendation is the minimum of independent score, structural-stop,
-    volatility, execution-friction, and execution-suitability ceilings.  It is
-    intentionally symbol-agnostic.  If any independent bound requires less
-    than 4x, the signal is rejected instead of being unsafely clamped upward.
+    volatility, execution-friction, and execution-suitability ceilings. It is
+    intentionally symbol-agnostic. A bound below 4x means leveraged exposure is
+    not recommended; it is not a canonical signal/lifecycle gate.
     """
     if not isinstance(metrics, dict):
-        raise ValueError("signal metrics unavailable for leverage")
+        raise LeverageUnavailableError("signal metrics unavailable for leverage")
 
     score = _finite_number(metrics.get("score"))
     position = metrics.get("position_setup") if isinstance(metrics.get("position_setup"), dict) else {}
@@ -41,11 +52,11 @@ def recommend_signal_leverage(
     exit_slippage = _finite_number(micro.get("exit_slippage_pct"))
 
     if score is None or score < 85.0 or score > 100.0:
-        raise ValueError("strict finite score required for leverage")
+        raise LeverageUnavailableError("strict finite score required for leverage")
     if entry is None or stop is None or entry <= 0 or stop <= entry:
-        raise ValueError("valid short entry and structural stop required for leverage")
+        raise LeverageUnavailableError("valid short entry and structural stop required for leverage")
     if spread is None or slippage is None or spread < 0 or slippage < 0:
-        raise ValueError("finite execution friction required for leverage")
+        raise LeverageUnavailableError("finite execution friction required for leverage")
 
     features = metrics.get("candle_features") if isinstance(metrics.get("candle_features"), dict) else {}
     atr_values = []
@@ -55,7 +66,7 @@ def recommend_signal_leverage(
         if value is not None and value > 0:
             atr_values.append(value)
     if not atr_values:
-        raise ValueError("finite ATR evidence required for leverage")
+        raise LeverageUnavailableError("finite ATR evidence required for leverage")
 
     stop_distance_pct = (stop - entry) / entry * 100.0
     atr_pct = max(atr_values)
@@ -98,8 +109,39 @@ def recommend_signal_leverage(
 
     raw = min(18, score_bound, stop_bound, volatility_bound, execution_bound, suitability_bound, exchange_bound)
     if raw < 4:
-        raise ValueError("independent risk bound requires leverage below 4x")
+        raise LeverageNotRecommendedError("independent risk bound requires leverage below 4x")
     return int(raw)
+
+
+def build_signal_leverage_advisory(
+    metrics: Dict[str, Any],
+    execution_suitability: Dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return the canonical live leverage advisory without fabricating a fallback."""
+    base = {
+        "policy_version": LEVERAGE_POLICY_VERSION,
+        "minimum": 4,
+        "maximum": 18,
+        "symbol_agnostic": True,
+        "signal_only": True,
+        "advisory_only": True,
+    }
+    try:
+        leverage = recommend_signal_leverage(metrics, execution_suitability)
+    except LeverageNotRecommendedError as exc:
+        return {**base, "status": "NOT_RECOMMENDED", "leverage": None, "reason": str(exc)}
+    except LeverageUnavailableError as exc:
+        return {**base, "status": "UNAVAILABLE", "leverage": None, "reason": str(exc)}
+    except Exception as exc:
+        logger.warning("Adaptive leverage advisory unavailable: %s", exc)
+        return {
+            **base,
+            "status": "UNAVAILABLE",
+            "leverage": None,
+            "reason": "adaptive leverage calculation unavailable",
+            "error_type": type(exc).__name__,
+        }
+    return {**base, "status": "AVAILABLE", "leverage": leverage, "reason": None}
 
 class LiquidityRiskManager:
     def __init__(self):

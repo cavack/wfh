@@ -167,7 +167,12 @@ def test_armed_source_failover_retires_previous_websocket_subscription(monkeypat
 
     monkeypatch.setattr(main.validator, "cross_check_symbol", cross_check_symbol)
     monkeypatch.setattr(main, "_apply_deterministic_entry_gate", lambda _s, state, _m: (state, False))
-    monkeypatch.setattr(main, "get_leverage", lambda _symbol: 1)
+    monkeypatch.setattr(main, "build_signal_leverage_advisory", lambda metrics, execution_suitability=None: {
+        "policy_version": "adaptive_signal_leverage_v1",
+        "minimum": 4, "maximum": 18, "symbol_agnostic": True,
+        "signal_only": True, "advisory_only": True,
+        "status": "UNAVAILABLE", "leverage": None, "reason": "test unavailable",
+    })
     monkeypatch.setattr(main.entry_decision_store, "latest_for_symbol", lambda _symbol: None)
     monkeypatch.setattr(main.entry_decision_store, "append_if_changed", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(main.production_evidence_recorder, "record", lambda *args, **kwargs: True)

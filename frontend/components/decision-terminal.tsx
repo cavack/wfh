@@ -71,6 +71,7 @@ function evidencePacket(candidate: Candidate) {
     plan: record(decision.trade_plan),
     evidence: record(decision.evidence_summary),
     advisory: record(metrics.ai_advisory),
+    leverageAdvisory: record(metrics.leverage_advisory),
   };
 }
 
@@ -109,12 +110,19 @@ function EvidenceGrid({ evidence }: Readonly<{ evidence: Rec }>) {
 }
 
 function DecisionCard({ symbol, candidate }: Readonly<{ symbol: string; candidate: Candidate }>) {
-  const { decision, plan, evidence, advisory } = evidencePacket(candidate);
+  const { decision, plan, evidence, advisory, leverageAdvisory } = evidencePacket(candidate);
   const state = String(decision.decision ?? "UNAVAILABLE");
   const readiness = finite(decision.entry_readiness);
   const coverage = finite(decision.evidence_coverage_pct);
   const hasPlan = tradePlanAvailable(plan);
   const advisoryView = advisoryPresentation(advisory);
+  const leverageStatus = String(leverageAdvisory.status ?? "");
+  const leverageValue = finite(leverageAdvisory.leverage ?? plan.leverage);
+  const leverageText = leverageStatus === "AVAILABLE" && leverageValue !== undefined
+    ? `${number(leverageValue, 0)}×`
+    : leverageStatus === "UNAVAILABLE" || leverageStatus === "NOT_RECOMMENDED"
+      ? leverageStatus.replaceAll("_", " ")
+      : leverageValue !== undefined ? `${number(leverageValue, 0)}×` : "UNAVAILABLE";
   const blocks = Array.isArray(decision.block_reasons)
     ? decision.block_reasons.filter((value): value is string => typeof value === "string")
     : [];
@@ -130,7 +138,7 @@ function DecisionCard({ symbol, candidate }: Readonly<{ symbol: string; candidat
         </div>
         <div className="mt-4 flex flex-wrap items-end justify-between gap-3">
           <div><p className="text-xs uppercase tracking-wider text-slate-500">Entry readiness</p><p className="text-4xl font-semibold tabular-nums">{readiness === undefined ? "—" : readiness.toFixed(1)}<span className="text-base text-slate-500">/100</span></p></div>
-          <div className="text-right text-xs text-slate-400"><p>Evidence {coverage === undefined ? "—" : `${coverage.toFixed(0)}%`}</p><p>Leverage {finite(plan.leverage) === undefined ? "—" : `${number(plan.leverage, 0)}×`}</p></div>
+          <div className="text-right text-xs text-slate-400"><p>Evidence {coverage === undefined ? "—" : `${coverage.toFixed(0)}%`}</p><p>Leverage {leverageText}</p></div>
         </div>
         {hasPlan ? (
           <>
