@@ -1125,6 +1125,44 @@ def _websocket_source(metrics: object) -> tuple[str, str] | None:
     return exchange, mapped_symbol
 
 
+def _sync_websocket_evidence_subscription(
+    previous_source: tuple[str, str] | None,
+    current_source: tuple[str, str] | None,
+    *,
+    state: str,
+) -> None:
+    if previous_source is not None and previous_source != current_source:
+        validator.ws_manager.unsubscribe(*previous_source)
+    if current_source is None:
+        return
+    if state == "PRE-TRIGGER":
+        validator.ws_manager.retain_liquidations_only(*current_source)
+    elif state == "ARMED":
+        validator.ws_manager.subscribe(*current_source)
+    else:
+        validator.ws_manager.unsubscribe(*current_source)
+
+
+def _retire_removed_candidate_websocket_sources(
+    removed_candidates: dict[str, dict],
+) -> None:
+    for candidate in removed_candidates.values():
+        source = _websocket_source(candidate.get("metrics"))
+        if source is not None:
+            validator.ws_manager.unsubscribe(*source)
+
+
+scanner.on_candidates_removed = _retire_removed_candidate_websocket_sources
+
+
+def _candidate_evaluation_token_is_current(
+    symbol: str,
+    token: dict,
+) -> bool:
+    """Fence an in-flight evaluation against a catalogue active-universe swap."""
+    return scanner.active_candidates.get(symbol) is token
+
+
 def _store_live_metrics(
     symbol: str,
     metrics: dict | None,
@@ -1843,10 +1881,48 @@ async def evaluate_candidate(
 ):
     analysis_observed_at = int(time.time())
 
-    active_candidate = scanner.active_candidates.setdefault(
-        symbol,
-        {},
-    )
+    active_candidate = scanner.active_candidates.get(symbol)
+    if not isinstance(active_candidate, dict):
+        logger.info(
+            "Discarding queued evaluation outside active universe for %s",
+            symbol,
+        )
+        return
+
+    expected_lifecycle_id = data.get("lifecycle_id")
+    active_lifecycle_id = active_candidate.get("lifecycle_id")
+    if scanner.last_successful_refresh_at is not None:
+        if (
+            isinstance(expected_lifecycle_id, bool)
+            or not isinstance(expected_lifecycle_id, int)
+            or expected_lifecycle_id < 1
+            or isinstance(active_lifecycle_id, bool)
+            or not isinstance(active_lifecycle_id, int)
+            or active_lifecycle_id != expected_lifecycle_id
+        ):
+            logger.info(
+                "Discarding queued evaluation after lifecycle change for %s: expected=%s active=%s",
+                symbol,
+                expected_lifecycle_id,
+                active_lifecycle_id,
+            )
+            return
+    elif (
+        isinstance(active_lifecycle_id, int)
+        and not isinstance(active_lifecycle_id, bool)
+        and isinstance(expected_lifecycle_id, int)
+        and not isinstance(expected_lifecycle_id, bool)
+        and active_lifecycle_id != expected_lifecycle_id
+    ):
+        logger.info(
+            "Discarding queued evaluation after lifecycle change for %s: expected=%s active=%s",
+            symbol,
+            expected_lifecycle_id,
+            active_lifecycle_id,
+        )
+        return
+
+    evaluation_candidate_token = active_candidate
     previous_ws_source = _websocket_source(active_candidate.get("metrics"))
     active_candidate["analysis_status"] = "pending"
     active_candidate["analysis_observed_at"] = analysis_observed_at
@@ -1911,6 +1987,16 @@ async def evaluate_candidate(
                 symbol
             )
         )
+
+        if not _candidate_evaluation_token_is_current(
+            symbol,
+            evaluation_candidate_token,
+        ):
+            logger.info(
+                "Discarding in-flight evaluation after active-universe swap for %s",
+                symbol,
+            )
+            return
 
         if not fallback_reference:
             replay_policy = EntryDecisionPolicy()
@@ -2014,6 +2100,12 @@ async def evaluate_candidate(
                 "analysis_status"
             ] = "unavailable"
 
+            _sync_websocket_evidence_subscription(
+                previous_ws_source,
+                None,
+                state="WATCH",
+            )
+
             _store_live_metrics(
                 symbol,
                 reference_failure_metrics,
@@ -2093,6 +2185,15 @@ async def evaluate_candidate(
             lifecycle_id=int(data.get("lifecycle_id") or 1),
         )
     )
+    if not _candidate_evaluation_token_is_current(
+        symbol,
+        evaluation_candidate_token,
+    ):
+        logger.info(
+            "Discarding in-flight evaluation after active-universe swap for %s",
+            symbol,
+        )
+        return
     lifecycle_v2_decision_clock_at = time.time()
 
     result_metrics = result.setdefault(
@@ -2149,6 +2250,16 @@ async def evaluate_candidate(
             "status": "UNKNOWN",
             "reason": "execution suitability unavailable",
         }
+
+    if not _candidate_evaluation_token_is_current(
+        symbol,
+        evaluation_candidate_token,
+    ):
+        logger.info(
+            "Discarding in-flight evaluation after active-universe swap for %s",
+            symbol,
+        )
+        return
 
     leverage_advisory = build_signal_leverage_advisory(
         result_metrics,
@@ -2461,14 +2572,16 @@ async def evaluate_candidate(
                 )
             )
 
-            if (
-                observation_state_aligned
-                and observation_exchange
-                and observation_symbol
-            ):
-                validator.ws_manager.unsubscribe(
-                    observation_exchange,
-                    observation_symbol,
+            if observation_state_aligned:
+                observation_ws_source = (
+                    (observation_exchange, observation_symbol)
+                    if observation_exchange and observation_symbol
+                    else None
+                )
+                _sync_websocket_evidence_subscription(
+                    previous_ws_source,
+                    observation_ws_source,
+                    state=str(observation_status),
                 )
 
         else:
@@ -2501,21 +2614,11 @@ async def evaluate_candidate(
                     final_v1_shadow_state = "WATCH"
 
             if watch_state_persisted:
-                unavailable_exchange = stored_metrics.get(
-                    "exchange"
+                _sync_websocket_evidence_subscription(
+                    previous_ws_source,
+                    _websocket_source(stored_metrics),
+                    state="WATCH",
                 )
-                unavailable_symbol = stored_metrics.get(
-                    "mapped_symbol"
-                )
-
-                if (
-                    unavailable_exchange
-                    and unavailable_symbol
-                ):
-                    validator.ws_manager.unsubscribe(
-                        unavailable_exchange,
-                        unavailable_symbol,
-                    )
 
         if data.get(
             "dex_context"
@@ -2636,17 +2739,11 @@ async def evaluate_candidate(
                 return
 
         current_ws_source = _websocket_source(metrics)
-        if (
-            previous_ws_source is not None
-            and previous_ws_source != current_ws_source
-        ):
-            validator.ws_manager.unsubscribe(*previous_ws_source)
-
-        if new_state == "ARMED":
-            if current_ws_source is not None:
-                validator.ws_manager.subscribe(*current_ws_source)
-        elif current_ws_source is not None:
-            validator.ws_manager.unsubscribe(*current_ws_source)
+        _sync_websocket_evidence_subscription(
+            previous_ws_source,
+            current_ws_source,
+            state=str(new_state),
+        )
 
         persist_lifecycle_v2_shadow(str(new_state))
 

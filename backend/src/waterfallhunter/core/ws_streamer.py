@@ -4,6 +4,7 @@ import math
 import time
 
 from waterfallhunter.core.liquidation_flow import LIQUIDATION_FLOW_FRESHNESS_SECONDS
+from waterfallhunter.core.multi_exchange import MultiExchangeGateway
 import random
 from typing import Dict, Any, Optional
 
@@ -58,6 +59,7 @@ class WebSocketManager:
         self.active_tasks: Dict[str, asyncio.Task] = {}
         self.circuit_breakers: Dict[str, CircuitBreaker] = {}
         self.message_counters: Dict[str, int] = {}
+        self.unsupported_liquidation_exchanges: set[str] = set()
 
         # قانون سخت: دیتای قدیمی‌تر از 5 ثانیه منقضی (Stale) محسوب می‌شود
         self.ttl_seconds = 5.0
@@ -71,7 +73,8 @@ class WebSocketManager:
         if ccxt_pro is None:
             raise RuntimeError("CCXT Pro is not installed; WebSocket streaming is unavailable")
         if ex_name not in self.exchanges:
-            ex_class = getattr(ccxt_pro, ex_name)
+            ccxt_id = MultiExchangeGateway._ccxt_exchange_id(ex_name)
+            ex_class = getattr(ccxt_pro, ccxt_id)
             self.exchanges[ex_name] = ex_class({
                 'enableRateLimit': True,
                 'options': {'defaultType': 'swap'}
@@ -226,7 +229,8 @@ class WebSocketManager:
             exchange = await self._get_exchange(ex_name)
             watch = getattr(exchange, "watch_liquidations", None)
             supports = getattr(exchange, "has", {}).get("watchLiquidations")
-            if not callable(watch) or supports is False:
+            if not callable(watch) or supports not in {True, "emulated"}:
+                self.unsupported_liquidation_exchanges.add(ex_name)
                 logger.info("Liquidation stream unavailable for %s:%s", ex_name, symbol)
                 return
             breaker = self.circuit_breakers.setdefault(task_id, CircuitBreaker())
@@ -250,7 +254,9 @@ class WebSocketManager:
                     await asyncio.sleep(cb_recovery(breaker, delay))
                     delay = min(delay * 2, 15.0)
         finally:
-            self.active_tasks.pop(task_id, None)
+            current_task = asyncio.current_task()
+            if self.active_tasks.get(task_id) is current_task:
+                self.active_tasks.pop(task_id, None)
 
     def get_realtime_liquidation_flow(
         self, ex_name: str, symbol: str, *, now: float | None = None
@@ -298,6 +304,62 @@ class WebSocketManager:
             "baseline_notional_1m": round(baseline_total, 6),
         }
 
+    def subscribe_liquidations(self, ex_name: str, symbol: str):
+        """Start only the liquidation consumer for early PRE-TRIGGER evidence."""
+        if ccxt_pro is None:
+            logger.warning(
+                "CCXT Pro is unavailable; skipping liquidation subscription for %s:%s",
+                ex_name,
+                symbol,
+            )
+            return
+        if ex_name in self.unsupported_liquidation_exchanges:
+            return
+        liquidation_id = f"{ex_name}:{symbol}:liquidations"
+        if liquidation_id not in self.active_tasks:
+            self.active_tasks[liquidation_id] = asyncio.create_task(
+                self._watch_liquidations_stream(ex_name, symbol)
+            )
+
+    def refresh_liquidation_capability(self, ex_name: str | None = None) -> None:
+        """Forget cached unsupported capability after an explicit refresh request."""
+        if ex_name is None:
+            self.unsupported_liquidation_exchanges.clear()
+        else:
+            self.unsupported_liquidation_exchanges.discard(ex_name)
+
+    def retain_liquidations_only(self, ex_name: str, symbol: str):
+        """Keep the liquidation consumer while retiring heavier streams."""
+        stream_id = f"{ex_name}:{symbol}"
+        liquidation_id = f"{stream_id}:liquidations"
+        for task_id in [
+            key
+            for key in list(self.active_tasks)
+            if (key == stream_id or key.startswith(f"{stream_id}:"))
+            and key != liquidation_id
+        ]:
+            task = self.active_tasks.pop(task_id, None)
+            if task is not None:
+                task.cancel()
+        self.live_orderbooks.pop(stream_id, None)
+        self.live_tickers.pop(stream_id, None)
+        self.live_trades.pop(stream_id, None)
+        for key in [
+            key
+            for key in list(self.circuit_breakers)
+            if (key == stream_id or key.startswith(f"{stream_id}:"))
+            and key != liquidation_id
+        ]:
+            self.circuit_breakers.pop(key, None)
+        for key in [
+            key
+            for key in list(self.message_counters)
+            if (key == stream_id or key.startswith(f"{stream_id}:"))
+            and key != liquidation_id
+        ]:
+            self.message_counters.pop(key, None)
+        self.subscribe_liquidations(ex_name, symbol)
+
     def subscribe(self, ex_name: str, symbol: str):
         """الگوی Single-flight: اطمینان از عدم ایجاد Task تکراری برای یک نماد"""
         if ccxt_pro is None:
@@ -306,15 +368,16 @@ class WebSocketManager:
             return
         stream_id = f"{ex_name}:{symbol}"
         if stream_id not in self.active_tasks:
-            task = asyncio.create_task(self.watch_orderbook_stream(ex_name, symbol))
-            self.active_tasks[stream_id] = task
-            for kind in ("ticker", "trades"):
-                child_id = f"{stream_id}:{kind}"
-                self.active_tasks[child_id] = asyncio.create_task(self._watch_stream(ex_name, symbol, kind))
-            liquidation_id = f"{stream_id}:liquidations"
-            self.active_tasks[liquidation_id] = asyncio.create_task(
-                self._watch_liquidations_stream(ex_name, symbol)
+            self.active_tasks[stream_id] = asyncio.create_task(
+                self.watch_orderbook_stream(ex_name, symbol)
             )
+        for kind in ("ticker", "trades"):
+            child_id = f"{stream_id}:{kind}"
+            if child_id not in self.active_tasks:
+                self.active_tasks[child_id] = asyncio.create_task(
+                    self._watch_stream(ex_name, symbol, kind)
+                )
+        self.subscribe_liquidations(ex_name, symbol)
 
     def unsubscribe(self, ex_name: str, symbol: str):
         stream_id = f"{ex_name}:{symbol}"
