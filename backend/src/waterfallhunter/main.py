@@ -1515,6 +1515,9 @@ def get_formatted_candidates(*, evaluation_time: float | None = None):  # NOSONA
     historical_by_symbol = (
         historical_outcome_store.symbol_summaries()
     )
+    execution_suitability_by_symbol = (
+        execution_suitability_enricher.for_symbols(active_from_db.keys())
+    )
 
     for (
         symbol,
@@ -1730,12 +1733,7 @@ def get_formatted_candidates(*, evaluation_time: float | None = None):  # NOSONA
 
         data[
             "execution_suitability"
-        ] = (
-            execution_suitability_enricher
-            .for_symbol(
-                symbol
-            )
-        )
+        ] = execution_suitability_by_symbol[symbol]
 
         data["historical_outcome"] = (
             historical_by_symbol.get(symbol)
