@@ -526,3 +526,31 @@ def test_established_catalog_rejects_queued_candidate_missing_from_active_univer
         )
     )
     assert symbol not in main.scanner.active_candidates
+
+
+def test_readded_candidate_rejects_queued_stale_lifecycle_before_mutation(monkeypatch) -> None:
+    symbol = "REGEN/USDT:USDT"
+    current = {
+        "lifecycle_id": 2,
+        "status": "WATCH",
+        "analysis_status": "fresh_generation",
+    }
+    monkeypatch.setattr(main.scanner, "active_candidates", {symbol: current})
+    monkeypatch.setattr(main.scanner, "last_successful_refresh_at", 1_700_000_000.0)
+
+    def should_not_read_reference(_symbol):
+        raise AssertionError("stale lifecycle reached live evaluation")
+
+    monkeypatch.setattr(main.scanner, "get_live_reference", should_not_read_reference)
+
+    asyncio.run(
+        main.evaluate_candidate(
+            symbol,
+            {
+                "status": "PRE-TRIGGER", "lifecycle_id": 1, "scan_eligible": True,
+                "quote_volume": 3_000_000.0, "last_price": 0.01,
+            },
+        )
+    )
+    assert main.scanner.active_candidates[symbol] is current
+    assert current["analysis_status"] == "fresh_generation"

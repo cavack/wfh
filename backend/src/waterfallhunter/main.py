@@ -1881,20 +1881,47 @@ async def evaluate_candidate(
 ):
     analysis_observed_at = int(time.time())
 
-    if (
-        scanner.last_successful_refresh_at is not None
-        and symbol not in scanner.active_candidates
-    ):
+    active_candidate = scanner.active_candidates.get(symbol)
+    if not isinstance(active_candidate, dict):
         logger.info(
-            "Discarding queued evaluation outside established active universe for %s",
+            "Discarding queued evaluation outside active universe for %s",
             symbol,
         )
         return
 
-    active_candidate = scanner.active_candidates.setdefault(
-        symbol,
-        {},
-    )
+    expected_lifecycle_id = data.get("lifecycle_id")
+    active_lifecycle_id = active_candidate.get("lifecycle_id")
+    if scanner.last_successful_refresh_at is not None:
+        if (
+            isinstance(expected_lifecycle_id, bool)
+            or not isinstance(expected_lifecycle_id, int)
+            or expected_lifecycle_id < 1
+            or isinstance(active_lifecycle_id, bool)
+            or not isinstance(active_lifecycle_id, int)
+            or active_lifecycle_id != expected_lifecycle_id
+        ):
+            logger.info(
+                "Discarding queued evaluation after lifecycle change for %s: expected=%s active=%s",
+                symbol,
+                expected_lifecycle_id,
+                active_lifecycle_id,
+            )
+            return
+    elif (
+        isinstance(active_lifecycle_id, int)
+        and not isinstance(active_lifecycle_id, bool)
+        and isinstance(expected_lifecycle_id, int)
+        and not isinstance(expected_lifecycle_id, bool)
+        and active_lifecycle_id != expected_lifecycle_id
+    ):
+        logger.info(
+            "Discarding queued evaluation after lifecycle change for %s: expected=%s active=%s",
+            symbol,
+            expected_lifecycle_id,
+            active_lifecycle_id,
+        )
+        return
+
     evaluation_candidate_token = active_candidate
     previous_ws_source = _websocket_source(active_candidate.get("metrics"))
     active_candidate["analysis_status"] = "pending"

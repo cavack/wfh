@@ -416,3 +416,33 @@ def test_catalog_refresh_reports_candidates_removed_from_active_universe(monkeyp
     assert symbol not in scanner.active_candidates
     assert len(removed) == 1
     assert removed[0][symbol]["metrics"]["exchange"] == "binance"
+
+
+def test_catalog_refresh_projects_canonical_lifecycle_into_active_candidate(tmp_path, monkeypatch):
+    db = _db(tmp_path / "catalog-lifecycle.db")
+    scanner = LBankCatalogScanner(db_adapter=db)
+    symbol = "LIFECYCLE/USDT:USDT"
+
+    async def fetch():
+        return [{
+            "symbol": symbol,
+            "last_price": 0.1,
+            "quote_volume": 3_000_000.0,
+            "is_meme": False,
+            "contract_size": 1.0,
+            "scan_eligible": True,
+        }]
+
+    monkeypatch.setattr(scanner, "fetch_lbank_futures_symbols", fetch)
+    monkeypatch.setattr(scanner, "_enrich_dex_context", lambda _symbols: asyncio.sleep(0))
+    asyncio.run(scanner.update_catalog())
+
+    active = scanner.active_candidates[symbol]
+    assert active["lifecycle_id"] == 1
+    assert active["status"] == "WATCH"
+
+    assert db.update_candidate_state(symbol, "PRE-TRIGGER") is True
+    asyncio.run(scanner.update_catalog())
+    active = scanner.active_candidates[symbol]
+    assert active["lifecycle_id"] == 1
+    assert active["status"] == "PRE-TRIGGER"

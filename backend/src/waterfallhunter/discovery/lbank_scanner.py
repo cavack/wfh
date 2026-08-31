@@ -496,6 +496,8 @@ class LBankCatalogScanner:
             - fetched_symbols
         )
 
+        canonical_active: Dict[str, Any] | None = None
+
         if self.db:
             self.db.update_candidates(
                 new_symbols_map
@@ -507,6 +509,10 @@ class LBankCatalogScanner:
                     missing_symbols,
                     removal_after=2,
                 )
+            )
+            canonical_active = (
+                self.db
+                .get_all_active_candidates()
             )
         else:
             removed_now = (
@@ -541,6 +547,26 @@ class LBankCatalogScanner:
             current_data.update(
                 catalog_data
             )
+
+            if canonical_active is not None:
+                canonical_data = canonical_active.get(symbol)
+                if canonical_data is None:
+                    logger.warning(
+                        "Skipping %s because canonical active lifecycle is unavailable",
+                        symbol,
+                    )
+                    continue
+                current_data["lifecycle_id"] = int(
+                    canonical_data.get("lifecycle_id")
+                    or 1
+                )
+                current_data["status"] = str(
+                    canonical_data.get("status")
+                    or "WATCH"
+                )
+                current_data["scan_eligible"] = bool(
+                    canonical_data.get("scan_eligible")
+                )
 
             next_active[
                 symbol
