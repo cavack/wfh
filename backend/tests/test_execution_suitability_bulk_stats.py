@@ -114,6 +114,40 @@ def test_bulk_universe_summary_matches_per_symbol_semantics(monkeypatch):
     assert actual == expected
 
 
+def test_bulk_exact_symbols_match_per_symbol_semantics_and_preserve_order(monkeypatch):
+    database_uri = "file:wfh-bulk-exact-symbols?mode=memory&cache=shared"
+    anchor = sqlite3.connect(database_uri, uri=True)
+    try:
+        _create_history_schema(anchor)
+        _seed_history(anchor)
+        monkeypatch.setattr(stats_module.time, "time", lambda: 10_000.0)
+        stats = LBankExecutionStats("unused-in-memory.db")
+        monkeypatch.setattr(
+            stats,
+            "_connect",
+            lambda timeout=10.0: sqlite3.connect(database_uri, uri=True),
+        )
+        requested = [
+            "A/USDT:USDT",
+            "C/USDT:USDT",
+            "MISSING/USDT:USDT",
+        ]
+        expected = [
+            stats.summarize_symbol(symbol, limit=3)
+            for symbol in requested
+        ]
+        actual = stats.summarize_symbols(
+            requested,
+            per_symbol_limit=3,
+        )
+    finally:
+        anchor.close()
+
+    assert [row["symbol"] for row in actual] == requested
+    assert actual == expected
+    assert all(row["symbol"] != "B/USDT:USDT" for row in actual)
+
+
 class _BulkOnlyStats:
     def __init__(self) -> None:
         self.bulk_calls = 0

@@ -218,6 +218,9 @@ class _ExecutionSuitability:
             "maximum_leverage": 20,
         }
 
+    def for_symbols(self, symbols) -> dict[str, dict]:
+        return {symbol: self.for_symbol(symbol) for symbol in symbols}
+
 
 class _ExecutionDecisionLogger:
     @staticmethod
