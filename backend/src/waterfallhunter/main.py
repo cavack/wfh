@@ -505,6 +505,30 @@ if "candidate_state_metric" not in globals():
         ("state",),
     )
 
+if "websocket_active_tasks_metric" not in globals():
+    websocket_active_tasks_metric = Gauge(
+        "waterfall_websocket_active_tasks",
+        "Process-local active WebSocket consumer tasks.",
+    )
+
+if "websocket_liquidation_tasks_metric" not in globals():
+    websocket_liquidation_tasks_metric = Gauge(
+        "waterfall_websocket_liquidation_tasks",
+        "Process-local liquidation WebSocket consumer tasks.",
+    )
+
+if "websocket_shared_liquidation_tasks_metric" not in globals():
+    websocket_shared_liquidation_tasks_metric = Gauge(
+        "waterfall_websocket_shared_liquidation_tasks",
+        "Exchange-wide shared liquidation WebSocket consumers.",
+    )
+
+if "websocket_shared_liquidation_subscribers_metric" not in globals():
+    websocket_shared_liquidation_subscribers_metric = Gauge(
+        "waterfall_websocket_shared_liquidation_subscribers",
+        "Symbols routed through exchange-wide liquidation consumers.",
+    )
+
 _CANDIDATE_METRIC_STATES = (
     "WATCH",
     "FUEL-RICH",
@@ -994,6 +1018,18 @@ def _update_candidate_state_metrics(
         candidate_state_metric.labels(
             state=state
         ).set(value)
+
+
+def _update_websocket_metrics() -> None:
+    snapshot = validator.ws_manager.runtime_diagnostics()
+    websocket_active_tasks_metric.set(float(snapshot["active_tasks"]))
+    websocket_liquidation_tasks_metric.set(float(snapshot["liquidation_tasks"]))
+    websocket_shared_liquidation_tasks_metric.set(
+        float(snapshot["shared_liquidation_tasks"])
+    )
+    websocket_shared_liquidation_subscribers_metric.set(
+        float(snapshot["shared_liquidation_subscribers"])
+    )
 
 
 def _update_signal_settlement_worker_metrics() -> None:
@@ -3547,6 +3583,8 @@ async def metrics():
     _update_candidate_state_metrics(
         active_candidates
     )
+
+    _update_websocket_metrics()
 
     if (
         scanner.last_successful_refresh_at

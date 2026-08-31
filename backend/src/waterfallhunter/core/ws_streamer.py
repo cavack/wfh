@@ -60,6 +60,10 @@ class WebSocketManager:
         self.circuit_breakers: Dict[str, CircuitBreaker] = {}
         self.message_counters: Dict[str, int] = {}
         self.unsupported_liquidation_exchanges: set[str] = set()
+        # Binance exposes an official all-market liquidation stream. Track
+        # desired symbols separately so PRE-TRIGGER evidence uses one bounded
+        # consumer instead of one WebSocket subscription per symbol.
+        self.liquidation_subscribers: Dict[str, set[str]] = {}
 
         # قانون سخت: دیتای قدیمی‌تر از 5 ثانیه منقضی (Stale) محسوب می‌شود
         self.ttl_seconds = 5.0
@@ -223,6 +227,62 @@ class WebSocketManager:
             "updated_at": now,
         }
 
+    async def _watch_shared_liquidations_stream(self, ex_name: str) -> None:
+        """Consume one exchange-wide liquidation stream and route subscribed symbols."""
+        task_id = f"{ex_name}:liquidations"
+        try:
+            exchange = await self._get_exchange(ex_name)
+            watch = getattr(exchange, "watch_liquidations_for_symbols", None)
+            supports = getattr(exchange, "has", {}).get("watchLiquidationsForSymbols")
+            if not callable(watch) or supports is not True:
+                self.unsupported_liquidation_exchanges.add(ex_name)
+                logger.info("Shared liquidation stream unavailable for %s", ex_name)
+                return
+            breaker = self.circuit_breakers.setdefault(task_id, CircuitBreaker())
+            delay = 1.0
+            while task_id in self.active_tasks:
+                if not self.liquidation_subscribers.get(ex_name):
+                    await asyncio.sleep(0.25)
+                    continue
+                if not breaker.can_try():
+                    await asyncio.sleep(1.0)
+                    continue
+                try:
+                    # An empty symbol list selects Binance's official all-market
+                    # !forceOrder@arr feed. Route only symbols currently requested
+                    # by PRE-TRIGGER/ARMED lifecycle states.
+                    rows = await watch([], limit=1000)
+                    subscribers = set(self.liquidation_subscribers.get(ex_name, ()))
+                    grouped: Dict[str, list[Dict[str, Any]]] = {}
+                    iterable = rows if isinstance(rows, list) else [rows]
+                    for row in iterable:
+                        if not isinstance(row, dict):
+                            continue
+                        symbol = row.get("symbol")
+                        if not isinstance(symbol, str) or symbol not in subscribers:
+                            continue
+                        grouped.setdefault(symbol, []).append(row)
+                    received_at = time.time()
+                    for symbol, symbol_rows in grouped.items():
+                        self._ingest_liquidations(
+                            ex_name, symbol, symbol_rows, received_at=received_at
+                        )
+                    self.message_counters[task_id] = self.message_counters.get(task_id, 0) + 1
+                    breaker.record_success()
+                    delay = 1.0
+                except Exception as exc:
+                    breaker.record_failure()
+                    logger.debug(
+                        "Shared liquidation stream unavailable for %s: %s",
+                        ex_name, type(exc).__name__,
+                    )
+                    await asyncio.sleep(cb_recovery(breaker, delay))
+                    delay = min(delay * 2, 15.0)
+        finally:
+            current_task = asyncio.current_task()
+            if self.active_tasks.get(task_id) is current_task:
+                self.active_tasks.pop(task_id, None)
+
     async def _watch_liquidations_stream(self, ex_name: str, symbol: str) -> None:
         task_id = f"{ex_name}:{symbol}:liquidations"
         try:
@@ -305,7 +365,7 @@ class WebSocketManager:
         }
 
     def subscribe_liquidations(self, ex_name: str, symbol: str):
-        """Start only the liquidation consumer for early PRE-TRIGGER evidence."""
+        """Start bounded liquidation evidence acquisition for early PRE-TRIGGER state."""
         if ccxt_pro is None:
             logger.warning(
                 "CCXT Pro is unavailable; skipping liquidation subscription for %s:%s",
@@ -314,6 +374,14 @@ class WebSocketManager:
             )
             return
         if ex_name in self.unsupported_liquidation_exchanges:
+            return
+        if ex_name == "binance":
+            self.liquidation_subscribers.setdefault(ex_name, set()).add(symbol)
+            liquidation_id = f"{ex_name}:liquidations"
+            if liquidation_id not in self.active_tasks:
+                self.active_tasks[liquidation_id] = asyncio.create_task(
+                    self._watch_shared_liquidations_stream(ex_name)
+                )
             return
         liquidation_id = f"{ex_name}:{symbol}:liquidations"
         if liquidation_id not in self.active_tasks:
@@ -381,6 +449,12 @@ class WebSocketManager:
 
     def unsubscribe(self, ex_name: str, symbol: str):
         stream_id = f"{ex_name}:{symbol}"
+        if ex_name == "binance":
+            subscribers = self.liquidation_subscribers.get(ex_name)
+            if subscribers is not None:
+                subscribers.discard(symbol)
+                if not subscribers:
+                    self.liquidation_subscribers.pop(ex_name, None)
         for task_id in [key for key in self.active_tasks if key == stream_id or key.startswith(f"{stream_id}:")]:
             self.active_tasks.pop(task_id).cancel()
         self.live_orderbooks.pop(stream_id, None)
@@ -420,6 +494,23 @@ class WebSocketManager:
     def get_realtime_trades(self, ex_name: str, symbol: str):
         return self._cached(self.live_trades, ex_name, symbol)
 
+    def runtime_diagnostics(self) -> Dict[str, int]:
+        """Return bounded task/subscriber counts for operational fan-out telemetry."""
+        task_ids = tuple(self.active_tasks)
+        liquidation_task_ids = tuple(
+            task_id for task_id in task_ids if task_id.endswith(":liquidations")
+        )
+        return {
+            "active_tasks": len(task_ids),
+            "liquidation_tasks": len(liquidation_task_ids),
+            "shared_liquidation_tasks": sum(
+                1 for task_id in liquidation_task_ids if task_id.count(":") == 1
+            ),
+            "shared_liquidation_subscribers": sum(
+                len(symbols) for symbols in self.liquidation_subscribers.values()
+            ),
+        }
+
     def prune_stale_cache(self):
         now = time.time()
         cutoff = now - self.ttl_seconds
@@ -442,6 +533,7 @@ class WebSocketManager:
         for task in list(self.active_tasks.values()):
             task.cancel()
         self.active_tasks.clear()
+        self.liquidation_subscribers.clear()
 
         for ex in self.exchanges.values():
             await ex.close()
