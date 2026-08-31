@@ -227,14 +227,47 @@ class WebSocketManager:
             "updated_at": now,
         }
 
+    @staticmethod
+    def _shared_liquidation_watcher(exchange: Any):
+        watch = getattr(exchange, "watch_liquidations_for_symbols", None)
+        supports = getattr(exchange, "has", {}).get("watchLiquidationsForSymbols")
+        return watch if callable(watch) and supports is True else None
+
+    @staticmethod
+    def _group_subscribed_liquidations(
+        rows: Any, subscribers: set[str]
+    ) -> Dict[str, list[Dict[str, Any]]]:
+        grouped: Dict[str, list[Dict[str, Any]]] = {}
+        iterable = rows if isinstance(rows, list) else [rows]
+        for row in iterable:
+            if not isinstance(row, dict):
+                continue
+            symbol = row.get("symbol")
+            if isinstance(symbol, str) and symbol in subscribers:
+                grouped.setdefault(symbol, []).append(row)
+        return grouped
+
+    async def _consume_shared_liquidations(
+        self, ex_name: str, watch: Any
+    ) -> None:
+        # An empty symbol list selects Binance's official all-market
+        # !forceOrder@arr feed. Route only lifecycle-requested symbols.
+        rows = await watch([], limit=1000)
+        subscribers = set(self.liquidation_subscribers.get(ex_name, ()))
+        grouped = self._group_subscribed_liquidations(rows, subscribers)
+        received_at = time.time()
+        for symbol, symbol_rows in grouped.items():
+            self._ingest_liquidations(
+                ex_name, symbol, symbol_rows, received_at=received_at
+            )
+
     async def _watch_shared_liquidations_stream(self, ex_name: str) -> None:
         """Consume one exchange-wide liquidation stream and route subscribed symbols."""
         task_id = f"{ex_name}:liquidations"
         try:
             exchange = await self._get_exchange(ex_name)
-            watch = getattr(exchange, "watch_liquidations_for_symbols", None)
-            supports = getattr(exchange, "has", {}).get("watchLiquidationsForSymbols")
-            if not callable(watch) or supports is not True:
+            watch = self._shared_liquidation_watcher(exchange)
+            if watch is None:
                 self.unsupported_liquidation_exchanges.add(ex_name)
                 logger.info("Shared liquidation stream unavailable for %s", ex_name)
                 return
@@ -248,25 +281,7 @@ class WebSocketManager:
                     await asyncio.sleep(1.0)
                     continue
                 try:
-                    # An empty symbol list selects Binance's official all-market
-                    # !forceOrder@arr feed. Route only symbols currently requested
-                    # by PRE-TRIGGER/ARMED lifecycle states.
-                    rows = await watch([], limit=1000)
-                    subscribers = set(self.liquidation_subscribers.get(ex_name, ()))
-                    grouped: Dict[str, list[Dict[str, Any]]] = {}
-                    iterable = rows if isinstance(rows, list) else [rows]
-                    for row in iterable:
-                        if not isinstance(row, dict):
-                            continue
-                        symbol = row.get("symbol")
-                        if not isinstance(symbol, str) or symbol not in subscribers:
-                            continue
-                        grouped.setdefault(symbol, []).append(row)
-                    received_at = time.time()
-                    for symbol, symbol_rows in grouped.items():
-                        self._ingest_liquidations(
-                            ex_name, symbol, symbol_rows, received_at=received_at
-                        )
+                    await self._consume_shared_liquidations(ex_name, watch)
                     self.message_counters[task_id] = self.message_counters.get(task_id, 0) + 1
                     breaker.record_success()
                     delay = 1.0
