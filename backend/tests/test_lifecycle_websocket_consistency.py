@@ -228,7 +228,7 @@ def test_pretrigger_observation_starts_websocket_evidence_subscription(monkeypat
         monkeypatch, symbol=symbol, result=result, persist_state=True
     )
     full_subscribed: list[tuple[str, str]] = []
-    liquidation_subscribed: list[tuple[str, str]] = []
+    liquidation_only: list[tuple[str, str]] = []
     monkeypatch.setattr(
         main.validator.ws_manager,
         "subscribe",
@@ -236,8 +236,9 @@ def test_pretrigger_observation_starts_websocket_evidence_subscription(monkeypat
     )
     monkeypatch.setattr(
         main.validator.ws_manager,
-        "subscribe_liquidations",
-        lambda exchange, mapped: liquidation_subscribed.append((exchange, mapped)),
+        "retain_liquidations_only",
+        lambda exchange, mapped: liquidation_only.append((exchange, mapped)),
+        raising=False,
     )
 
     asyncio.run(
@@ -251,7 +252,7 @@ def test_pretrigger_observation_starts_websocket_evidence_subscription(monkeypat
     )
 
     assert full_subscribed == []
-    assert liquidation_subscribed == [("binance", mapped_symbol)]
+    assert liquidation_only == [("binance", mapped_symbol)]
     assert unsubscribed == []
 
 
@@ -280,7 +281,7 @@ def test_pretrigger_source_failover_retires_previous_websocket_subscription(monk
         {symbol: {"metrics": {"exchange": "binance", "mapped_symbol": old_symbol}}},
     )
     full_subscribed: list[tuple[str, str]] = []
-    liquidation_subscribed: list[tuple[str, str]] = []
+    liquidation_only: list[tuple[str, str]] = []
     monkeypatch.setattr(
         main.validator.ws_manager,
         "subscribe",
@@ -288,8 +289,8 @@ def test_pretrigger_source_failover_retires_previous_websocket_subscription(monk
     )
     monkeypatch.setattr(
         main.validator.ws_manager,
-        "subscribe_liquidations",
-        lambda exchange, mapped: liquidation_subscribed.append((exchange, mapped)),
+        "retain_liquidations_only",
+        lambda exchange, mapped: liquidation_only.append((exchange, mapped)),
     )
 
     asyncio.run(
@@ -304,7 +305,7 @@ def test_pretrigger_source_failover_retires_previous_websocket_subscription(monk
 
     assert unsubscribed == [("binance", old_symbol)]
     assert full_subscribed == []
-    assert liquidation_subscribed == [("bybit", new_symbol)]
+    assert liquidation_only == [("bybit", new_symbol)]
 
 
 def test_pretrigger_downgrade_to_watch_retires_websocket_subscription(monkeypatch) -> None:

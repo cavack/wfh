@@ -1136,7 +1136,7 @@ def _sync_websocket_evidence_subscription(
     if current_source is None:
         return
     if state == "PRE-TRIGGER":
-        validator.ws_manager.subscribe_liquidations(*current_source)
+        validator.ws_manager.retain_liquidations_only(*current_source)
     elif state == "ARMED":
         validator.ws_manager.subscribe(*current_source)
     else:

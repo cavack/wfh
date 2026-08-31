@@ -313,6 +313,38 @@ class WebSocketManager:
                 self._watch_liquidations_stream(ex_name, symbol)
             )
 
+    def retain_liquidations_only(self, ex_name: str, symbol: str):
+        """Keep the liquidation consumer while retiring heavier streams."""
+        stream_id = f"{ex_name}:{symbol}"
+        liquidation_id = f"{stream_id}:liquidations"
+        for task_id in [
+            key
+            for key in list(self.active_tasks)
+            if (key == stream_id or key.startswith(f"{stream_id}:"))
+            and key != liquidation_id
+        ]:
+            task = self.active_tasks.pop(task_id, None)
+            if task is not None:
+                task.cancel()
+        self.live_orderbooks.pop(stream_id, None)
+        self.live_tickers.pop(stream_id, None)
+        self.live_trades.pop(stream_id, None)
+        for key in [
+            key
+            for key in list(self.circuit_breakers)
+            if (key == stream_id or key.startswith(f"{stream_id}:"))
+            and key != liquidation_id
+        ]:
+            self.circuit_breakers.pop(key, None)
+        for key in [
+            key
+            for key in list(self.message_counters)
+            if (key == stream_id or key.startswith(f"{stream_id}:"))
+            and key != liquidation_id
+        ]:
+            self.message_counters.pop(key, None)
+        self.subscribe_liquidations(ex_name, symbol)
+
     def subscribe(self, ex_name: str, symbol: str):
         """الگوی Single-flight: اطمینان از عدم ایجاد Task تکراری برای یک نماد"""
         if ccxt_pro is None:
