@@ -191,3 +191,56 @@ def test_pretrigger_scale_uses_one_liquidation_task_per_symbol(monkeypatch) -> N
         assert manager.active_tasks == {}
 
     asyncio.run(scenario())
+
+
+def test_unsupported_liquidation_capability_is_cached_between_subscriptions(monkeypatch) -> None:
+    manager = WebSocketManager()
+    symbol = "NOSUPPORTCACHE/USDT:USDT"
+    monkeypatch.setattr(ws_module, "ccxt_pro", object())
+    lookups = 0
+
+    class Exchange:
+        has = {"watchLiquidations": None}
+
+    async def get_exchange(_name):
+        nonlocal lookups
+        lookups += 1
+        return Exchange()
+
+    monkeypatch.setattr(manager, "_get_exchange", get_exchange)
+
+    async def scenario() -> None:
+        manager.subscribe_liquidations("bingx", symbol)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert f"bingx:{symbol}:liquidations" not in manager.active_tasks
+        manager.subscribe_liquidations("bingx", symbol)
+        await asyncio.sleep(0)
+        assert f"bingx:{symbol}:liquidations" not in manager.active_tasks
+
+    asyncio.run(scenario())
+    assert lookups == 1
+
+
+def test_gateio_exchange_id_is_mapped_at_websocket_boundary(monkeypatch) -> None:
+    manager = WebSocketManager()
+    created = []
+
+    class Exchange:
+        pass
+
+    class FakeCCXTPro:
+        @staticmethod
+        def gate(config):
+            created.append(config)
+            return Exchange()
+
+    monkeypatch.setattr(ws_module, "ccxt_pro", FakeCCXTPro())
+
+    async def scenario() -> None:
+        exchange = await manager._get_exchange("gateio")
+        assert isinstance(exchange, Exchange)
+        assert await manager._get_exchange("gateio") is exchange
+
+    asyncio.run(scenario())
+    assert len(created) == 1

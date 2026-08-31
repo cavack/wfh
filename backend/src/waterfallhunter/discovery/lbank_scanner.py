@@ -128,6 +128,7 @@ class LBankCatalogScanner:
         self.db = db_adapter
         self.dex_client = dex_client
         self.onchain_client = onchain_client
+        self.on_candidates_removed = None
 
         self._is_running = False
 
@@ -551,6 +552,14 @@ class LBankCatalogScanner:
                 None,
             )
 
+        removed_from_active = {
+            symbol: {
+                **dict(previous_active[symbol]),
+                "metrics": dict(previous_active[symbol].get("metrics") or {}),
+            }
+            for symbol in set(previous_active) - set(next_active)
+        }
+
         # Swap atomically under the candidates lock so in-flight evaluations
         # either finish against the old dict (their writes are copied into
         # next_active via the per-symbol merge above) or start on the new one.
@@ -558,6 +567,12 @@ class LBankCatalogScanner:
             self.active_candidates = (
                 next_active
             )
+
+        if removed_from_active and callable(self.on_candidates_removed):
+            try:
+                self.on_candidates_removed(removed_from_active)
+            except Exception as exc:
+                logger.warning("Active-candidate removal callback failed: %s", exc)
 
         await self._enrich_dex_context(
             set(

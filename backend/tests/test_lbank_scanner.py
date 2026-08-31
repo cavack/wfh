@@ -397,3 +397,22 @@ def test_background_catalogue_default_interval_is_six_hours():
     assert defaults == (
         21_600,
     )
+
+
+def test_catalog_refresh_reports_candidates_removed_from_active_universe(monkeypatch):
+    scanner = LBankCatalogScanner(db_adapter=None)
+    symbol = "DROP/USDT:USDT"
+    scanner.active_candidates = {symbol: {"symbol": symbol, "scan_eligible": True, "metrics": {"exchange": "binance", "mapped_symbol": symbol}}}
+    removed = []
+    scanner.on_candidates_removed = lambda packet: removed.append(packet)
+
+    async def fetch():
+        return [{"symbol": symbol, "last_price": 0.1, "quote_volume": 100_000.0, "is_meme": False, "scan_eligible": False}]
+
+    monkeypatch.setattr(scanner, "fetch_lbank_futures_symbols", fetch)
+    monkeypatch.setattr(scanner, "_enrich_dex_context", lambda _symbols: asyncio.sleep(0))
+    asyncio.run(scanner.update_catalog())
+
+    assert symbol not in scanner.active_candidates
+    assert len(removed) == 1
+    assert removed[0][symbol]["metrics"]["exchange"] == "binance"

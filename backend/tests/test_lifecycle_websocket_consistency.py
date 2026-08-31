@@ -350,3 +350,46 @@ def test_pretrigger_downgrade_to_watch_retires_websocket_subscription(monkeypatc
 
     assert subscribed == []
     assert unsubscribed == [("binance", mapped_symbol)]
+
+
+def test_reference_failure_retires_previous_pretrigger_subscription(monkeypatch) -> None:
+    symbol = "REFLOSS/USDT:USDT"
+    mapped_symbol = "REFLOSS/USDT:USDT"
+    monkeypatch.setattr(main.scanner, "active_candidates", {symbol: {"metrics": {"exchange": "binance", "mapped_symbol": mapped_symbol}}})
+    monkeypatch.setattr(main.scanner, "get_live_reference", lambda _symbol: (None, None))
+    monkeypatch.setattr(main.execution_decision_logger, "observe_evaluation", lambda *a, **k: None)
+
+    async def no_reference(_symbol):
+        return None
+
+    monkeypatch.setattr(main.validator, "resolve_live_reference", no_reference)
+    monkeypatch.setattr(main.production_evidence_recorder, "record", lambda *a, **k: True)
+    monkeypatch.setattr(main.entry_decision_store, "latest_for_symbol", lambda _symbol: None)
+    monkeypatch.setattr(main, "_store_live_metrics", lambda *a, **k: None)
+    monkeypatch.setattr(main.db, "update_candidate_state", lambda *a, **k: True)
+    unsubscribed = []
+    monkeypatch.setattr(main.validator.ws_manager, "unsubscribe", lambda exchange, mapped: unsubscribed.append((exchange, mapped)))
+
+    asyncio.run(main.evaluate_candidate(symbol, {"status": "PRE-TRIGGER", "lifecycle_id": 1, "scan_eligible": True, "quote_volume": 3_000_000.0, "last_price": 0.01}))
+    assert unsubscribed == [("binance", mapped_symbol)]
+
+
+def test_source_less_validation_failure_retires_previous_pretrigger_subscription(monkeypatch) -> None:
+    symbol = "SOURCELESS/USDT:USDT"
+    mapped_symbol = "SOURCELESS/USDT:USDT"
+    result = {"is_valid": False, "score": None, "suggested_status": "REJECTED", "metrics": {"error": "no exchange source selected"}}
+    unsubscribed = _prepare_invalid_evaluation(monkeypatch, symbol=symbol, result=result, persist_state=True)
+    monkeypatch.setattr(main.scanner, "active_candidates", {symbol: {"metrics": {"exchange": "binance", "mapped_symbol": mapped_symbol}}})
+
+    asyncio.run(main.evaluate_candidate(symbol, {"status": "PRE-TRIGGER", "lifecycle_id": 1, "scan_eligible": True, "quote_volume": 3_000_000.0, "last_price": 0.01}))
+    assert unsubscribed == [("binance", mapped_symbol)]
+
+
+def test_removed_candidate_cleanup_retires_its_previous_websocket_source(monkeypatch) -> None:
+    symbol = "REMOVED/USDT:USDT"
+    mapped_symbol = "REMOVED/USDT:USDT"
+    unsubscribed = []
+    monkeypatch.setattr(main.validator.ws_manager, "unsubscribe", lambda exchange, mapped: unsubscribed.append((exchange, mapped)))
+    main._retire_removed_candidate_websocket_sources({symbol: {"metrics": {"exchange": "binance", "mapped_symbol": mapped_symbol}}})
+    assert unsubscribed == [("binance", mapped_symbol)]
+    assert main.scanner.on_candidates_removed is main._retire_removed_candidate_websocket_sources

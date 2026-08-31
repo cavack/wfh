@@ -1143,6 +1143,18 @@ def _sync_websocket_evidence_subscription(
         validator.ws_manager.unsubscribe(*current_source)
 
 
+def _retire_removed_candidate_websocket_sources(
+    removed_candidates: dict[str, dict],
+) -> None:
+    for candidate in removed_candidates.values():
+        source = _websocket_source(candidate.get("metrics"))
+        if source is not None:
+            validator.ws_manager.unsubscribe(*source)
+
+
+scanner.on_candidates_removed = _retire_removed_candidate_websocket_sources
+
+
 def _store_live_metrics(
     symbol: str,
     metrics: dict | None,
@@ -2032,6 +2044,12 @@ async def evaluate_candidate(
                 "analysis_status"
             ] = "unavailable"
 
+            _sync_websocket_evidence_subscription(
+                previous_ws_source,
+                None,
+                state="WATCH",
+            )
+
             _store_live_metrics(
                 symbol,
                 reference_failure_metrics,
@@ -2521,21 +2539,11 @@ async def evaluate_candidate(
                     final_v1_shadow_state = "WATCH"
 
             if watch_state_persisted:
-                unavailable_exchange = stored_metrics.get(
-                    "exchange"
+                _sync_websocket_evidence_subscription(
+                    previous_ws_source,
+                    _websocket_source(stored_metrics),
+                    state="WATCH",
                 )
-                unavailable_symbol = stored_metrics.get(
-                    "mapped_symbol"
-                )
-
-                if (
-                    unavailable_exchange
-                    and unavailable_symbol
-                ):
-                    validator.ws_manager.unsubscribe(
-                        unavailable_exchange,
-                        unavailable_symbol,
-                    )
 
         if data.get(
             "dex_context"
