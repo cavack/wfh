@@ -384,6 +384,9 @@ def test_binance_shared_subscription_churn_does_not_duplicate_consumer(monkeypat
         }
         manager.unsubscribe("binance", "AAA/USDT:USDT")
         manager.unsubscribe("binance", "BBB/USDT:USDT")
+        await asyncio.sleep(0)
+        assert "binance:liquidations" not in manager.active_tasks
+        assert "binance" not in manager.liquidation_subscribers
         await manager.close_all()
         await asyncio.sleep(0)
 
@@ -435,3 +438,42 @@ def test_runtime_diagnostics_exposes_liquidation_fanout_shape() -> None:
         "shared_liquidation_tasks": 1,
         "shared_liquidation_subscribers": 2,
     }
+
+
+def test_cancelled_shared_liquidation_task_cannot_remove_replacement(monkeypatch) -> None:
+    manager = WebSocketManager()
+    monkeypatch.setattr(ws_module, "ccxt_pro", object())
+    started = 0
+
+    class Exchange:
+        has = {"watchLiquidationsForSymbols": True}
+
+        async def watch_liquidations_for_symbols(self, symbols, **kwargs):
+            nonlocal started
+            started += 1
+            await asyncio.Future()
+
+    async def get_exchange(_name):
+        return Exchange()
+
+    monkeypatch.setattr(manager, "_get_exchange", get_exchange)
+
+    async def scenario() -> None:
+        task_id = "binance:liquidations"
+        manager.subscribe_liquidations("binance", "AAA/USDT:USDT")
+        await asyncio.sleep(0)
+        old_task = manager.active_tasks[task_id]
+        manager.unsubscribe("binance", "AAA/USDT:USDT")
+        manager.subscribe_liquidations("binance", "BBB/USDT:USDT")
+        replacement = manager.active_tasks[task_id]
+        assert replacement is not old_task
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert manager.active_tasks.get(task_id) is replacement
+        assert replacement.done() is False
+        manager.unsubscribe("binance", "BBB/USDT:USDT")
+        await asyncio.sleep(0)
+        assert task_id not in manager.active_tasks
+
+    asyncio.run(scenario())
+    assert started >= 1

@@ -470,6 +470,9 @@ class WebSocketManager:
                 subscribers.discard(symbol)
                 if not subscribers:
                     self.liquidation_subscribers.pop(ex_name, None)
+                    shared_task = self.active_tasks.pop(f"{ex_name}:liquidations", None)
+                    if shared_task is not None:
+                        shared_task.cancel()
         for task_id in [key for key in self.active_tasks if key == stream_id or key.startswith(f"{stream_id}:")]:
             self.active_tasks.pop(task_id).cancel()
         self.live_orderbooks.pop(stream_id, None)
