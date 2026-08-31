@@ -462,17 +462,23 @@ class WebSocketManager:
                 )
         self.subscribe_liquidations(ex_name, symbol)
 
+    def _detach_shared_liquidation_subscriber(self, ex_name: str, symbol: str) -> None:
+        if ex_name != "binance":
+            return
+        subscribers = self.liquidation_subscribers.get(ex_name)
+        if subscribers is None:
+            return
+        subscribers.discard(symbol)
+        if subscribers:
+            return
+        self.liquidation_subscribers.pop(ex_name, None)
+        shared_task = self.active_tasks.pop(f"{ex_name}:liquidations", None)
+        if shared_task is not None:
+            shared_task.cancel()
+
     def unsubscribe(self, ex_name: str, symbol: str):
         stream_id = f"{ex_name}:{symbol}"
-        if ex_name == "binance":
-            subscribers = self.liquidation_subscribers.get(ex_name)
-            if subscribers is not None:
-                subscribers.discard(symbol)
-                if not subscribers:
-                    self.liquidation_subscribers.pop(ex_name, None)
-                    shared_task = self.active_tasks.pop(f"{ex_name}:liquidations", None)
-                    if shared_task is not None:
-                        shared_task.cancel()
+        self._detach_shared_liquidation_subscriber(ex_name, symbol)
         for task_id in [key for key in self.active_tasks if key == stream_id or key.startswith(f"{stream_id}:")]:
             self.active_tasks.pop(task_id).cancel()
         self.live_orderbooks.pop(stream_id, None)
