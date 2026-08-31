@@ -1155,6 +1155,14 @@ def _retire_removed_candidate_websocket_sources(
 scanner.on_candidates_removed = _retire_removed_candidate_websocket_sources
 
 
+def _candidate_evaluation_token_is_current(
+    symbol: str,
+    token: dict,
+) -> bool:
+    """Fence an in-flight evaluation against a catalogue active-universe swap."""
+    return scanner.active_candidates.get(symbol) is token
+
+
 def _store_live_metrics(
     symbol: str,
     metrics: dict | None,
@@ -1877,6 +1885,7 @@ async def evaluate_candidate(
         symbol,
         {},
     )
+    evaluation_candidate_token = active_candidate
     previous_ws_source = _websocket_source(active_candidate.get("metrics"))
     active_candidate["analysis_status"] = "pending"
     active_candidate["analysis_observed_at"] = analysis_observed_at
@@ -1941,6 +1950,16 @@ async def evaluate_candidate(
                 symbol
             )
         )
+
+        if not _candidate_evaluation_token_is_current(
+            symbol,
+            evaluation_candidate_token,
+        ):
+            logger.info(
+                "Discarding in-flight evaluation after active-universe swap for %s",
+                symbol,
+            )
+            return
 
         if not fallback_reference:
             replay_policy = EntryDecisionPolicy()
@@ -2129,6 +2148,15 @@ async def evaluate_candidate(
             lifecycle_id=int(data.get("lifecycle_id") or 1),
         )
     )
+    if not _candidate_evaluation_token_is_current(
+        symbol,
+        evaluation_candidate_token,
+    ):
+        logger.info(
+            "Discarding in-flight evaluation after active-universe swap for %s",
+            symbol,
+        )
+        return
     lifecycle_v2_decision_clock_at = time.time()
 
     result_metrics = result.setdefault(
@@ -2185,6 +2213,16 @@ async def evaluate_candidate(
             "status": "UNKNOWN",
             "reason": "execution suitability unavailable",
         }
+
+    if not _candidate_evaluation_token_is_current(
+        symbol,
+        evaluation_candidate_token,
+    ):
+        logger.info(
+            "Discarding in-flight evaluation after active-universe swap for %s",
+            symbol,
+        )
+        return
 
     leverage_advisory = build_signal_leverage_advisory(
         result_metrics,
