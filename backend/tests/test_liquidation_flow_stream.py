@@ -244,3 +244,42 @@ def test_gateio_exchange_id_is_mapped_at_websocket_boundary(monkeypatch) -> None
 
     asyncio.run(scenario())
     assert len(created) == 1
+
+
+def test_cancelled_liquidation_task_cannot_remove_replacement(monkeypatch) -> None:
+    manager = WebSocketManager()
+    symbol = "REPLACE/USDT:USDT"
+    monkeypatch.setattr(ws_module, "ccxt_pro", object())
+    started = 0
+
+    class Exchange:
+        has = {"watchLiquidations": True}
+
+        async def watch_liquidations(self, *args, **kwargs):
+            nonlocal started
+            started += 1
+            await asyncio.Future()
+
+    async def get_exchange(_name):
+        return Exchange()
+
+    monkeypatch.setattr(manager, "_get_exchange", get_exchange)
+
+    async def scenario() -> None:
+        task_id = f"binance:{symbol}:liquidations"
+        manager.subscribe_liquidations("binance", symbol)
+        await asyncio.sleep(0)
+        old_task = manager.active_tasks[task_id]
+        manager.unsubscribe("binance", symbol)
+        manager.subscribe_liquidations("binance", symbol)
+        replacement = manager.active_tasks[task_id]
+        assert replacement is not old_task
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert manager.active_tasks.get(task_id) is replacement
+        assert replacement.done() is False
+        manager.unsubscribe("binance", symbol)
+        await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+    assert started >= 1

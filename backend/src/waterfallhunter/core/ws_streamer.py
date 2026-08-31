@@ -254,7 +254,9 @@ class WebSocketManager:
                     await asyncio.sleep(cb_recovery(breaker, delay))
                     delay = min(delay * 2, 15.0)
         finally:
-            self.active_tasks.pop(task_id, None)
+            current_task = asyncio.current_task()
+            if self.active_tasks.get(task_id) is current_task:
+                self.active_tasks.pop(task_id, None)
 
     def get_realtime_liquidation_flow(
         self, ex_name: str, symbol: str, *, now: float | None = None
