@@ -386,8 +386,8 @@ class LBankExecutionStats:
                     ).fetchall()
                     for row in rows:
                         grouped[str(row["symbol"])].append(row)
-        except Exception as exc:
-            logger.error("Failed reading exact-symbol LBank execution statistics: %s", exc)
+        except Exception:
+            logger.exception("Failed reading exact-symbol LBank execution statistics")
             return [
                 self._empty_summary(
                     symbol,

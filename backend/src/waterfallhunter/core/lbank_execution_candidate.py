@@ -17,6 +17,10 @@ logger = logging.getLogger(
     "WaterfallHunter.LBankExecutionCandidate"
 )
 
+EXECUTION_SUITABILITY_ENRICHMENT_UNAVAILABLE = (
+    "execution suitability enrichment unavailable"
+)
+
 
 class LBankExecutionCandidateEnricher:
     """
@@ -220,8 +224,75 @@ class LBankExecutionCandidateEnricher:
             )
             return self._unknown_packet(
                 symbol,
-                "execution suitability enrichment unavailable",
+                EXECUTION_SUITABILITY_ENRICHMENT_UNAVAILABLE,
             )
+
+    def _cached_packets_and_misses(
+        self,
+        requested: list[str],
+        *,
+        now: float,
+    ) -> tuple[dict[str, dict], list[str]]:
+        packets: dict[str, dict] = {}
+        misses: list[str] = []
+        with self._cache_lock:
+            for symbol in requested:
+                if not symbol:
+                    packets[symbol] = self._unknown_packet("", "symbol missing")
+                    continue
+                cached = self._cache.get(symbol)
+                if cached is None:
+                    misses.append(symbol)
+                    continue
+                cached_at, packet = cached
+                if now - cached_at > self.cache_ttl_seconds:
+                    misses.append(symbol)
+                    continue
+                packets[symbol] = copy.deepcopy(packet)
+        return packets, misses
+
+    def _fresh_bulk_packets(
+        self,
+        symbols: list[str],
+    ) -> dict[str, dict]:
+        if not symbols:
+            return {}
+        try:
+            summaries = self.stats.summarize_symbols(symbols)
+            summaries_by_symbol = {
+                str(summary.get("symbol") or ""): summary
+                for summary in summaries
+                if isinstance(summary, dict)
+            }
+        except Exception as exc:
+            logger.warning(
+                "Bulk execution suitability enrichment failed: %s",
+                exc,
+            )
+            summaries_by_symbol = {}
+
+        packets: dict[str, dict] = {}
+        for symbol in symbols:
+            summary = summaries_by_symbol.get(symbol)
+            if summary is None:
+                packets[symbol] = self._unknown_packet(
+                    symbol,
+                    EXECUTION_SUITABILITY_ENRICHMENT_UNAVAILABLE,
+                )
+                continue
+            try:
+                packets[symbol] = self._packet_from_summary(symbol, summary)
+            except Exception as exc:
+                logger.warning(
+                    "Execution suitability candidate enrichment failed for %s: %s",
+                    symbol,
+                    exc,
+                )
+                packets[symbol] = self._unknown_packet(
+                    symbol,
+                    EXECUTION_SUITABILITY_ENRICHMENT_UNAVAILABLE,
+                )
+        return packets
 
     def for_symbols(
         self,
@@ -229,60 +300,10 @@ class LBankExecutionCandidateEnricher:
     ) -> dict[str, dict]:
         requested = list(dict.fromkeys(str(symbol or "") for symbol in symbols))
         now = time.monotonic()
-        packets: dict[str, dict] = {}
-        misses: list[str] = []
+        packets, misses = self._cached_packets_and_misses(requested, now=now)
+        fresh_packets = self._fresh_bulk_packets(misses)
 
-        with self._cache_lock:
-            for symbol in requested:
-                if not symbol:
-                    packets[symbol] = self._unknown_packet("", "symbol missing")
-                    continue
-                cached = self._cache.get(symbol)
-                if cached is not None:
-                    cached_at, packet = cached
-                    if now - cached_at <= self.cache_ttl_seconds:
-                        packets[symbol] = copy.deepcopy(packet)
-                        continue
-                misses.append(symbol)
-
-        if misses:
-            try:
-                summaries = self.stats.summarize_symbols(misses)
-                summaries_by_symbol = {
-                    str(summary.get("symbol") or ""): summary
-                    for summary in summaries
-                    if isinstance(summary, dict)
-                }
-            except Exception as exc:
-                logger.warning(
-                    "Bulk execution suitability enrichment failed: %s",
-                    exc,
-                )
-                summaries_by_symbol = {}
-
-            fresh_packets: dict[str, dict] = {}
-            for symbol in misses:
-                summary = summaries_by_symbol.get(symbol)
-                if summary is None:
-                    packet = self._unknown_packet(
-                        symbol,
-                        "execution suitability enrichment unavailable",
-                    )
-                else:
-                    try:
-                        packet = self._packet_from_summary(symbol, summary)
-                    except Exception as exc:
-                        logger.warning(
-                            "Execution suitability candidate enrichment failed for %s: %s",
-                            symbol,
-                            exc,
-                        )
-                        packet = self._unknown_packet(
-                            symbol,
-                            "execution suitability enrichment unavailable",
-                        )
-                fresh_packets[symbol] = packet
-
+        if fresh_packets:
             with self._cache_lock:
                 for symbol, packet in fresh_packets.items():
                     self._cache[symbol] = (now, copy.deepcopy(packet))
