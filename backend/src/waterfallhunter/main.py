@@ -1881,6 +1881,16 @@ async def evaluate_candidate(
 ):
     analysis_observed_at = int(time.time())
 
+    if (
+        scanner.last_successful_refresh_at is not None
+        and symbol not in scanner.active_candidates
+    ):
+        logger.info(
+            "Discarding queued evaluation outside established active universe for %s",
+            symbol,
+        )
+        return
+
     active_candidate = scanner.active_candidates.setdefault(
         symbol,
         {},

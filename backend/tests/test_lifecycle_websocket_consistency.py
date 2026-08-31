@@ -504,3 +504,25 @@ def test_catalog_removal_during_cross_check_cannot_restart_pretrigger_stream(mon
     assert liquidation_only == []
     assert unsubscribed == [("binance", mapped_symbol)]
     assert symbol not in main.scanner.active_candidates
+
+
+def test_established_catalog_rejects_queued_candidate_missing_from_active_universe(monkeypatch) -> None:
+    symbol = "QUEUEDSTALE/USDT:USDT"
+    monkeypatch.setattr(main.scanner, "active_candidates", {})
+    monkeypatch.setattr(main.scanner, "last_successful_refresh_at", 1_700_000_000.0)
+
+    def should_not_read_reference(_symbol):
+        raise AssertionError("stale queued candidate reached live evaluation")
+
+    monkeypatch.setattr(main.scanner, "get_live_reference", should_not_read_reference)
+
+    asyncio.run(
+        main.evaluate_candidate(
+            symbol,
+            {
+                "status": "PRE-TRIGGER", "lifecycle_id": 1, "scan_eligible": True,
+                "quote_volume": 3_000_000.0, "last_price": 0.01,
+            },
+        )
+    )
+    assert symbol not in main.scanner.active_candidates
