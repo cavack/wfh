@@ -69,6 +69,42 @@ class EntryDecisionStore:
         )
         return payload, canonical_sha256(packet)
 
+    @staticmethod
+    def _material_projection(packet: dict[str, Any]) -> dict[str, Any]:
+        advisory = packet.get("leverage_advisory")
+        leverage_advisory = advisory if isinstance(advisory, dict) else None
+        execution_input = (
+            leverage_advisory.get("execution_suitability_input")
+            if leverage_advisory is not None
+            and isinstance(leverage_advisory.get("execution_suitability_input"), dict)
+            else {}
+        )
+        material_execution_input = {
+            "available": execution_input.get("available"),
+            "status": execution_input.get("status"),
+            "maximum_leverage": execution_input.get("maximum_leverage"),
+        }
+        plan = packet.get("trade_plan")
+        plan_leverage = plan.get("leverage") if isinstance(plan, dict) else None
+        return {
+            "decision": packet.get("decision"),
+            "lifecycle_id": packet.get("lifecycle_id"),
+            "policy_version": packet.get("policy_version"),
+            "leverage_advisory": None if leverage_advisory is None else {
+                "status": leverage_advisory.get("status"),
+                "leverage": leverage_advisory.get("leverage"),
+                "policy_version": leverage_advisory.get("policy_version"),
+                "reason": leverage_advisory.get("reason"),
+                "execution_suitability_input": material_execution_input,
+                "causal_input": (
+                    leverage_advisory.get("causal_input")
+                    if isinstance(leverage_advisory.get("causal_input"), dict)
+                    else None
+                ),
+            },
+            "trade_plan_leverage": plan_leverage,
+        }
+
     def append_if_changed(
         self,
         symbol: str,
@@ -106,12 +142,21 @@ class EntryDecisionStore:
                         "candidate lifecycle is no longer current"
                     )
             row = conn.execute(
-                "SELECT decision FROM entry_decision_events "
+                "SELECT decision,packet_json,packet_hash FROM entry_decision_events "
                 "WHERE symbol=? ORDER BY id DESC LIMIT 1",
                 (symbol,),
             ).fetchone()
-            if row is not None and str(row[0]) == decision:
-                return None
+            previous_packet: dict[str, Any] | None = None
+            if row is not None:
+                previous_packet = self._verified_record(
+                    row[1], row[2], label="previous entry decision packet"
+                )
+                if (
+                    str(row[0]) == decision
+                    and canonical_sha256(self._material_projection(previous_packet))
+                    == canonical_sha256(self._material_projection(packet))
+                ):
+                    return None
             cursor = conn.execute(
                 "INSERT INTO entry_decision_events ("
                 "symbol,event_at,decision,lifecycle_state,entry_readiness,"
@@ -131,7 +176,17 @@ class EntryDecisionStore:
                 ),
             )
             decision_event_id = int(cursor.lastrowid)
-            if decision == "ENTRY_READY":
+            previous_decision = str(previous_packet.get("decision") or "") if previous_packet else ""
+            previous_lifecycle_id = previous_packet.get("lifecycle_id") if previous_packet else None
+            current_lifecycle_id = packet.get("lifecycle_id")
+            entry_ready_transition = bool(
+                decision == "ENTRY_READY"
+                and (
+                    previous_decision != "ENTRY_READY"
+                    or previous_lifecycle_id != current_lifecycle_id
+                )
+            )
+            if entry_ready_transition:
                 event_id = f"entry:{decision_event_id}:ready"
                 event_payload = {
                     "contract_version": "entry_ready_notification_v1",

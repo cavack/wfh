@@ -419,6 +419,28 @@ class TelegramNotifier:
         symbol = escape(str(payload.get("symbol") or "UNKNOWN").split("/")[0])
         packet = payload.get("decision_packet") if isinstance(payload.get("decision_packet"), dict) else {}
         plan = packet.get("trade_plan") if isinstance(packet.get("trade_plan"), dict) else {}
+        leverage_advisory = (
+            packet.get("leverage_advisory")
+            if isinstance(packet.get("leverage_advisory"), dict)
+            else {}
+        )
+        leverage_status = str(leverage_advisory.get("status") or "")
+        raw_leverage = plan.get("leverage")
+        leverage_value = (
+            float(raw_leverage)
+            if isinstance(raw_leverage, (int, float))
+            and not isinstance(raw_leverage, bool)
+            and math.isfinite(raw_leverage)
+            else None
+        )
+        if leverage_status == "AVAILABLE" and leverage_value is not None:
+            leverage_text = f"{leverage_value:.0f}×"
+        elif leverage_status in {"UNAVAILABLE", "NOT_RECOMMENDED"}:
+            leverage_text = leverage_status.replace("_", " ")
+        elif leverage_value is not None:
+            leverage_text = f"{leverage_value:.0f}×"
+        else:
+            leverage_text = "UNAVAILABLE"
         evidence = packet.get("evidence_summary") if isinstance(packet.get("evidence_summary"), dict) else {}
         derivatives = evidence.get("derivatives") if isinstance(evidence.get("derivatives"), dict) else {}
         flow = evidence.get("order_flow") if isinstance(evidence.get("order_flow"), dict) else {}
@@ -433,7 +455,7 @@ class TelegramNotifier:
             f"🎯 Entry: <b>${cls._number(plan.get('entry_price'), 8)}</b>",
             f"🛑 SL: <b>${cls._number(plan.get('stop_loss'), 8)}</b>",
             f"💰 TP1 / TP2 / TP3: <b>${cls._number(plan.get('take_profit_1'), 8)}</b> / <b>${cls._number(plan.get('take_profit_2'), 8)}</b> / <b>${cls._number(plan.get('take_profit_3'), 8)}</b>",
-            f"⚖️ Leverage: <b>{cls._number(plan.get('leverage'), 0)}×</b>",
+            f"⚖️ Leverage: <b>{escape(leverage_text)}</b>",
             "",
             f"📉 OI 1h: <b>{cls._number(derivatives.get('oi_change_1h_pct'), 3)}%</b> · Funding: <b>{cls._number(derivatives.get('funding_rate_pct'), 4)}%</b>",
             f"🔻 Taker B/S: <b>{cls._number(flow.get('taker_buy_sell_ratio'), 3)}</b> · Sell share: <b>{cls._number(flow.get('sell_share_pct'), 1)}%</b>",

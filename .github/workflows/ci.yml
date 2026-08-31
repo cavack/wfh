@@ -58,6 +58,8 @@ jobs:
       - run: npm run test:contract
       - run: npm run typecheck
       - run: npm run build
+      - run: npx --no-install playwright install --with-deps chromium
+      - run: PLAYWRIGHT_PORT=3100 npm run test:e2e:built
 
   dependency-audit:
     runs-on: ubuntu-latest

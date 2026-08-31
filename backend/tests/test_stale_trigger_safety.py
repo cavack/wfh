@@ -84,8 +84,13 @@ def test_stale_trigger_persistence_failure_suppresses_telegram(
     )
     monkeypatch.setattr(
         main,
-        "recommend_signal_leverage",
-        lambda metrics, execution_suitability=None: 4,
+        "build_signal_leverage_advisory",
+        lambda metrics, execution_suitability=None: {
+            "policy_version": "adaptive_signal_leverage_v1",
+            "minimum": 4, "maximum": 18, "symbol_agnostic": True,
+            "signal_only": True, "advisory_only": True,
+            "status": "AVAILABLE", "leverage": 4, "reason": None,
+        },
     )
     monkeypatch.setattr(
         main.execution_suitability_enricher,

@@ -304,6 +304,35 @@ def _cascade_points(metrics: dict[str, Any]) -> tuple[float, float, list[str]]:
     return _clamp(points, 0.0, available), available, [f"CASCADE_{status}"]
 
 
+def _leverage_advisory(metrics: dict[str, Any]) -> dict[str, Any] | None:
+    advisory = _record(metrics.get("leverage_advisory"))
+    status = str(advisory.get("status") or "")
+    if status not in {"AVAILABLE", "UNAVAILABLE", "NOT_RECOMMENDED"}:
+        return None
+    leverage = _finite(advisory.get("leverage"))
+    if status == "AVAILABLE":
+        if leverage is None or leverage < 4 or leverage > 18:
+            return None
+    else:
+        leverage = None
+    packet = {
+        "status": status,
+        "leverage": leverage,
+        "policy_version": str(advisory.get("policy_version") or ""),
+        "reason": advisory.get("reason") if isinstance(advisory.get("reason"), str) else None,
+    }
+    execution_input = advisory.get("execution_suitability_input")
+    if isinstance(execution_input, dict):
+        packet["execution_suitability_input"] = dict(execution_input)
+    causal_input = advisory.get("causal_input")
+    if isinstance(causal_input, dict):
+        packet["causal_input"] = {
+            key: dict(value) if isinstance(value, dict) else value
+            for key, value in causal_input.items()
+        }
+    return packet
+
+
 def _trade_plan(metrics: dict[str, Any]) -> dict[str, Any] | None:
     setup = _record(metrics.get("position_setup"))
     required = ("entry_price", "stop_loss", "take_profit_1", "take_profit_2")
@@ -726,6 +755,9 @@ def build_entry_decision(
         "trade_plan": trade_plan,
         "policy": asdict(policy),
     }
+    leverage_advisory = _leverage_advisory(metrics)
+    if leverage_advisory is not None:
+        packet["leverage_advisory"] = leverage_advisory
     if lifecycle_id is not None:
         packet["lifecycle_id"] = lifecycle_id
     return packet

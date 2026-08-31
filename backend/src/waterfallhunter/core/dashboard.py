@@ -25,6 +25,8 @@ def compact_metrics(
         "stage_lifecycle",
         "ai_advisory",
         "applied_leverage",
+        "leverage_advisory",
+        "leverage_policy",
         "dex_context",
         "onchain_context",
         "data_sources",

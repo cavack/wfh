@@ -270,7 +270,12 @@ def test_runtime_binds_canonical_append_to_expected_lifecycle(monkeypatch) -> No
 
     monkeypatch.setattr(main.validator, "cross_check_symbol", cross_check_symbol)
     monkeypatch.setattr(main, "_apply_deterministic_entry_gate", lambda _s, state, _m: (state, False))
-    monkeypatch.setattr(main, "get_leverage", lambda _symbol: 1)
+    monkeypatch.setattr(main, "build_signal_leverage_advisory", lambda metrics, execution_suitability=None: {
+        "policy_version": "adaptive_signal_leverage_v1",
+        "minimum": 4, "maximum": 18, "symbol_agnostic": True,
+        "signal_only": True, "advisory_only": True,
+        "status": "UNAVAILABLE", "leverage": None, "reason": "test unavailable",
+    })
     monkeypatch.setattr(main.entry_decision_store, "latest_for_symbol", lambda _symbol: None)
     monkeypatch.setattr(main, "build_entry_decision", lambda *args, **kwargs: {"decision": "FORMING"})
 
@@ -285,3 +290,105 @@ def test_runtime_binds_canonical_append_to_expected_lifecycle(monkeypatch) -> No
             "quote_volume": 3_000_000.0, "last_price": 0.01,
         }))
     assert observed == [expected_lifecycle]
+
+
+def _actionable_packet(*, leverage: int, now: int = 100, lifecycle_id: int = 1) -> dict:
+    value = packet("ENTRY_READY", 90.0, now)
+    value["lifecycle_id"] = lifecycle_id
+    value["trade_plan"] = {
+        "entry_price": 100.0, "stop_loss": 102.0,
+        "take_profit_1": 98.0, "take_profit_2": 96.0,
+        "take_profit_3": None, "reward_to_risk": 2.0,
+        "leverage": leverage,
+    }
+    value["leverage_advisory"] = {
+        "status": "AVAILABLE", "leverage": leverage,
+        "policy_version": "adaptive_signal_leverage_v1", "reason": None,
+        "execution_suitability_input": {"status": "SUITABLE"},
+    }
+    return value
+
+
+def test_same_entry_ready_persists_material_leverage_projection_change_without_duplicate_notification(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    first = store.append_if_changed("SXT/USDT:USDT", _actionable_packet(leverage=6, now=100))
+    changed = store.append_if_changed("SXT/USDT:USDT", _actionable_packet(leverage=10, now=110))
+    assert first is not None
+    assert changed is not None
+    latest = store.latest_for_symbol("SXT/USDT:USDT")
+    assert latest["trade_plan"]["leverage"] == 10
+    assert latest["leverage_advisory"]["leverage"] == 10
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM entry_notification_outbox").fetchone()[0] == 1
+
+
+def test_same_entry_ready_persists_execution_suitability_provenance_change(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    first_packet = _actionable_packet(leverage=8, now=100)
+    second_packet = _actionable_packet(leverage=8, now=110)
+    second_packet["leverage_advisory"]["execution_suitability_input"] = {
+        "status": "MARGINAL", "maximum_leverage": 10, "observed_samples": 55
+    }
+    assert store.append_if_changed("SXT/USDT:USDT", first_packet) is not None
+    changed = store.append_if_changed("SXT/USDT:USDT", second_packet)
+    assert changed is not None
+    latest = store.latest_for_symbol("SXT/USDT:USDT")
+    assert latest["leverage_advisory"]["execution_suitability_input"]["status"] == "MARGINAL"
+
+
+def test_same_entry_ready_persists_changed_leverage_causal_input(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    first = _actionable_packet(leverage=8, now=100)
+    second = _actionable_packet(leverage=8, now=110)
+    first["leverage_advisory"]["causal_input"] = {"score": 91.0, "microstructure": {"spread_pct": 0.04}}
+    second["leverage_advisory"]["causal_input"] = {"score": 92.0, "microstructure": {"spread_pct": 0.04}}
+    assert store.append_if_changed("SXT/USDT:USDT", first) is not None
+    changed = store.append_if_changed("SXT/USDT:USDT", second)
+    assert changed is not None
+    latest = store.latest_for_symbol("SXT/USDT:USDT")
+    assert latest["leverage_advisory"]["causal_input"]["score"] == 92.0
+
+
+def test_same_entry_ready_persists_leverage_reason_change(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    first = _actionable_packet(leverage=8, now=100)
+    second = _actionable_packet(leverage=8, now=110)
+    first["leverage_advisory"].update({"status": "NOT_RECOMMENDED", "leverage": None, "reason": "score bound"})
+    second["leverage_advisory"].update({"status": "NOT_RECOMMENDED", "leverage": None, "reason": "position setup rejected"})
+    first["trade_plan"]["leverage"] = None
+    second["trade_plan"]["leverage"] = None
+    assert store.append_if_changed("SXT/USDT:USDT", first) is not None
+    changed = store.append_if_changed("SXT/USDT:USDT", second)
+    assert changed is not None
+    latest = store.latest_for_symbol("SXT/USDT:USDT")
+    assert latest["leverage_advisory"]["reason"] == "position setup rejected"
+
+
+def test_same_entry_ready_ignores_volatile_execution_suitability_counters(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    first = _actionable_packet(leverage=8, now=100)
+    second = _actionable_packet(leverage=8, now=110)
+    first["leverage_advisory"]["execution_suitability_input"] = {
+        "available": True, "status": "SUITABLE", "maximum_leverage": 12,
+        "observed_samples": 40, "observation_span_hours": 24.0, "availability_rate": 0.95,
+    }
+    second["leverage_advisory"]["execution_suitability_input"] = {
+        "available": True, "status": "SUITABLE", "maximum_leverage": 12,
+        "observed_samples": 55, "observation_span_hours": 36.0, "availability_rate": 0.97,
+    }
+    assert store.append_if_changed("SXT/USDT:USDT", first) is not None
+    assert store.append_if_changed("SXT/USDT:USDT", second) is None
+
+
+def test_same_entry_ready_same_material_projection_remains_deduplicated(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    assert store.append_if_changed("SXT/USDT:USDT", _actionable_packet(leverage=8, now=100)) is not None
+    duplicate = _actionable_packet(leverage=8, now=120)
+    duplicate["entry_readiness"] = 91.0
+    assert store.append_if_changed("SXT/USDT:USDT", duplicate) is None
