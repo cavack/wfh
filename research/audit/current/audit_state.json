@@ -50,7 +50,7 @@
     "pull_request": 97,
     "pull_request_state": "OPEN",
     "scope": "correctness leverage canonicalization + deterministic vertical/browser E2E; no calibration changes",
-    "tested_code_commit": "bc18bdd9b3bccdfaae03e87862db9dfe34d855f2",
+    "tested_code_commit": "e615b8d2e2cec1e914f0f857e1d8d25f4b913093",
     "working_tree_dirty": false,
     "worktree": "/srv/wfh-worktrees/vertical-e2e-20260830"
   },
@@ -79,9 +79,9 @@
   "base_main_sha": "65c063ffea6209ecd84b224656bbc627ff811898",
   "browser_e2e_checkpoint": {
     "ci_gate_added": true,
-    "code_sha": "bc18bdd9b3bccdfaae03e87862db9dfe34d855f2",
+    "code_sha": "e615b8d2e2cec1e914f0f857e1d8d25f4b913093",
     "isolated_port": 3100,
-    "result": "4 passed / 0 failed",
+    "result": "4 passed / 0 failed; raw ScoreCard preserves AVAILABLE/UNAVAILABLE/NOT_RECOMMENDED leverage semantics",
     "scenarios": [
       "canonical decision/plan/tri-state leverage/freshness",
       "SSE full-snapshot replacement removes stale candidate",
@@ -102,11 +102,11 @@
   "continuation_work": {
     "base_sha": "65c063ffea6209ecd84b224656bbc627ff811898",
     "branch": "test/vertical-e2e-20260830",
-    "phase": "REVIEW_FIXES_GREEN_BROWSER_E2E_COMPLETE_PENDING_REMOTE_EXACT_HEAD_CI_REVIEW",
-    "tested_code_commit": "bc18bdd9b3bccdfaae03e87862db9dfe34d855f2",
+    "phase": "FINAL_REVIEW_FIXES_LOCAL_EXACT_SHA_GREEN_PENDING_REMOTE_EXACT_HEAD_CI_REVIEW",
+    "tested_code_commit": "e615b8d2e2cec1e914f0f857e1d8d25f4b913093",
     "worktree": "/srv/wfh-worktrees/vertical-e2e-20260830"
   },
-  "next_executable_action": "Push PR #97 review-fix and audit commits; require exact-head CI and all review threads resolved. In a separate correctness branch, reproduce and fix the P1 liquidation-flow subscription lifecycle gap (PRE-TRIGGER evidence acquisition) without changing production thresholds/gates. Keep LIVE_TRADING_ENABLED=false.",
+  "next_executable_action": "Push PR #97 final review-fix plus audit commit; require exact-head required CI and no unresolved valid review findings before merge. Then release-certify/deploy correctness only with LIVE_TRADING_ENABLED=false. Rebase the separate PRE-TRIGGER liquidation-evidence fix onto the new main and repeat exact-head verification; do not change calibration.",
   "open_defects": [
     {
       "fix": "persist explicit replay completeness fields and queue every v9 row for EQUIVALENT, MISMATCH, or NOT_REPLAYABLE classification",
@@ -271,7 +271,7 @@
     "telegram_signal_delivery_enabled": false
   },
   "review_97_checkpoint": {
-    "code_sha": "bc18bdd9b3bccdfaae03e87862db9dfe34d855f2",
+    "code_sha": "e615b8d2e2cec1e914f0f857e1d8d25f4b913093",
     "fixture_defects_fixed": [
       "vertical success execution-suitability fixture now supplies complete SUITABLE evidence"
     ],
@@ -280,11 +280,15 @@
       "same-state canonical leverage persistence/restore consistency",
       "complete score<85 tri-state classification",
       "UNKNOWN execution evidence no fabricated 8x",
-      "persist exact execution-suitability input in leverage advisory",
-      "dashboard fallback to persisted decision leverage advisory",
-      "Playwright clean-workspace build contract",
-      "SSE full snapshot replacement assertion",
-      "browser suite added to required frontend CI"
+      "persist full causal leverage input plus execution-suitability provenance",
+      "ignore volatile execution counters while persisting causal projection changes",
+      "explicit rejected position setup => NOT_RECOMMENDED",
+      "explicit invalid/null exit slippage => UNAVAILABLE while absent field retains fallback",
+      "execution-suitability aggregation offloaded from scanner event loop",
+      "adaptive leverage policy semantics versioned as adaptive_signal_leverage_v2",
+      "dashboard decision and raw ScoreCard preserve leverage tri-state",
+      "Playwright clean-workspace build contract and required CI gate",
+      "SSE full snapshot replacement assertion"
     ]
   },
   "routing": {
@@ -322,23 +326,30 @@
       "qualification": "EXACT_COMMITTED_CODE_SHA",
       "result": "backend_1177_passed_1_existing_warning_skill_validation_pass_runtime_parity_pass_npm_ci_zero_vulns_frontend_contract_typecheck_build_pass_playwright_4_passed_diff_check_pass_clean_tree",
       "sha": "bc18bdd9b3bccdfaae03e87862db9dfe34d855f2"
+    },
+    {
+      "environment": "LOCAL_ISOLATED_VENV_PYTHON_3_12_PLUS_NODE_PLAYWRIGHT",
+      "qualification": "EXACT_COMMITTED_CODE_SHA",
+      "result": "backend_1186_passed_1_existing_warning_skill_validation_pass_runtime_parity_pass_npm_ci_zero_vulns_frontend_contract_typecheck_build_pass_playwright_4_passed_diff_check_pass_clean_tree",
+      "sha": "e615b8d2e2cec1e914f0f857e1d8d25f4b913093"
     }
   ],
-  "updated_at": "2026-08-30T22:30:59Z",
+  "updated_at": "2026-08-31T02:46:15.529056+00:00",
   "vertical_e2e_leverage_checkpoint": {
     "advisory_only": true,
-    "canonical_live_leverage": "build_signal_leverage_advisory -> recommend_signal_leverage",
-    "code_sha": "df35bf041685ac43a4edb8c08892897fccd378c9",
+    "canonical_live_leverage": "build_signal_leverage_advisory(adaptive_signal_leverage_v2) -> recommend_signal_leverage; immutable decision retains normalized causal_input",
+    "code_sha": "e615b8d2e2cec1e914f0f857e1d8d25f4b913093",
     "exact_sha_verification": {
+      "clean_tree": "PASS",
       "frontend_build": "PASS",
       "frontend_contract": "PASS",
+      "frontend_npm_ci": "PASS; 0 vulnerabilities",
       "frontend_typecheck": "PASS",
-      "full_backend": "1170 passed, 2 warnings",
+      "full_backend": "1186 passed, 1 existing Starlette deprecation warning",
       "git_diff_check": "PASS",
-      "repository_hygiene": "PASS tracked_files=448",
+      "playwright": "4 passed / 0 failed",
       "runtime_parity": "PASS",
-      "skill_validation": "PASS",
-      "targeted_neighboring": "129 passed"
+      "skill_validation": "PASS"
     },
     "leverage_root_cause": "legacy get_leverage(symbol) populated applied_leverage before canonical EntryDecision while adaptive leverage ran only later in TRIGGERED",
     "leverage_states": [
