@@ -43,6 +43,25 @@ def test_strong_fresh_setup_is_entry_ready() -> None:
     assert packet["reason_codes"] == sorted(packet["reason_codes"])
 
 
+def test_entry_decision_persists_leverage_causal_input_packet() -> None:
+    metrics = strong_metrics()
+    metrics["leverage_advisory"] = {
+        "status": "AVAILABLE", "leverage": 8,
+        "policy_version": "adaptive_signal_leverage_v2", "reason": None,
+        "execution_suitability_input": {"status": "SUITABLE", "maximum_leverage": 12},
+        "causal_input": {
+            "score": 92.0,
+            "position_setup": {"status": "READY", "entry_price": 0.1, "stop_loss": 0.103},
+            "microstructure": {"spread_pct": 0.04, "slippage_pct": 0.06, "exit_slippage_present": False, "exit_slippage_pct": None},
+            "candle_atr_pct": {"5m": 0.8, "15m": 0.9, "1h": 1.0},
+            "market_constraints": {"maximum_leverage": 12.0},
+            "execution_suitability": {"available": True, "status": "SUITABLE", "maximum_leverage": 12.0},
+        },
+    }
+    packet = decide(metrics)
+    assert packet["leverage_advisory"]["causal_input"] == metrics["leverage_advisory"]["causal_input"]
+
+
 def test_stale_analysis_is_hard_blocked_no_trade() -> None:
     packet = decide(strong_metrics(), analysis_age=181.0)
     assert packet["decision"] == "NO_TRADE"

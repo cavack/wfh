@@ -26,7 +26,49 @@ class LeverageNotRecommendedError(ValueError):
     """Complete inputs imply that leverage of at least 4x is not recommended."""
 
 
-LEVERAGE_POLICY_VERSION = "adaptive_signal_leverage_v1"
+LEVERAGE_POLICY_VERSION = "adaptive_signal_leverage_v2"
+
+
+def _normalized_leverage_causal_input(
+    metrics: Dict[str, Any],
+    execution_suitability: Dict[str, Any] | None,
+) -> dict[str, Any]:
+    source = metrics if isinstance(metrics, dict) else {}
+    position = source.get("position_setup") if isinstance(source.get("position_setup"), dict) else {}
+    micro = source.get("microstructure") if isinstance(source.get("microstructure"), dict) else {}
+    features = source.get("candle_features") if isinstance(source.get("candle_features"), dict) else {}
+    constraints = source.get("market_constraints") if isinstance(source.get("market_constraints"), dict) else {}
+    suitability = execution_suitability if isinstance(execution_suitability, dict) else {}
+
+    atr_by_timeframe: dict[str, float | None] = {}
+    for timeframe in ("5m", "15m", "1h"):
+        packet = features.get(timeframe) if isinstance(features.get(timeframe), dict) else {}
+        atr_by_timeframe[timeframe] = _finite_number(packet.get("atr_pct"))
+
+    available = suitability.get("available")
+    return {
+        "score": _finite_number(source.get("score")),
+        "position_setup": {
+            "status": str(position.get("status") or "").upper(),
+            "entry_price": _finite_number(position.get("entry_price")),
+            "stop_loss": _finite_number(position.get("stop_loss")),
+        },
+        "microstructure": {
+            "spread_pct": _finite_number(micro.get("spread_pct")),
+            "slippage_pct": _finite_number(micro.get("slippage_pct")),
+            "exit_slippage_present": "exit_slippage_pct" in micro,
+            "exit_slippage_pct": _finite_number(micro.get("exit_slippage_pct")),
+        },
+        "candle_atr_pct": atr_by_timeframe,
+        "market_constraints": {
+            "maximum_leverage": _finite_number(constraints.get("maximum_leverage")),
+        },
+        "execution_suitability": {
+            "available": available if isinstance(available, bool) else None,
+            "status": str(suitability.get("status") or "UNKNOWN").upper(),
+            "maximum_leverage": _finite_number(suitability.get("maximum_leverage")),
+        },
+    }
 
 
 def recommend_signal_leverage(
@@ -150,6 +192,7 @@ def build_signal_leverage_advisory(
         "signal_only": True,
         "advisory_only": True,
         "execution_suitability_input": execution_input,
+        "causal_input": _normalized_leverage_causal_input(metrics, execution_suitability),
     }
     try:
         leverage = recommend_signal_leverage(metrics, execution_suitability)

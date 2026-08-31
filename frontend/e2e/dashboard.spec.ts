@@ -220,6 +220,10 @@ test("desktop renders canonical decision, plan, tri-state leverage, evidence and
   const alphaRaw = page.locator("article.panel").filter({ hasText: "ALPHA/USDT" }).last();
   await expect(alphaRaw.getByText("98/100")).toBeVisible();
   await expect(alphaRaw.getByText("ARMED", { exact: true })).toBeVisible();
+  const betaRaw = page.locator("article.panel").filter({ hasText: "BETA/USDT" }).last();
+  await expect(betaRaw.getByText("UNAVAILABLE", { exact: true })).toBeVisible();
+  const gammaRaw = page.locator("article.panel").filter({ hasText: "GAMMA/USDT" }).last();
+  await expect(gammaRaw.getByText("NOT RECOMMENDED", { exact: true })).toBeVisible();
   expect(errors).toEqual([]);
 });
 

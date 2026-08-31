@@ -324,6 +324,12 @@ def _leverage_advisory(metrics: dict[str, Any]) -> dict[str, Any] | None:
     execution_input = advisory.get("execution_suitability_input")
     if isinstance(execution_input, dict):
         packet["execution_suitability_input"] = dict(execution_input)
+    causal_input = advisory.get("causal_input")
+    if isinstance(causal_input, dict):
+        packet["causal_input"] = {
+            key: dict(value) if isinstance(value, dict) else value
+            for key, value in causal_input.items()
+        }
     return packet
 
 

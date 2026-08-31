@@ -96,6 +96,11 @@ class EntryDecisionStore:
                 "policy_version": leverage_advisory.get("policy_version"),
                 "reason": leverage_advisory.get("reason"),
                 "execution_suitability_input": material_execution_input,
+                "causal_input": (
+                    leverage_advisory.get("causal_input")
+                    if isinstance(leverage_advisory.get("causal_input"), dict)
+                    else None
+                ),
             },
             "trade_plan_leverage": plan_leverage,
         }

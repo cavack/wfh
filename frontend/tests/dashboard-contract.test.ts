@@ -7,6 +7,7 @@ import {
   candidateFreshness,
   canonicalLeverageAdvisory,
   pipelineHealthDegraded,
+  rawLeveragePresentation,
   summarizeCandidateFreshness,
   tradePlanAvailable,
 } from "../lib/decision-terminal-ui";
@@ -140,3 +141,8 @@ assert.deepEqual(
   { status: "NOT_RECOMMENDED", leverage: null, policy_version: "adaptive_signal_leverage_v1" },
   "persisted decision leverage advisory must remain canonical when the live metric copy is absent",
 );
+
+assert.equal(rawLeveragePresentation({ applied_leverage: 8, leverage_advisory: { status: "AVAILABLE" } }), "8×");
+assert.equal(rawLeveragePresentation({ applied_leverage: null, leverage_advisory: { status: "UNAVAILABLE" } }), "UNAVAILABLE");
+assert.equal(rawLeveragePresentation({ applied_leverage: null, leverage_advisory: { status: "NOT_RECOMMENDED" } }), "NOT RECOMMENDED");
+assert.equal(rawLeveragePresentation({}), "—");

@@ -1,4 +1,5 @@
 import { CheckCircle2, CircleAlert, Gauge, MinusCircle, Sparkles, XCircle } from "lucide-react";
+import { rawLeveragePresentation } from "../lib/decision-terminal-ui";
 
 export type Candidate = Record<string, unknown>;
 type RecordValue = Record<string, unknown>;
@@ -163,14 +164,14 @@ function CandidateHeader({ symbol, candidate, live, state }: {
   );
 }
 
-function ScoreSummary({ ready, watchScore, coverage, derivativePressure, takerRatio, score, leverage }: {
+function ScoreSummary({ ready, watchScore, coverage, derivativePressure, takerRatio, score, leverageText }: {
   ready: boolean;
   watchScore: number | undefined;
   coverage: number | undefined;
   derivativePressure: number | undefined;
   takerRatio: number | undefined;
   score: number | undefined;
-  leverage: number | undefined;
+  leverageText: string;
 }) {
   const partial = !ready && watchScore !== undefined;
   const displayedScore = ready ? score : watchScore;
@@ -184,7 +185,7 @@ function ScoreSummary({ ready, watchScore, coverage, derivativePressure, takerRa
       </div>
       <div className="shrink-0 text-right">
         <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Leverage</p>
-        <p className="mt-1 font-mono text-lg font-medium text-slate-100">{leverage !== undefined ? `${rawNumberText(leverage)}×` : "—"}</p>
+        <p className="mt-1 font-mono text-lg font-medium text-slate-100">{leverageText}</p>
       </div>
     </section>
   );
@@ -273,14 +274,14 @@ export function ScoreCard({ symbol, candidate, hasFreshSnapshot }: { symbol: str
   const state = candidateState(candidate, live);
   const unavailableReason = analysisReason(metrics);
   const confidence = finiteNumber(advisory?.ai_confidence);
-  const leverage = finiteNumber(metrics?.applied_leverage);
+  const leverageText = rawLeveragePresentation(metrics);
   const executionSuitability = asRecord(candidate.execution_suitability);
   const ready = hasStrictScoreEvidence(live, metrics);
   const hasWatchEvidence = partialWatchScore !== undefined && asRecord(watchScore?.components) !== undefined;
 
   return <article className="p-4 sm:p-6">
     <CandidateHeader symbol={symbol} candidate={candidate} live={live} state={state} />
-    <ScoreSummary ready={ready} watchScore={partialWatchScore} coverage={coverage} derivativePressure={derivativePressure} takerRatio={takerRatio} score={strictScore} leverage={leverage} />
+    <ScoreSummary ready={ready} watchScore={partialWatchScore} coverage={coverage} derivativePressure={derivativePressure} takerRatio={takerRatio} score={strictScore} leverageText={leverageText} />
     <ExecutionSuitability packet={executionSuitability} />
     {ready && metrics ? <ScoreEvidence metrics={metrics} strict /> : null}
     {!ready && hasWatchEvidence && metrics ? <ScoreEvidence metrics={metrics} strict={false} /> : null}

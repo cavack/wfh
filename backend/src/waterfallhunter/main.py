@@ -2134,7 +2134,10 @@ async def evaluate_candidate(
     )
 
     try:
-        execution_suitability = execution_suitability_enricher.for_symbol(symbol)
+        execution_suitability = await asyncio.to_thread(
+            execution_suitability_enricher.for_symbol,
+            symbol,
+        )
     except Exception as exc:
         logger.warning(
             "Execution suitability unavailable for leverage advisory %s: %s",

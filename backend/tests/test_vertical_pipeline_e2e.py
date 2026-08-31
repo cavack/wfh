@@ -361,7 +361,20 @@ def test_vertical_success_preserves_identity_plan_leverage_persistence_api_and_s
     candidate = db.get_all_active_candidates()[SYMBOL]
     assert candidate["lifecycle_id"] == 1
 
+    original_to_thread = asyncio.to_thread
+    offloaded_functions: list[object] = []
+
+    async def tracked_to_thread(func, /, *args, **kwargs):
+        offloaded_functions.append(func)
+        return await original_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(main.asyncio, "to_thread", tracked_to_thread)
     asyncio.run(main.evaluate_candidate(SYMBOL, candidate))
+    assert any(
+        getattr(func, "__self__", None) is main.execution_suitability_enricher
+        and getattr(func, "__name__", "") == "for_symbol"
+        for func in offloaded_functions
+    ), "execution-suitability aggregation must run off the scanner event loop"
 
     latest = entry_store.latest_for_symbol(SYMBOL)
     assert latest is not None

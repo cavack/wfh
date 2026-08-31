@@ -51,6 +51,17 @@ export function tradePlanAvailable(value: unknown): boolean {
     .every((key) => finite(plan[key]) !== undefined);
 }
 
+export function rawLeveragePresentation(metricsValue: unknown): string {
+  const metrics = record(metricsValue);
+  const leverage = finite(metrics.applied_leverage);
+  if (leverage !== undefined) return `${leverage}×`;
+  const advisory = record(metrics.leverage_advisory);
+  const status = typeof advisory.status === "string" ? advisory.status.toUpperCase() : "";
+  if (status === "NOT_RECOMMENDED") return "NOT RECOMMENDED";
+  if (status === "UNAVAILABLE") return "UNAVAILABLE";
+  return "—";
+}
+
 export function advisoryPresentation(value: unknown): {
   status: string;
   confidence?: number;

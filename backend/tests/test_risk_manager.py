@@ -109,6 +109,28 @@ def test_absent_exit_slippage_uses_entry_slippage_fallback():
     assert advisory["leverage"] == 12
 
 
+def test_advisory_carries_complete_normalized_causal_input_packet():
+    metrics = _metrics(score=92.0, spread=0.04, slippage=0.06, exit_slippage=0.08)
+    metrics["market_constraints"] = {"maximum_leverage": 11}
+    advisory = build_signal_leverage_advisory(
+        metrics,
+        {"available": True, "status": "MARGINAL", "maximum_leverage": 10, "observed_samples": 55},
+    )
+    causal = advisory["causal_input"]
+    assert advisory["policy_version"] == "adaptive_signal_leverage_v2"
+    assert causal["score"] == 92.0
+    assert causal["position_setup"] == {"status": "", "entry_price": 100.0, "stop_loss": 102.0}
+    assert causal["microstructure"] == {
+        "spread_pct": 0.04, "slippage_pct": 0.06,
+        "exit_slippage_present": True, "exit_slippage_pct": 0.08,
+    }
+    assert causal["candle_atr_pct"] == {"5m": 0.5, "15m": 0.5, "1h": None}
+    assert causal["market_constraints"] == {"maximum_leverage": 11.0}
+    assert causal["execution_suitability"] == {
+        "available": True, "status": "MARGINAL", "maximum_leverage": 10.0,
+    }
+
+
 def test_adaptive_leverage_uses_exit_side_slippage_ceiling():
     leverage = recommend_signal_leverage(
         _metrics(slippage=0.03, exit_slippage=0.29),
@@ -139,7 +161,7 @@ def test_adaptive_leverage_advisory_available_uses_canonical_policy():
     advisory = build_signal_leverage_advisory(_metrics(), {"status": "SUITABLE"})
     assert advisory["status"] == "AVAILABLE"
     assert advisory["leverage"] == 18
-    assert advisory["policy_version"] == "adaptive_signal_leverage_v1"
+    assert advisory["policy_version"] == "adaptive_signal_leverage_v2"
 
 
 def test_adaptive_leverage_advisory_missing_inputs_is_unavailable_without_fallback():

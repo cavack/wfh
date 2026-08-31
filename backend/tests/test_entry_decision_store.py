@@ -338,6 +338,20 @@ def test_same_entry_ready_persists_execution_suitability_provenance_change(tmp_p
     assert latest["leverage_advisory"]["execution_suitability_input"]["status"] == "MARGINAL"
 
 
+def test_same_entry_ready_persists_changed_leverage_causal_input(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    first = _actionable_packet(leverage=8, now=100)
+    second = _actionable_packet(leverage=8, now=110)
+    first["leverage_advisory"]["causal_input"] = {"score": 91.0, "microstructure": {"spread_pct": 0.04}}
+    second["leverage_advisory"]["causal_input"] = {"score": 92.0, "microstructure": {"spread_pct": 0.04}}
+    assert store.append_if_changed("SXT/USDT:USDT", first) is not None
+    changed = store.append_if_changed("SXT/USDT:USDT", second)
+    assert changed is not None
+    latest = store.latest_for_symbol("SXT/USDT:USDT")
+    assert latest["leverage_advisory"]["causal_input"]["score"] == 92.0
+
+
 def test_same_entry_ready_persists_leverage_reason_change(tmp_path) -> None:
     db_path = migrate_test_database(tmp_path / "registry.db")
     store = EntryDecisionStore(db_path)
