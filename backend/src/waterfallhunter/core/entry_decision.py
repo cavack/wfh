@@ -694,6 +694,34 @@ def _current_late_origin(
     return "ANTI_CHASE" if anti_chase_late else None
 
 
+
+def _retained_terminal_transition(
+    previous: dict[str, Any],
+    *,
+    previous_state: str,
+    decision: str,
+    block_reasons: list[str],
+    late_origin: str | None,
+) -> tuple[str, list[str], str | None]:
+    current_repeats_terminal = decision == previous_state
+    if current_repeats_terminal:
+        effective_reasons = block_reasons
+    else:
+        previous_reasons = previous.get("block_reasons")
+        effective_reasons = (
+            list(previous_reasons)
+            if isinstance(previous_reasons, list)
+            else block_reasons
+        )
+
+    retained_origin = None
+    if previous_state == "LATE":
+        if current_repeats_terminal and late_origin is not None:
+            retained_origin = late_origin
+        else:
+            retained_origin = _previous_late_origin(previous)
+    return previous_state, effective_reasons, retained_origin
+
 def _apply_previous_transition(
     previous_decision: dict[str, Any] | None,
     *,
@@ -717,21 +745,13 @@ def _apply_previous_transition(
         and not distinct_lifecycle
         and not recoverable_legacy_late
     ):
-        previous_reasons = previous.get("block_reasons")
-        current_repeats_terminal = decision == previous_state
-        effective_reasons = (
-            block_reasons
-            if current_repeats_terminal
-            else list(previous_reasons) if isinstance(previous_reasons, list) else block_reasons
+        return _retained_terminal_transition(
+            previous,
+            previous_state=previous_state,
+            decision=decision,
+            block_reasons=block_reasons,
+            late_origin=late_origin,
         )
-        retained_origin = None
-        if previous_state == "LATE":
-            retained_origin = (
-                late_origin
-                if current_repeats_terminal and late_origin is not None
-                else _previous_late_origin(previous)
-            )
-        return previous_state, effective_reasons, retained_origin
     if distinct_lifecycle or previous_state not in {"ENTRY_READY", "ACTIVE"}:
         return decision, block_reasons, late_origin
     if _trade_plan_expired(previous, evaluated_at):
