@@ -623,6 +623,52 @@ def _base_decision(
     return decision
 
 
+def _distinct_lifecycle(
+    previous_lifecycle_id: Any,
+    lifecycle_id: int | None,
+) -> bool:
+    return bool(
+        isinstance(previous_lifecycle_id, int)
+        and not isinstance(previous_lifecycle_id, bool)
+        and isinstance(lifecycle_id, int)
+        and not isinstance(lifecycle_id, bool)
+        and previous_lifecycle_id != lifecycle_id
+    )
+
+
+def _legacy_low_readiness_late(
+    previous: dict[str, Any],
+    *,
+    previous_state: str,
+    forming_minimum: float,
+) -> bool:
+    previous_readiness = _finite(previous.get("entry_readiness"))
+    return bool(
+        previous_state == "LATE"
+        and str(previous.get("lifecycle_state") or "").upper() != "EXHAUSTED"
+        and previous_readiness is not None
+        and previous_readiness < forming_minimum
+        and set(previous.get("block_reasons") or []) == {"ANTI_CHASE_HARD_BLOCK"}
+    )
+
+
+def _trade_plan_expired(previous: dict[str, Any], evaluated_at: int) -> bool:
+    previous_expiry = _record(previous.get("trade_plan")).get("expires_at")
+    return bool(
+        isinstance(previous_expiry, int)
+        and not isinstance(previous_expiry, bool)
+        and evaluated_at >= previous_expiry
+    )
+
+
+def _valid_entry_transition(previous_state: str, decision: str) -> bool:
+    return bool(
+        decision in {"LATE", "INVALIDATED", "EXPIRED"}
+        or (previous_state == "ENTRY_READY" and decision in {"ENTRY_READY", "ACTIVE"})
+        or (previous_state == "ACTIVE" and decision == "ACTIVE")
+    )
+
+
 def _apply_previous_transition(
     previous_decision: dict[str, Any] | None,
     *,
@@ -635,26 +681,16 @@ def _apply_previous_transition(
 ) -> tuple[str, list[str], str]:
     previous = _record(previous_decision)
     previous_state = str(previous.get("decision") or "")
-    previous_lifecycle_id = previous.get("lifecycle_id")
-    distinct_lifecycle = bool(
-        isinstance(previous_lifecycle_id, int)
-        and not isinstance(previous_lifecycle_id, bool)
-        and isinstance(lifecycle_id, int)
-        and not isinstance(lifecycle_id, bool)
-        and previous_lifecycle_id != lifecycle_id
-    )
-    previous_readiness = _finite(previous.get("entry_readiness"))
-    legacy_low_readiness_late = bool(
-        previous_state == "LATE"
-        and str(previous.get("lifecycle_state") or "").upper() != "EXHAUSTED"
-        and previous_readiness is not None
-        and previous_readiness < forming_minimum
-        and set(previous.get("block_reasons") or []) == {"ANTI_CHASE_HARD_BLOCK"}
+    distinct_lifecycle = _distinct_lifecycle(previous.get("lifecycle_id"), lifecycle_id)
+    recoverable_legacy_late = _legacy_low_readiness_late(
+        previous,
+        previous_state=previous_state,
+        forming_minimum=forming_minimum,
     )
     if (
         previous_state in {"LATE", "INVALIDATED", "EXPIRED"}
         and not distinct_lifecycle
-        and not legacy_low_readiness_late
+        and not recoverable_legacy_late
     ):
         previous_reasons = previous.get("block_reasons")
         return (
@@ -662,23 +698,11 @@ def _apply_previous_transition(
             list(previous_reasons) if isinstance(previous_reasons, list) else block_reasons,
             str(previous.get("lifecycle_state") or lifecycle_state).upper(),
         )
-    if distinct_lifecycle:
+    if distinct_lifecycle or previous_state not in {"ENTRY_READY", "ACTIVE"}:
         return decision, block_reasons, lifecycle_state
-    if previous_state not in {"ENTRY_READY", "ACTIVE"}:
-        return decision, block_reasons, lifecycle_state
-    previous_expiry = _record(previous.get("trade_plan")).get("expires_at")
-    if (
-        isinstance(previous_expiry, int)
-        and not isinstance(previous_expiry, bool)
-        and evaluated_at >= previous_expiry
-    ):
+    if _trade_plan_expired(previous, evaluated_at):
         return "EXPIRED", ["TRADE_PLAN_EXPIRED"], lifecycle_state
-    valid = (
-        decision in {"LATE", "INVALIDATED", "EXPIRED"}
-        or (previous_state == "ENTRY_READY" and decision in {"ENTRY_READY", "ACTIVE"})
-        or (previous_state == "ACTIVE" and decision == "ACTIVE")
-    )
-    if valid:
+    if _valid_entry_transition(previous_state, decision):
         return decision, block_reasons, lifecycle_state
     return "INVALIDATED", [*block_reasons, "ENTRY_CONDITIONS_LOST"], lifecycle_state
 
