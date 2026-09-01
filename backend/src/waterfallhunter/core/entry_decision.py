@@ -636,6 +636,17 @@ def _distinct_lifecycle(
     )
 
 
+def _previous_late_origin(previous: dict[str, Any]) -> str | None:
+    explicit = str(previous.get("late_origin") or "").upper()
+    if explicit in {"ANTI_CHASE", "LIFECYCLE_EXHAUSTED"}:
+        return explicit
+    if str(previous.get("lifecycle_state") or "").upper() == "EXHAUSTED":
+        return "LIFECYCLE_EXHAUSTED"
+    if "ANTI_CHASE_HARD_BLOCK" in set(previous.get("block_reasons") or []):
+        return "ANTI_CHASE"
+    return None
+
+
 def _legacy_low_readiness_late(
     previous: dict[str, Any],
     *,
@@ -645,6 +656,7 @@ def _legacy_low_readiness_late(
     previous_readiness = _finite(previous.get("entry_readiness"))
     return bool(
         previous_state == "LATE"
+        and not previous.get("late_origin")
         and str(previous.get("lifecycle_state") or "").upper() != "EXHAUSTED"
         and previous_readiness is not None
         and previous_readiness < forming_minimum
@@ -669,6 +681,19 @@ def _valid_entry_transition(previous_state: str, decision: str) -> bool:
     )
 
 
+def _current_late_origin(
+    *,
+    decision: str,
+    lifecycle_state: str,
+    anti_chase_late: bool,
+) -> str | None:
+    if decision != "LATE":
+        return None
+    if lifecycle_state == "EXHAUSTED":
+        return "LIFECYCLE_EXHAUSTED"
+    return "ANTI_CHASE" if anti_chase_late else None
+
+
 def _apply_previous_transition(
     previous_decision: dict[str, Any] | None,
     *,
@@ -676,9 +701,9 @@ def _apply_previous_transition(
     decision: str,
     block_reasons: list[str],
     lifecycle_id: int | None,
-    lifecycle_state: str,
     forming_minimum: float,
-) -> tuple[str, list[str], str]:
+    late_origin: str | None,
+) -> tuple[str, list[str], str | None]:
     previous = _record(previous_decision)
     previous_state = str(previous.get("decision") or "")
     distinct_lifecycle = _distinct_lifecycle(previous.get("lifecycle_id"), lifecycle_id)
@@ -693,19 +718,19 @@ def _apply_previous_transition(
         and not recoverable_legacy_late
     ):
         previous_reasons = previous.get("block_reasons")
+        retained_origin = _previous_late_origin(previous) if previous_state == "LATE" else None
         return (
             previous_state,
             list(previous_reasons) if isinstance(previous_reasons, list) else block_reasons,
-            str(previous.get("lifecycle_state") or lifecycle_state).upper(),
+            retained_origin,
         )
     if distinct_lifecycle or previous_state not in {"ENTRY_READY", "ACTIVE"}:
-        return decision, block_reasons, lifecycle_state
+        return decision, block_reasons, late_origin
     if _trade_plan_expired(previous, evaluated_at):
-        return "EXPIRED", ["TRADE_PLAN_EXPIRED"], lifecycle_state
+        return "EXPIRED", ["TRADE_PLAN_EXPIRED"], None
     if _valid_entry_transition(previous_state, decision):
-        return decision, block_reasons, lifecycle_state
-    return "INVALIDATED", [*block_reasons, "ENTRY_CONDITIONS_LOST"], lifecycle_state
-
+        return decision, block_reasons, late_origin
+    return "INVALIDATED", [*block_reasons, "ENTRY_CONDITIONS_LOST"], None
 
 def build_entry_decision(
     metrics: dict[str, Any],
@@ -779,18 +804,20 @@ def build_entry_decision(
             block_reasons.append("ENTRY_READY_PREDECESSOR_REQUIRED")
     if decision in {"ENTRY_READY", "ACTIVE"} and not block_reasons:
         reasons.append("ENTRY_GATES_PASS")
-    decision, block_reasons, effective_lifecycle_state = _apply_previous_transition(
+    late_origin = _current_late_origin(
+        decision=decision, lifecycle_state=status, anti_chase_late=anti_chase_late
+    )
+    decision, block_reasons, late_origin = _apply_previous_transition(
         previous_decision, evaluated_at=evaluated_at, decision=decision,
         block_reasons=block_reasons, lifecycle_id=lifecycle_id,
-        lifecycle_state=status,
-        forming_minimum=policy.forming_minimum,
+        forming_minimum=policy.forming_minimum, late_origin=late_origin,
     )
     packet = {
         "contract_version": "entry_decision_v1",
         "policy_version": policy.version,
         "evaluated_at": int(evaluated_at),
         "decision": decision,
-        "lifecycle_state": effective_lifecycle_state,
+        "lifecycle_state": status,
         "entry_readiness": readiness,
         "evidence_coverage_pct": coverage_pct,
         "hard_blocked": bool(block_reasons),
@@ -806,4 +833,6 @@ def build_entry_decision(
         packet["leverage_advisory"] = leverage_advisory
     if lifecycle_id is not None:
         packet["lifecycle_id"] = lifecycle_id
+    if decision == "LATE" and late_origin is not None:
+        packet["late_origin"] = late_origin
     return packet

@@ -392,3 +392,44 @@ def test_same_entry_ready_same_material_projection_remains_deduplicated(tmp_path
     duplicate = _actionable_packet(leverage=8, now=120)
     duplicate["entry_readiness"] = 91.0
     assert store.append_if_changed("SXT/USDT:USDT", duplicate) is None
+
+
+def test_same_late_persists_lifecycle_and_terminal_origin_change(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    first = packet("LATE", 60.0, 100)
+    first["lifecycle_state"] = "PRE-TRIGGER"
+    first["late_origin"] = "ANTI_CHASE"
+    second = packet("LATE", 30.0, 110)
+    second["lifecycle_state"] = "EXHAUSTED"
+    second["late_origin"] = "LIFECYCLE_EXHAUSTED"
+
+    assert store.append_if_changed("SXT/USDT:USDT", first) is not None
+    changed = store.append_if_changed("SXT/USDT:USDT", second)
+
+    assert changed is not None
+    latest = store.latest_for_symbol("SXT/USDT:USDT")
+    assert latest["lifecycle_state"] == "EXHAUSTED"
+    assert latest["late_origin"] == "LIFECYCLE_EXHAUSTED"
+
+
+def test_same_exhausted_late_persists_new_measured_anti_chase_blocker(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    first = packet("LATE", 30.0, 100)
+    first["lifecycle_state"] = "EXHAUSTED"
+    first["late_origin"] = "LIFECYCLE_EXHAUSTED"
+    first["hard_blocked"] = False
+    first["block_reasons"] = []
+    second = packet("LATE", 30.0, 110)
+    second["lifecycle_state"] = "EXHAUSTED"
+    second["late_origin"] = "LIFECYCLE_EXHAUSTED"
+    second["hard_blocked"] = True
+    second["block_reasons"] = ["ANTI_CHASE_HARD_BLOCK"]
+
+    assert store.append_if_changed("SXT/USDT:USDT", first) is not None
+    changed = store.append_if_changed("SXT/USDT:USDT", second)
+
+    assert changed is not None
+    latest = store.latest_for_symbol("SXT/USDT:USDT")
+    assert latest["block_reasons"] == ["ANTI_CHASE_HARD_BLOCK"]

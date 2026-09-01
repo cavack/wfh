@@ -114,6 +114,9 @@ def test_documented_entry_policy_matches_canonical_constants() -> None:
         assert f"FORMING >= {policy.forming_minimum:g}" in document
         assert f"{policy.anti_chase_hard_block_atr:g} ATR" in document
         assert "does not turn sub-`FORMING` evidence into `LATE`" in document
+    assert "late_origin" in decision_doc
+    assert "late_origin" in readme
+    assert "late_origin" in model_doc
 
 
 def test_active_production_tree_has_no_ollama_runtime_dependency() -> None:

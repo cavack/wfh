@@ -473,6 +473,7 @@ def test_legacy_low_readiness_late_can_recover_within_same_lifecycle() -> None:
     # Reproduce a projection poisoned by the pre-fix LATE semantics.
     previous["decision"] = "LATE"
     previous["block_reasons"] = ["ANTI_CHASE_HARD_BLOCK"]
+    previous.pop("late_origin", None)
     assert previous["entry_readiness"] < EntryDecisionPolicy().forming_minimum
 
     fresh = build_entry_decision(
@@ -532,7 +533,8 @@ def test_genuine_low_readiness_exhausted_late_remains_terminal() -> None:
     )
 
     assert repeated["decision"] == "LATE"
-    assert repeated["lifecycle_state"] == "EXHAUSTED"
+    assert repeated["lifecycle_state"] == "FUEL-RICH"
+    assert repeated["late_origin"] == "LIFECYCLE_EXHAUSTED"
 
     repeated_again = build_entry_decision(
         metrics,
@@ -545,8 +547,62 @@ def test_genuine_low_readiness_exhausted_late_remains_terminal() -> None:
     )
 
     assert repeated_again["decision"] == "LATE"
-    assert repeated_again["lifecycle_state"] == "EXHAUSTED"
+    assert repeated_again["lifecycle_state"] == "FUEL-RICH"
+    assert repeated_again["late_origin"] == "LIFECYCLE_EXHAUSTED"
 
+
+
+def test_genuine_anti_chase_late_keeps_origin_when_readiness_later_drops() -> None:
+    extended = strong_metrics()
+    extended["anti_chase"] = {
+        "available": True,
+        "cross_timeframe": {"max_post_break_extension_atr": 1.35},
+    }
+    first = build_entry_decision(
+        extended,
+        "PRE-TRIGGER",
+        evaluated_at=1_788_000_000,
+        analysis_age_seconds=10.0,
+        reference_age_seconds=3.0,
+        lifecycle_id=12,
+    )
+    assert first["decision"] == "LATE"
+    assert first["late_origin"] == "ANTI_CHASE"
+
+    weak = strong_metrics()
+    weak["derivatives"]["taker_buy_sell_ratio"] = 1.7
+    weak["microstructure"]["sell_flow_usdt"] = 20_000.0
+    weak["microstructure"]["buy_flow_usdt"] = 200_000.0
+    weak["microstructure"]["footprint"]["aggressive_selling"] = False
+    for timeframe in ("1h", "15m", "5m"):
+        weak["candle_features"][timeframe]["rsi_rollover"] = False
+        weak["candle_features"][timeframe]["bearish_close"] = False
+
+    second = build_entry_decision(
+        weak,
+        "FUEL-RICH",
+        evaluated_at=1_788_000_100,
+        analysis_age_seconds=10.0,
+        reference_age_seconds=3.0,
+        lifecycle_id=12,
+        previous_decision=first,
+    )
+    assert second["entry_readiness"] < EntryDecisionPolicy().forming_minimum
+    assert second["decision"] == "LATE"
+    assert second["lifecycle_state"] == "FUEL-RICH"
+    assert second["late_origin"] == "ANTI_CHASE"
+
+    third = build_entry_decision(
+        weak,
+        "FUEL-RICH",
+        evaluated_at=1_788_000_200,
+        analysis_age_seconds=10.0,
+        reference_age_seconds=3.0,
+        lifecycle_id=12,
+        previous_decision=second,
+    )
+    assert third["decision"] == "LATE"
+    assert third["late_origin"] == "ANTI_CHASE"
 
 def test_exhausted_preserves_measured_anti_chase_blocker() -> None:
     metrics = strong_metrics()
