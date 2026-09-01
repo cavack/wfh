@@ -604,6 +604,71 @@ def test_genuine_anti_chase_late_keeps_origin_when_readiness_later_drops() -> No
     assert third["decision"] == "LATE"
     assert third["late_origin"] == "ANTI_CHASE"
 
+def test_exhausted_replaces_prior_anti_chase_terminal_origin() -> None:
+    metrics = strong_metrics()
+    metrics["anti_chase"] = {
+        "available": True,
+        "cross_timeframe": {"max_post_break_extension_atr": 1.35},
+    }
+    previous = build_entry_decision(
+        metrics,
+        "PRE-TRIGGER",
+        evaluated_at=1_788_000_000,
+        analysis_age_seconds=10.0,
+        reference_age_seconds=3.0,
+        lifecycle_id=13,
+    )
+    assert previous["decision"] == "LATE"
+    assert previous["late_origin"] == "ANTI_CHASE"
+
+    exhausted = build_entry_decision(
+        metrics,
+        "EXHAUSTED",
+        evaluated_at=1_788_000_100,
+        analysis_age_seconds=10.0,
+        reference_age_seconds=3.0,
+        lifecycle_id=13,
+        previous_decision=previous,
+    )
+
+    assert exhausted["decision"] == "LATE"
+    assert exhausted["lifecycle_state"] == "EXHAUSTED"
+    assert exhausted["late_origin"] == "LIFECYCLE_EXHAUSTED"
+    assert "ANTI_CHASE_HARD_BLOCK" in exhausted["block_reasons"]
+
+
+def test_retained_exhausted_late_refreshes_current_measured_blockers() -> None:
+    previous = build_entry_decision(
+        strong_metrics(),
+        "EXHAUSTED",
+        evaluated_at=1_788_000_000,
+        analysis_age_seconds=10.0,
+        reference_age_seconds=3.0,
+        lifecycle_id=14,
+    )
+    assert previous["decision"] == "LATE"
+    assert previous["block_reasons"] == []
+
+    metrics = strong_metrics()
+    metrics["anti_chase"] = {
+        "available": True,
+        "cross_timeframe": {"max_post_break_extension_atr": 1.35},
+    }
+    current = build_entry_decision(
+        metrics,
+        "EXHAUSTED",
+        evaluated_at=1_788_000_100,
+        analysis_age_seconds=10.0,
+        reference_age_seconds=3.0,
+        lifecycle_id=14,
+        previous_decision=previous,
+    )
+
+    assert current["decision"] == "LATE"
+    assert current["late_origin"] == "LIFECYCLE_EXHAUSTED"
+    assert current["block_reasons"] == ["ANTI_CHASE_HARD_BLOCK"]
+
+
 def test_exhausted_preserves_measured_anti_chase_blocker() -> None:
     metrics = strong_metrics()
     metrics["anti_chase"] = {

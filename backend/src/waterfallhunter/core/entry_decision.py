@@ -718,12 +718,20 @@ def _apply_previous_transition(
         and not recoverable_legacy_late
     ):
         previous_reasons = previous.get("block_reasons")
-        retained_origin = _previous_late_origin(previous) if previous_state == "LATE" else None
-        return (
-            previous_state,
-            list(previous_reasons) if isinstance(previous_reasons, list) else block_reasons,
-            retained_origin,
+        current_repeats_terminal = decision == previous_state
+        effective_reasons = (
+            block_reasons
+            if current_repeats_terminal
+            else list(previous_reasons) if isinstance(previous_reasons, list) else block_reasons
         )
+        retained_origin = None
+        if previous_state == "LATE":
+            retained_origin = (
+                late_origin
+                if current_repeats_terminal and late_origin is not None
+                else _previous_late_origin(previous)
+            )
+        return previous_state, effective_reasons, retained_origin
     if distinct_lifecycle or previous_state not in {"ENTRY_READY", "ACTIVE"}:
         return decision, block_reasons, late_origin
     if _trade_plan_expired(previous, evaluated_at):
