@@ -18,6 +18,8 @@ Historical chat, ZIP files, old server copies, stale branches, or old repositori
 
 Only canonical `ENTRY_READY` is a proactive entry signal. `FORMING` is not ready; `ACTIVE` is an already-emitted setup in progress; lifecycle `TRIGGERED` alone is never an entry instruction. The user-facing score is `entry_readiness`.
 
+The protected `entry_policy_v1` calibration is `ENTRY_READY >= 78`, `FORMING >= 55`, and Anti-Chase at `1.2 ATR`. Anti-Chase converts only otherwise `FORMING`/`ENTRY_READY`/`ACTIVE` evidence to `LATE`; sub-`FORMING`, stale, or invalid evidence remains `NO_TRADE` or the applicable fail-closed state. Genuine lifecycle `EXHAUSTED` remains terminal `LATE` even when freshness or another blocker applies. `LATE` packets carry `late_origin` provenance while `lifecycle_state` continues to report the current evaluation; lifecycle/origin/blocker changes are material persistence events. See `docs/MODEL_CHANGELOG.md` before changing decision semantics.
+
 ## Runtime services
 
 Canonical application/observability services are backend, frontend, watchdog, Prometheus, Grafana, and Alertmanager, fronted by host nginx. Docker Compose manages containers; systemd asserts/recoveries the stack after boot.

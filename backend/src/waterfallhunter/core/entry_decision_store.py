@@ -89,6 +89,11 @@ class EntryDecisionStore:
         return {
             "decision": packet.get("decision"),
             "lifecycle_id": packet.get("lifecycle_id"),
+            "lifecycle_state": packet.get("lifecycle_state"),
+            "late_origin": packet.get("late_origin"),
+            "block_reasons": sorted(
+                str(reason) for reason in (packet.get("block_reasons") or [])
+            ),
             "policy_version": packet.get("policy_version"),
             "leverage_advisory": None if leverage_advisory is None else {
                 "status": leverage_advisory.get("status"),

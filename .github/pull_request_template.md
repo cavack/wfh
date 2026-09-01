@@ -1,6 +1,40 @@
-## Summary
+## Problem
 
-Describe the change and why it is needed.
+Describe the observed defect or research question. Include affected runtime/model surfaces.
+
+## Evidence / reproduction
+
+Provide the exact command, dataset/runtime window, and pre-fix result. Missing evidence is `UNAVAILABLE`, not success.
+
+## Root cause and classification
+
+Classification: `CORRECTNESS | DATA | RUNTIME | MODEL | POLICY | UI | DOCS`
+
+Explain the causal mechanism and why neighboring hypotheses were excluded.
+
+## RED test
+
+Record the focused failing test and exact pre-fix result.
+
+## Implementation
+
+Describe the smallest coherent change. Separate correctness fixes from calibration challengers.
+
+## GREEN and regression results
+
+Record targeted, neighboring, full-suite, frontend/build, security, hygiene, and documentation results as applicable.
+
+## Runtime and signal-funnel impact
+
+State measured or expected effects on cadence, freshness, resources, stage counts, decisions, and dominant blockers. Label unmeasured effects explicitly.
+
+## Calibration and scientific status
+
+State whether weights, thresholds, gates, or lifecycle semantics changed. For a challenger, include version, dataset provenance, walk-forward/holdout status, and promotion status.
+
+## Documentation changed
+
+List README/model/decision/dashboard/API/runbook/diagram/ledger changes required by this behavior.
 
 ## Safety
 
@@ -21,3 +55,11 @@ Describe the change and why it is needed.
 ## Operational impact
 
 Document migrations, environment changes, deployment considerations, or state compatibility concerns. Use `None` when there is no operational impact.
+
+## Rollback notes
+
+Describe the exact rollback boundary, data/schema compatibility, and any evidence that must be preserved.
+
+## Exact tested commit
+
+`<full 40-character SHA>`

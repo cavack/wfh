@@ -100,6 +100,10 @@ WATCH → FUEL-RICH → PRE-TRIGGER → ARMED → TRIGGERED → EXHAUSTED
 
 Lifecycle `TRIGGERED` does not mean `ENTRY_READY`. An immutable entry event cannot silently disappear; later changes are recorded as explicit transitions with timestamps, reason codes, model/evidence version, and provenance.
 
+### Protected calibration and pending Anti-Chase correction
+
+The protected `entry_policy_v1` bands are `ENTRY_READY >= 78` and `FORMING >= 55`; lower readiness remains `NO_TRADE`. Anti-Chase uses a `1.2 ATR` hard-extension boundary. PR [#102](https://github.com/cavack/wfh/pull/102) corrects its ordering in canonical code but remains `CODE_READY_NOT_DEPLOYED` until an exact revision passes the release gate: freshness and deterministic invalidators are evaluated first, and Anti-Chase only converts an otherwise `FORMING`, `ENTRY_READY`, or `ACTIVE` decision to `LATE`. Anti-Chase does not turn sub-`FORMING` evidence into `LATE`, lower either readiness threshold, or manufacture missing evidence. Genuine lifecycle `EXHAUSTED` remains explicitly terminal `LATE`, including when other blockers apply. New `LATE` packets record `late_origin` provenance while `lifecycle_state` continues to reflect the current evaluation.
+
 Read the full contracts in [Decision Engine](docs/DECISION_ENGINE.md), [Model](docs/MODEL.md), and [Dashboard](docs/DASHBOARD.md).
 
 ## System architecture
@@ -414,6 +418,7 @@ Healthy endpoints do not by themselves prove decision correctness, backup validi
 | Advisory boundary | [AI Advisory](docs/AI_ADVISORY.md) |
 | Common failures | [Troubleshooting](docs/TROUBLESHOOTING.md) |
 | Program sequencing | [Dependency Graph](docs/program/DEPENDENCY_GRAPH.md) |
+| Model and decision changes | [Model Change Ledger](docs/MODEL_CHANGELOG.md) |
 
 ## Contributing
 
