@@ -489,6 +489,51 @@ def test_legacy_low_readiness_late_can_recover_within_same_lifecycle() -> None:
     assert fresh["hard_blocked"] is False
 
 
+def test_exhausted_remains_late_when_other_inputs_are_blocked() -> None:
+    metrics = strong_metrics()
+    metrics.pop("microstructure")
+
+    packet = decide(metrics, status="EXHAUSTED")
+
+    assert packet["decision"] == "LATE"
+    assert packet["lifecycle_state"] == "EXHAUSTED"
+    assert "EXECUTION_UNAVAILABLE" in packet["block_reasons"]
+    assert "ANTI_CHASE_HARD_BLOCK" not in packet["block_reasons"]
+
+
+def test_genuine_low_readiness_exhausted_late_remains_terminal() -> None:
+    metrics = strong_metrics()
+    metrics["derivatives"]["taker_buy_sell_ratio"] = 1.7
+    metrics["microstructure"]["sell_flow_usdt"] = 20_000.0
+    metrics["microstructure"]["buy_flow_usdt"] = 200_000.0
+    metrics["microstructure"]["footprint"]["aggressive_selling"] = False
+    for timeframe in ("1h", "15m", "5m"):
+        metrics["candle_features"][timeframe]["rsi_rollover"] = False
+        metrics["candle_features"][timeframe]["bearish_close"] = False
+    previous = build_entry_decision(
+        metrics,
+        "EXHAUSTED",
+        evaluated_at=1_788_000_000,
+        analysis_age_seconds=10.0,
+        reference_age_seconds=3.0,
+        lifecycle_id=8,
+    )
+    assert previous["entry_readiness"] < EntryDecisionPolicy().forming_minimum
+    assert previous["decision"] == "LATE"
+
+    repeated = build_entry_decision(
+        metrics,
+        "FUEL-RICH",
+        evaluated_at=1_788_000_100,
+        analysis_age_seconds=10.0,
+        reference_age_seconds=3.0,
+        lifecycle_id=8,
+        previous_decision=previous,
+    )
+
+    assert repeated["decision"] == "LATE"
+
+
 def test_stale_evidence_precedes_anti_chase_late_classification() -> None:
     metrics = strong_metrics()
     metrics["anti_chase"] = {

@@ -24,7 +24,7 @@ Anti-Chase is mandatory, but it is a late-entry classification rather than a sou
 4. Convert an otherwise `FORMING`, `ENTRY_READY`, or `ACTIVE` decision to `LATE` when extension is at least `1.2 ATR`.
 5. Classify lifecycle `EXHAUSTED` as `LATE` independently of readiness.
 
-Therefore Anti-Chase does not turn sub-`FORMING` evidence into `LATE`. A same-lifecycle legacy projection with readiness below `55` and no blocker other than `ANTI_CHASE_HARD_BLOCK` is recognized as an impossible pre-fix state and may recover to its current canonical decision; the historical event remains persisted.
+Therefore Anti-Chase does not turn sub-`FORMING` evidence into `LATE`. A same-lifecycle, non-`EXHAUSTED` legacy projection with readiness below `55` and no blocker other than `ANTI_CHASE_HARD_BLOCK` is recognized as an impossible pre-fix state and may recover to its current canonical decision; a genuine `EXHAUSTED` state remains terminal, and the historical event remains persisted.
 
 ## Persistence
 

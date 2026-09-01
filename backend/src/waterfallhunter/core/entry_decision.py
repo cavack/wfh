@@ -603,6 +603,8 @@ def _base_decision(
     trade_plan_ok: bool,
     policy: EntryDecisionPolicy,
 ) -> str:
+    if status == "EXHAUSTED":
+        return "LATE"
     if block_reasons:
         if "STRUCTURE_INVALIDATED" in block_reasons:
             return "INVALIDATED"
@@ -616,8 +618,6 @@ def _base_decision(
         decision = "ACTIVE" if status == "TRIGGERED" else "ENTRY_READY"
     else:
         decision = "FORMING" if readiness >= policy.forming_minimum else "NO_TRADE"
-    if status == "EXHAUSTED":
-        return "LATE"
     if late and decision in {"FORMING", "ENTRY_READY", "ACTIVE"}:
         return "LATE"
     return decision
@@ -645,6 +645,7 @@ def _apply_previous_transition(
     previous_readiness = _finite(previous.get("entry_readiness"))
     legacy_low_readiness_late = bool(
         previous_state == "LATE"
+        and str(previous.get("lifecycle_state") or "").upper() != "EXHAUSTED"
         and previous_readiness is not None
         and previous_readiness < forming_minimum
         and set(previous.get("block_reasons") or []) <= {"ANTI_CHASE_HARD_BLOCK"}
@@ -735,7 +736,7 @@ def build_entry_decision(
         coverage_pct=coverage_pct, direction_ok=direction_ok, timing_ok=timing >= 10.0,
         execution_ok=execution_ok, cross_ok=cross_ok, trade_plan_ok=trade_plan_ok, policy=policy,
     )
-    if decision == "LATE":
+    if decision == "LATE" and late and status != "EXHAUSTED":
         block_reasons.append("ANTI_CHASE_HARD_BLOCK")
     if decision == "ACTIVE":
         previous = _record(previous_decision)
