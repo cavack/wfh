@@ -1,0 +1,14 @@
+# Model Change Ledger
+
+This ledger records externally meaningful model, decision, evidence, runtime, UI, and documentation changes. Production status is independent from code, review, and CI status. A row marked `NOT_DEPLOYED` is not evidence of current Production behavior.
+
+| Date (UTC) | Commit | PR | Component | Old behavior | New behavior | Reason | Classification | Expected effect | Measured effect | Tests | Research/runtime evidence | Production status | Rollback notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-09-01 | `ed6606d15c01db9f47d9c3907eae888496f6f36b` | Pending | Entry Decision / Anti-Chase | Any extension at or above `1.2 ATR` was inserted as an initial hard blocker and forced `LATE`, including readiness below `55` and stale evidence; the resulting same-lifecycle `LATE` projection was sticky. | Freshness and deterministic blockers are resolved first; Anti-Chase converts only otherwise `FORMING`, `ENTRY_READY`, or `ACTIVE` evidence to `LATE`; `EXHAUSTED` remains `LATE`; impossible legacy low-readiness Anti-Chase-only projections can recover. Calibration remains `78` / `55` / `1.2 ATR`. | Production funnel showed a systemic `LATE` projection inconsistent with the documented decision geometry. | CORRECTNESS | Remove false `LATE` inflation without increasing readiness, weakening Anti-Chase, or creating an actionable signal. | Deterministic RED: `3 failed, 25 passed`; focused GREEN plus adjacent transition/store/freshness coverage: `54 passed`. Production effect is not yet measured. | `test_entry_decision.py`, `test_entry_decision_store.py`, `test_stale_trigger_safety.py`, `test_decision_terminal.py` | Read-only Production snapshot: 160 candidates, 144 `LATE`, 16 `NO_TRADE`, 0 `FORMING`, 0 `ENTRY_READY`; 144 Anti-Chase blockers. Kernel/runtime evidence is tracked separately because OOM/freshness remain independent defects. | `CODE_READY_NOT_DEPLOYED` | Revert the implementation commit; no schema migration or calibration rollback is required. |
+
+## Status vocabulary
+
+- `CODE_READY_NOT_DEPLOYED`: implementation and focused evidence exist, but exact-head CI/review/release gates are incomplete.
+- `DEPLOYED_UNVERIFIED`: exact code is running, but runtime/funnel verification or soak is incomplete.
+- `PRODUCTION_VERIFIED`: exact revision, safety, runtime, and expected natural funnel behavior have been verified for a bounded observation window.
+- `SCIENTIFICALLY_VALIDATED`: performance claims additionally satisfy the recorded replay, walk-forward, holdout, and robustness protocol.

@@ -20,6 +20,7 @@ CANONICAL_DOCS = {
     "docs/TROUBLESHOOTING.md",
     "docs/DEVELOPER_ONBOARDING.md",
     "docs/PROJECT_HANDOFF.md",
+    "docs/MODEL_CHANGELOG.md",
 }
 
 
@@ -86,6 +87,33 @@ def test_pull_request_template_guards_canonical_decision_contract() -> None:
     template = (ROOT / ".github/pull_request_template.md").read_text(encoding="utf-8")
     assert "Only canonical `ENTRY_READY`" in template
     assert "PROJECT_HANDOFF.md" in template
+    for heading in (
+        "## Problem",
+        "## Evidence / reproduction",
+        "## Root cause and classification",
+        "## RED test",
+        "## Runtime and signal-funnel impact",
+        "## Calibration and scientific status",
+        "## Documentation changed",
+        "## Rollback notes",
+        "## Exact tested commit",
+    ):
+        assert heading in template
+
+
+def test_documented_entry_policy_matches_canonical_constants() -> None:
+    from waterfallhunter.core.entry_decision import EntryDecisionPolicy
+
+    policy = EntryDecisionPolicy()
+    decision_doc = (ROOT / "docs/DECISION_ENGINE.md").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    model_doc = (ROOT / "docs/MODEL.md").read_text(encoding="utf-8")
+
+    for document in (decision_doc, readme, model_doc):
+        assert f"ENTRY_READY >= {policy.entry_ready_minimum:g}" in document
+        assert f"FORMING >= {policy.forming_minimum:g}" in document
+        assert f"{policy.anti_chase_hard_block_atr:g} ATR" in document
+        assert "does not turn sub-`FORMING` evidence into `LATE`" in document
 
 
 def test_active_production_tree_has_no_ollama_runtime_dependency() -> None:
