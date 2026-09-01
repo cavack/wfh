@@ -18,7 +18,7 @@ Historical chat, ZIP files, old server copies, stale branches, or old repositori
 
 Only canonical `ENTRY_READY` is a proactive entry signal. `FORMING` is not ready; `ACTIVE` is an already-emitted setup in progress; lifecycle `TRIGGERED` alone is never an entry instruction. The user-facing score is `entry_readiness`.
 
-The protected `entry_policy_v1` calibration is `ENTRY_READY >= 78`, `FORMING >= 55`, and Anti-Chase at `1.2 ATR`. Anti-Chase converts only otherwise `FORMING`/`ENTRY_READY`/`ACTIVE` evidence to `LATE`; sub-`FORMING`, stale, or invalid evidence remains `NO_TRADE` or the applicable fail-closed state. See `docs/MODEL_CHANGELOG.md` before changing decision semantics.
+The protected `entry_policy_v1` calibration is `ENTRY_READY >= 78`, `FORMING >= 55`, and Anti-Chase at `1.2 ATR`. Anti-Chase converts only otherwise `FORMING`/`ENTRY_READY`/`ACTIVE` evidence to `LATE`; sub-`FORMING`, stale, or invalid evidence remains `NO_TRADE` or the applicable fail-closed state. Genuine lifecycle `EXHAUSTED` remains terminal `LATE` even when freshness or another blocker applies. See `docs/MODEL_CHANGELOG.md` before changing decision semantics.
 
 ## Runtime services
 

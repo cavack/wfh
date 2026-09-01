@@ -532,6 +532,33 @@ def test_genuine_low_readiness_exhausted_late_remains_terminal() -> None:
     )
 
     assert repeated["decision"] == "LATE"
+    assert repeated["lifecycle_state"] == "EXHAUSTED"
+
+    repeated_again = build_entry_decision(
+        metrics,
+        "FUEL-RICH",
+        evaluated_at=1_788_000_200,
+        analysis_age_seconds=10.0,
+        reference_age_seconds=3.0,
+        lifecycle_id=8,
+        previous_decision=repeated,
+    )
+
+    assert repeated_again["decision"] == "LATE"
+    assert repeated_again["lifecycle_state"] == "EXHAUSTED"
+
+
+def test_exhausted_preserves_measured_anti_chase_blocker() -> None:
+    metrics = strong_metrics()
+    metrics["anti_chase"] = {
+        "available": True,
+        "cross_timeframe": {"max_post_break_extension_atr": 1.35},
+    }
+
+    packet = decide(metrics, status="EXHAUSTED")
+
+    assert packet["decision"] == "LATE"
+    assert packet["block_reasons"] == ["ANTI_CHASE_HARD_BLOCK"]
 
 
 def test_stale_evidence_precedes_anti_chase_late_classification() -> None:

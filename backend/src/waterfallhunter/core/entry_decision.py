@@ -516,10 +516,10 @@ def _initial_block_reasons(
     if _record(metrics.get("ai_advisory")).get("deterministic_veto") is True:
         reasons.append("DETERMINISTIC_MARKET_DATA_VETO")
     extension = _anti_chase_extension(metrics)
-    late = status == "EXHAUSTED" or (
+    anti_chase_late = bool(
         extension is not None and extension >= policy.anti_chase_hard_block_atr
     )
-    return reasons, late
+    return reasons, anti_chase_late
 
 
 def _record_component(
@@ -592,7 +592,7 @@ def _score_entry_components(
 def _base_decision(
     *,
     block_reasons: list[str],
-    late: bool,
+    anti_chase_late: bool,
     status: str,
     readiness: float,
     coverage_pct: float,
@@ -618,7 +618,7 @@ def _base_decision(
         decision = "ACTIVE" if status == "TRIGGERED" else "ENTRY_READY"
     else:
         decision = "FORMING" if readiness >= policy.forming_minimum else "NO_TRADE"
-    if late and decision in {"FORMING", "ENTRY_READY", "ACTIVE"}:
+    if anti_chase_late and decision in {"FORMING", "ENTRY_READY", "ACTIVE"}:
         return "LATE"
     return decision
 
@@ -630,8 +630,9 @@ def _apply_previous_transition(
     decision: str,
     block_reasons: list[str],
     lifecycle_id: int | None,
+    lifecycle_state: str,
     forming_minimum: float,
-) -> tuple[str, list[str]]:
+) -> tuple[str, list[str], str]:
     previous = _record(previous_decision)
     previous_state = str(previous.get("decision") or "")
     previous_lifecycle_id = previous.get("lifecycle_id")
@@ -648,7 +649,7 @@ def _apply_previous_transition(
         and str(previous.get("lifecycle_state") or "").upper() != "EXHAUSTED"
         and previous_readiness is not None
         and previous_readiness < forming_minimum
-        and set(previous.get("block_reasons") or []) <= {"ANTI_CHASE_HARD_BLOCK"}
+        and set(previous.get("block_reasons") or []) == {"ANTI_CHASE_HARD_BLOCK"}
     )
     if (
         previous_state in {"LATE", "INVALIDATED", "EXPIRED"}
@@ -659,26 +660,27 @@ def _apply_previous_transition(
         return (
             previous_state,
             list(previous_reasons) if isinstance(previous_reasons, list) else block_reasons,
+            str(previous.get("lifecycle_state") or lifecycle_state).upper(),
         )
     if distinct_lifecycle:
-        return decision, block_reasons
+        return decision, block_reasons, lifecycle_state
     if previous_state not in {"ENTRY_READY", "ACTIVE"}:
-        return decision, block_reasons
+        return decision, block_reasons, lifecycle_state
     previous_expiry = _record(previous.get("trade_plan")).get("expires_at")
     if (
         isinstance(previous_expiry, int)
         and not isinstance(previous_expiry, bool)
         and evaluated_at >= previous_expiry
     ):
-        return "EXPIRED", ["TRADE_PLAN_EXPIRED"]
+        return "EXPIRED", ["TRADE_PLAN_EXPIRED"], lifecycle_state
     valid = (
         decision in {"LATE", "INVALIDATED", "EXPIRED"}
         or (previous_state == "ENTRY_READY" and decision in {"ENTRY_READY", "ACTIVE"})
         or (previous_state == "ACTIVE" and decision == "ACTIVE")
     )
     if valid:
-        return decision, block_reasons
-    return "INVALIDATED", [*block_reasons, "ENTRY_CONDITIONS_LOST"]
+        return decision, block_reasons, lifecycle_state
+    return "INVALIDATED", [*block_reasons, "ENTRY_CONDITIONS_LOST"], lifecycle_state
 
 
 def build_entry_decision(
@@ -700,7 +702,7 @@ def build_entry_decision(
     ):
         raise ValueError("lifecycle_id must be a positive integer when provided")
     status = str(candidate_status or "WATCH").upper()
-    block_reasons, late = _initial_block_reasons(
+    block_reasons, anti_chase_late = _initial_block_reasons(
         metrics, status, analysis_age_seconds=analysis_age_seconds,
         reference_age_seconds=reference_age_seconds, policy=policy,
     )
@@ -732,11 +734,12 @@ def build_entry_decision(
         block_reasons.append("TRADE_PLAN_EXPIRED")
 
     decision = _base_decision(
-        block_reasons=block_reasons, late=late, status=status, readiness=readiness,
+        block_reasons=block_reasons, anti_chase_late=anti_chase_late,
+        status=status, readiness=readiness,
         coverage_pct=coverage_pct, direction_ok=direction_ok, timing_ok=timing >= 10.0,
         execution_ok=execution_ok, cross_ok=cross_ok, trade_plan_ok=trade_plan_ok, policy=policy,
     )
-    if decision == "LATE" and late and status != "EXHAUSTED":
+    if decision == "LATE" and anti_chase_late:
         block_reasons.append("ANTI_CHASE_HARD_BLOCK")
     if decision == "ACTIVE":
         previous = _record(previous_decision)
@@ -752,9 +755,10 @@ def build_entry_decision(
             block_reasons.append("ENTRY_READY_PREDECESSOR_REQUIRED")
     if decision in {"ENTRY_READY", "ACTIVE"} and not block_reasons:
         reasons.append("ENTRY_GATES_PASS")
-    decision, block_reasons = _apply_previous_transition(
+    decision, block_reasons, effective_lifecycle_state = _apply_previous_transition(
         previous_decision, evaluated_at=evaluated_at, decision=decision,
         block_reasons=block_reasons, lifecycle_id=lifecycle_id,
+        lifecycle_state=status,
         forming_minimum=policy.forming_minimum,
     )
     packet = {
@@ -762,7 +766,7 @@ def build_entry_decision(
         "policy_version": policy.version,
         "evaluated_at": int(evaluated_at),
         "decision": decision,
-        "lifecycle_state": status,
+        "lifecycle_state": effective_lifecycle_state,
         "entry_readiness": readiness,
         "evidence_coverage_pct": coverage_pct,
         "hard_blocked": bool(block_reasons),
