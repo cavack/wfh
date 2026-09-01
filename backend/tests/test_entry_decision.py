@@ -405,3 +405,99 @@ def test_triggered_setup_becomes_active_after_same_lifecycle_entry_ready() -> No
     )
     assert active["decision"] == "ACTIVE"
     assert active["hard_blocked"] is False
+
+
+def test_anti_chase_does_not_turn_low_readiness_no_trade_into_late() -> None:
+    metrics = strong_metrics()
+    metrics["derivatives"]["taker_buy_sell_ratio"] = 1.7
+    metrics["microstructure"]["sell_flow_usdt"] = 20_000.0
+    metrics["microstructure"]["buy_flow_usdt"] = 200_000.0
+    metrics["microstructure"]["footprint"]["aggressive_selling"] = False
+    for timeframe in ("1h", "15m", "5m"):
+        metrics["candle_features"][timeframe]["rsi_rollover"] = False
+        metrics["candle_features"][timeframe]["bearish_close"] = False
+    metrics["anti_chase"] = {
+        "available": True,
+        "cross_timeframe": {"max_post_break_extension_atr": 2.4},
+    }
+
+    packet = decide(metrics, status="FUEL-RICH")
+
+    assert packet["entry_readiness"] < EntryDecisionPolicy().forming_minimum
+    assert packet["decision"] == "NO_TRADE"
+    assert "ANTI_CHASE_HARD_BLOCK" not in packet["block_reasons"]
+
+
+def test_anti_chase_still_converts_forming_to_late() -> None:
+    metrics = strong_metrics()
+    metrics["breakdown_confirmation"] = {}
+    metrics["derivatives"]["funding_percentile"] = 0.55
+    metrics["derivatives"]["oi_change_1h_pct"] = -0.1
+    metrics["candle_features"]["5m"]["rsi_rollover"] = False
+    metrics["anti_chase"] = {
+        "available": True,
+        "cross_timeframe": {"max_post_break_extension_atr": 1.35},
+    }
+
+    packet = decide(metrics, status="PRE-TRIGGER")
+
+    assert packet["entry_readiness"] >= EntryDecisionPolicy().forming_minimum
+    assert packet["entry_readiness"] < EntryDecisionPolicy().entry_ready_minimum
+    assert packet["decision"] == "LATE"
+    assert packet["block_reasons"] == ["ANTI_CHASE_HARD_BLOCK"]
+
+
+def test_legacy_low_readiness_late_can_recover_within_same_lifecycle() -> None:
+    metrics = strong_metrics()
+    metrics["derivatives"]["taker_buy_sell_ratio"] = 1.7
+    metrics["microstructure"]["sell_flow_usdt"] = 20_000.0
+    metrics["microstructure"]["buy_flow_usdt"] = 200_000.0
+    metrics["microstructure"]["footprint"]["aggressive_selling"] = False
+    for timeframe in ("1h", "15m", "5m"):
+        metrics["candle_features"][timeframe]["rsi_rollover"] = False
+        metrics["candle_features"][timeframe]["bearish_close"] = False
+    previous = build_entry_decision(
+        metrics
+        | {
+            "anti_chase": {
+                "available": True,
+                "cross_timeframe": {"max_post_break_extension_atr": 2.4},
+            }
+        },
+        "FUEL-RICH",
+        evaluated_at=1_788_000_000,
+        analysis_age_seconds=10.0,
+        reference_age_seconds=3.0,
+        lifecycle_id=7,
+    )
+    # Reproduce a projection poisoned by the pre-fix LATE semantics.
+    previous["decision"] = "LATE"
+    previous["block_reasons"] = ["ANTI_CHASE_HARD_BLOCK"]
+    assert previous["entry_readiness"] < EntryDecisionPolicy().forming_minimum
+
+    fresh = build_entry_decision(
+        metrics,
+        "FUEL-RICH",
+        evaluated_at=1_788_000_100,
+        analysis_age_seconds=10.0,
+        reference_age_seconds=3.0,
+        lifecycle_id=7,
+        previous_decision=previous,
+    )
+
+    assert fresh["decision"] == "NO_TRADE"
+    assert fresh["hard_blocked"] is False
+
+
+def test_stale_evidence_precedes_anti_chase_late_classification() -> None:
+    metrics = strong_metrics()
+    metrics["anti_chase"] = {
+        "available": True,
+        "cross_timeframe": {"max_post_break_extension_atr": 1.8},
+    }
+
+    packet = decide(metrics, status="PRE-TRIGGER", analysis_age=181.0)
+
+    assert packet["decision"] == "NO_TRADE"
+    assert "STALE_ANALYSIS" in packet["block_reasons"]
+    assert "ANTI_CHASE_HARD_BLOCK" not in packet["block_reasons"]
