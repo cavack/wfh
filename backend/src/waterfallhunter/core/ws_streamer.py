@@ -646,9 +646,10 @@ class WebSocketManager:
             await asyncio.sleep(0.25)
             return active_symbols, delay
         if desired != active_symbols:
+            retired_symbols = tuple(sorted(set(active_symbols) - set(desired)))
             retired = await self._unwatch_shared_evidence_symbols(
                 unwatch,
-                active_symbols,
+                retired_symbols,
                 ex_name=ex_name,
                 kind=kind,
             )

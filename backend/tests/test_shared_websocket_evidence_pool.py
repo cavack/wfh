@@ -306,6 +306,36 @@ def test_unsupported_shared_evidence_clears_pending_membership(monkeypatch) -> N
     assert "okx" not in manager.shared_evidence_subscribers
 
 
+def test_shared_membership_change_unwatches_only_retired_symbols() -> None:
+    manager = WebSocketManager()
+    keep = "KEEP/USDT:USDT"
+    retired = "OLD/USDT:USDT"
+    added = "NEW/USDT:USDT"
+    manager.shared_evidence_subscribers["bybit"] = {keep, added}
+    unwatch_calls: list[tuple[str, ...]] = []
+    watch_calls: list[tuple[str, ...]] = []
+
+    async def unwatch(symbols, params=None):
+        unwatch_calls.append(tuple(symbols))
+        return {}
+
+    async def watch(symbols=None, params=None):
+        watch_calls.append(tuple(symbols or ()))
+        return {keep: {"symbol": keep, "last": 1.0}}
+
+    async def scenario() -> None:
+        active, _ = await manager._shared_evidence_iteration(
+            ex_name="bybit", kind="ticker", task_id="shared-evidence:bybit:ticker",
+            watch=watch, unwatch=unwatch, breaker=CircuitBreaker(),
+            active_symbols=(keep, retired), delay=1.0,
+        )
+        assert active == tuple(sorted((keep, added)))
+
+    asyncio.run(scenario())
+    assert unwatch_calls == [(retired,)]
+    assert watch_calls == [tuple(sorted((keep, added)))]
+
+
 def test_failed_shared_unwatch_retries_before_advancing_active_membership() -> None:
     manager = WebSocketManager()
     old_symbol = "OLD/USDT:USDT"
