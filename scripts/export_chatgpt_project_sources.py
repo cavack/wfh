@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -19,6 +20,8 @@ AUDIT_FILE = "03-WFH-SKILL-AUDIT-SUMMARY-v2.md"
 INSTRUCTIONS_FILE = "PROJECT-INSTRUCTIONS-v2.txt"
 INSTALL_FILE = "INSTALL-FA-v2.md"
 RESUME_FILE = "TWFH-RESUME.md"
+MANIFEST_FILE = "PROJECT-SOURCE-MANIFEST.json"
+SOURCE_LABEL = "source"
 
 OVERLAY_FILES = (
     ROUTER_FILE,
@@ -30,7 +33,7 @@ OVERLAY_FILES = (
     RESUME_FILE,
 )
 
-EXPECTED_EXPORT_FILES = {*OVERLAY_FILES, "PROJECT-SOURCE-MANIFEST.json"}
+EXPECTED_EXPORT_FILES = {*OVERLAY_FILES, MANIFEST_FILE}
 
 
 def _normalized_bytes(path: Path) -> bytes:
@@ -38,6 +41,19 @@ def _normalized_bytes(path: Path) -> bytes:
     if not text.endswith("\n"):
         text += "\n"
     return text.encode("utf-8")
+
+
+def _write_all(fd: int, payload: bytes) -> None:
+    try:
+        remaining = memoryview(payload)
+        while remaining:
+            written = os.write(fd, remaining)
+            if written <= 0:
+                raise OSError("failed to write export payload")
+            remaining = remaining[written:]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _skills() -> list[str]:
@@ -98,21 +114,28 @@ def export_project_sources() -> Path:
     _assert_no_unexpected_export_content()
     DEFAULT_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
-    router = _normalized_bytes(_confined_path(SOURCE_DIR / ROUTER_FILE, SOURCE_DIR, label="source", strict=True))
-    catalog = _normalized_bytes(_confined_path(SOURCE_DIR / CATALOG_FILE, SOURCE_DIR, label="source", strict=True))
-    capability = _normalized_bytes(_confined_path(SOURCE_DIR / CAPABILITY_FILE, SOURCE_DIR, label="source", strict=True))
-    audit = _normalized_bytes(_confined_path(SOURCE_DIR / AUDIT_FILE, SOURCE_DIR, label="source", strict=True))
-    instructions = _normalized_bytes(_confined_path(SOURCE_DIR / INSTRUCTIONS_FILE, SOURCE_DIR, label="source", strict=True))
-    install = _normalized_bytes(_confined_path(SOURCE_DIR / INSTALL_FILE, SOURCE_DIR, label="source", strict=True))
-    resume = _normalized_bytes(_confined_path(SOURCE_DIR / RESUME_FILE, SOURCE_DIR, label="source", strict=True))
+    router = _normalized_bytes(_confined_path(SOURCE_DIR / ROUTER_FILE, SOURCE_DIR, label=SOURCE_LABEL, strict=True))
+    catalog = _normalized_bytes(_confined_path(SOURCE_DIR / CATALOG_FILE, SOURCE_DIR, label=SOURCE_LABEL, strict=True))
+    capability = _normalized_bytes(_confined_path(SOURCE_DIR / CAPABILITY_FILE, SOURCE_DIR, label=SOURCE_LABEL, strict=True))
+    audit = _normalized_bytes(_confined_path(SOURCE_DIR / AUDIT_FILE, SOURCE_DIR, label=SOURCE_LABEL, strict=True))
+    instructions = _normalized_bytes(_confined_path(SOURCE_DIR / INSTRUCTIONS_FILE, SOURCE_DIR, label=SOURCE_LABEL, strict=True))
+    install = _normalized_bytes(_confined_path(SOURCE_DIR / INSTALL_FILE, SOURCE_DIR, label=SOURCE_LABEL, strict=True))
+    resume = _normalized_bytes(_confined_path(SOURCE_DIR / RESUME_FILE, SOURCE_DIR, label=SOURCE_LABEL, strict=True))
 
-    _confined_path(DEFAULT_EXPORT_DIR / ROUTER_FILE, DEFAULT_EXPORT_DIR, label="export target").write_bytes(router)
-    _confined_path(DEFAULT_EXPORT_DIR / CATALOG_FILE, DEFAULT_EXPORT_DIR, label="export target").write_bytes(catalog)
-    _confined_path(DEFAULT_EXPORT_DIR / CAPABILITY_FILE, DEFAULT_EXPORT_DIR, label="export target").write_bytes(capability)
-    _confined_path(DEFAULT_EXPORT_DIR / AUDIT_FILE, DEFAULT_EXPORT_DIR, label="export target").write_bytes(audit)
-    _confined_path(DEFAULT_EXPORT_DIR / INSTRUCTIONS_FILE, DEFAULT_EXPORT_DIR, label="export target").write_bytes(instructions)
-    _confined_path(DEFAULT_EXPORT_DIR / INSTALL_FILE, DEFAULT_EXPORT_DIR, label="export target").write_bytes(install)
-    _confined_path(DEFAULT_EXPORT_DIR / RESUME_FILE, DEFAULT_EXPORT_DIR, label="export target").write_bytes(resume)
+    file_flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    dir_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    export_dir_fd = os.open(DEFAULT_EXPORT_DIR, dir_flags)
+    try:
+        _write_all(os.open(ROUTER_FILE, file_flags, 0o600, dir_fd=export_dir_fd), router)
+        _write_all(os.open(CATALOG_FILE, file_flags, 0o600, dir_fd=export_dir_fd), catalog)
+        _write_all(os.open(CAPABILITY_FILE, file_flags, 0o600, dir_fd=export_dir_fd), capability)
+        _write_all(os.open(AUDIT_FILE, file_flags, 0o600, dir_fd=export_dir_fd), audit)
+        _write_all(os.open(INSTRUCTIONS_FILE, file_flags, 0o600, dir_fd=export_dir_fd), instructions)
+        _write_all(os.open(INSTALL_FILE, file_flags, 0o600, dir_fd=export_dir_fd), install)
+        _write_all(os.open(RESUME_FILE, file_flags, 0o600, dir_fd=export_dir_fd), resume)
+        os.fsync(export_dir_fd)
+    finally:
+        os.close(export_dir_fd)
 
     payloads = {
         ROUTER_FILE: router,
@@ -135,15 +158,14 @@ def export_project_sources() -> Path:
         "sha256": hashes,
         **_source_provenance(),
     }
-    manifest_path = _confined_path(
-        DEFAULT_EXPORT_DIR / "PROJECT-SOURCE-MANIFEST.json",
-        DEFAULT_EXPORT_DIR,
-        label="manifest target",
-    )
-    manifest_path.write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    return manifest_path
+    manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    export_dir_fd = os.open(DEFAULT_EXPORT_DIR, dir_flags)
+    try:
+        _write_all(os.open(MANIFEST_FILE, file_flags, 0o600, dir_fd=export_dir_fd), manifest_bytes)
+        os.fsync(export_dir_fd)
+    finally:
+        os.close(export_dir_fd)
+    return DEFAULT_EXPORT_DIR / MANIFEST_FILE
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -239,3 +239,23 @@ def test_exporter_uses_exact_static_overlay_allowlist() -> None:
         exporter.RESUME_FILE,
     )
     assert exporter.RESUME_FILE == "TWFH-RESUME.md"
+
+
+def test_exporter_does_not_route_file_destinations_through_generic_path_helper(
+    monkeypatch, tmp_path: Path
+) -> None:
+    export_root = tmp_path / "exports"
+    out = export_root / "sources"
+    monkeypatch.setattr(exporter, "EXPORT_ROOT", export_root)
+    monkeypatch.setattr(exporter, "DEFAULT_EXPORT_DIR", out)
+    original = exporter._confined_path
+
+    def guarded(path: Path, allowed_root: Path, *, label: str, strict: bool = False) -> Path:
+        assert label != "export target"
+        return original(path, allowed_root, label=label, strict=strict)
+
+    monkeypatch.setattr(exporter, "_confined_path", guarded)
+    manifest = exporter.export_project_sources()
+
+    assert manifest == out / "PROJECT-SOURCE-MANIFEST.json"
+    assert {path.name for path in out.iterdir()} == exporter.EXPECTED_EXPORT_FILES
