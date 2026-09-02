@@ -537,6 +537,18 @@ if "websocket_shared_liquidation_subscribers_metric" not in globals():
         "Symbols routed through exchange-wide liquidation consumers.",
     )
 
+if "websocket_shared_evidence_tasks_metric" not in globals():
+    websocket_shared_evidence_tasks_metric = Gauge(
+        "waterfall_websocket_shared_evidence_tasks",
+        "Exchange-scoped shared FUEL-RICH market-evidence WebSocket consumers.",
+    )
+
+if "websocket_shared_evidence_subscribers_metric" not in globals():
+    websocket_shared_evidence_subscribers_metric = Gauge(
+        "waterfall_websocket_shared_evidence_subscribers",
+        "Symbols routed through shared FUEL-RICH market-evidence consumers.",
+    )
+
 if "hunter_evaluation_duration_metric" not in globals():
     hunter_evaluation_duration_metric = Histogram(
         "waterfall_hunter_evaluation_duration_seconds",
@@ -1191,6 +1203,12 @@ def _update_websocket_metrics() -> None:
     websocket_shared_liquidation_subscribers_metric.set(
         float(snapshot["shared_liquidation_subscribers"])
     )
+    websocket_shared_evidence_tasks_metric.set(
+        float(snapshot["shared_evidence_tasks"])
+    )
+    websocket_shared_evidence_subscribers_metric.set(
+        float(snapshot["shared_evidence_subscribers"])
+    )
 
 
 def _update_signal_settlement_worker_metrics() -> None:
@@ -1328,14 +1346,24 @@ def _sync_websocket_evidence_subscription(
     *,
     state: str,
 ) -> None:
+    manager = validator.ws_manager
     if previous_source is not None and previous_source != current_source:
-        validator.ws_manager.unsubscribe(*previous_source)
+        manager.unsubscribe_shared_evidence(*previous_source)
+        manager.unsubscribe(*previous_source)
     if current_source is None:
         return
-    if state in {"PRE-TRIGGER", "ARMED"}:
-        validator.ws_manager.subscribe(*current_source)
-    else:
-        validator.ws_manager.unsubscribe(*current_source)
+    normalized_state = str(state or "WATCH").upper()
+    if normalized_state in {"PRE-TRIGGER", "ARMED"}:
+        manager.unsubscribe_shared_evidence(*current_source)
+        manager.subscribe(*current_source)
+        return
+    if normalized_state == "FUEL-RICH":
+        if manager.has_direct_evidence_subscription(*current_source):
+            manager.unsubscribe(*current_source)
+        manager.subscribe_shared_evidence(*current_source)
+        return
+    manager.unsubscribe_shared_evidence(*current_source)
+    manager.unsubscribe(*current_source)
 
 
 def _retire_removed_candidate_websocket_sources(
@@ -1344,6 +1372,7 @@ def _retire_removed_candidate_websocket_sources(
     for candidate in removed_candidates.values():
         source = _websocket_source(candidate.get("metrics"))
         if source is not None:
+            validator.ws_manager.unsubscribe_shared_evidence(*source)
             validator.ws_manager.unsubscribe(*source)
 
 

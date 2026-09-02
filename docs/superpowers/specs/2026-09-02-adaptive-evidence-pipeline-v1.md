@@ -72,9 +72,13 @@ Wave A is successful only if exact-head tests and CI pass, the deployed revision
 
 ## Conditional Wave B
 
-A read-only CCXT Pro probe on the production library confirmed multi-symbol order-book/trade/ticker APIs. Their returns are incremental and exchange-specific, and dynamic unsubscribe capability is not uniform. Therefore shared multi-symbol FUEL-RICH pools are deliberately gated behind Wave A production measurements rather than mixed into the first correctness-sensitive change.
+Wave A was deployed on exact main `4940daf58ef40831fccab98afa0e245602e50875` and remained healthy with zero restart/OOM events, but the release freshness gate failed: a production snapshot had 93 usable analyses, global usable analysis p95 about 568 seconds, max about 680 seconds, and a sustained due backlog around 111-124 while all 12 evaluation slots were commonly occupied. REST evidence fallbacks increased rapidly while WebSocket evidence hits remained near zero. The `<180s` gate therefore requires Wave B; strategy thresholds must not be loosened to hide runtime latency.
 
-If Wave A does not hold global p95 below 180 seconds, Wave B will add capability-gated shared market-evidence pools, initially on exchanges with explicit multi-symbol subscribe and unsubscribe support, with bounded subscriber sets and per-exchange circuit breakers.
+Wave B routes only `FUEL-RICH` candidates through a shared multi-symbol order-book/trade/ticker pool. `PRE-TRIGGER` and `ARMED` keep their direct hot streams; `WATCH` retains no heavy evidence stream. Each exchange pool is single-flight per evidence kind, bounded to 64 symbols, protected by its own circuit breakers, and writes only through the existing causal TTL/history ingestion helpers. Unknown, stale, future-dated, incomplete, or unsubscribed-symbol data remains unusable and REST fallback stays fail-closed.
+
+Activation is capability-gated: all six CCXT Pro methods (`watch` and explicit `unwatch` for order book, trades, and tickers) must report native `True` support and be callable. Production-library probes confirmed this complete contract for Binance and Bybit. OKX/KuCoin lack explicit unwatch capability declarations for the full three-stream set, and MEXC/BingX lack required multi-symbol capabilities, so they remain on REST fallback. Bybit shared order books use the venue-safe depth limit 50; Binance uses 20.
+
+Wave B adds low-cardinality `waterfall_websocket_shared_evidence_tasks` and `waterfall_websocket_shared_evidence_subscribers` gauges. Release success still requires exact-artifact CI/review, DR/recovery certification, guarded deploy, zero restart/OOM regressions, and a production soak proving global usable analysis p95 holds below 180 seconds.
 
 ## Separate follow-up work
 
