@@ -173,7 +173,8 @@
     "schema_version": "decision_outcome_capture_v1",
     "tests": "191 focused tests passed",
     "deployed": false,
-    "pr": "https://github.com/cavack/wfh/pull/new/feat/model-excellence-forward-capture-20260902"
+    "pr": "https://github.com/cavack/wfh/pull/116",
+    "final_pr_head": "b324bf4b04e0482d57fa1f1f382296fb409903ba"
   },
   "reproduced_defects": [],
   "fixed_defects": [
