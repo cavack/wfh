@@ -1,3 +1,5 @@
+import waterfallhunter.core.hunter_schedule as hunter_schedule
+
 from waterfallhunter.core.hunter_schedule import (
     DEFAULT_EVALUATION_CONCURRENCY,
     ordered_hunter_candidates,
@@ -42,3 +44,79 @@ def test_hunter_orders_near_trigger_and_oldest_analysis_first() -> None:
         "FUEL_OLD",
         "WATCH_NEW",
     ]
+
+
+def test_deadline_schedule_new_candidates_are_due_and_state_priority_wins() -> None:
+    factory = getattr(hunter_schedule, "HunterDeadlineSchedule", None)
+    assert factory is not None
+    schedule = factory()
+    candidates = {
+        "WATCH": {"status": "WATCH"},
+        "PRE": {"status": "PRE-TRIGGER"},
+    }
+    schedule.sync(candidates, now=100.0)
+
+    due = schedule.due_candidates(
+        candidates, {}, now=100.0, in_flight=set(), limit=2
+    )
+
+    assert [symbol for symbol, _ in due] == ["PRE", "WATCH"]
+
+
+def test_deadline_schedule_start_to_start_intervals_and_promotion_expedite() -> None:
+    factory = getattr(hunter_schedule, "HunterDeadlineSchedule", None)
+    assert factory is not None
+    schedule = factory()
+    candidates = {"X": {"status": "WATCH"}}
+    schedule.sync(candidates, now=100.0)
+    schedule.mark_started("X", "WATCH", now=100.0)
+    assert schedule.seconds_until_next_due(candidates, now=100.0, in_flight=set()) == 150.0
+
+    candidates["X"]["status"] = "PRE-TRIGGER"
+    schedule.sync(candidates, now=110.0)
+    assert schedule.seconds_until_next_due(candidates, now=110.0, in_flight=set()) == 20.0
+
+
+def test_deadline_schedule_never_returns_inflight_and_prunes_removed() -> None:
+    factory = getattr(hunter_schedule, "HunterDeadlineSchedule", None)
+    assert factory is not None
+    schedule = factory()
+    candidates = {
+        "KEEP": {"status": "FUEL-RICH"},
+        "DROP": {"status": "WATCH"},
+    }
+    schedule.sync(candidates, now=100.0)
+    assert schedule.due_candidates(
+        candidates, {}, now=100.0, in_flight={"KEEP"}, limit=5
+    ) == [("DROP", candidates["DROP"])]
+
+    schedule.sync({"KEEP": candidates["KEEP"]}, now=101.0)
+    assert "DROP" not in schedule.next_due_at
+    assert schedule.due_candidates(
+        {"KEEP": candidates["KEEP"]}, {}, now=101.0, in_flight={"KEEP"}, limit=5
+    ) == []
+
+
+def test_deadline_schedule_demotion_does_not_postpone_already_due_work() -> None:
+    factory = getattr(hunter_schedule, "HunterDeadlineSchedule", None)
+    assert factory is not None
+    schedule = factory()
+    candidates = {"X": {"status": "PRE-TRIGGER"}}
+    schedule.sync(candidates, now=100.0)
+    schedule.mark_started("X", "PRE-TRIGGER", now=100.0)
+
+    candidates["X"]["status"] = "WATCH"
+    schedule.sync(candidates, now=135.0)
+
+    assert schedule.seconds_until_next_due(candidates, now=135.0, in_flight=set()) == 0.0
+
+
+def test_state_evaluation_intervals_are_bounded_runtime_budgets() -> None:
+    interval = getattr(hunter_schedule, "evaluation_interval_seconds", None)
+    assert interval is not None
+    assert interval("TRIGGERED") == 15.0
+    assert interval("ARMED") == 15.0
+    assert interval("PRE-TRIGGER") == 30.0
+    assert interval("FUEL-RICH") == 90.0
+    assert interval("WATCH") == 150.0
+    assert interval("UNKNOWN") == 150.0

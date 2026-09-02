@@ -20,6 +20,12 @@ Only canonical `ENTRY_READY` is a proactive entry signal. `FORMING` is not ready
 
 The protected `entry_policy_v1` calibration is `ENTRY_READY >= 78`, `FORMING >= 55`, and Anti-Chase at `1.2 ATR`. Anti-Chase converts only otherwise `FORMING`/`ENTRY_READY`/`ACTIVE` evidence to `LATE`; sub-`FORMING`, stale, or invalid evidence remains `NO_TRADE` or the applicable fail-closed state. Genuine lifecycle `EXHAUSTED` remains terminal `LATE` even when freshness or another blocker applies. `LATE` packets carry `late_origin` provenance while `lifecycle_state` continues to report the current evaluation; lifecycle/origin/blocker changes are material persistence events. See `docs/MODEL_CHANGELOG.md` before changing decision semantics.
 
+## Adaptive evidence runtime
+
+The hunter uses bounded, per-symbol single-flight deadline scheduling rather than waiting for an all-candidate batch barrier. Near-trigger states are evaluated on shorter deadlines, while fairness prevents WATCH starvation. PRE-TRIGGER/ARMED may reuse causally fresh WebSocket ticker/order-book/trade evidence; missing, stale, future-dated, incomplete, or invalid evidence falls back to the existing REST/fail-closed path. Validated closed OHLCV is cached only inside its current closed-candle bucket.
+
+Leverage is advisory-only and never a strategy/signal gate. Canonical non-actionable decisions (`FORMING`, `LATE`, `NO_TRADE`, `INVALIDATED`, `EXPIRED`) report `NOT_RECOMMENDED` with no leverage value. `UNAVAILABLE` is reserved for an actionable decision whose required causal leverage evidence cannot be established. Numeric leverage for actionable evidence continues to use the existing adaptive policy and exchange/risk ceilings.
+
 ## Runtime services
 
 Canonical application/observability services are backend, frontend, watchdog, Prometheus, Grafana, and Alertmanager, fronted by host nginx. Docker Compose manages containers; systemd asserts/recoveries the stack after boot.

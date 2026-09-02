@@ -530,3 +530,26 @@ def test_shadow_health_is_observational_and_does_not_gate_main_health(
         ]
         == 8
     )
+
+
+def test_live_reference_loop_propagates_task_cancellation(monkeypatch):
+    import waterfallhunter.main as main
+
+    async def cancelled_refresh():
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(
+        main.scanner,
+        "refresh_live_references",
+        cancelled_refresh,
+    )
+
+    async def scenario():
+        task = asyncio.create_task(main.live_reference_loop(interval_seconds=0))
+        try:
+            await task
+        except asyncio.CancelledError:
+            return True
+        return False
+
+    assert asyncio.run(scenario()) is True

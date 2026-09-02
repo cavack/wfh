@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import logging
 import math
 import time
@@ -51,8 +52,12 @@ class WebSocketManager:
 
         # ساختار کش: { 'exchange:symbol': {'data': orderbook, 'updated_at': timestamp} }
         self.live_orderbooks: Dict[str, Dict[str, Any]] = {}
+        self.live_orderbook_history: Dict[str, list[Dict[str, Any]]] = {}
         self.live_tickers: Dict[str, Dict[str, Any]] = {}
         self.live_trades: Dict[str, Dict[str, Any]] = {}
+        self.orderbook_history_limit = 8
+        self.trade_history_limit = 500
+        self.trade_ttl_seconds = 60.0
         self.live_liquidations: Dict[str, Dict[str, Any]] = {}
         self.liquidation_window_seconds = LIQUIDATION_FLOW_FRESHNESS_SECONDS
         self.liquidation_retention_seconds = 120.0
@@ -72,6 +77,72 @@ class WebSocketManager:
         # every stream holds its slot only around the await boundary it needs,
         # so N symbols no longer starve each other through a single semaphore.
         self._stream_slots = asyncio.Semaphore(10)
+
+    def _ingest_orderbook(
+        self,
+        ex_name: str,
+        symbol: str,
+        orderbook: Any,
+        *,
+        received_at: float | None = None,
+    ) -> None:
+        if not isinstance(orderbook, dict):
+            return
+        now = time.time() if received_at is None else float(received_at)
+        if not math.isfinite(now) or now < 0:
+            return
+        stream_id = f"{ex_name}:{symbol}"
+        snapshot = copy.deepcopy(orderbook)
+        snapshot["_received_at"] = now
+        self.live_orderbooks[stream_id] = {
+            "data": snapshot,
+            "updated_at": now,
+        }
+        history = self.live_orderbook_history.setdefault(stream_id, [])
+        history.append(snapshot)
+        if len(history) > self.orderbook_history_limit:
+            del history[:-self.orderbook_history_limit]
+
+    @staticmethod
+    def _trade_fingerprint(trade: Dict[str, Any]) -> tuple[Any, ...]:
+        trade_id = trade.get("id")
+        if trade_id not in (None, ""):
+            return ("id", str(trade_id), None, None, None)
+        return (
+            "fields", trade.get("timestamp"), trade.get("side"),
+            trade.get("price"), trade.get("amount"),
+        )
+
+    def _ingest_trades(
+        self,
+        ex_name: str,
+        symbol: str,
+        rows: Any,
+        *,
+        received_at: float | None = None,
+    ) -> None:
+        now = time.time() if received_at is None else float(received_at)
+        if not math.isfinite(now) or now < 0:
+            return
+        stream_id = f"{ex_name}:{symbol}"
+        existing = self.live_trades.get(stream_id, {}).get("data", [])
+        combined = [copy.deepcopy(row) for row in existing if isinstance(row, dict)]
+        iterable = rows if isinstance(rows, list) else [rows]
+        combined.extend(copy.deepcopy(row) for row in iterable if isinstance(row, dict))
+        cutoff_ms = (now - self.trade_ttl_seconds) * 1000.0
+        deduped: dict[tuple[Any, ...], Dict[str, Any]] = {}
+        for trade in combined:
+            timestamp = trade.get("timestamp")
+            if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
+                continue
+            if timestamp <= 0 or float(timestamp) < cutoff_ms:
+                continue
+            deduped[self._trade_fingerprint(trade)] = trade
+        fresh = sorted(
+            deduped.values(),
+            key=lambda trade: float(trade.get("timestamp") or 0.0),
+        )[-self.trade_history_limit:]
+        self.live_trades[stream_id] = {"data": fresh, "updated_at": now}
 
     async def _get_exchange(self, ex_name: str) -> Any:
         if ccxt_pro is None:
@@ -110,11 +181,11 @@ class WebSocketManager:
                 safe_limit = 50 if ex_name in ['bybit', 'kucoin'] else limit
                 orderbook = await exchange.watch_order_book(symbol, limit=safe_limit)
 
-                # Single-flight Cache Update
-                self.live_orderbooks[stream_id] = {
-                    "data": orderbook,
-                    "updated_at": time.time()
-                }
+                # Preserve an immutable bounded history because CCXT Pro may
+                # mutate its live OrderBook object in place between updates.
+                self._ingest_orderbook(
+                    ex_name, symbol, orderbook, received_at=time.time()
+                )
 
                 self.message_counters[stream_id] += 1
                 cb.record_success()
@@ -149,7 +220,16 @@ class WebSocketManager:
                 continue
             try:
                 data = await getattr(exchange, f"watch_{kind}")(symbol)
-                cache[f"{ex_name}:{symbol}"] = {"data": data, "updated_at": time.time()}
+                received_at = time.time()
+                if kind == "trades":
+                    self._ingest_trades(
+                        ex_name, symbol, data, received_at=received_at
+                    )
+                else:
+                    cache[f"{ex_name}:{symbol}"] = {
+                        "data": copy.deepcopy(data),
+                        "updated_at": received_at,
+                    }
                 self.message_counters[stream_id] = self.message_counters.get(stream_id, 0) + 1
                 breaker.record_success()
                 delay = 1.0
@@ -425,6 +505,7 @@ class WebSocketManager:
             if task is not None:
                 task.cancel()
         self.live_orderbooks.pop(stream_id, None)
+        self.live_orderbook_history.pop(stream_id, None)
         self.live_tickers.pop(stream_id, None)
         self.live_trades.pop(stream_id, None)
         for key in [
@@ -482,6 +563,7 @@ class WebSocketManager:
         for task_id in [key for key in self.active_tasks if key == stream_id or key.startswith(f"{stream_id}:")]:
             self.active_tasks.pop(task_id).cancel()
         self.live_orderbooks.pop(stream_id, None)
+        self.live_orderbook_history.pop(stream_id, None)
         self.live_tickers.pop(stream_id, None)
         self.live_trades.pop(stream_id, None)
         self.live_liquidations.pop(stream_id, None)
@@ -493,30 +575,74 @@ class WebSocketManager:
             self.message_counters.pop(key, None)
 
     def get_realtime_orderbook(self, ex_name: str, symbol: str) -> Optional[Dict]:
-        """فراخوانی دیتا با اعمال Cache TTL برای REST Fallback"""
+        """Return only a fresh latest OrderBook snapshot."""
         stream_id = f"{ex_name}:{symbol}"
         cached = self.live_orderbooks.get(stream_id)
-
         if not cached:
             return None
-
-        # اگر دیتا قدیمی‌تر از 5 ثانیه باشد (مثلا قطعیِ سوکت رخ داده)، None برمی‌گرداند
-        # تا سیستم مرکزی به صورت خودکار به REST API سوییچ (Fallback) کند.
         if time.time() - cached["updated_at"] > self.ttl_seconds:
             logger.debug(f"Cache TTL expired for {stream_id}. Triggering REST fallback.")
             return None
+        return copy.deepcopy(cached["data"])
 
-        return cached["data"]
+    def get_realtime_orderbook_samples(
+        self,
+        ex_name: str,
+        symbol: str,
+        *,
+        count: int = 3,
+        min_span_seconds: float = 0.5,
+        now: float | None = None,
+    ) -> list[Dict[str, Any]]:
+        observed_now = time.time() if now is None else float(now)
+        if not math.isfinite(observed_now) or observed_now < 0 or count <= 0:
+            return []
+        history = self.live_orderbook_history.get(f"{ex_name}:{symbol}", [])
+        cutoff = observed_now - self.ttl_seconds
+        fresh = [
+            snapshot for snapshot in history
+            if isinstance(snapshot.get("_received_at"), (int, float))
+            and not isinstance(snapshot.get("_received_at"), bool)
+            and cutoff <= float(snapshot["_received_at"]) <= observed_now
+        ]
+        if len(fresh) < count:
+            return []
+        selected = fresh[-count:]
+        span = float(selected[-1]["_received_at"]) - float(selected[0]["_received_at"])
+        if span < max(0.0, float(min_span_seconds)):
+            return []
+        return copy.deepcopy(selected)
 
     def _cached(self, cache: Dict[str, Dict[str, Any]], ex_name: str, symbol: str):
         entry = cache.get(f"{ex_name}:{symbol}")
-        return entry["data"] if entry and time.time() - entry["updated_at"] <= self.ttl_seconds else None
+        return (
+            copy.deepcopy(entry["data"])
+            if entry and time.time() - entry["updated_at"] <= self.ttl_seconds
+            else None
+        )
 
     def get_realtime_ticker(self, ex_name: str, symbol: str):
         return self._cached(self.live_tickers, ex_name, symbol)
 
-    def get_realtime_trades(self, ex_name: str, symbol: str):
-        return self._cached(self.live_trades, ex_name, symbol)
+    def get_realtime_trades(
+        self, ex_name: str, symbol: str, *, now: float | None = None
+    ) -> list[Dict[str, Any]]:
+        observed_now = time.time() if now is None else float(now)
+        if not math.isfinite(observed_now) or observed_now < 0:
+            return []
+        entry = self.live_trades.get(f"{ex_name}:{symbol}")
+        rows = entry.get("data") if isinstance(entry, dict) else None
+        if not isinstance(rows, list):
+            return []
+        cutoff_ms = (observed_now - self.trade_ttl_seconds) * 1000.0
+        return [
+            copy.deepcopy(row)
+            for row in rows
+            if isinstance(row, dict)
+            and isinstance(row.get("timestamp"), (int, float))
+            and not isinstance(row.get("timestamp"), bool)
+            and cutoff_ms <= float(row["timestamp"]) <= observed_now * 1000.0
+        ][-self.trade_history_limit:]
 
     def runtime_diagnostics(self) -> Dict[str, int]:
         """Return bounded task/subscriber counts for operational fan-out telemetry."""
@@ -535,23 +661,74 @@ class WebSocketManager:
             ),
         }
 
-    def prune_stale_cache(self):
-        now = time.time()
-        cutoff = now - self.ttl_seconds
-        for cache in (self.live_orderbooks, self.live_tickers, self.live_trades):
-            for key, entry in list(cache.items()):
-                if entry.get("updated_at", 0) < cutoff:
-                    cache.pop(key, None)
-        liquidation_cutoff_ms = (now - self.liquidation_retention_seconds) * 1000.0
-        for key, entry in list(self.live_liquidations.items()):
+    @staticmethod
+    def _prune_latest_cache(
+        cache: Dict[str, Dict[str, Any]],
+        *,
+        cutoff: float,
+    ) -> None:
+        for key, entry in tuple(cache.items()):
+            if entry.get("updated_at", 0) < cutoff:
+                cache.pop(key, None)
+
+    def _prune_orderbook_history(self, *, cutoff: float) -> None:
+        for key, history in tuple(self.live_orderbook_history.items()):
+            fresh = [
+                snapshot
+                for snapshot in history
+                if isinstance(snapshot.get("_received_at"), (int, float))
+                and not isinstance(snapshot.get("_received_at"), bool)
+                and float(snapshot["_received_at"]) >= cutoff
+            ]
+            if fresh:
+                self.live_orderbook_history[key] = fresh[-self.orderbook_history_limit:]
+            else:
+                self.live_orderbook_history.pop(key, None)
+
+    def _prune_trade_history(self, *, cutoff_ms: float, now_ms: float) -> None:
+        for key, entry in tuple(self.live_trades.items()):
+            rows = entry.get("data") if isinstance(entry, dict) else None
+            fresh = [
+                row
+                for row in (rows or [])
+                if isinstance(row, dict)
+                and isinstance(row.get("timestamp"), (int, float))
+                and not isinstance(row.get("timestamp"), bool)
+                and cutoff_ms <= float(row["timestamp"]) <= now_ms
+            ]
+            if fresh:
+                entry["data"] = fresh[-self.trade_history_limit:]
+            else:
+                self.live_trades.pop(key, None)
+
+    def _prune_liquidation_history(self, *, cutoff_ms: float, now_ms: float) -> None:
+        for key, entry in tuple(self.live_liquidations.items()):
             events = [
-                event for event in entry.get("events", [])
-                if isinstance(event, dict) and float(event.get("timestamp", 0)) >= liquidation_cutoff_ms
+                event
+                for event in entry.get("events", [])
+                if isinstance(event, dict)
+                and cutoff_ms <= float(event.get("timestamp", 0)) <= now_ms
             ]
             if events:
                 entry["events"] = events
             else:
                 self.live_liquidations.pop(key, None)
+
+    def prune_stale_cache(self):
+        """Prune all process-local evidence caches to their causal TTL windows."""
+        now = time.time()
+        cutoff = now - self.ttl_seconds
+        for cache in (self.live_orderbooks, self.live_tickers):
+            self._prune_latest_cache(cache, cutoff=cutoff)
+        self._prune_orderbook_history(cutoff=cutoff)
+        self._prune_trade_history(
+            cutoff_ms=(now - self.trade_ttl_seconds) * 1000.0,
+            now_ms=now * 1000.0,
+        )
+        self._prune_liquidation_history(
+            cutoff_ms=(now - self.liquidation_retention_seconds) * 1000.0,
+            now_ms=now * 1000.0,
+        )
 
     async def close_all(self):
         for task in list(self.active_tasks.values()):

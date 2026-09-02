@@ -475,7 +475,7 @@ async def test_cross_check_preserves_entry_decision_candle_contract(monkeypatch)
     exchange = FakeExchange()
 
     class FakeGateway:
-        async def compatible_market_sources(self, symbol, reference_price, max_deviation_pct):
+        async def compatible_market_sources(self, symbol, reference_price, max_deviation_pct, **kwargs):
             yield {
                 "data": {"last": 100.0, "vwap": 101.0, "quoteVolume": 1_000_000.0},
                 "exchange": "binance",
@@ -595,7 +595,7 @@ async def test_cross_check_rejects_bad_microstructure_before_fetching_candles():
     exchange = FakeExchange()
 
     class FakeGateway:
-        async def compatible_market_sources(self, symbol, reference_price, max_deviation_pct):
+        async def compatible_market_sources(self, symbol, reference_price, max_deviation_pct, **kwargs):
             yield {
                 "data": {"last": 100.0, "vwap": 101.0, "quoteVolume": 1_000_000.0},
                 "exchange": "binance",
@@ -634,3 +634,107 @@ async def test_cross_check_rejects_bad_microstructure_before_fetching_candles():
     assert result["metrics"]["source_failures"] == [
         {"exchange": "binance", "reason": "stale orderbook snapshot"}
     ]
+
+
+@pytest.mark.asyncio
+async def test_cross_check_reuses_fresh_ws_ticker_and_hot_microstructure_packet():
+    instance = validator()
+    exchange = type("Exchange", (), {"markets": {"TEST/USDT:USDT": {
+        "precision": {}, "contractSize": 1.0,
+        "limits": {"amount": {"min": 0.01}, "cost": {"min": 1.0}},
+    }}})()
+    cached_ticker = {"last": 100.0, "quoteVolume": 1_000_000.0}
+    snapshots = [{"timestamp": 1000 + index, "_received_at": 1.0 + index,
+                  "bids": [[99.9, 10.0]], "asks": [[100.1, 10.0]]}
+                 for index in range(3)]
+    trades = [{"timestamp": 3000, "side": "sell", "price": 100.0, "amount": 1.0}
+              for _ in range(20)]
+
+    class FakeWebsocket:
+        def get_realtime_ticker(self, ex_name, mapped):
+            assert (ex_name, mapped) == ("binance", "TEST/USDT:USDT")
+            return cached_ticker
+        def get_realtime_orderbook(self, ex_name, mapped):
+            return snapshots[-1]
+        def get_realtime_orderbook_samples(self, ex_name, mapped, **kwargs):
+            return snapshots
+        def get_realtime_trades(self, ex_name, mapped):
+            return trades
+
+    class FakeGateway:
+        async def compatible_market_sources(
+            self, symbol, reference_price, max_deviation_pct,
+            realtime_ticker_getter=None,
+        ):
+            assert realtime_ticker_getter is not None
+            assert realtime_ticker_getter("binance", "TEST/USDT:USDT") is cached_ticker
+            yield {
+                "data": cached_ticker,
+                "exchange": "binance",
+                "mapped_symbol": "TEST/USDT:USDT",
+                "exchange_instance": exchange,
+            }
+        async def get_confirmation_exchange(self, *args, **kwargs):
+            raise AssertionError("rejected microstructure must stop before confirmation")
+
+    captured = {}
+    class FakeMicrostructure:
+        async def analyze(self, *args, **kwargs):
+            captured.update(kwargs)
+            return {"approved": False, "reason": "stale orderbook snapshot"}
+
+    instance.gateway = FakeGateway()
+    instance.ws_manager = FakeWebsocket()
+    instance.microstructure = FakeMicrostructure()
+
+    result = await instance.cross_check_symbol(
+        "TEST/USDT:USDT", reference_price=100.0, reference_source="test"
+    )
+
+    assert result["is_valid"] is False
+    assert captured["preloaded_snapshots"] is snapshots
+    assert captured["preloaded_trades"] is trades
+
+
+@pytest.mark.asyncio
+async def test_cross_check_emits_bounded_runtime_diagnostics_on_unavailable_path():
+    instance = validator()
+
+    class Exchange:
+        markets = {"TEST/USDT:USDT": {"contractSize": 1.0, "limits": {}}}
+
+    class Gateway:
+        async def compatible_market_sources(self, *args, **kwargs):
+            yield {
+                "data": {"last": 100.0}, "exchange": "binance",
+                "mapped_symbol": "TEST/USDT:USDT", "exchange_instance": Exchange(),
+            }
+
+    class WS:
+        def get_realtime_ticker(self, *args): return None
+        def get_realtime_orderbook(self, *args):
+            return {"bids": [[99.9, 10.0]], "asks": [[100.1, 10.0]]}
+        def get_realtime_orderbook_samples(self, *args, **kwargs): return []
+        def get_realtime_trades(self, *args): return []
+
+    class Micro:
+        snapshot_delay_seconds = 0.25
+        async def analyze(self, *args, **kwargs):
+            return {"approved": False, "reason": "stale orderbook snapshot"}
+
+    instance.gateway = Gateway()
+    instance.ws_manager = WS()
+    instance.microstructure = Micro()
+
+    result = await instance.cross_check_symbol(
+        "TEST/USDT:USDT", reference_price=100.0, reference_source="test"
+    )
+    runtime = result.get("_runtime_diagnostics")
+
+    assert runtime is not None
+    assert runtime["source_attempts"] == 1
+    assert runtime["ws_evidence_hits"] == 0
+    assert runtime["rest_evidence_fallbacks"] == 1
+    assert runtime["outcome"] == "unavailable"
+    assert runtime["stage_durations_seconds"]["microstructure"] >= 0.0
+    assert runtime["stage_durations_seconds"]["total"] >= 0.0

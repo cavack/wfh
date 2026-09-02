@@ -1539,6 +1539,33 @@ class MultiExchangeValidator:
     ) -> Dict[str, Any]:
         source_failures = []
         selected = None
+        runtime_started_at = time.monotonic()
+        runtime_diagnostics: dict[str, Any] = {
+            "source_attempts": 0,
+            "ws_evidence_hits": 0,
+            "rest_evidence_fallbacks": 0,
+            "outcome": "unavailable",
+            "stage_durations_seconds": {},
+        }
+
+        def add_stage_duration(stage: str, started_at: float) -> None:
+            elapsed = max(0.0, time.monotonic() - started_at)
+            stages = runtime_diagnostics["stage_durations_seconds"]
+            stages[stage] = round(float(stages.get(stage, 0.0)) + elapsed, 6)
+
+        def finish_runtime(result: Dict[str, Any], *, outcome: str) -> Dict[str, Any]:
+            runtime_diagnostics["outcome"] = outcome
+            runtime_diagnostics["stage_durations_seconds"]["total"] = round(
+                max(0.0, time.monotonic() - runtime_started_at), 6
+            )
+            result["_runtime_diagnostics"] = {
+                "source_attempts": int(runtime_diagnostics["source_attempts"]),
+                "ws_evidence_hits": int(runtime_diagnostics["ws_evidence_hits"]),
+                "rest_evidence_fallbacks": int(runtime_diagnostics["rest_evidence_fallbacks"]),
+                "outcome": str(runtime_diagnostics["outcome"]),
+                "stage_durations_seconds": dict(runtime_diagnostics["stage_durations_seconds"]),
+            }
+            return result
 
         async for wf_result in (
             self.gateway
@@ -1551,8 +1578,14 @@ class MultiExchangeValidator:
                     self
                     .max_cross_exchange_deviation_pct
                 ),
+                realtime_ticker_getter=getattr(
+                    self.ws_manager,
+                    "get_realtime_ticker",
+                    None,
+                ),
             )
         ):
+            runtime_diagnostics["source_attempts"] += 1
             ticker = (
                 wf_result["data"]
             )
@@ -1595,6 +1628,7 @@ class MultiExchangeValidator:
                 )
                 continue
 
+            microstructure_started_at = time.monotonic()
             orderbook = (
                 self.ws_manager
                 .get_realtime_orderbook(
@@ -1657,6 +1691,55 @@ class MultiExchangeValidator:
                 )
             )
 
+            sample_getter = getattr(
+                self.ws_manager,
+                "get_realtime_orderbook_samples",
+                None,
+            )
+            trade_getter = getattr(
+                self.ws_manager,
+                "get_realtime_trades",
+                None,
+            )
+            preloaded_snapshots = (
+                sample_getter(
+                    ex_name,
+                    mapped_sym,
+                    count=3,
+                    min_span_seconds=(
+                        2.0 * float(getattr(self.microstructure, "snapshot_delay_seconds", 0.25))
+                    ),
+                )
+                if callable(sample_getter)
+                else None
+            )
+            preloaded_trades = (
+                trade_getter(ex_name, mapped_sym)
+                if callable(trade_getter)
+                else None
+            )
+            preload_checker = getattr(
+                self.microstructure,
+                "_preloaded_evidence_is_usable",
+                None,
+            )
+            preloaded_usable = False
+            if callable(preload_checker):
+                try:
+                    preloaded_usable = bool(
+                        preload_checker(
+                            preloaded_snapshots,
+                            preloaded_trades,
+                            now=time.time(),
+                        )
+                    )
+                except Exception:
+                    preloaded_usable = False
+            if preloaded_usable:
+                runtime_diagnostics["ws_evidence_hits"] += 1
+            else:
+                runtime_diagnostics["rest_evidence_fallbacks"] += 1
+
             microstructure = (
                 await self
                 .microstructure
@@ -1665,8 +1748,11 @@ class MultiExchangeValidator:
                     mapped_sym,
                     orderbook,
                     market_info,
+                    preloaded_snapshots=preloaded_snapshots,
+                    preloaded_trades=preloaded_trades,
                 )
             )
+            add_stage_duration("microstructure", microstructure_started_at)
 
             if (
                 self
@@ -1689,6 +1775,7 @@ class MultiExchangeValidator:
                 )
                 continue
 
+            candles_started_at = time.monotonic()
             (
                 confirmation_exchange,
                 confirmation_symbol,
@@ -1717,6 +1804,7 @@ class MultiExchangeValidator:
                     confirmation_symbol,
                 )
             )
+            add_stage_duration("candles", candles_started_at)
 
             candle_details = (
                 candle_results.get(
@@ -1850,30 +1938,24 @@ class MultiExchangeValidator:
             break
 
         if selected is None:
-            return {
-                "is_valid": False,
-                "score": None,
-                "suggested_status": (
-                    "REJECTED"
-                ),
-                "metrics": {
-                    "error": (
-                        "no complete live USDT "
-                        "perpetual data source in "
-                        "exchange waterfall"
-                    ),
-                    (
-                        "max_cross_exchange_"
-                        "deviation_pct"
-                    ): (
-                        self
-                        .max_cross_exchange_deviation_pct
-                    ),
-                    "source_failures": (
-                        source_failures
-                    ),
+            return finish_runtime(
+                {
+                    "is_valid": False,
+                    "score": None,
+                    "suggested_status": "REJECTED",
+                    "metrics": {
+                        "error": (
+                            "no complete live USDT perpetual data source in "
+                            "exchange waterfall"
+                        ),
+                        "max_cross_exchange_deviation_pct": (
+                            self.max_cross_exchange_deviation_pct
+                        ),
+                        "source_failures": source_failures,
+                    },
                 },
-            }
+                outcome="unavailable",
+            )
 
         (
             metrics,
@@ -1888,6 +1970,7 @@ class MultiExchangeValidator:
 
         metrics["price_location"] = self._price_location_packet(ticker)
 
+        context_started_at = time.monotonic()
         derivatives, benchmark = (
             await asyncio.gather(
                 self._derivatives_context(
@@ -1904,6 +1987,7 @@ class MultiExchangeValidator:
                 ),
             )
         )
+        add_stage_duration("context", context_started_at)
 
         metrics[
             "derivatives"
@@ -2294,24 +2378,17 @@ class MultiExchangeValidator:
                 }
             )
 
-            return {
-                "is_valid": False,
-                "score": None,
-                (
-                    "suggested_status"
-                ): "REJECTED",
-                (
-                    "observation_score"
-                ): (
-                    observation_score
-                ),
-                (
-                    "observation_status"
-                ): (
-                    observation_state
-                ),
-                "metrics": metrics,
-            }
+            return finish_runtime(
+                {
+                    "is_valid": False,
+                    "score": None,
+                    "suggested_status": "REJECTED",
+                    "observation_score": observation_score,
+                    "observation_status": observation_state,
+                    "metrics": metrics,
+                },
+                outcome="complete",
+            )
 
         score_result = (
             self._merge_score_v2(
@@ -2516,14 +2593,17 @@ class MultiExchangeValidator:
                     microstructure=microstructure,
                     market_info=market_info,
                 )
-                return {
-                    "is_valid": False,
-                    "score": None,
-                    "suggested_status": "REJECTED",
-                    "observation_score": observation_score,
-                    "observation_status": observation_state,
-                    "metrics": metrics,
-                }
+                return finish_runtime(
+                    {
+                        "is_valid": False,
+                        "score": None,
+                        "suggested_status": "REJECTED",
+                        "observation_score": observation_score,
+                        "observation_status": observation_state,
+                        "metrics": metrics,
+                    },
+                    outcome="complete",
+                )
 
             base_score = float(observation_score)
             metrics.update(
@@ -2574,14 +2654,15 @@ class MultiExchangeValidator:
             market_info=market_info,
         )
 
-        return {
-            "is_valid": True,
-            "score": base_score,
-            "suggested_status": (
-                status
-            ),
-            "metrics": metrics,
-        }
+        return finish_runtime(
+            {
+                "is_valid": True,
+                "score": base_score,
+                "suggested_status": status,
+                "metrics": metrics,
+            },
+            outcome="complete",
+        )
 
     async def close_all(self):
         await self.ws_manager.close_all()

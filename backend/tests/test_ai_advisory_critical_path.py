@@ -57,7 +57,7 @@ def test_trigger_persistence_does_not_wait_for_gemini_advisory(monkeypatch) -> N
     monkeypatch.setattr(
         main,
         "build_signal_leverage_advisory",
-        lambda metrics, execution_suitability=None: {
+        lambda metrics, execution_suitability=None, **kwargs: {
             "policy_version": "adaptive_signal_leverage_v1",
             "minimum": 4, "maximum": 18, "symbol_agnostic": True,
             "signal_only": True, "advisory_only": True,

@@ -1101,6 +1101,7 @@ class _CrossCheckGateway:
         symbol,
         reference_price,
         max_deviation_pct,
+        **kwargs,
     ):
         yield {
             "exchange": "bybit",
@@ -1204,6 +1205,7 @@ class _CrossCheckMicrostructure:
         mapped_symbol,
         orderbook,
         market_info,
+        **kwargs,
     ):
         return {
             "approved": True,
@@ -1358,3 +1360,52 @@ def test_validator_does_not_score_or_transition_an_incomplete_derivatives_packet
         ]
         == "1000TESTUSDT"
     )
+
+
+
+def _collect_sources_with_realtime_ticker(realtime_ticker):
+    gateway = MultiExchangeGateway()
+    gateway.priority_chain = ["binance"]
+    gateway._markets_loaded = {"binance": True}
+
+    class CountingExchange(_Exchange):
+        def __init__(self) -> None:
+            super().__init__(1.01)
+            self.ticker_calls = 0
+
+        async def fetch_ticker(self, symbol):
+            self.ticker_calls += 1
+            return await super().fetch_ticker(symbol)
+
+    exchange = CountingExchange()
+
+    async def get_exchange(name):
+        assert name == "binance"
+        return exchange
+
+    gateway._get_exchange = get_exchange
+
+    async def collect():
+        return [
+            source
+            async for source in gateway.compatible_market_sources(
+                "TEST/USDT:USDT",
+                1.0,
+                5.0,
+                realtime_ticker_getter=lambda ex, symbol: realtime_ticker,
+            )
+        ]
+
+    return asyncio.run(collect()), exchange.ticker_calls
+
+
+def test_compatible_market_sources_prefers_fresh_realtime_ticker_over_rest() -> None:
+    sources, ticker_calls = _collect_sources_with_realtime_ticker({"last": 1.01})
+    assert [source["exchange"] for source in sources] == ["binance"]
+    assert ticker_calls == 0
+
+
+def test_compatible_market_sources_falls_back_to_rest_when_realtime_ticker_missing() -> None:
+    sources, ticker_calls = _collect_sources_with_realtime_ticker(None)
+    assert [source["exchange"] for source in sources] == ["binance"]
+    assert ticker_calls == 1

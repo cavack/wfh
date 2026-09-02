@@ -193,3 +193,125 @@ def test_microstructure_cancels_parallel_trade_fetch_when_analysis_is_cancelled(
         assert trade_cancelled.is_set()
 
     asyncio.run(scenario())
+
+
+def test_complete_preloaded_microstructure_evidence_avoids_rest_calls() -> None:
+    now = time.time()
+    snapshots = []
+    for offset in (0.6, 0.3, 0.0):
+        observed = now - offset
+        snapshots.append({
+            "timestamp": int(observed * 1000),
+            "_received_at": observed,
+            "bids": [[10.0, 100.0]],
+            "asks": [[10.1, 100.0]],
+        })
+    trades = [
+        {
+            "id": f"pre-{index}",
+            "timestamp": int(now * 1000),
+            "side": "sell",
+            "price": 10.0,
+            "amount": 1.0,
+        }
+        for index in range(20)
+    ]
+
+    class NoRestExchange:
+        async def fetch_order_book(self, symbol, limit):
+            raise AssertionError("REST orderbook must not be called")
+
+        async def fetch_trades(self, symbol, limit):
+            raise AssertionError("REST trades must not be called")
+
+    result = asyncio.run(
+        MicrostructureAnalyzer(snapshot_delay_seconds=0.25).analyze(
+            NoRestExchange(),
+            "TEST/USDT:USDT",
+            snapshots[-1],
+            {
+                "limits": {"amount": {"min": 0.01}, "cost": {"min": 1.0}},
+                "contractSize": 1.0,
+            },
+            preloaded_snapshots=snapshots,
+            preloaded_trades=trades,
+        )
+    )
+
+    assert result["source_capture"]["raw_trades_captured"] is True
+    assert result["source_capture"]["orderbook_snapshots_captured"] is True
+    assert len(result["source_capture"]["orderbook_snapshots"]) == 3
+
+
+def test_incomplete_preloaded_microstructure_evidence_uses_existing_rest_path() -> None:
+    now = int(time.time() * 1000)
+
+    class CountingExchange:
+        def __init__(self) -> None:
+            self.book_calls = 0
+            self.trade_calls = 0
+
+        async def fetch_order_book(self, symbol, limit):
+            self.book_calls += 1
+            return {
+                "timestamp": int(time.time() * 1000),
+                "bids": [[10.0, 100.0]],
+                "asks": [[10.1, 100.0]],
+            }
+        async def fetch_trades(self, symbol, limit):
+            self.trade_calls += 1
+            observed = int(time.time() * 1000)
+            return [
+                {
+                    "timestamp": observed,
+                    "side": "sell",
+                    "price": 10.0,
+                    "amount": 1.0,
+                }
+                for _ in range(20)
+            ]
+
+    exchange = CountingExchange()
+    first = {
+        "timestamp": now,
+        "bids": [[10.0, 100.0]],
+        "asks": [[10.1, 100.0]],
+    }
+    result = asyncio.run(
+        MicrostructureAnalyzer(snapshot_delay_seconds=0.0).analyze(
+            exchange,
+            "TEST/USDT:USDT",
+            first,
+            {
+                "limits": {"amount": {"min": 0.01}, "cost": {"min": 1.0}},
+                "contractSize": 1.0,
+            },
+            preloaded_snapshots=[first],
+            preloaded_trades=[],
+        )
+    )
+
+    assert exchange.book_calls == 2
+    assert exchange.trade_calls == 1
+    assert result["source_capture"]["orderbook_snapshots_captured"] is True
+
+
+def test_future_dated_preloaded_orderbook_is_rejected_before_reuse() -> None:
+    analyzer = MicrostructureAnalyzer(snapshot_delay_seconds=0.25)
+    now = time.time()
+    snapshots = [
+        {
+            "timestamp": int((now - 0.6 + index * 0.3) * 1000),
+            "_received_at": now - 0.6 + index * 0.3,
+            "bids": [[10.0, 100.0]],
+            "asks": [[10.1, 100.0]],
+        }
+        for index in range(3)
+    ]
+    snapshots[-1]["timestamp"] = int((now + 2.0) * 1000)
+    trades = [
+        {"timestamp": int(now * 1000), "side": "sell", "price": 10.0, "amount": 1.0}
+        for _ in range(20)
+    ]
+
+    assert analyzer._preloaded_evidence_is_usable(snapshots, trades, now=now) is False

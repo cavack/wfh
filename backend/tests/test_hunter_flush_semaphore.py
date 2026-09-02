@@ -6,62 +6,35 @@ import threading
 import waterfallhunter.main as main
 
 
-def test_periodic_flush_does_not_hold_evaluation_semaphore(
-    monkeypatch,
-) -> None:
-    original_sleep = asyncio.sleep
+def test_periodic_flush_does_not_block_remaining_deadline_work(monkeypatch) -> None:
     candidates = {
-        f"T{index:02d}": {}
-        for index in range(36)
+        f"T{index:02d}": {"status": "WATCH"}
+        for index in range(42)
     }
-
-    async def refresh_live_references() -> None:
-        return None
-
+    monkeypatch.setattr(main.db, "get_all_active_candidates", lambda: candidates)
+    monkeypatch.setattr(main, "_reconcile_explicit_entry_expirations", lambda **_: 0)
+    monkeypatch.setattr(main, "_reconcile_inactive_actionable_decisions", lambda **_: 0)
+    monkeypatch.setattr(main.execution_decision_logger, "record_universe_snapshot", lambda: None)
+    monkeypatch.setattr(main.validator.ws_manager, "prune_stale_cache", lambda: None)
     monkeypatch.setattr(
-        main.scanner,
-        "refresh_live_references",
-        refresh_live_references,
-    )
-    monkeypatch.setattr(
-        main.db,
-        "get_all_active_candidates",
-        lambda: candidates,
-    )
-    def stop_after_cycle() -> None:
-        main._hunter_running = False
-        main._hunter_stop_event.set()
-
-    monkeypatch.setattr(
-        main.execution_decision_logger,
-        "record_universe_snapshot",
-        stop_after_cycle,
+        main,
+        "trim_process_heap",
+        lambda: {"gc_collected": 0, "malloc_trim_released": False},
     )
     monkeypatch.setattr(main, "_HUNTER_STARTUP_DELAY_SECONDS", 0.0)
-    main._hunter_stop_event.clear()
-    monkeypatch.setattr(
-        main.validator.ws_manager,
-        "prune_stale_cache",
-        lambda: None,
-    )
 
     flush_started = threading.Event()
-    six_waiters_started = threading.Event()
+    post_boundary_started = threading.Event()
     release_flush = threading.Event()
-    flush_observed_full_capacity: list[bool] = []
     flush_calls = 0
-    waiters: set[str] = set()
 
     def flush_evaluations() -> None:
         nonlocal flush_calls
         flush_calls += 1
         if flush_calls != 1:
             return
-
         flush_started.set()
-        flush_observed_full_capacity.append(
-            six_waiters_started.wait(timeout=1.0)
-        )
+        assert post_boundary_started.wait(timeout=1.0)
         release_flush.set()
 
     monkeypatch.setattr(
@@ -72,50 +45,39 @@ def test_periodic_flush_does_not_hold_evaluation_semaphore(
 
     async def evaluate_candidate(symbol: str, data: dict) -> None:
         del data
-        if int(symbol[1:]) < 30:
+        index = int(symbol[1:])
+        if index < 36:
             return
-
+        post_boundary_started.set()
         while not flush_started.is_set():
-            await original_sleep(0)
-
-        if not release_flush.is_set():
-            waiters.add(symbol)
-            if len(waiters) == 6:
-                six_waiters_started.set()
-
-            while not release_flush.is_set():
-                await original_sleep(0)
-
-    monkeypatch.setattr(
-        main,
-        "evaluate_candidate",
-        evaluate_candidate,
-    )
-
-    sleep_calls = 0
-
-    async def controlled_sleep(_: float) -> None:
-        nonlocal sleep_calls
-        sleep_calls += 1
-        if sleep_calls >= 2:
+            await asyncio.sleep(0)
+        while not release_flush.is_set():
+            await asyncio.sleep(0)
+        if symbol == "T36":
             main._hunter_running = False
+            main._hunter_stop_event.set()
 
-    monkeypatch.setattr(
-        main.asyncio,
-        "sleep",
-        controlled_sleep,
-    )
+    monkeypatch.setattr(main, "evaluate_candidate", evaluate_candidate)
 
-    asyncio.run(
-        main.hunter_loop(interval_seconds=0)
-    )
+    async def scenario() -> None:
+        main._hunter_stop_event.clear()
+        hunter = asyncio.create_task(main.hunter_loop(interval_seconds=60.0))
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(flush_started.wait, 1.0),
+                timeout=1.2,
+            )
+            await asyncio.wait_for(
+                asyncio.to_thread(post_boundary_started.wait, 1.0),
+                timeout=1.2,
+            )
+        finally:
+            main._hunter_running = False
+            main._hunter_stop_event.set()
+            release_flush.set()
+            await asyncio.wait_for(hunter, timeout=1.0)
 
-    assert flush_observed_full_capacity == [True]
-    assert waiters == {
-        "T30",
-        "T31",
-        "T32",
-        "T33",
-        "T34",
-        "T35",
-    }
+    asyncio.run(scenario())
+
+    assert flush_calls >= 1
+    assert post_boundary_started.is_set()
