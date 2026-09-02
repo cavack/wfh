@@ -78,6 +78,13 @@ class WebSocketManager:
         self.shared_evidence_subscribers: Dict[str, set[str]] = {}
         self.unsupported_shared_evidence_exchanges: set[str] = set()
         self.shared_evidence_symbol_limit = 64
+        # Bound CCXT Pro's internal subscription/cache state across dynamic
+        # FUEL-RICH membership. Binance keys multi-symbol streams by the whole
+        # symbol set, so repeated set changes otherwise retain unbounded client state.
+        self.shared_evidence_client_generation_limit = 8
+        self.shared_evidence_membership_generation: Dict[str, int] = {}
+        self._shared_evidence_recycle_tasks: Dict[str, asyncio.Task] = {}
+        self._shared_evidence_recycle_locks: Dict[str, asyncio.Lock] = {}
 
         # قانون سخت: دیتای قدیمی‌تر از 5 ثانیه منقضی (Stale) محسوب می‌شود
         self.ttl_seconds = 5.0
@@ -175,6 +182,7 @@ class WebSocketManager:
         async with self._lock:
             if ex_name not in self.shared_evidence_exchanges:
                 self.shared_evidence_exchanges[ex_name] = self._new_exchange(ex_name)
+                self.shared_evidence_membership_generation[ex_name] = 0
             return self.shared_evidence_exchanges[ex_name]
 
     async def watch_orderbook_stream(self, ex_name: str, symbol: str, limit: int = 20):
@@ -589,6 +597,17 @@ class WebSocketManager:
     def _shared_evidence_symbols(self, ex_name: str) -> tuple[str, ...]:
         return tuple(sorted(self.shared_evidence_subscribers.get(ex_name, ())))
 
+    @staticmethod
+    def _purge_exchange_symbol_state(exchange: Any | None, symbols: tuple[str, ...]) -> None:
+        if exchange is None or not symbols:
+            return
+        for attribute in ("orderbooks", "trades", "tickers", "bidsasks"):
+            cache = getattr(exchange, attribute, None)
+            if not isinstance(cache, dict):
+                continue
+            for symbol in symbols:
+                cache.pop(symbol, None)
+
     async def _unwatch_shared_evidence_symbols(
         self,
         unwatch: Any,
@@ -596,6 +615,7 @@ class WebSocketManager:
         *,
         ex_name: str,
         kind: str,
+        exchange: Any | None = None,
         final: bool = False,
     ) -> bool:
         if not symbols:
@@ -612,6 +632,7 @@ class WebSocketManager:
                 type(exc).__name__,
             )
             return False
+        self._purge_exchange_symbol_state(exchange, symbols)
         return True
 
     @staticmethod
@@ -652,6 +673,7 @@ class WebSocketManager:
                 retired_symbols,
                 ex_name=ex_name,
                 kind=kind,
+                exchange=self.shared_evidence_exchanges.get(ex_name),
             )
             if not retired:
                 return active_symbols, delay
@@ -705,6 +727,7 @@ class WebSocketManager:
                 active_symbols,
                 ex_name=ex_name,
                 kind=kind,
+                exchange=exchange,
                 final=True,
             )
         current_task = asyncio.current_task()
@@ -745,6 +768,77 @@ class WebSocketManager:
                 active_symbols=active_symbols,
             )
 
+    def _start_shared_evidence_tasks(self, ex_name: str) -> None:
+        for kind in ("orderbook", "trades", "ticker"):
+            task_id = f"shared-evidence:{ex_name}:{kind}"
+            if task_id not in self.active_tasks:
+                self.active_tasks[task_id] = asyncio.create_task(
+                    self._watch_shared_evidence_stream(ex_name, kind)
+                )
+
+    def _schedule_shared_evidence_recycle(self, ex_name: str) -> None:
+        task = self._shared_evidence_recycle_tasks.get(ex_name)
+        if task is not None and not task.done():
+            return
+        # Consume the current churn budget at scheduling time. Any membership
+        # changes that happen while recycling start a fresh generation.
+        self.shared_evidence_membership_generation[ex_name] = 0
+        task = asyncio.create_task(self._recycle_shared_evidence_exchange(ex_name))
+        self._shared_evidence_recycle_tasks[ex_name] = task
+
+        def _done(completed: asyncio.Task) -> None:
+            if self._shared_evidence_recycle_tasks.get(ex_name) is completed:
+                self._shared_evidence_recycle_tasks.pop(ex_name, None)
+            if (
+                self.shared_evidence_membership_generation.get(ex_name, 0)
+                >= self.shared_evidence_client_generation_limit
+            ):
+                self._schedule_shared_evidence_recycle(ex_name)
+
+        task.add_done_callback(_done)
+
+    def _record_shared_evidence_membership_change(self, ex_name: str) -> None:
+        # No client exists during initial population. Its constructor resets the
+        # generation to zero, so only post-connect churn counts toward recycle.
+        if ex_name not in self.shared_evidence_exchanges:
+            return
+        generation = self.shared_evidence_membership_generation.get(ex_name, 0) + 1
+        self.shared_evidence_membership_generation[ex_name] = generation
+        if generation >= self.shared_evidence_client_generation_limit:
+            self._schedule_shared_evidence_recycle(ex_name)
+
+    async def _recycle_shared_evidence_exchange(self, ex_name: str) -> None:
+        lock = self._shared_evidence_recycle_locks.setdefault(ex_name, asyncio.Lock())
+        async with lock:
+            tasks: list[asyncio.Task] = []
+            for kind in ("orderbook", "trades", "ticker"):
+                task = self.active_tasks.pop(f"shared-evidence:{ex_name}:{kind}", None)
+                if task is not None and task is not asyncio.current_task():
+                    task.cancel()
+                    tasks.append(task)
+            if tasks:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*tasks, return_exceptions=True), timeout=10.0
+                    )
+                except TimeoutError:
+                    logger.warning("Timed out retiring shared evidence tasks for %s", ex_name)
+            exchange = self.shared_evidence_exchanges.pop(ex_name, None)
+            if exchange is not None:
+                try:
+                    await asyncio.wait_for(exchange.close(), timeout=10.0)
+                except Exception as exc:
+                    logger.debug(
+                        "Shared evidence client close failed for %s: %s",
+                        ex_name,
+                        type(exc).__name__,
+                    )
+            if (
+                self.shared_evidence_subscribers.get(ex_name)
+                and ex_name not in self.unsupported_shared_evidence_exchanges
+            ):
+                self._start_shared_evidence_tasks(ex_name)
+
     def subscribe_shared_evidence(self, ex_name: str, symbol: str) -> bool:
         if ccxt_pro is None or ex_name in self.unsupported_shared_evidence_exchanges:
             return False
@@ -755,27 +849,25 @@ class WebSocketManager:
                 ex_name,
             )
             return False
+        added = symbol not in subscribers
         subscribers.add(symbol)
-        for kind in ("orderbook", "trades", "ticker"):
-            task_id = f"shared-evidence:{ex_name}:{kind}"
-            if task_id not in self.active_tasks:
-                self.active_tasks[task_id] = asyncio.create_task(
-                    self._watch_shared_evidence_stream(ex_name, kind)
-                )
+        if added:
+            self._record_shared_evidence_membership_change(ex_name)
+        self._start_shared_evidence_tasks(ex_name)
         return True
 
     def unsubscribe_shared_evidence(self, ex_name: str, symbol: str) -> None:
         subscribers = self.shared_evidence_subscribers.get(ex_name)
         if subscribers is None:
             return
+        removed = symbol in subscribers
         subscribers.discard(symbol)
+        if removed:
+            self._record_shared_evidence_membership_change(ex_name)
         if subscribers:
             return
         self.shared_evidence_subscribers.pop(ex_name, None)
-        for kind in ("orderbook", "trades", "ticker"):
-            task = self.active_tasks.pop(f"shared-evidence:{ex_name}:{kind}", None)
-            if task is not None:
-                task.cancel()
+        self._schedule_shared_evidence_recycle(ex_name)
 
     def has_direct_evidence_subscription(self, ex_name: str, symbol: str) -> bool:
         stream_id = f"{ex_name}:{symbol}"
@@ -833,6 +925,7 @@ class WebSocketManager:
         self.live_orderbook_history.pop(stream_id, None)
         self.live_tickers.pop(stream_id, None)
         self.live_trades.pop(stream_id, None)
+        self._purge_exchange_symbol_state(self.exchanges.get(ex_name), (symbol,))
         for key in [
             key
             for key in list(self.circuit_breakers)
@@ -892,6 +985,7 @@ class WebSocketManager:
         self.live_tickers.pop(stream_id, None)
         self.live_trades.pop(stream_id, None)
         self.live_liquidations.pop(stream_id, None)
+        self._purge_exchange_symbol_state(self.exchanges.get(ex_name), (symbol,))
         # Drop per-stream bookkeeping so symbol churn cannot grow these maps
         # without bound (previously circuit_breakers/message_counters leaked).
         for key in [key for key in list(self.circuit_breakers) if key == stream_id or key.startswith(f"{stream_id}:")]:
@@ -1063,6 +1157,12 @@ class WebSocketManager:
         )
 
     async def close_all(self):
+        recycle_tasks = list(self._shared_evidence_recycle_tasks.values())
+        for task in recycle_tasks:
+            task.cancel()
+        self._shared_evidence_recycle_tasks.clear()
+        if recycle_tasks:
+            await asyncio.gather(*recycle_tasks, return_exceptions=True)
         tasks = list(self.active_tasks.values())
         for task in tasks:
             task.cancel()
@@ -1076,6 +1176,8 @@ class WebSocketManager:
             await ex.close()
         self.exchanges.clear()
         self.shared_evidence_exchanges.clear()
+        self.shared_evidence_membership_generation.clear()
+        self._shared_evidence_recycle_locks.clear()
 
 
 def cb_recovery(breaker: CircuitBreaker, current_delay: float) -> float:
