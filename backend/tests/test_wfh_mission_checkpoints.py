@@ -5,38 +5,27 @@ import subprocess
 from pathlib import Path
 
 from scripts import wfh_mission as mission
+from wfh_mission_test_support import valid_state, write_required_bundle
 
 
 REPO = Path(__file__).resolve().parents[2]
 
 
 def _state(next_action: str = "run Task 3") -> dict[str, object]:
-    return {
-        "contract_version": mission.MISSION_CONTRACT,
-        "mission_id": "WFH-ME-V3-20260902",
-        "project": "TWFH",
-        "repository": "cavack/wfh",
-        "baseline_main_sha": "a" * 40,
-        "current_main_sha": "b" * 40,
-        "current_phase": "M0",
-        "current_task": "M0.3",
-        "next_action": next_action,
-        "completed_tasks": ["M0.1", "M0.2"],
-        "do_not_repeat": ["resume-intent-contract", "state-core"],
-        "open_defects": [],
-        "blocked_tasks": [],
-        "active_branch": "feat/mission-continuity-v1-20260902",
-        "active_worktree": "/srv/wfh-worktrees/mission-continuity-v1-20260902",
-    }
+    return valid_state(
+        current_task="M0.3",
+        next_action=next_action,
+        completed_tasks=["M0.1", "M0.2"],
+        do_not_repeat=["resume-intent-contract", "state-core"],
+        open_defects=[],
+        blocked_tasks=[],
+    )
 
 
 def _init_mission_dir(tmp_path: Path) -> Path:
     root = tmp_path / "WFH-ME-V3-20260902"
     root.mkdir()
-    mission.atomic_write_json(root / "MISSION_STATE.json", _state(), allowed_root=root)
-    mission.atomic_write_json(root / "TASK_GRAPH.json", {"tasks": []}, allowed_root=root)
-    mission.atomic_write_json(root / "EVIDENCE_LEDGER.json", {"records": []}, allowed_root=root)
-    return root
+    return write_required_bundle(root, state=_state())
 
 
 def test_checkpoint_hash_mismatch_blocks_resume(tmp_path: Path) -> None:

@@ -4,49 +4,27 @@ import json
 from pathlib import Path
 
 from scripts import wfh_mission as mission
+from wfh_mission_test_support import observations as valid_observations, valid_state, write_required_bundle
 
 
 def _state(**overrides: object) -> dict[str, object]:
-    state: dict[str, object] = {
-        "contract_version": mission.MISSION_CONTRACT,
-        "mission_id": "WFH-ME-V3-20260902",
-        "project": "TWFH",
-        "repository": "cavack/wfh",
-        "baseline_main_sha": "a" * 40,
-        "current_main_sha": "b" * 40,
-        "production_sha": "c" * 40,
-        "current_phase": "PHASE_-1_MISSION_CONTINUITY",
-        "current_task": "M-1.9_CHAOS_RECOVERY_CERTIFICATION",
-        "next_action": "continue chaos certification",
-        "active_branch": "feat/mission-continuity-v1-20260902",
-        "active_branch_head": "d" * 40,
-        "active_worktree": "/srv/wfh-worktrees/mission-continuity-v1-20260902",
-        "required_capabilities": [],
-    }
-    state.update(overrides)
-    return state
+    return valid_state(
+        current_phase="PHASE_-1_MISSION_CONTINUITY",
+        current_task="M-1.9_CHAOS_RECOVERY_CERTIFICATION",
+        next_action="continue chaos certification",
+        **overrides,
+    )
 
 
 def _root(tmp_path: Path, **overrides: object) -> Path:
     root = tmp_path / "WFH-ME-V3-20260902"
     root.mkdir()
-    mission.atomic_write_json(root / "MISSION_STATE.json", _state(**overrides), allowed_root=root)
-    mission.atomic_write_json(root / "TASK_GRAPH.json", {"tasks": []}, allowed_root=root)
-    mission.atomic_write_json(root / "EVIDENCE_LEDGER.json", {"records": []}, allowed_root=root)
-    return root
-
+    return write_required_bundle(root, state=_state(**overrides))
 
 
 def _observations(**overrides: object) -> dict[str, object]:
-    values: dict[str, object] = {
-        "observed_main_sha": "b" * 40,
-        "observed_production_sha": "c" * 40,
-        "observed_branch_head": "d" * 40,
-        "observed_branch": "feat/mission-continuity-v1-20260902",
-        "observed_worktree": "/srv/wfh-worktrees/mission-continuity-v1-20260902",
-    }
-    values.update(overrides)
-    return values
+    return valid_observations(**overrides)
+
 
 def test_latest_pointer_cannot_regress_to_older_valid_checkpoint(tmp_path: Path) -> None:
     root = _root(tmp_path)
@@ -128,13 +106,36 @@ def test_checkpoint_hashes_all_durable_control_state_files(tmp_path: Path) -> No
     root = _root(tmp_path)
     mission.atomic_write_json(root / "TASK_GRAPH.json", {"tasks": []}, allowed_root=root)
     mission.atomic_write_json(root / "EVIDENCE_LEDGER.json", {"records": []}, allowed_root=root)
-    mission.atomic_write_json(root / "BRANCH_REGISTRY.json", {"records": []}, allowed_root=root)
     mission.atomic_write_json(
-        root / "SCIENTIFIC_STATE.json",
-        {"final_holdout_opened": False, "final_holdout_retired": False},
+        root / "BRANCH_REGISTRY.json",
+        {
+            "contract_version": "wfh_branch_registry_v1",
+            "mission_id": "WFH-ME-V3-20260902",
+            "records": [
+                {
+                    "task_id": "M-1.9_CHAOS_RECOVERY_CERTIFICATION",
+                    "branch_name": "feat/mission-continuity-v1-20260902",
+                    "worktree_path": "/srv/wfh-worktrees/mission-continuity-v1-20260902",
+                    "current_sha": "d" * 40,
+                    "state": "VERIFYING",
+                }
+            ],
+        },
         allowed_root=root,
     )
-    (root / "DECISION_LOG.jsonl").write_text("{}\n", encoding="utf-8")
+    mission.atomic_write_json(
+        root / "SCIENTIFIC_STATE.json",
+        {
+            "contract_version": "wfh_scientific_state_v1",
+            "mission_id": "WFH-ME-V3-20260902",
+            "final_holdout_opened": False,
+            "final_holdout_retired": False,
+        },
+        allowed_root=root,
+    )
+    (root / "DECISION_LOG.jsonl").write_text(
+        '{"decision_id":"D-1"}\n', encoding="utf-8"
+    )
 
     pointer = mission.create_checkpoint(root, created_at="2026-09-02T15:30:00Z")
     checkpoint = json.loads((root / pointer["path"]).read_text(encoding="utf-8"))

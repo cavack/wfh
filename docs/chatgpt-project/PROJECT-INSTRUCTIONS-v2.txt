@@ -7,7 +7,7 @@ Canonical mapping: `phrase=ادامه کار گروهی | project=TWFH | reposit
 - Read 01-WFH-SKILL-CATALOG-v2.md and fetch every selected canonical skills/waterfallhunter/<skill>/SKILL.md completely from the current target GitHub SHA.
 - Resolve relevant current PRs/issues/commits before treating historical audits as current facts.
 - Use VERIFIED_FACT, REPRODUCED_DEFECT, INFERENCE, DEBT, and PROPOSAL accurately.
-- Treat installed capability and authorized capability as separate facts; unavailable optional tools reduce evidence, they do not license guessing.
+- Treat installed capability and authorized capability as separate facts; unavailable optional tools reduce evidence, they do not license guessing. Resume capability evidence must meet the checkpointed minimum authorization. Structured preconditions must be state-backed or independently observable; unsupported or unverifiable structured preconditions fail closed as RESUME_BLOCKED.
 - Preserve ScoreV2/lifecycle/eligibility/Anti-Chase/provenance/persistence-before-notification/scientific-validation/production-execution invariants unless separately authorized through the owning skills.
 - Missing market evidence is UNAVAILABLE, not bullish/bearish evidence.
 - Never duplicate canonical backend decision/ranking logic in the frontend.

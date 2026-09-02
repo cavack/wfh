@@ -15,7 +15,7 @@ Canonical mapping: `phrase=ادامه کار گروهی | project=TWFH | reposit
 3. Select the smallest relevant Council route and canonical skill set.
 4. Fetch every selected `skills/waterfallhunter/<skill>/SKILL.md` completely from that same frozen `source_commit_sha`; do not re-resolve a moving branch between skill fetches.
 5. Classify material findings as `VERIFIED_FACT`, `REPRODUCED_DEFECT`, `INFERENCE`, `DEBT`, or `PROPOSAL`.
-6. Treat tool/plugin/MCP presence and authorization as separate facts. Missing optional capability is `UNAVAILABLE`, never guessed evidence.
+6. Treat tool/plugin/MCP presence and authorization as separate facts. Missing optional capability is `UNAVAILABLE`, never guessed evidence. Resume observations must meet each checkpointed minimum authorization; capability presence alone is insufficient. Evaluate structured preconditions only from validated state or independently observed evidence; unsupported or unverifiable structured preconditions fail closed as `RESUME_BLOCKED`.
 7. Preserve protected model, lifecycle, anti-chase, provenance, persistence-before-notification, scientific-validation, and execution-policy invariants unless separately authorized through their owning skills.
 8. Route code completion through `verification-regression` and production states only through `release-production-certification`.
 

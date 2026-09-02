@@ -19,8 +19,9 @@ Required behavior:
 4. Verify checkpoint integrity and supply independently observed values for every checkpointed repository/Production/branch/head/worktree/cleanliness field required by the active task. Never reuse the expected checkpoint value as the observation.
 5. If work stopped mid-step, return `RECONCILIATION_REQUIRED` and reconcile side effects before retrying.
 6. If state drifted, return `DRIFT_DETECTED`; do not silently reuse stale evidence.
-7. If a required capability, control source, or checkpointed observation is unavailable, return `RESUME_BLOCKED` with the exact missing prerequisite; absence is not permission to skip a drift check.
-8. If valid, return `RESUME_READY` and continue from the checkpoint's exact `next_action`.
+7. If a required capability, control source, or checkpointed observation is unavailable, return `RESUME_BLOCKED` with the exact missing prerequisite; absence is not permission to skip a drift check. Every observed capability must meet or exceed the checkpointed minimum authorization; tool presence alone is insufficient.
+8. Evaluate every structured precondition from checkpointed state or independently supplied observations. Unsupported or unverifiable structured preconditions fail closed as `RESUME_BLOCKED`.
+9. If valid, return `RESUME_READY` and continue from the checkpoint's exact `next_action`.
 
 Current initial active mission contract: `WFH-ME-V3-20260902` (`WaterfallHunter Model Excellence v3`). The active-mission pointer may later select a successor without changing the meaning of the resume phrase.
 

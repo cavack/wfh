@@ -47,7 +47,7 @@ The first mission using this protocol is:
 - project: `TWFH`
 - repository: `cavack/wfh`
 - mission id: `WFH-ME-V3-20260902`
-- mission name: `WaterfallHunter Model Excellence v3`
+- mission name: `Model Excellence v3`
 - continuity contract: `wfh_mission_continuity_v1`
 
 Future missions may replace the active mission through the pointer contract, without changing the meaning of `ادامه کار گروهی`: it always resolves the active TWFH mission.
@@ -100,6 +100,7 @@ The mission directory contains:
 - `DECISION_LOG.jsonl`
 - `BRANCH_REGISTRY.json`
 - `SCIENTIFIC_STATE.json`
+- `STEP_JOURNAL.json`
 - `LATEST_CHECKPOINT.json`
 - `checkpoints/`
 - `artifacts/`
@@ -110,20 +111,20 @@ Writes to state/pointer/checkpoint files must be atomic.
 
 `MISSION_STATE.json` records at minimum:
 
-- contract version and mission identity;
+- contract version, canonical project/repository identity, mission id and mission name;
 - charter hash;
 - current phase/task/subtask;
-- baseline/current `main` SHA;
-- observed Production SHA with classification;
-- active PR/branch/worktree references;
+- baseline/current `main` SHA and Production SHA;
+- active PR, branch, branch-head, worktree and worktree-cleanliness references;
 - completed/in-progress/blocked/deferred tasks;
 - latest verified facts and open defect/hypothesis/proposal IDs;
 - scientific, runtime and release summaries;
-- exact `next_action`, owner and preconditions;
+- exact `next_action`, owner and structured preconditions; supported preconditions are validated state equality or independently observed equality, and anything unsupported/unverifiable fails closed;
+- required capabilities plus a per-capability minimum authorization (`AVAILABLE`, `AUTHORIZED_READ`, or `AUTHORIZED_WRITE`);
 - last checkpoint id/hash/time;
 - updated timestamp.
 
-Secrets, credentials and raw private exchange/account data are forbidden.
+Secrets, credentials and raw private exchange/account data are forbidden. Mission state is recursively checked for secret-bearing key names before checkpoint serialization.
 
 ## Task graph
 
@@ -141,7 +142,7 @@ Every task has:
 - current state;
 - exact next action when not terminal.
 
-A child cannot become `COMPLETE` without a parent-consumable handoff record.
+Task ids must be unique, every parent must exist, and the dependency graph must be acyclic. A child cannot become `COMPLETE` without a parent-consumable handoff record.
 
 ## Workstream bound
 
@@ -165,7 +166,7 @@ Each mission branch/worktree record contains:
 - PR number when applicable;
 - merge SHA when applicable.
 
-No unregistered mission branch is considered authoritative mission state.
+No unregistered mission branch is considered authoritative mission state. The registry must contain exactly one record matching the active branch/worktree, and that record's `current_sha` must equal `MISSION_STATE.active_branch_head`.
 
 ## Step interruption protocol
 
@@ -217,7 +218,8 @@ Resume fails closed if:
 - the hash does not match;
 - the mission id differs;
 - checkpoint sequence regresses;
-- required referenced state files are invalid.
+- any contract-required durable state file is absent or invalid (`TASK_GRAPH.json`, `EVIDENCE_LEDGER.json`, `BRANCH_REGISTRY.json`, `SCIENTIFIC_STATE.json`, `STEP_JOURNAL.json`, or `DECISION_LOG.jsonl`);
+- branch/worktree authority disagrees with mission state.
 
 ## Human resume projection
 
@@ -274,6 +276,8 @@ Completed investigations may be reopened only when new current evidence contradi
 
 ## Drift guard
 
+Resume evaluation holds the mission lock across checkpoint loading, live-journal/state-file checks, observations, capability authorization, structured preconditions and final drift evaluation so a concurrent journal mutation cannot create a false `RESUME_READY`.
+
 Before a material implementation/release/scientific action, the mission controller compares:
 
 - mission id/charter hash;
@@ -293,7 +297,7 @@ Use two durable issues:
 1. stable pointer issue: `[MISSION][POINTER] TWFH Active Mission`;
 2. mission issue: `[MISSION] WFH-ME-V3-20260902 — Model Excellence v3`.
 
-The pointer issue exposes the active mission id, mission issue number and latest checkpoint reference. The mission issue body contains the current compact state; checkpoint transitions are mirrored as immutable comments where GitHub write authorization exists.
+The pointer issue exposes the active mission id, mission issue number and latest checkpoint reference. The mission issue title is derived from validated `mission_name`. The mission issue body contains the current compact state; checkpoint transitions are mirrored as immutable comments where GitHub write authorization exists. Remote synchronization writes mission body and immutable checkpoint evidence first, then publishes the pointer issue last as the commit marker.
 
 GitHub state must not contain secrets or bulky raw evidence.
 

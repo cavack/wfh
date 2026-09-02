@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 from scripts import wfh_mission as mission
+from wfh_mission_test_support import valid_state, write_required_bundle
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -13,27 +14,14 @@ SCRIPT = REPO / "scripts/wfh_mission.py"
 
 
 def _state() -> dict[str, object]:
-    return {
-        "contract_version": mission.MISSION_CONTRACT,
-        "mission_id": "WFH-ME-V3-20260902",
-        "project": "TWFH",
-        "repository": "cavack/wfh",
-        "baseline_main_sha": "a" * 40,
-        "current_main_sha": "b" * 40,
-        "current_phase": "M0",
-        "current_task": "M0.5",
-        "next_action": "continue Task 5",
-        "required_capabilities": [],
-    }
+    return valid_state(current_task="M0.5", next_action="continue Task 5")
 
 
 def _control_root(tmp_path: Path) -> Path:
     control = tmp_path / "mission-control"
     mission_dir = control / "WFH-ME-V3-20260902"
     mission_dir.mkdir(parents=True)
-    mission.atomic_write_json(mission_dir / "MISSION_STATE.json", _state(), allowed_root=mission_dir)
-    mission.atomic_write_json(mission_dir / "TASK_GRAPH.json", {"tasks": []}, allowed_root=mission_dir)
-    mission.atomic_write_json(mission_dir / "EVIDENCE_LEDGER.json", {"records": []}, allowed_root=mission_dir)
+    write_required_bundle(mission_dir, state=_state())
     mission.create_checkpoint(mission_dir, created_at="2026-09-02T15:10:00Z")
     mission.atomic_write_json(
         control / "ACTIVE_MISSION.json",
@@ -60,6 +48,17 @@ def _run(control: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _resume_observation_args() -> tuple[str, ...]:
+    return (
+        "--observed-main-sha", "b" * 40,
+        "--observed-production-sha", "c" * 40,
+        "--observed-branch-head", "d" * 40,
+        "--observed-branch", "feat/mission-continuity-v1-20260902",
+        "--observed-worktree", "/srv/wfh-worktrees/mission-continuity-v1-20260902",
+        "--observed-worktree-status", "clean",
+    )
+
+
 def test_cli_rejects_noncanonical_resume_phrase(tmp_path: Path) -> None:
     control = _control_root(tmp_path)
     proc = _run(control, "resume", "--intent", "ادامه پروژه", "--json")
@@ -71,7 +70,7 @@ def test_cli_rejects_noncanonical_resume_phrase(tmp_path: Path) -> None:
 
 def test_cli_canonical_phrase_returns_json_from_active_mission(tmp_path: Path) -> None:
     control = _control_root(tmp_path)
-    proc = _run(control, "resume", "--intent", "ادامه کار گروهی", "--json", "--observed-main-sha", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+    proc = _run(control, "resume", "--intent", "ادامه کار گروهی", "--json", *_resume_observation_args())
 
     assert proc.returncode == 0, proc.stderr
     output = json.loads(proc.stdout)
@@ -82,7 +81,7 @@ def test_cli_canonical_phrase_returns_json_from_active_mission(tmp_path: Path) -
 
 def test_cli_normalizes_unicode_whitespace_for_canonical_phrase(tmp_path: Path) -> None:
     control = _control_root(tmp_path)
-    proc = _run(control, "resume", "--intent", "  ادامه\u00a0کار\u2003گروهی  ", "--json", "--observed-main-sha", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+    proc = _run(control, "resume", "--intent", "  ادامه\u00a0کار\u2003گروهی  ", "--json", *_resume_observation_args())
 
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout)["disposition"] == "RESUME_READY"
@@ -94,7 +93,7 @@ def test_cli_corrupt_checkpoint_pointer_returns_nonzero(tmp_path: Path) -> None:
         "{not-json}\n", encoding="utf-8"
     )
 
-    proc = _run(control, "resume", "--intent", "ادامه کار گروهی", "--json", "--observed-main-sha", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+    proc = _run(control, "resume", "--intent", "ادامه کار گروهی", "--json", *_resume_observation_args())
 
     assert proc.returncode != 0
     output = json.loads(proc.stdout)

@@ -1,37 +1,25 @@
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
 from scripts import wfh_mission as mission
+from wfh_mission_test_support import valid_state, write_required_bundle
 
 
 def _state() -> dict[str, object]:
-    return {
-        "contract_version": mission.MISSION_CONTRACT,
-        "mission_id": "WFH-ME-V3-20260902",
-        "project": "TWFH",
-        "repository": "cavack/wfh",
-        "baseline_main_sha": "a" * 40,
-        "current_main_sha": "b" * 40,
-        "current_phase": "M0",
-        "current_task": "M0.6",
-        "next_action": "sync GitHub control plane",
-        "active_branch": "feat/mission-continuity-v1-20260902",
-        "active_worktree": "/srv/wfh-worktrees/mission-continuity-v1-20260902",
-        "active_pr": None,
-        "required_capabilities": [],
-        "telegram_bot_token": "MUST_NOT_APPEAR",
-        "api_key": "MUST_NOT_APPEAR_EITHER",
-    }
+    return valid_state(
+        current_task="M0.6",
+        next_action="sync GitHub control plane",
+        active_pr=None,
+    )
 
 
 def _mission_dir(tmp_path: Path) -> Path:
     root = tmp_path / "WFH-ME-V3-20260902"
     root.mkdir()
-    mission.atomic_write_json(root / "MISSION_STATE.json", _state(), allowed_root=root)
-    mission.atomic_write_json(root / "TASK_GRAPH.json", {"tasks": []}, allowed_root=root)
-    mission.atomic_write_json(root / "EVIDENCE_LEDGER.json", {"records": []}, allowed_root=root)
+    write_required_bundle(root, state=_state())
     mission.create_checkpoint(root, created_at="2026-09-02T15:20:00Z")
     return root
 
@@ -57,8 +45,11 @@ def test_pointer_issue_body_contains_durable_resume_identity(tmp_path: Path) -> 
 def test_mission_issue_body_is_compact_and_secret_free(tmp_path: Path) -> None:
     root = _mission_dir(tmp_path)
     loaded = mission.load_latest_checkpoint(root)
+    checkpoint = copy.deepcopy(loaded["checkpoint"])
+    checkpoint["mission_state"]["telegram_bot_token"] = "MUST_NOT_APPEAR"
+    checkpoint["mission_state"]["api_key"] = "MUST_NOT_APPEAR_EITHER"
 
-    body = mission.render_mission_issue(loaded["checkpoint"], loaded["pointer"])
+    body = mission.render_mission_issue(checkpoint, loaded["pointer"])
 
     assert "<!-- wfh-mission-state:v1" in body
     assert "M0.6" in body

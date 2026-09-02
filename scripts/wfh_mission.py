@@ -20,6 +20,20 @@ from typing import Any
 
 
 MISSION_CONTRACT = "wfh_mission_continuity_v1"
+CANONICAL_PROJECT = "TWFH"
+CANONICAL_REPOSITORY = "cavack/wfh"
+MINIMUM_CAPABILITY_STATES = {"AVAILABLE", "AUTHORIZED_READ", "AUTHORIZED_WRITE"}
+CAPABILITY_STATE_RANK = {"AVAILABLE": 0, "AUTHORIZED_READ": 1, "AUTHORIZED_WRITE": 2}
+OBSERVATION_STATE_KEYS = {
+    "repository_main": "current_main_sha",
+    "production_revision": "production_sha",
+    "branch_head": "active_branch_head",
+    "active_branch": "active_branch",
+    "active_worktree": "active_worktree",
+    "worktree_cleanliness": "active_worktree_dirty",
+}
+_SECRET_KEY_PARTS = {"token", "secret", "password", "passwd", "credential", "cookie"}
+_SECRET_COMPACT_KEYS = {"apikey", "privatekey", "accesstoken", "refreshtoken", "telegrambottoken"}
 TASK_STATES = {
     "NOT_STARTED",
     "READY",
@@ -57,27 +71,108 @@ def _is_sha(value: object) -> bool:
     return isinstance(value, str) and bool(_SHA_RE.fullmatch(value))
 
 
+def _secret_key_paths(value: object, *, prefix: str = "mission_state") -> list[str]:
+    paths: list[str] = []
+    if isinstance(value, dict):
+        for raw_key, child in value.items():
+            key = str(raw_key)
+            lowered = key.lower()
+            parts = {part for part in re.split(r"[^a-z0-9]+", lowered) if part}
+            compact = re.sub(r"[^a-z0-9]", "", lowered)
+            child_path = f"{prefix}.{key}"
+            if parts & _SECRET_KEY_PARTS or compact in _SECRET_COMPACT_KEYS:
+                paths.append(child_path)
+            paths.extend(_secret_key_paths(child, prefix=child_path))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            paths.extend(_secret_key_paths(child, prefix=f"{prefix}[{index}]"))
+    return paths
+
+
+def _validate_preconditions(preconditions: object) -> list[str]:
+    if preconditions is None:
+        return []
+    if not isinstance(preconditions, list):
+        return ["mission state next_action_preconditions must be an array"]
+    errors: list[str] = []
+    for index, item in enumerate(preconditions):
+        if not isinstance(item, dict):
+            errors.append(f"mission state precondition {index} must be an object")
+            continue
+        kind = item.get("kind")
+        if kind == "state_equals":
+            if not isinstance(item.get("field"), str) or not item.get("field"):
+                errors.append(f"mission state precondition {index} state_equals requires field")
+            if "expected" not in item:
+                errors.append(f"mission state precondition {index} state_equals requires expected")
+        elif kind == "observation_equals":
+            if item.get("scope") not in OBSERVATION_STATE_KEYS:
+                errors.append(f"mission state precondition {index} has unsupported observation scope")
+            if "expected" not in item:
+                errors.append(f"mission state precondition {index} observation_equals requires expected")
+        else:
+            errors.append(f"mission state precondition {index} has unsupported kind: {kind}")
+        if "description" in item and not isinstance(item.get("description"), str):
+            errors.append(f"mission state precondition {index} description must be text")
+    return errors
+
+
 def validate_mission_state(state: dict[str, Any]) -> list[str]:
     errors: list[str] = []
-    required = (
+    required_nonempty = (
         "contract_version",
         "mission_id",
+        "mission_name",
         "project",
         "repository",
         "baseline_main_sha",
         "current_main_sha",
+        "production_sha",
         "current_phase",
         "current_task",
         "next_action",
+        "active_branch_head",
+        "active_branch",
+        "active_worktree",
     )
-    for key in required:
+    for key in required_nonempty:
         if not state.get(key):
+            errors.append(f"mission state missing required field: {key}")
+    for key in ("active_worktree_dirty", "required_capabilities", "required_capability_states"):
+        if key not in state:
             errors.append(f"mission state missing required field: {key}")
     if state.get("contract_version") not in {None, MISSION_CONTRACT}:
         errors.append("mission state contract_version is unsupported")
-    for key in ("baseline_main_sha", "current_main_sha"):
-        if key in state and not _is_sha(state.get(key)):
+    if state.get("project") not in {None, CANONICAL_PROJECT}:
+        errors.append(f"mission state project must be canonical {CANONICAL_PROJECT}")
+    if state.get("repository") not in {None, CANONICAL_REPOSITORY}:
+        errors.append(f"mission state repository must be canonical {CANONICAL_REPOSITORY}")
+    for key in ("baseline_main_sha", "current_main_sha", "production_sha", "active_branch_head"):
+        if key in state and state.get(key) is not None and not _is_sha(state.get(key)):
             errors.append(f"mission state {key} must be a 40-character lowercase Git SHA")
+    if "active_worktree_dirty" in state and not isinstance(state.get("active_worktree_dirty"), bool):
+        errors.append("mission state active_worktree_dirty must be boolean")
+    capabilities = state.get("required_capabilities")
+    if not isinstance(capabilities, list) or any(
+        not isinstance(item, str) or not item for item in (capabilities or [])
+    ):
+        errors.append("mission state required_capabilities must be an array of names")
+        capabilities = []
+    elif len(set(capabilities)) != len(capabilities):
+        errors.append("mission state required_capabilities must be unique")
+    required_states = state.get("required_capability_states")
+    if not isinstance(required_states, dict):
+        errors.append("mission state required_capability_states must be an object")
+    else:
+        if set(required_states) != set(capabilities):
+            errors.append("mission state required_capability_states must exactly cover required_capabilities")
+        for name, minimum in required_states.items():
+            if minimum not in MINIMUM_CAPABILITY_STATES:
+                errors.append(f"mission state capability {name} has invalid minimum authorization: {minimum}")
+    errors.extend(_validate_preconditions(state.get("next_action_preconditions", [])))
+    secret_paths = _secret_key_paths(state)
+    if secret_paths:
+        errors.append("mission state must not contain secret or credential fields: " + ", ".join(secret_paths))
     return errors
 
 
@@ -87,11 +182,17 @@ def validate_task_graph(graph: dict[str, Any]) -> list[str]:
     if not isinstance(tasks, list):
         return ["task graph tasks must be an array"]
     in_progress = 0
+    task_ids: list[str] = []
+    parent_map: dict[str, list[str]] = {}
     for task in tasks:
         if not isinstance(task, dict):
             errors.append("task graph entries must be objects")
             continue
-        task_id = str(task.get("task_id") or "<missing>")
+        raw_task_id = task.get("task_id")
+        task_id = raw_task_id if isinstance(raw_task_id, str) and raw_task_id else "<missing>"
+        if task_id == "<missing>":
+            errors.append("task graph entry missing task_id")
+        task_ids.append(task_id)
         state = task.get("state")
         if state not in TASK_STATES:
             errors.append(f"task {task_id} has invalid state: {state}")
@@ -100,8 +201,39 @@ def validate_task_graph(graph: dict[str, Any]) -> list[str]:
         parents = task.get("parents", [])
         if not isinstance(parents, list):
             errors.append(f"task {task_id} parents must be an array")
+            parents = []
+        elif any(not isinstance(parent, str) or not parent for parent in parents):
+            errors.append(f"task {task_id} parents must contain task IDs")
+            parents = [parent for parent in parents if isinstance(parent, str) and parent]
+        parent_map[task_id] = list(parents)
         if state == "COMPLETE" and parents and not task.get("handoff"):
             errors.append(f"task {task_id} COMPLETE requires a parent-consumable handoff")
+    duplicates = sorted({task_id for task_id in task_ids if task_ids.count(task_id) > 1})
+    if duplicates:
+        errors.append("task graph duplicate task IDs: " + ", ".join(duplicates))
+    valid_ids = set(task_ids) - {"<missing>"}
+    for task_id, parents in parent_map.items():
+        for parent in parents:
+            if parent not in valid_ids:
+                errors.append(f"task {task_id} parent does not exist: {parent}")
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(task_id: str) -> bool:
+        if task_id in visiting:
+            return True
+        if task_id in visited:
+            return False
+        visiting.add(task_id)
+        for parent in parent_map.get(task_id, []):
+            if parent in valid_ids and visit(parent):
+                return True
+        visiting.remove(task_id)
+        visited.add(task_id)
+        return False
+
+    if any(visit(task_id) for task_id in valid_ids if task_id not in visited):
+        errors.append("task graph dependency cycle detected")
     if in_progress > 3:
         errors.append("task graph may not have more than three IN_PROGRESS workstreams")
     return errors
@@ -122,6 +254,118 @@ def validate_evidence_ledger(ledger: dict[str, Any]) -> list[str]:
             errors.append(
                 f"evidence {evidence_id} classification must be one of {sorted(EVIDENCE_CLASSES)}"
             )
+    return errors
+
+
+def validate_branch_registry(
+    registry: dict[str, Any], *, mission_id: str, state: dict[str, Any] | None = None
+) -> list[str]:
+    errors: list[str] = []
+    if registry.get("contract_version") != "wfh_branch_registry_v1":
+        errors.append("branch registry contract_version is unsupported")
+    if registry.get("mission_id") != mission_id:
+        errors.append("branch registry mission_id mismatch")
+    records = registry.get("records")
+    if not isinstance(records, list):
+        return errors + ["branch registry records must be an array"]
+    seen_worktrees: set[str] = set()
+    valid_records: list[dict[str, Any]] = []
+    for index, record in enumerate(records):
+        if not isinstance(record, dict):
+            errors.append(f"branch registry record {index} must be an object")
+            continue
+        for key in ("task_id", "branch_name", "worktree_path", "state"):
+            if not record.get(key):
+                errors.append(f"branch registry record {index} missing {key}")
+        current_sha = record.get("current_sha")
+        if current_sha is not None and not _is_sha(current_sha):
+            errors.append(f"branch registry record {index} current_sha must be a Git SHA")
+        worktree = record.get("worktree_path")
+        if isinstance(worktree, str) and worktree:
+            if worktree in seen_worktrees:
+                errors.append(f"branch registry duplicate worktree_path: {worktree}")
+            seen_worktrees.add(worktree)
+        valid_records.append(record)
+    if state is not None:
+        active_branch = state.get("active_branch")
+        active_worktree = state.get("active_worktree")
+        active_head = state.get("active_branch_head")
+        matching = [
+            record
+            for record in valid_records
+            if record.get("branch_name") == active_branch
+            and record.get("worktree_path") == active_worktree
+        ]
+        if len(matching) != 1:
+            errors.append("branch registry must contain exactly one active branch/worktree record")
+        elif matching[0].get("current_sha") != active_head:
+            errors.append("branch registry active branch head does not match mission state")
+    return errors
+
+
+def validate_scientific_state(scientific: dict[str, Any], *, mission_id: str) -> list[str]:
+    errors: list[str] = []
+    if scientific.get("contract_version") != "wfh_scientific_state_v1":
+        errors.append("scientific state contract_version is unsupported")
+    if scientific.get("mission_id") != mission_id:
+        errors.append("scientific state mission_id mismatch")
+    for key in ("final_holdout_opened", "final_holdout_retired"):
+        if not isinstance(scientific.get(key), bool):
+            errors.append(f"scientific state {key} must be boolean")
+    if scientific.get("final_holdout_retired") is True and scientific.get("final_holdout_opened") is not True:
+        errors.append("scientific state cannot retire a final holdout that was never opened")
+    return errors
+
+
+def validate_step_journal(journal: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    if journal.get("contract_version") != "wfh_step_journal_v1":
+        errors.append("step journal contract_version is unsupported")
+    steps = journal.get("steps")
+    if not isinstance(steps, list):
+        return errors + ["step journal steps must be an array"]
+    seen: set[str] = set()
+    for index, step in enumerate(steps):
+        if not isinstance(step, dict):
+            errors.append(f"step journal entry {index} must be an object")
+            continue
+        step_id = step.get("step_id")
+        if not isinstance(step_id, str) or not step_id:
+            errors.append(f"step journal entry {index} missing step_id")
+            continue
+        if step_id in seen:
+            errors.append(f"step journal duplicate step_id: {step_id}")
+        seen.add(step_id)
+        if step.get("status") not in {"IN_PROGRESS", "COMPLETE"}:
+            errors.append(f"step journal {step_id} has invalid status")
+    return errors
+
+
+def validate_decision_log_bytes(payload: bytes) -> list[str]:
+    errors: list[str] = []
+    seen: set[str] = set()
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError:
+        return ["decision log must be UTF-8"]
+    for line_number, raw in enumerate(text.splitlines(), start=1):
+        if not raw.strip():
+            continue
+        try:
+            item = json.loads(raw)
+        except json.JSONDecodeError:
+            errors.append(f"decision log line {line_number} is invalid JSON")
+            continue
+        if not isinstance(item, dict):
+            errors.append(f"decision log line {line_number} must be an object")
+            continue
+        decision_id = item.get("decision_id")
+        if not isinstance(decision_id, str) or not decision_id:
+            errors.append(f"decision log line {line_number} missing decision_id")
+            continue
+        if decision_id in seen:
+            errors.append(f"decision log duplicate decision_id: {decision_id}")
+        seen.add(decision_id)
     return errors
 
 
@@ -269,6 +513,29 @@ def _load_json(path: Path) -> dict[str, Any]:
     return data
 
 
+def _precondition_summary(preconditions: object) -> str:
+    if not isinstance(preconditions, list) or not preconditions:
+        return "none"
+    rendered: list[str] = []
+    for item in preconditions:
+        if isinstance(item, str):
+            rendered.append(item)
+            continue
+        if not isinstance(item, dict):
+            rendered.append("INVALID")
+            continue
+        description = item.get("description")
+        if isinstance(description, str) and description:
+            rendered.append(description)
+        elif item.get("kind") == "state_equals":
+            rendered.append(f"{item.get('field')} == {item.get('expected')!r}")
+        elif item.get("kind") == "observation_equals":
+            rendered.append(f"{item.get('scope')} == {item.get('expected')!r}")
+        else:
+            rendered.append("INVALID")
+    return ", ".join(rendered) or "none"
+
+
 def _resume_projection(checkpoint: dict[str, Any]) -> str:
     state = checkpoint["mission_state"]
     completed = ", ".join(state.get("completed_tasks", [])) or "none"
@@ -300,20 +567,32 @@ def _resume_projection(checkpoint: dict[str, Any]) -> str:
             f"Active PR: {state.get('active_pr', 'UNAVAILABLE')}",
             f"In-progress operation: {operation}",
             f"Next action: {state.get('next_action', 'UNAVAILABLE')}",
-            f"Preconditions: {', '.join(state.get('next_action_preconditions', [])) or 'none'}",
+            f"Preconditions: {_precondition_summary(state.get('next_action_preconditions', []))}",
             f"Do not: {', '.join(state.get('do_not', [])) or 'none'}",
             "",
         ]
     )
 
 
-def _validate_checkpoint_control_bundle(root: Path) -> list[str]:
+def _validate_checkpoint_control_bundle(root: Path, state: dict[str, Any]) -> list[str]:
     errors: list[str] = []
-    validators = (
+    mission_id = str(state.get("mission_id") or "")
+    json_validators: tuple[tuple[str, Any], ...] = (
         ("TASK_GRAPH.json", validate_task_graph),
         ("EVIDENCE_LEDGER.json", validate_evidence_ledger),
+        (
+            "BRANCH_REGISTRY.json",
+            lambda payload: validate_branch_registry(
+                payload, mission_id=mission_id, state=state
+            ),
+        ),
+        (
+            "SCIENTIFIC_STATE.json",
+            lambda payload: validate_scientific_state(payload, mission_id=mission_id),
+        ),
+        (STEP_JOURNAL_FILE, validate_step_journal),
     )
-    for name, validator in validators:
+    for name, validator in json_validators:
         path = _confined_path(root / name, root)
         if not path.exists():
             errors.append(f"required checkpoint state missing: {name}")
@@ -324,6 +603,19 @@ def _validate_checkpoint_control_bundle(root: Path) -> list[str]:
             errors.append(f"invalid {name}: {type(exc).__name__}")
             continue
         errors.extend(f"{name}: {message}" for message in validator(payload))
+    decision_path = _confined_path(root / "DECISION_LOG.jsonl", root)
+    if not decision_path.exists():
+        errors.append("required checkpoint state missing: DECISION_LOG.jsonl")
+    else:
+        try:
+            decision_payload = decision_path.read_bytes()
+        except OSError as exc:
+            errors.append(f"invalid DECISION_LOG.jsonl: {type(exc).__name__}")
+        else:
+            errors.extend(
+                f"DECISION_LOG.jsonl: {message}"
+                for message in validate_decision_log_bytes(decision_payload)
+            )
     return errors
 
 
@@ -332,7 +624,7 @@ def create_checkpoint(mission_dir: Path, *, created_at: str | None = None) -> di
     with _mission_lock(root):
         state_path = _confined_path(root / MISSION_STATE_FILE, root)
         state = _load_json(state_path)
-        errors = validate_mission_state(state) + _validate_checkpoint_control_bundle(root)
+        errors = validate_mission_state(state) + _validate_checkpoint_control_bundle(root, state)
         if errors:
             raise ValueError("; ".join(errors))
         checkpoint_id = _next_checkpoint_id(root)
@@ -340,9 +632,7 @@ def create_checkpoint(mission_dir: Path, *, created_at: str | None = None) -> di
         state_files: dict[str, str | None] = {}
         for name in DURABLE_STATE_FILES:
             candidate = _confined_path(root / name, root)
-            state_files[name] = (
-                _sha256_bytes(candidate.read_bytes()) if candidate.exists() else None
-            )
+            state_files[name] = _sha256_bytes(candidate.read_bytes())
         checkpoint = {
             "contract_version": "wfh_mission_checkpoint_v1",
             "mission_id": state["mission_id"],
@@ -510,7 +800,7 @@ OBSERVED_CAPABILITY_STATES = {
     "UNAVAILABLE",
     "BLOCKED",
 }
-_USABLE_CAPABILITY_STATES = {"AVAILABLE", "AUTHORIZED_READ", "AUTHORIZED_WRITE"}
+_USABLE_CAPABILITY_STATES = set(MINIMUM_CAPABILITY_STATES)
 
 
 def _interrupted_step_gate(root: Path, checkpoint: dict[str, Any]) -> dict[str, Any] | None:
@@ -565,11 +855,14 @@ def _observation_gate(
         ("active_worktree", state.get("active_worktree"), observed_worktree),
         ("worktree_cleanliness", state.get("active_worktree_dirty"), observed_worktree_dirty),
     )
-    missing = [
-        name
-        for name, expected, observed in observations
-        if expected is not None and observed is None
-    ]
+    incomplete = [name for name, expected, _observed in observations if expected is None]
+    if incomplete:
+        return {
+            "disposition": "RESUME_BLOCKED",
+            "reason": "checkpoint_observation_contract_incomplete",
+            "missing_checkpoint_observations": incomplete,
+        }
+    missing = [name for name, _expected, observed in observations if observed is None]
     if not missing:
         return None
     return {
@@ -599,18 +892,33 @@ def _worktree_cleanliness_gate(
 def _capability_gate(
     state: dict[str, Any], capabilities: dict[str, str] | None
 ) -> dict[str, Any] | None:
-    states = capabilities or {}
-    unavailable = sorted(
-        capability
-        for capability in state.get("required_capabilities", [])
-        if states.get(capability) not in _USABLE_CAPABILITY_STATES
-    )
-    if not unavailable:
+    observed_states = capabilities or {}
+    required_states = state.get("required_capability_states")
+    if not isinstance(required_states, dict):
+        return {
+            "disposition": "RESUME_BLOCKED",
+            "reason": "capability_requirement_contract_incomplete",
+        }
+    unavailable: list[str] = []
+    insufficient: list[str] = []
+    for capability in state.get("required_capabilities", []):
+        observed = observed_states.get(capability)
+        minimum = required_states.get(capability)
+        if observed not in _USABLE_CAPABILITY_STATES:
+            unavailable.append(capability)
+            continue
+        if minimum not in CAPABILITY_STATE_RANK:
+            insufficient.append(capability)
+            continue
+        if CAPABILITY_STATE_RANK[observed] < CAPABILITY_STATE_RANK[minimum]:
+            insufficient.append(capability)
+    if not unavailable and not insufficient:
         return None
     return {
         "disposition": "RESUME_BLOCKED",
         "reason": "required_capability_unavailable",
-        "unavailable_capabilities": unavailable,
+        "unavailable_capabilities": sorted(unavailable),
+        "insufficient_capabilities": sorted(insufficient),
     }
 
 
@@ -637,6 +945,68 @@ def _observed_drift(
     ]
 
 
+def _precondition_gate(
+    state: dict[str, Any],
+    *,
+    observed_main_sha: str | None,
+    observed_production_sha: str | None,
+    observed_branch_head: str | None,
+    observed_branch: str | None,
+    observed_worktree: str | None,
+    observed_worktree_dirty: bool | None,
+) -> dict[str, Any] | None:
+    preconditions = state.get("next_action_preconditions", [])
+    if not isinstance(preconditions, list):
+        return {"disposition": "RESUME_BLOCKED", "reason": "next_action_precondition_invalid"}
+    observed = {
+        "repository_main": observed_main_sha,
+        "production_revision": observed_production_sha,
+        "branch_head": observed_branch_head,
+        "active_branch": observed_branch,
+        "active_worktree": observed_worktree,
+        "worktree_cleanliness": observed_worktree_dirty,
+    }
+    unmet: list[str] = []
+    for index, item in enumerate(preconditions):
+        if not isinstance(item, dict):
+            return {
+                "disposition": "RESUME_BLOCKED",
+                "reason": "next_action_precondition_invalid",
+                "precondition_index": index,
+            }
+        kind = item.get("kind")
+        description = str(item.get("description") or f"precondition[{index}]")
+        if kind == "state_equals":
+            if state.get(str(item.get("field"))) != item.get("expected"):
+                unmet.append(description)
+        elif kind == "observation_equals":
+            scope = item.get("scope")
+            if scope not in OBSERVATION_STATE_KEYS:
+                return {
+                    "disposition": "RESUME_BLOCKED",
+                    "reason": "next_action_precondition_invalid",
+                    "precondition_index": index,
+                }
+            expected = item.get("expected")
+            if expected == "checkpoint":
+                expected = state.get(OBSERVATION_STATE_KEYS[str(scope)])
+            if observed.get(str(scope)) != expected:
+                unmet.append(description)
+        else:
+            return {
+                "disposition": "RESUME_BLOCKED",
+                "reason": "next_action_precondition_invalid",
+                "precondition_index": index,
+            }
+    if not unmet:
+        return None
+    return {
+        "disposition": "RESUME_BLOCKED",
+        "reason": "next_action_precondition_unmet",
+        "unmet_preconditions": unmet,
+    }
+
+
 def resume_guard(
     mission_dir: Path,
     *,
@@ -649,40 +1019,50 @@ def resume_guard(
     capabilities: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     root = Path(mission_dir).resolve(strict=True)
-    loaded = load_latest_checkpoint(root)
-    if loaded.get("disposition") != "RESUME_READY":
-        return loaded
-    checkpoint = loaded["checkpoint"]
-    state = checkpoint["mission_state"]
-    gates = (
-        _interrupted_step_gate(root, checkpoint),
-        _state_files_gate(root, checkpoint),
-        _worktree_cleanliness_gate(state, observed_worktree_dirty),
-        _observation_gate(
+    with _mission_lock(root):
+        loaded = load_latest_checkpoint(root)
+        if loaded.get("disposition") != "RESUME_READY":
+            return loaded
+        checkpoint = loaded["checkpoint"]
+        state = checkpoint["mission_state"]
+        gates = (
+            _interrupted_step_gate(root, checkpoint),
+            _state_files_gate(root, checkpoint),
+            _worktree_cleanliness_gate(state, observed_worktree_dirty),
+            _observation_gate(
+                state,
+                observed_main_sha=observed_main_sha,
+                observed_production_sha=observed_production_sha,
+                observed_branch_head=observed_branch_head,
+                observed_branch=observed_branch,
+                observed_worktree=observed_worktree,
+                observed_worktree_dirty=observed_worktree_dirty,
+            ),
+            _capability_gate(state, capabilities),
+            _precondition_gate(
+                state,
+                observed_main_sha=observed_main_sha,
+                observed_production_sha=observed_production_sha,
+                observed_branch_head=observed_branch_head,
+                observed_branch=observed_branch,
+                observed_worktree=observed_worktree,
+                observed_worktree_dirty=observed_worktree_dirty,
+            ),
+        )
+        for result in gates:
+            if result is not None:
+                return result
+        drift = _observed_drift(
             state,
             observed_main_sha=observed_main_sha,
             observed_production_sha=observed_production_sha,
             observed_branch_head=observed_branch_head,
             observed_branch=observed_branch,
             observed_worktree=observed_worktree,
-            observed_worktree_dirty=observed_worktree_dirty,
-        ),
-        _capability_gate(state, capabilities),
-    )
-    for result in gates:
-        if result is not None:
-            return result
-    drift = _observed_drift(
-        state,
-        observed_main_sha=observed_main_sha,
-        observed_production_sha=observed_production_sha,
-        observed_branch_head=observed_branch_head,
-        observed_branch=observed_branch,
-        observed_worktree=observed_worktree,
-    )
-    if drift:
-        return {"disposition": "DRIFT_DETECTED", "reason": "revision_drift", "drift": drift}
-    return loaded
+        )
+        if drift:
+            return {"disposition": "DRIFT_DETECTED", "reason": "revision_drift", "drift": drift}
+        return loaded
 
 
 CANONICAL_RESUME_INTENT = "ادامه کار گروهی"
@@ -709,6 +1089,9 @@ def resolve_active_mission(control_root: Path) -> Path:
     state = _load_json(_confined_path(target / MISSION_STATE_FILE, target))
     if state.get("mission_id") != mission_id:
         raise ValueError("active mission pointer mission identity mismatch")
+    errors = validate_mission_state(state)
+    if errors:
+        raise ValueError("active mission state invalid: " + "; ".join(errors))
     return target
 
 
@@ -775,7 +1158,7 @@ def render_mission_issue(checkpoint: dict[str, Any], pointer: dict[str, Any]) ->
     return "\n".join(
         [
             marker,
-            f"# {checkpoint['mission_id']} — Model Excellence v3",
+            f"# {checkpoint['mission_id']} — {state['mission_name']}",
             "",
             f"Current phase: `{state.get('current_phase', 'UNAVAILABLE')}`",
             f"Current task: `{state.get('current_task', 'UNAVAILABLE')}`",
@@ -968,13 +1351,15 @@ def sync_github(
         }
     checkpoint = loaded["checkpoint"]
     pointer = loaded["pointer"]
+    state = checkpoint["mission_state"]
+    mission_id = str(checkpoint["mission_id"])
+    mission_name = str(state["mission_name"])
     pointer_body = render_pointer_issue(
-        mission_id=checkpoint["mission_id"],
+        mission_id=mission_id,
         mission_issue_number=mission_issue,
         pointer=pointer,
     )
     mission_body = render_mission_issue(checkpoint, pointer)
-    mission_id = str(checkpoint["mission_id"])
     current_pointer = _github_get_issue(repository, pointer_issue, token)
     current_mission = _github_get_issue(repository, mission_issue, token)
     _validate_issue_identity(
@@ -985,11 +1370,11 @@ def sync_github(
     )
     _validate_issue_identity(
         current_mission,
-        expected_title=f"[MISSION] {mission_id} — Model Excellence v3",
+        expected_title=f"[MISSION] {mission_id} — {mission_name}",
         expected_marker=f"<!-- wfh-mission-state:v1 mission={mission_id} -->",
         initialize=initialize,
     )
-    _github_edit_issue(repository, pointer_issue, pointer_body, token)
+    # Publish evidence first. The pointer issue is the final commit marker.
     _github_edit_issue(repository, mission_issue, mission_body, token)
     comments = _github_list_issue_comments(repository, mission_issue, token)
     marker = _checkpoint_marker(pointer)
@@ -1004,6 +1389,7 @@ def sync_github(
             render_checkpoint_comment(checkpoint, pointer),
             token,
         )
+    _github_edit_issue(repository, pointer_issue, pointer_body, token)
     return {
         "status": "SYNCED",
         "reason": None,

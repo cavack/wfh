@@ -61,3 +61,17 @@ def test_codex_entry_uses_real_resume_cli_contract() -> None:
     assert "python3 scripts/wfh_mission.py resume --intent" in text
     assert "--phrase" not in text
     assert "git status" in text or "worktree" in text.lower()
+
+def test_resume_surfaces_require_authorization_floor_and_structured_preconditions() -> None:
+    surfaces = {
+        "codex": _read("AGENTS.md"),
+        "project_instructions": _read("docs/chatgpt-project/PROJECT-INSTRUCTIONS-v2.txt"),
+        "project_router": _read("docs/chatgpt-project/00-WFH-CHATGPT-ROUTER-v2.md"),
+        "resume_overlay": _read("docs/chatgpt-project/TWFH-RESUME.md"),
+    }
+
+    for name, text in surfaces.items():
+        lowered = text.lower()
+        assert "minimum authorization" in lowered, name
+        assert "structured precondition" in lowered, name
+        assert "fail closed" in lowered or "resume_blocked" in lowered, name

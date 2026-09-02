@@ -5,36 +5,24 @@ import subprocess
 from pathlib import Path
 
 from scripts import wfh_mission as mission
+from wfh_mission_test_support import observations, valid_state, write_required_bundle
 
 
 REPO = Path(__file__).resolve().parents[2]
 
 
 def _state(**overrides: object) -> dict[str, object]:
-    state: dict[str, object] = {
-        "contract_version": mission.MISSION_CONTRACT,
-        "mission_id": "WFH-ME-V3-20260902",
-        "project": "TWFH",
-        "repository": "cavack/wfh",
-        "baseline_main_sha": "a" * 40,
-        "current_main_sha": "b" * 40,
-        "production_sha": "c" * 40,
-        "current_phase": "M0",
-        "current_task": "M0.4",
-        "next_action": "reconcile interrupted step",
-        "required_capabilities": [],
-    }
-    state.update(overrides)
-    return state
+    return valid_state(
+        current_task="M0.4",
+        next_action="reconcile interrupted step",
+        **overrides,
+    )
 
 
 def _mission_dir(tmp_path: Path, **overrides: object) -> Path:
     root = tmp_path / "WFH-ME-V3-20260902"
     root.mkdir()
-    mission.atomic_write_json(root / "MISSION_STATE.json", _state(**overrides), allowed_root=root)
-    mission.atomic_write_json(root / "TASK_GRAPH.json", {"tasks": []}, allowed_root=root)
-    mission.atomic_write_json(root / "EVIDENCE_LEDGER.json", {"records": []}, allowed_root=root)
-    return root
+    return write_required_bundle(root, state=_state(**overrides))
 
 
 def test_abrupt_stop_requires_reconciliation_in_fresh_process(tmp_path: Path) -> None:
@@ -73,9 +61,8 @@ def test_main_revision_drift_is_named_and_blocks_ready_resume(tmp_path: Path) ->
 
     result = mission.resume_guard(
         root,
-        observed_main_sha="e" * 40,
-        observed_production_sha="c" * 40,
         capabilities={},
+        **observations(observed_main_sha="e" * 40),
     )
 
     assert result["disposition"] == "DRIFT_DETECTED"
@@ -90,9 +77,8 @@ def test_production_revision_drift_is_named(tmp_path: Path) -> None:
 
     result = mission.resume_guard(
         root,
-        observed_main_sha="b" * 40,
-        observed_production_sha="f" * 40,
         capabilities={},
+        **observations(observed_production_sha="f" * 40),
     )
 
     assert result["disposition"] == "DRIFT_DETECTED"
@@ -107,9 +93,8 @@ def test_required_unavailable_capability_blocks_without_guessing(tmp_path: Path)
 
     result = mission.resume_guard(
         root,
-        observed_main_sha="b" * 40,
-        observed_production_sha="c" * 40,
         capabilities={"github_connector": "UNAVAILABLE"},
+        **observations(),
     )
 
     assert result["disposition"] == "RESUME_BLOCKED"
@@ -136,9 +121,8 @@ def test_completed_journal_step_allows_ready_resume(tmp_path: Path) -> None:
 
     result = mission.resume_guard(
         root,
-        observed_main_sha="b" * 40,
-        observed_production_sha="c" * 40,
         capabilities={"git": "AVAILABLE"},
+        **observations(),
     )
 
     assert result["disposition"] == "RESUME_READY"

@@ -13,6 +13,7 @@ def _state(**overrides: object) -> dict[str, object]:
     state: dict[str, object] = {
         "contract_version": mission.MISSION_CONTRACT,
         "mission_id": "WFH-ME-V3-20260902",
+        "mission_name": "Model Excellence v3",
         "project": "TWFH",
         "repository": "cavack/wfh",
         "baseline_main_sha": "a" * 40,
@@ -26,6 +27,8 @@ def _state(**overrides: object) -> dict[str, object]:
         "active_worktree": "/srv/wfh-worktrees/mission-continuity-v1-20260902",
         "active_worktree_dirty": False,
         "required_capabilities": [],
+        "required_capability_states": {},
+        "next_action_preconditions": [],
     }
     state.update(overrides)
     return state
@@ -34,14 +37,48 @@ def _state(**overrides: object) -> dict[str, object]:
 def _root(tmp_path: Path, **overrides: object) -> Path:
     root = tmp_path / "WFH-ME-V3-20260902"
     root.mkdir()
-    mission.atomic_write_json(root / "MISSION_STATE.json", _state(**overrides), allowed_root=root)
+    payload = _state(**overrides)
+    mission.atomic_write_json(root / "MISSION_STATE.json", payload, allowed_root=root)
     mission.atomic_write_json(root / "TASK_GRAPH.json", {"tasks": []}, allowed_root=root)
     mission.atomic_write_json(root / "EVIDENCE_LEDGER.json", {"records": []}, allowed_root=root)
+    mission.atomic_write_json(
+        root / "BRANCH_REGISTRY.json",
+        {
+            "contract_version": "wfh_branch_registry_v1",
+            "mission_id": "WFH-ME-V3-20260902",
+            "records": [
+                {
+                    "task_id": str(payload["current_task"]),
+                    "branch_name": str(payload["active_branch"]),
+                    "worktree_path": str(payload["active_worktree"]),
+                    "current_sha": str(payload["active_branch_head"]),
+                    "state": "VERIFYING",
+                }
+            ],
+        },
+        allowed_root=root,
+    )
+    mission.atomic_write_json(
+        root / "SCIENTIFIC_STATE.json",
+        {
+            "contract_version": "wfh_scientific_state_v1",
+            "mission_id": "WFH-ME-V3-20260902",
+            "final_holdout_opened": False,
+            "final_holdout_retired": False,
+        },
+        allowed_root=root,
+    )
+    mission.atomic_write_json(
+        root / "STEP_JOURNAL.json",
+        {"contract_version": "wfh_step_journal_v1", "steps": []},
+        allowed_root=root,
+    )
+    (root / "DECISION_LOG.jsonl").write_text("", encoding="utf-8")
     return root
 
 
-def _observations() -> dict[str, object]:
-    return {
+def _observations(**overrides: object) -> dict[str, object]:
+    values: dict[str, object] = {
         "observed_main_sha": "b" * 40,
         "observed_production_sha": "c" * 40,
         "observed_branch_head": "d" * 40,
@@ -49,6 +86,8 @@ def _observations() -> dict[str, object]:
         "observed_worktree": "/srv/wfh-worktrees/mission-continuity-v1-20260902",
         "observed_worktree_dirty": False,
     }
+    values.update(overrides)
+    return values
 
 
 def test_atomic_write_fsyncs_parent_after_replace(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -192,3 +231,255 @@ def test_journal_mutations_enter_mission_lock(monkeypatch: pytest.MonkeyPatch, t
     )
     mission.journal_step_complete(root, "LOCK-1")
     assert events == ["enter", "exit", "enter", "exit"]
+
+
+def test_checkpoint_rejects_state_missing_resume_observations(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    state = json.loads((root / "MISSION_STATE.json").read_text(encoding="utf-8"))
+    for key in (
+        "production_sha",
+        "active_branch_head",
+        "active_branch",
+        "active_worktree",
+        "active_worktree_dirty",
+    ):
+        state.pop(key, None)
+    mission.atomic_write_json(root / "MISSION_STATE.json", state, allowed_root=root)
+
+    with pytest.raises(ValueError, match="production_sha|active_branch"):
+        mission.create_checkpoint(root)
+
+
+def test_checkpoint_requires_every_contract_durable_state_file(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    (root / "BRANCH_REGISTRY.json").unlink()
+
+    with pytest.raises(ValueError, match="BRANCH_REGISTRY.json"):
+        mission.create_checkpoint(root)
+
+
+def test_resume_requires_capability_authorization_level(tmp_path: Path) -> None:
+    root = _root(
+        tmp_path,
+        required_capabilities=["github_connector"],
+        required_capability_states={"github_connector": "AUTHORIZED_WRITE"},
+    )
+    mission.create_checkpoint(root)
+
+    result = mission.resume_guard(
+        root,
+        **_observations(),
+        capabilities={"github_connector": "AUTHORIZED_READ"},
+    )
+
+    assert result["disposition"] == "RESUME_BLOCKED"
+    assert result["reason"] == "required_capability_unavailable"
+    assert result["insufficient_capabilities"] == ["github_connector"]
+
+
+@pytest.mark.parametrize(
+    "tasks",
+    [
+        [
+            {"task_id": "A", "state": "READY", "parents": []},
+            {"task_id": "A", "state": "READY", "parents": []},
+        ],
+        [{"task_id": "A", "state": "READY", "parents": ["MISSING"]}],
+        [
+            {"task_id": "A", "state": "READY", "parents": ["B"]},
+            {"task_id": "B", "state": "READY", "parents": ["A"]},
+        ],
+    ],
+    ids=["duplicate", "dangling", "cycle"],
+)
+def test_checkpoint_rejects_invalid_task_dependency_graph(
+    tmp_path: Path, tasks: list[dict[str, object]]
+) -> None:
+    root = _root(tmp_path)
+    mission.atomic_write_json(root / "TASK_GRAPH.json", {"tasks": tasks}, allowed_root=root)
+
+    with pytest.raises(ValueError, match="task graph|task .*parent|duplicate|cycle"):
+        mission.create_checkpoint(root)
+
+
+def test_resume_guard_holds_mission_lock_for_entire_snapshot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = _root(tmp_path)
+    mission.create_checkpoint(root)
+    events: list[str] = []
+
+    @contextmanager
+    def fake_lock(_root: Path):
+        events.append("enter")
+        yield
+        events.append("exit")
+
+    monkeypatch.setattr(mission, "_mission_lock", fake_lock)
+    result = mission.resume_guard(root, **_observations(), capabilities={})
+
+    assert result["disposition"] == "RESUME_READY"
+    assert events == ["enter", "exit"]
+
+
+def test_github_pointer_is_not_published_before_checkpoint_evidence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = _root(tmp_path)
+    pointer = mission.create_checkpoint(root)
+    state = json.loads((root / "MISSION_STATE.json").read_text(encoding="utf-8"))
+    marker = f"<!-- wfh-mission-state:v1 mission={state['mission_id']} -->"
+    pointer_marker = f"<!-- wfh-mission-pointer:v1 mission={state['mission_id']} -->"
+    monkeypatch.setattr(mission, "_github_token", lambda: "token")
+    monkeypatch.setattr(
+        mission,
+        "_github_get_issue",
+        lambda repository, issue_number, token: (
+            {"title": "[MISSION][POINTER] TWFH Active Mission", "body": pointer_marker}
+            if issue_number == 114
+            else {"title": f"[MISSION] {state['mission_id']} — Model Excellence v3", "body": marker}
+        ),
+    )
+    edits: list[int] = []
+    monkeypatch.setattr(
+        mission,
+        "_github_edit_issue",
+        lambda repository, issue_number, body, token: edits.append(issue_number),
+    )
+    monkeypatch.setattr(mission, "_github_list_issue_comments", lambda *args: [])
+
+    def fail_comment(*args, **kwargs):
+        raise RuntimeError("simulated comment failure")
+
+    monkeypatch.setattr(mission, "_github_comment_issue", fail_comment)
+
+    with pytest.raises(RuntimeError, match="simulated comment failure"):
+        mission.sync_github(
+            root,
+            repository="cavack/wfh",
+            pointer_issue=114,
+            mission_issue=113,
+        )
+
+    assert 114 not in edits
+    assert pointer["checkpoint_id"]
+
+
+def test_mission_issue_title_is_derived_from_mission_state(tmp_path: Path) -> None:
+    root = _root(tmp_path, mission_name="Successor Mission")
+    pointer = mission.create_checkpoint(root)
+    loaded = mission.load_latest_checkpoint(root)
+
+    rendered = mission.render_mission_issue(loaded["checkpoint"], pointer)
+
+    assert f"# {loaded['checkpoint']['mission_id']} — Successor Mission" in rendered
+
+
+def test_checkpoint_rejects_secret_bearing_mission_state(tmp_path: Path) -> None:
+    root = _root(tmp_path, api_key="DO_NOT_SERIALIZE")
+
+    with pytest.raises(ValueError, match="secret|credential"):
+        mission.create_checkpoint(root)
+
+
+def test_checkpoint_rejects_noncanonical_project_repository_identity(tmp_path: Path) -> None:
+    root = _root(tmp_path, project="OTHER", repository="other/repo")
+
+    with pytest.raises(ValueError, match="canonical|project|repository"):
+        mission.create_checkpoint(root)
+
+
+def test_resume_blocks_unmet_structured_next_action_precondition(tmp_path: Path) -> None:
+    root = _root(
+        tmp_path,
+        model_excellence_phase0_blocked=False,
+        next_action_preconditions=[
+            {
+                "kind": "state_equals",
+                "field": "model_excellence_phase0_blocked",
+                "expected": True,
+            }
+        ],
+    )
+    mission.create_checkpoint(root)
+
+    result = mission.resume_guard(root, **_observations(), capabilities={})
+
+    assert result["disposition"] == "RESUME_BLOCKED"
+    assert result["reason"] == "next_action_precondition_unmet"
+
+
+def test_nested_secret_bearing_state_is_rejected(tmp_path: Path) -> None:
+    root = _root(
+        tmp_path,
+        integration={"telegram": {"telegram_bot_token": "DO_NOT_SERIALIZE"}},
+    )
+
+    with pytest.raises(ValueError, match="secret|credential"):
+        mission.create_checkpoint(root)
+
+
+def test_write_authorized_capability_satisfies_write_requirement(tmp_path: Path) -> None:
+    root = _root(
+        tmp_path,
+        required_capabilities=["github_connector"],
+        required_capability_states={"github_connector": "AUTHORIZED_WRITE"},
+    )
+    mission.create_checkpoint(root)
+
+    result = mission.resume_guard(
+        root,
+        **_observations(),
+        capabilities={"github_connector": "AUTHORIZED_WRITE"},
+    )
+
+    assert result["disposition"] == "RESUME_READY"
+
+
+def test_observation_precondition_can_require_checkpoint_value(tmp_path: Path) -> None:
+    root = _root(
+        tmp_path,
+        next_action_preconditions=[
+            {
+                "kind": "observation_equals",
+                "scope": "repository_main",
+                "expected": "checkpoint",
+            }
+        ],
+    )
+    mission.create_checkpoint(root)
+
+    ready = mission.resume_guard(root, **_observations(), capabilities={})
+    drifted = mission.resume_guard(
+        root,
+        **_observations(observed_main_sha="e" * 40),
+        capabilities={},
+    )
+
+    assert ready["disposition"] == "RESUME_READY"
+    assert drifted["disposition"] == "RESUME_BLOCKED"
+    assert drifted["reason"] == "next_action_precondition_unmet"
+
+
+def test_checkpoint_rejects_branch_registry_mismatch_with_active_state(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    mission.atomic_write_json(
+        root / "BRANCH_REGISTRY.json",
+        {
+            "contract_version": "wfh_branch_registry_v1",
+            "mission_id": "WFH-ME-V3-20260902",
+            "records": [
+                {
+                    "task_id": "M-1.9",
+                    "branch_name": "other-branch",
+                    "worktree_path": "/tmp/other-worktree",
+                    "current_sha": "e" * 40,
+                    "state": "VERIFYING",
+                }
+            ],
+        },
+        allowed_root=root,
+    )
+
+    with pytest.raises(ValueError, match="active branch|active worktree|active branch head"):
+        mission.create_checkpoint(root)
