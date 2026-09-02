@@ -222,7 +222,19 @@ def test_research_registry_is_preregisterable_and_falsifiable() -> None:
     assert "regime" in text.lower()
 
 
-def test_snapshot_separates_repository_and_production_revision(tmp_path: Path) -> None:
+def test_snapshot_separates_repository_and_production_revision(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        council,
+        "doctor",
+        lambda repo_root: {
+            "repo": {
+                "status": "AVAILABLE",
+                "path": str(repo_root),
+                "git_sha": "repo-sha-456",
+                "branch": "test",
+            }
+        },
+    )
     _write_json(
         tmp_path / "DATASET_AUDIT.json",
         {"contract": "DATASET_AUDIT.v1", "span_days": 10.0},
@@ -239,9 +251,10 @@ def test_snapshot_separates_repository_and_production_revision(tmp_path: Path) -
     assert snapshot["repo"]["git_sha"] != "production-sha-123"
     assert snapshot["repo"]["classification"] == "VERIFIED_FACT"
     assert snapshot["runtime"]["production_revision"] == {
-        "classification": "VERIFIED_FACT",
+        "classification": "UNVERIFIED_CLAIM",
         "value": "production-sha-123",
     }
+    assert snapshot["readiness"]["repo_matches_claimed_production_revision"] is False
     assert snapshot["research"]["promotion_disposition"] == "NO_PROMOTION_EVIDENCE"
 
 
@@ -271,7 +284,7 @@ def test_snapshot_cli_emits_stable_json(capsys) -> None:
 
     assert rc == 0
     assert output["contract_version"] == "wfh_council_snapshot_v1"
-    assert output["runtime"]["production_revision"]["value"] == "prod-456"
+    assert output["runtime"]["production_revision"] == {"classification": "UNVERIFIED_CLAIM", "value": "prod-456"}
     assert output["generated_at"].endswith("Z")
 
 
@@ -293,3 +306,117 @@ def test_snapshot_marks_repo_identity_unavailable_when_doctor_cannot_resolve_git
 
     assert snapshot["repo"]["classification"] == "UNAVAILABLE"
     assert "repo_identity" in snapshot["unknowns"]
+
+
+def test_validate_manifest_handles_non_mapping_routes_without_crashing() -> None:
+    manifest = council.load_manifest(MANIFEST)
+    broken = copy.deepcopy(manifest)
+    broken["routes"] = []
+
+    errors = council.validate_manifest(REPO, broken)
+
+    assert "manifest routes must be a non-empty object" in errors
+    assert any("model_optimization route" in error for error in errors)
+
+
+def test_validate_cli_reports_invalid_for_non_mapping_routes(tmp_path: Path, capsys) -> None:
+    repo = tmp_path / "repo"
+    manifest_dir = repo / ".agents/wfh-council"
+    manifest_dir.mkdir(parents=True)
+    broken = council.load_manifest(MANIFEST)
+    broken["routes"] = []
+    _write_json(manifest_dir / "manifest.json", broken)
+
+    rc = council.main(["--repo-root", str(repo), "validate", "--json"])
+    output = json.loads(capsys.readouterr().out)
+
+    assert rc == 2
+    assert output["status"] == "INVALID"
+
+
+def _write_promotion_candidate_artifacts(root: Path) -> None:
+    dataset_hash = "dataset-sha"
+    outcome_hash = "outcome-sha"
+    _write_json(root / "DATASET_AUDIT.json", {
+        "contract": "DATASET_AUDIT.v1", "evidence_tier": "TIER_1_PROMOTION_GRADE",
+        "data_sha256": dataset_hash, "span_days": 60.0,
+    })
+    _write_json(root / "OOS_VALIDATION.json", {
+        "contract": "OOS_VALIDATION.v1", "status": "VALIDATED",
+        "dataset_sha256": dataset_hash, "outcome_cache_sha256": outcome_hash,
+    })
+    _write_json(root / "BEST_DEVELOPMENT_CONFIG.json", {
+        "contract": "BEST_DEVELOPMENT_CONFIG.v1", "status": "SCIENTIFIC_CHAMPION",
+        "promotion_allowed": True,
+    })
+    _write_json(root / "PRODUCTION_VS_CHALLENGERS.json", {
+        "contract": "PRODUCTION_VS_CHALLENGERS.v1", "promotion_allowed": True,
+    })
+    _write_json(root / "GATE_REJECTION_FUNNEL.json", {
+        "contract": "GATE_REJECTION_FUNNEL.v1", "episodes_total": 100,
+    })
+    _write_json(root / "OUTCOME_INTEGRITY.json", {
+        "contract": "OUTCOME_INTEGRITY.v1", "cache_sha256": outcome_hash,
+        "net_cost_adjusted_r_available": True,
+        "causal_entry_before_observation_count": 0, "duplicate_snapshot_ids": 0,
+    })
+
+
+def test_research_snapshot_requires_valid_contracts_and_provenance(tmp_path: Path) -> None:
+    _write_promotion_candidate_artifacts(tmp_path)
+    dataset_path = tmp_path / "DATASET_AUDIT.json"
+    dataset = json.loads(dataset_path.read_text(encoding="utf-8"))
+    dataset["contract"] = "DATASET_AUDIT.v999"
+    _write_json(dataset_path, dataset)
+
+    summary = council.summarize_research_evidence(tmp_path)
+
+    assert summary["promotion_disposition"] == "NO_PROMOTION_EVIDENCE"
+    assert "invalid_research_artifact_contract:DATASET_AUDIT.json" in summary["blockers"]
+
+
+def test_research_snapshot_requires_matching_provenance_hashes(tmp_path: Path) -> None:
+    _write_promotion_candidate_artifacts(tmp_path)
+    oos_path = tmp_path / "OOS_VALIDATION.json"
+    oos = json.loads(oos_path.read_text(encoding="utf-8"))
+    oos["dataset_sha256"] = "different-dataset"
+    _write_json(oos_path, oos)
+
+    summary = council.summarize_research_evidence(tmp_path)
+
+    assert summary["promotion_disposition"] == "NO_PROMOTION_EVIDENCE"
+    assert "dataset_provenance_mismatch" in summary["blockers"]
+
+
+def test_research_snapshot_can_identify_structurally_valid_candidate(tmp_path: Path) -> None:
+    _write_promotion_candidate_artifacts(tmp_path)
+
+    summary = council.summarize_research_evidence(tmp_path)
+
+    assert summary["promotion_disposition"] == "PROMOTION_EVIDENCE_CANDIDATE"
+    assert summary["blockers"] == []
+
+
+def test_council_skill_resolution_uses_canonical_precedence() -> None:
+    text = (REPO / ".agents/wfh-council/COUNCIL.md").read_text(encoding="utf-8")
+
+    assert "skills/waterfallhunter" in text
+    assert ".agents/skills" in text
+    assert "canonical" in text.lower()
+    assert "precedence" in text.lower()
+    assert "read completely" in text.lower()
+
+
+def test_manifest_inventory_covers_declared_operational_capabilities() -> None:
+    manifest = council.load_manifest(MANIFEST)
+    optional = set(manifest["tools"]["optional"])
+
+    assert {"grafana", "alertmanager", "pytest", "market_data_connectors"} <= optional
+
+
+def test_research_registry_covers_remaining_challenger_families() -> None:
+    text = (REPO / ".agents/wfh-council/RESEARCH.md").read_text(encoding="utf-8").lower()
+
+    assert "liquidity" in text and "cascade" in text
+    assert "relative weakness" in text and "regime" in text
+    assert "attention" in text

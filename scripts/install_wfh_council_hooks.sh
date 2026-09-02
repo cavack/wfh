@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+# WFH_EXTERNAL_COMMAND_ALLOWLIST: git chmod
 
 ROOT=$(git rev-parse --show-toplevel)
 GIT_DIR=$(git rev-parse --git-dir)

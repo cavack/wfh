@@ -154,7 +154,11 @@
       "prometheus",
       "playwright",
       "codeql",
-      "sonar"
+      "sonar",
+      "grafana",
+      "alertmanager",
+      "pytest",
+      "market_data_connectors"
     ]
   },
   "terminal_outcomes": [

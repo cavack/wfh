@@ -7,7 +7,7 @@ Council v1 coordinates the existing canonical WaterfallHunter skills. It is an o
 1. Resolve current target branch/SHA and open PRs/issues.
 2. Run `python scripts/wfh_council.py validate --json`.
 3. Run `python scripts/wfh_council.py route <task_type> --json`.
-4. Read every routed canonical `skills/waterfallhunter/<skill>/SKILL.md` completely.
+4. Resolve each routed skill with **canonical precedence**: `skills/waterfallhunter/<skill>/SKILL.md` is authoritative; `.agents/skills/<skill>/SKILL.md` is a discovery adapter only. Validate that both declared paths required by the repository contract exist, then read completely the selected canonical `SKILL.md` before proceeding. Never let an adapter override canonical content.
 5. Collect current source/runtime/data evidence before accepting historical findings.
 6. Execute each owner handoff with explicit evidence classification.
 7. Route code completion through `regression_lead`.

@@ -122,7 +122,8 @@ def validate_manifest(repo_root: Path, manifest: dict[str, Any]) -> list[str]:
     errors.extend(_validate_production_authority(manifest, roles))
     errors.extend(_validate_invariants(manifest))
 
-    model_route = manifest.get("routes", {}).get("model_optimization", [])
+    routes = manifest.get("routes")
+    model_route = routes.get("model_optimization", []) if isinstance(routes, dict) else []
     required = [
         "chief_orchestrator",
         "market_evidence_forensics",
@@ -223,6 +224,58 @@ RESEARCH_ARTIFACTS = (
     "OUTCOME_INTEGRITY.json",
 )
 
+EXPECTED_RESEARCH_CONTRACTS = {
+    "DATASET_AUDIT.json": "DATASET_AUDIT.v1",
+    "OOS_VALIDATION.json": "OOS_VALIDATION.v1",
+    "BEST_DEVELOPMENT_CONFIG.json": "BEST_DEVELOPMENT_CONFIG.v1",
+    "PRODUCTION_VS_CHALLENGERS.json": "PRODUCTION_VS_CHALLENGERS.v1",
+    "GATE_REJECTION_FUNNEL.json": "GATE_REJECTION_FUNNEL.v1",
+    "OUTCOME_INTEGRITY.json": "OUTCOME_INTEGRITY.v1",
+}
+
+
+def _research_integrity_blockers(
+    values: dict[str, dict[str, Any] | None],
+    artifact_status: dict[str, dict[str, Any]],
+) -> list[str]:
+    blockers: list[str] = []
+    for name, expected_contract in EXPECTED_RESEARCH_CONTRACTS.items():
+        status = artifact_status.get(name, {})
+        value = values.get(name) or {}
+        if status.get("status") != "AVAILABLE":
+            blockers.append(f"invalid_research_artifact:{name}")
+            continue
+        if value.get("contract") != expected_contract:
+            blockers.append(f"invalid_research_artifact_contract:{name}")
+
+    dataset = values.get("DATASET_AUDIT.json") or {}
+    oos = values.get("OOS_VALIDATION.json") or {}
+    outcome = values.get("OUTCOME_INTEGRITY.json") or {}
+    dataset_hash = dataset.get("data_sha256")
+    oos_dataset_hash = oos.get("dataset_sha256")
+    oos_outcome_hash = oos.get("outcome_cache_sha256")
+    outcome_hash = outcome.get("cache_sha256")
+
+    if not isinstance(dataset_hash, str) or not dataset_hash:
+        blockers.append("missing_dataset_provenance")
+    if not isinstance(oos_dataset_hash, str) or not oos_dataset_hash:
+        blockers.append("missing_oos_dataset_provenance")
+    elif isinstance(dataset_hash, str) and dataset_hash and oos_dataset_hash != dataset_hash:
+        blockers.append("dataset_provenance_mismatch")
+    if not isinstance(oos_outcome_hash, str) or not oos_outcome_hash:
+        blockers.append("missing_oos_outcome_provenance")
+    if not isinstance(outcome_hash, str) or not outcome_hash:
+        blockers.append("missing_outcome_cache_provenance")
+    elif isinstance(oos_outcome_hash, str) and oos_outcome_hash and outcome_hash != oos_outcome_hash:
+        blockers.append("outcome_provenance_mismatch")
+    if not str(dataset.get("evidence_tier") or "").startswith("TIER_1"):
+        blockers.append("insufficient_evidence_tier")
+    if outcome.get("causal_entry_before_observation_count") != 0:
+        blockers.append("causal_outcome_integrity_failed")
+    if outcome.get("duplicate_snapshot_ids") != 0:
+        blockers.append("duplicate_outcome_snapshots")
+    return blockers
+
 
 def _read_research_artifact(path: Path) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     if not path.is_file():
@@ -252,7 +305,7 @@ def summarize_research_evidence(research_dir: Path) -> dict[str, Any]:
     funnel = values["GATE_REJECTION_FUNNEL.json"] or {}
     outcome = values["OUTCOME_INTEGRITY.json"] or {}
 
-    blockers: list[str] = []
+    blockers = _research_integrity_blockers(values, artifact_status)
     span = dataset.get("span_days")
     if not isinstance(span, (int, float)) or span < 42.0:
         blockers.append("insufficient_promotion_span")
@@ -355,7 +408,7 @@ def build_snapshot(
         else {"promotion_disposition": "UNAVAILABLE", "artifacts": {}}
     )
     production_fact = {
-        "classification": "VERIFIED_FACT" if production_revision else "UNAVAILABLE",
+        "classification": "UNVERIFIED_CLAIM" if production_revision else "UNAVAILABLE",
         "value": production_revision,
     }
     unknowns: list[str] = []
@@ -376,7 +429,9 @@ def build_snapshot(
         "protected_invariants": manifest["protected_invariants"],
         "readiness": {
             "research_promotion_disposition": research.get("promotion_disposition", "UNAVAILABLE"),
-            "repo_matches_production": bool(production_revision and repo.get("git_sha") == production_revision),
+            "repo_matches_claimed_production_revision": bool(
+                production_revision and repo.get("git_sha") == production_revision
+            ),
         },
         "unknowns": unknowns,
     }

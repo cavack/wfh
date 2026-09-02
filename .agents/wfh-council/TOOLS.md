@@ -50,6 +50,19 @@ Inspect/build the existing container stack and collect exact image/revision/reso
 ### `prometheus`
 Primary runtime metric source for analysis freshness, memory/RSS, evaluation latency, workers, provider failures and signal evidence. Grafana/Alertmanager are presentation/alert layers over observable facts.
 
+
+### `grafana`
+Presentation/query surface for Prometheus-backed runtime evidence; never the sole source of truth.
+
+### `alertmanager`
+Alert-routing capability for SLO/runtime incidents; alert state must be reconciled with current metrics/logs.
+
+### `pytest`
+Focused and repository-level regression execution in the project environment.
+
+### `market_data_connectors`
+Optional read-only exchange/market-data adapters. Each connector requires explicit identity, timestamp, freshness, units and historical-reproducibility checks.
+
 ### `playwright`
 Browser/E2E verification of Decision Terminal, SSE/poll fallback, mobile behavior and user-visible contracts.
 

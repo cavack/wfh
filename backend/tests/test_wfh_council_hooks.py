@@ -84,3 +84,139 @@ def test_linked_worktree_install_does_not_set_shared_hooks_path(tmp_path: Path) 
         ["git", "config", "--local", "--get", "core.hooksPath"], cwd=root, text=True, capture_output=True
     )
     assert shared.returncode == 1
+
+
+def _write_fake_validators(repo: Path) -> None:
+    scripts = repo / "scripts"
+    scripts.mkdir(exist_ok=True)
+    validator = (
+        "from pathlib import Path\n"
+        "import sys\n"
+        "sys.exit(0 if Path('marker.txt').read_text().strip() == 'GOOD' else 9)\n"
+    )
+    (scripts / "wfh_council.py").write_text(validator, encoding="utf-8")
+    (scripts / "validate_wfh_skills.py").write_text(validator, encoding="utf-8")
+    hygiene = "import sys\nsys.exit(0)\n"
+    (scripts / "verify_repository_hygiene.py").write_text(hygiene, encoding="utf-8")
+    tests = repo / "backend/tests"
+    tests.mkdir(parents=True, exist_ok=True)
+    (tests / "test_wfh_council.py").write_text("def test_ok(): assert True\n", encoding="utf-8")
+    (tests / "test_wfh_council_hooks.py").write_text("def test_ok(): assert True\n", encoding="utf-8")
+
+
+def _configure_identity(repo: Path) -> None:
+    subprocess.run(["git", "config", "user.email", "council@example.invalid"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Council Test"], cwd=repo, check=True)
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git staged-index integration requires git")
+def test_pre_commit_validates_staged_index_not_mutable_worktree(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path)
+    _configure_identity(repo)
+    _write_fake_validators(repo)
+    marker = repo / "marker.txt"
+    marker.write_text("GOOD\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    marker.write_text("BAD\n", encoding="utf-8")
+
+    result = subprocess.run(["bash", str(repo / ".githooks/pre-commit")], cwd=repo)
+
+    assert result.returncode == 0
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git staged-index integration requires git")
+def test_pre_commit_rejects_invalid_staged_index_even_if_worktree_is_fixed(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path)
+    _configure_identity(repo)
+    _write_fake_validators(repo)
+    marker = repo / "marker.txt"
+    marker.write_text("BAD\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    marker.write_text("GOOD\n", encoding="utf-8")
+
+    result = subprocess.run(["bash", str(repo / ".githooks/pre-commit")], cwd=repo)
+
+    assert result.returncode != 0
+
+
+ZERO_SHA = "0" * 40
+
+
+def _commit_all(repo: Path, message: str) -> str:
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", message], cwd=repo, check=True)
+    return _git(repo, "rev-parse", "HEAD")
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git pre-push integration requires git")
+def test_pre_push_validates_exact_local_sha_not_mutable_worktree(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path)
+    _configure_identity(repo)
+    _write_fake_validators(repo)
+    marker = repo / "marker.txt"
+    marker.write_text("GOOD\n", encoding="utf-8")
+    local_sha = _commit_all(repo, "good")
+    marker.write_text("BAD\n", encoding="utf-8")
+    hook_input = f"refs/heads/main {local_sha} refs/heads/main {ZERO_SHA}\n"
+
+    result = subprocess.run(
+        ["bash", str(repo / ".githooks/pre-push"), "origin", "example.invalid/repo"],
+        cwd=repo, input=hook_input, text=True,
+    )
+
+    assert result.returncode == 0
+
+
+def _declared_external_allowlist(path: Path) -> set[str]:
+    prefix = "# WFH_EXTERNAL_COMMAND_ALLOWLIST:"
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith(prefix):
+            return set(line.removeprefix(prefix).split())
+    raise AssertionError(f"{path} must declare its external command allowlist")
+
+
+def test_hook_sources_declare_closed_external_command_allowlists() -> None:
+    expected = {
+        PRE_COMMIT: {"git", "mktemp", "rm", "python3"},
+        PRE_PUSH: {"git", "mktemp", "rm", "mkdir", "tar", "python3"},
+        INSTALLER: {"git", "chmod"},
+    }
+    for path, allowed in expected.items():
+        assert _declared_external_allowlist(path) == allowed
+        text = path.read_text(encoding="utf-8")
+        assert "eval " not in text
+        assert "sh -c" not in text
+        assert "bash -c" not in text
+        assert "source " not in text
+        assert "/usr/bin/" not in text and "/bin/" not in "\n".join(text.splitlines()[1:])
+
+
+def _closed_allowlist_env(root: Path, source: Path) -> dict[str, str]:
+    bin_dir = root / f"allow-{source.name}"
+    bin_dir.mkdir()
+    for command in _declared_external_allowlist(source):
+        target = shutil.which(command)
+        assert target is not None, f"required test command unavailable: {command}"
+        os.symlink(target, bin_dir / command)
+    env = os.environ.copy()
+    env["PATH"] = str(bin_dir)
+    return env
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="closed PATH integration requires git")
+def test_declared_allowlists_are_sufficient_for_real_hook_execution(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path)
+    _configure_identity(repo)
+    _write_fake_validators(repo)
+    (repo / "marker.txt").write_text("GOOD\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+
+    commit_env = _closed_allowlist_env(tmp_path, PRE_COMMIT)
+    result = subprocess.run(["/bin/sh", str(repo / ".githooks/pre-commit")], cwd=repo, env=commit_env)
+    assert result.returncode == 0
+
+    local_sha = _commit_all(repo, "good")
+    push_env = _closed_allowlist_env(tmp_path, PRE_PUSH)
+    hook_input = f"refs/heads/main {local_sha} refs/heads/main {ZERO_SHA}\n"
+    result = subprocess.run(["/bin/sh", str(repo / ".githooks/pre-push"), "origin", "unused"], cwd=repo, input=hook_input, text=True, env=push_env)
+    assert result.returncode == 0
