@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+ROOT=$(git rev-parse --show-toplevel)
+cd "$ROOT"
+export PYTHONPATH="$ROOT:$ROOT/backend/src${PYTHONPATH:+:$PYTHONPATH}"
+
+python3 scripts/wfh_council.py validate --json
+python3 scripts/validate_wfh_skills.py
+python3 -m pytest -q backend/tests/test_wfh_council.py backend/tests/test_wfh_council_hooks.py
+python3 scripts/verify_repository_hygiene.py --root "$ROOT"
+git diff --check
