@@ -12,3 +12,5 @@ Key improvements:
 - a lightweight Project Sources overlay that points to canonical GitHub skill bodies instead of copying them into Drive.
 
 External authoring guidance reviewed for v2 emphasizes progressive disclosure, concise triggerable skills, deterministic scripts for checks that agents might otherwise guess, and eval/pressure-test iteration. MCP guidance reviewed for v2 emphasizes explicit capabilities and hardened authorization. These external sources inform skill-system structure only; they do not replace WaterfallHunter repository/runtime facts.
+
+Council v2 route reachability is validated: `capability_scout` participates in `skill_system_audit`, and `research_librarian` participates in the dedicated `external_research` route.

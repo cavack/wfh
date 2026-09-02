@@ -2,6 +2,7 @@
   "canonical_ref_policy": "resolve current target SHA in GitHub at execution time",
   "canonical_repository": "cavack/wfh",
   "canonical_skill_root": "skills/waterfallhunter",
+  "certification_status": "TEMPLATE_NOT_CERTIFIED",
   "contract_version": "wfh_chatgpt_project_sources_v2",
   "council_contract": "wfh_agent_council_v2",
   "overlay_files": [
@@ -13,12 +14,12 @@
     "INSTALL-FA-v2.md"
   ],
   "sha256": {
-    "00-WFH-CHATGPT-ROUTER-v2.md": "38f267765939c3e247603aba3b8f269533166d1abb89d5de32c8302e4e38c471",
+    "00-WFH-CHATGPT-ROUTER-v2.md": "a1d442b80e16e0c7ee9a5994e5223a6e5322e9d208d2a162b3005efb26c75c7a",
     "01-WFH-SKILL-CATALOG-v2.md": "ff0f3a4badba03a11560cdc7cf4239d5e6885f74ef7b775aa7065205f7663ca9",
     "02-WFH-CAPABILITY-MAP-v2.md": "775fb130f6f6c733cd8879d9ecba497611d7a27abbc63bf2c1312f55be7f3d7d",
-    "03-WFH-SKILL-AUDIT-SUMMARY-v2.md": "71ee77bf6094948bc91ed723712c9029446d70a70ea2511c8c06fb9ce4f51ee4",
-    "INSTALL-FA-v2.md": "4355137bc0ea1e1dc47226e71d4f39894c4a9e36803fadb2806a2ac2187e71ed",
-    "PROJECT-INSTRUCTIONS-v2.txt": "4569c0384ca68f8baa4b1fc49f47dab968757d8d3fb320a8c09eba4945472368"
+    "03-WFH-SKILL-AUDIT-SUMMARY-v2.md": "2f4311cd1379f0b17b79df584b4dff8d87d396562133f09c0bba31e4aa5f87c1",
+    "INSTALL-FA-v2.md": "8ed579fb650b2c6c3ff9b54dac9b28740275341654e619d5d287ba73b2f04359",
+    "PROJECT-INSTRUCTIONS-v2.txt": "400a5a3851993ce37c9d8ae7042e8791c99f9297e304f948676d5df53998b7fd"
   },
   "skills": [
     "api-contract-schema-guardian",
@@ -35,5 +36,9 @@
     "skill-system-curator",
     "strategy-score-lifecycle",
     "verification-regression"
-  ]
+  ],
+  "source_commit_sha": "GENERATED_AT_EXPORT",
+  "source_provenance_policy": "runtime exporter adds source_commit_sha, source_ref, and source_worktree_dirty",
+  "source_ref": "GENERATED_AT_EXPORT",
+  "source_worktree_dirty": null
 }

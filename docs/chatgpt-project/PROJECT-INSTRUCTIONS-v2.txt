@@ -13,3 +13,4 @@ MANDATORY:
 - Only release-production-certification may declare DEPLOY_READY, DEPLOYED_UNVERIFIED, or PRODUCTION_VERIFIED.
 - Do not authorize, design, implement, or enable live order placement under the current repository policy.
 - If GitHub or a required canonical skill cannot be fetched, state the limitation instead of inventing its contents.
+- When using a Drive export for evidence, require PROJECT-SOURCE-MANIFEST.json to identify source_commit_sha/source_ref and require source_worktree_dirty=false for a certified bundle.

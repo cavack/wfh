@@ -330,12 +330,12 @@ The final Drive folder remains intentionally lightweight. Canonical skill bodies
 
 The export bundle contains:
 
-- `00-WFH-CHATGPT-ROUTER.md`
-- `01-WFH-SKILL-CATALOG.md`
-- `02-WFH-COUNCIL-CAPABILITY-MAP.md`
-- `03-WFH-SKILL-SYSTEM-AUDIT.md`
-- `PROJECT-INSTRUCTIONS.txt`
-- `INSTALL-FA.md`
+- `00-WFH-CHATGPT-ROUTER-v2.md`
+- `01-WFH-SKILL-CATALOG-v2.md`
+- `02-WFH-CAPABILITY-MAP-v2.md`
+- `03-WFH-SKILL-AUDIT-SUMMARY-v2.md`
+- `PROJECT-INSTRUCTIONS-v2.txt`
+- `INSTALL-FA-v2.md`
 - `PROJECT-SOURCE-MANIFEST.json`
 
 `PROJECT-SOURCE-MANIFEST.json` records repository, export schema version, canonical root, generated-at timestamp, source commit SHA, expected files, and SHA-256 hashes for the export files.

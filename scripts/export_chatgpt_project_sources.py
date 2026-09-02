@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 
 
@@ -19,6 +20,7 @@ OVERLAY_FILES = (
     "PROJECT-INSTRUCTIONS-v2.txt",
     "INSTALL-FA-v2.md",
 )
+EXPECTED_EXPORT_FILES = {*OVERLAY_FILES, "PROJECT-SOURCE-MANIFEST.json"}
 
 
 def _normalized_bytes(path: Path) -> bytes:
@@ -43,9 +45,47 @@ def _confined_path(path: Path, allowed_root: Path, *, label: str, strict: bool =
     return candidate
 
 
+def _git_output(*args: str) -> str:
+    return subprocess.check_output(
+        ["git", *args], cwd=REPO_ROOT, text=True, stderr=subprocess.DEVNULL
+    ).strip()
+
+
+def _source_provenance() -> dict[str, object]:
+    commit = _git_output("rev-parse", "HEAD")
+    ref = _git_output("branch", "--show-current") or "DETACHED"
+    dirty = bool(_git_output("status", "--porcelain", "--untracked-files=no"))
+    return {
+        "source_commit_sha": commit,
+        "source_ref": ref,
+        "source_worktree_dirty": dirty,
+    }
+
+
+def _assert_no_unexpected_export_content() -> None:
+    if not DEFAULT_EXPORT_DIR.exists():
+        return
+    entries = list(DEFAULT_EXPORT_DIR.rglob("*"))
+    symlinks = sorted(
+        str(path.relative_to(DEFAULT_EXPORT_DIR))
+        for path in entries
+        if path.is_symlink()
+    )
+    if symlinks:
+        raise ValueError(f"symlink entries are forbidden in export destination: {symlinks}")
+    unexpected = sorted(
+        str(path.relative_to(DEFAULT_EXPORT_DIR))
+        for path in entries
+        if str(path.relative_to(DEFAULT_EXPORT_DIR)) not in EXPECTED_EXPORT_FILES
+    )
+    if unexpected:
+        raise ValueError(f"unexpected stale export content: {unexpected}")
+
+
 def export_project_sources() -> Path:
     EXPORT_ROOT.mkdir(parents=True, exist_ok=True)
     _confined_path(DEFAULT_EXPORT_DIR, EXPORT_ROOT, label="destination")
+    _assert_no_unexpected_export_content()
     DEFAULT_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
     _confined_path(SOURCE_DIR / "00-WFH-CHATGPT-ROUTER-v2.md", SOURCE_DIR, label="source", strict=True)
@@ -95,6 +135,7 @@ def export_project_sources() -> Path:
         "skills": _skills(),
         "overlay_files": list(OVERLAY_FILES),
         "sha256": hashes,
+        **_source_provenance(),
     }
     _confined_path(
         DEFAULT_EXPORT_DIR / "PROJECT-SOURCE-MANIFEST.json",

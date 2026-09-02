@@ -226,7 +226,7 @@ def test_snapshot_separates_repository_and_production_revision(tmp_path: Path, m
     monkeypatch.setattr(
         council,
         "doctor",
-        lambda repo_root: {
+        lambda repo_root, **kwargs: {
             "repo": {
                 "status": "AVAILABLE",
                 "path": str(repo_root),
@@ -299,7 +299,7 @@ def test_snapshot_marks_repo_identity_unavailable_when_doctor_cannot_resolve_git
     monkeypatch.setattr(
         council,
         "doctor",
-        lambda repo_root: {"repo": unavailable_repo},
+        lambda repo_root, **kwargs: {"repo": unavailable_repo},
     )
 
     snapshot = council.build_snapshot(REPO, manifest)
@@ -448,6 +448,7 @@ def test_council_v2_requires_skill_system_curator_and_audit_route() -> None:
     assert roles["adversarial_prompt_tester"]["production_authority"] is False
     assert manifest["routes"]["skill_system_audit"] == [
         "chief_orchestrator",
+        "capability_scout",
         "skill_system_curator",
         "adversarial_prompt_tester",
         "regression_lead",
@@ -536,3 +537,125 @@ def test_doctor_cli_accepts_explicit_connected_capability_status(monkeypatch, ca
     assert rc == 0
     assert output["capabilities"]["github_connector"]["status"] == "AUTHORIZED_WRITE"
     assert output["capabilities"]["web_research"]["status"] == "AUTHORIZED_READ"
+
+
+def test_skill_system_audit_route_invokes_capability_scout() -> None:
+    manifest = council.load_manifest(MANIFEST)
+    route = manifest["routes"]["skill_system_audit"]
+    assert "capability_scout" in route
+    assert route.index("capability_scout") < route.index("adversarial_prompt_tester")
+
+
+def test_external_research_route_invokes_research_librarian() -> None:
+    manifest = council.load_manifest(MANIFEST)
+    assert "external_research" in manifest["routes"]
+    route = manifest["routes"]["external_research"]
+    assert "research_librarian" in route
+    assert route.index("research_librarian") < route.index("quant_validation_lead")
+
+
+def test_manifest_rejects_unreachable_role() -> None:
+    manifest = council.load_manifest(MANIFEST)
+    broken = copy.deepcopy(manifest)
+    broken["routes"] = {
+        name: [role for role in route if role != "capability_scout"]
+        for name, route in broken["routes"].items()
+    }
+    errors = council.validate_manifest(REPO, broken)
+    assert any("capability_scout" in error and "unreachable" in error.lower() for error in errors)
+
+
+def test_doctor_reports_every_declared_capability(monkeypatch) -> None:
+    manifest = council.load_manifest(MANIFEST)
+    monkeypatch.setattr(council, "_git_output", lambda repo_root, *args: "abc" if args == ("rev-parse", "HEAD") else "branch")
+    monkeypatch.setattr(council.shutil, "which", lambda name: f"/usr/bin/{name}" if name in {"git", "python3"} else None)
+    result = council.doctor(
+        REPO,
+        manifest=manifest,
+        capability_statuses={"playwright": "AVAILABLE", "pytest": "AVAILABLE"},
+    )
+    assert set(result["capabilities"]) == set(manifest["capabilities"])
+    assert result["capabilities"]["playwright"]["status"] == "AVAILABLE"
+    assert result["capabilities"]["pytest"]["status"] == "AVAILABLE"
+
+
+def test_doctor_honors_manifest_required_flags(monkeypatch) -> None:
+    manifest = council.load_manifest(MANIFEST)
+    broken = copy.deepcopy(manifest)
+    broken["capabilities"]["prometheus"]["required"] = True
+    monkeypatch.setattr(council, "_git_output", lambda repo_root, *args: "abc" if args == ("rev-parse", "HEAD") else "branch")
+    monkeypatch.setattr(council.shutil, "which", lambda name: f"/usr/bin/{name}" if name in {"git", "python3"} else None)
+    result = council.doctor(REPO, manifest=broken)
+    assert result["status"] == "BLOCKED"
+    assert "prometheus" in result["missing_required"]
+
+
+def test_doctor_rejects_authority_escalation(monkeypatch) -> None:
+    manifest = council.load_manifest(MANIFEST)
+    monkeypatch.setattr(council, "_git_output", lambda repo_root, *args: "abc" if args == ("rev-parse", "HEAD") else "branch")
+    monkeypatch.setattr(council.shutil, "which", lambda name: f"/usr/bin/{name}" if name in {"git", "python3"} else None)
+    try:
+        council.doctor(
+            REPO,
+            manifest=manifest,
+            capability_statuses={"web_research": "AUTHORIZED_WRITE"},
+        )
+    except ValueError as exc:
+        assert "web_research" in str(exc)
+        assert "authority" in str(exc).lower()
+    else:
+        raise AssertionError("doctor must reject capability authority escalation")
+
+
+def test_project_router_exports_every_council_route() -> None:
+    manifest = council.load_manifest(MANIFEST)
+    router = (REPO / "docs/chatgpt-project/00-WFH-CHATGPT-ROUTER-v2.md").read_text(encoding="utf-8")
+    for route_id, roles in manifest["routes"].items():
+        expected = f"- `{route_id}`: `{' → '.join(roles)}`"
+        assert expected in router
+
+
+def test_manifest_requires_canonical_skill_system_curator_role() -> None:
+    manifest = council.load_manifest(MANIFEST)
+    broken = copy.deepcopy(manifest)
+    broken["roles"] = [role for role in broken["roles"] if role["id"] != "skill_system_curator"]
+    broken["routes"]["skill_system_audit"] = [role for role in broken["routes"]["skill_system_audit"] if role != "skill_system_curator"]
+    errors = council.validate_manifest(REPO, broken)
+    assert any("skill_system_curator" in error and "required" in error.lower() for error in errors)
+
+
+def test_manifest_requires_canonical_skill_system_audit_route() -> None:
+    manifest = council.load_manifest(MANIFEST)
+    broken = copy.deepcopy(manifest)
+    del broken["routes"]["skill_system_audit"]
+    errors = council.validate_manifest(REPO, broken)
+    assert any("skill_system_audit" in error and "required" in error.lower() for error in errors)
+
+
+def test_manifest_rejects_non_list_tool_inventory() -> None:
+    manifest = council.load_manifest(MANIFEST)
+    broken = copy.deepcopy(manifest)
+    broken["tools"]["required"] = "git"
+    errors = council.validate_manifest(REPO, broken)
+    assert any("tools.required" in error and "list" in error.lower() for error in errors)
+
+
+def test_manifest_rejects_non_string_tool_inventory_entry() -> None:
+    manifest = council.load_manifest(MANIFEST)
+    broken = copy.deepcopy(manifest)
+    broken["tools"]["optional"] = [*broken["tools"]["optional"], 42]
+    errors = council.validate_manifest(REPO, broken)
+    assert any("tools.optional" in error and "string" in error.lower() for error in errors)
+
+
+def test_doctor_cli_rejects_unknown_capability_name(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(council, "_git_output", lambda repo_root, *args: "abc" if args == ("rev-parse", "HEAD") else "branch")
+    monkeypatch.setattr(council.shutil, "which", lambda name: f"/usr/bin/{name}" if name in {"git", "python3"} else None)
+    rc = council.main([
+        "--repo-root", str(REPO), "doctor",
+        "--capability", "typo=AUTHORIZED_READ", "--json",
+    ])
+    output = json.loads(capsys.readouterr().out)
+    assert rc == 2
+    assert output["status"] == "INVALID"
+    assert "unknown capability" in output["error"]

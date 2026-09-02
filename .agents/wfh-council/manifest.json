@@ -202,6 +202,7 @@
     ],
     "skill_system_audit": [
       "chief_orchestrator",
+      "capability_scout",
       "skill_system_curator",
       "adversarial_prompt_tester",
       "regression_lead"
@@ -231,6 +232,13 @@
       "runtime_lead",
       "regression_lead",
       "release_certifier"
+    ],
+    "external_research": [
+      "chief_orchestrator",
+      "research_librarian",
+      "market_evidence_forensics",
+      "quant_validation_lead",
+      "regression_lead"
     ]
   },
   "tools": {

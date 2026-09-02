@@ -50,6 +50,11 @@ REQUIRED_SHARED_SECTIONS = {
 }
 
 NAME_RE = re.compile(r"^[a-z0-9-]+$")
+README_SKILL_ROW_RE = re.compile(r"^\|\s*`([a-z0-9-]+)`\s*\|", re.MULTILINE)
+CATALOG_SKILL_ROW_RE = re.compile(
+    r"^\|\s*\d+\s*\|\s*([a-z0-9-]+)\s*\|\s*`([^`]+)`\s*\|",
+    re.MULTILINE,
+)
 PLACEHOLDER_RE = re.compile(
     r"\b(?:TBD|TODO|FIXME)\b|implement later|fill in details",
     flags=re.IGNORECASE,
@@ -172,7 +177,10 @@ def _validate_skill(path: Path, expected_name: str) -> list[str]:
     errors.extend(frontmatter_errors)
     errors.extend(_validate_name(path, expected_name, frontmatter.get("name")))
     errors.extend(_validate_description(path, frontmatter.get("description")))
-    errors.extend(_validate_body(path, text))
+    lines = text.splitlines()
+    closing, _ = _frontmatter_bounds(lines, path)
+    body = "\n".join(lines[closing + 1 :]) if closing is not None else text
+    errors.extend(_validate_body(path, body))
     return errors
 
 
@@ -187,6 +195,55 @@ def _validate_shared_readme(path: Path) -> list[str]:
         errors.append(f"{path}: missing discovery-adapter path documentation")
     if "must not authorize, design, implement, or enable live order placement" not in text:
         errors.append(f"{path}: missing categorical live-order safety policy")
+    return errors
+
+
+def _inventory_drift_errors(path: Path, label: str, names: list[str]) -> list[str]:
+    found = set(names)
+    errors = [
+        f"{path}: {label} missing canonical skill {name}"
+        for name in sorted(EXPECTED_SKILLS - found)
+    ]
+    errors.extend(
+        f"{path}: {label} contains unexpected skill {name}"
+        for name in sorted(found - EXPECTED_SKILLS)
+    )
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    errors.extend(f"{path}: {label} duplicates skill {name}" for name in duplicates)
+    return errors
+
+
+def _validate_readme_inventory(path: Path) -> list[str]:
+    text, errors = _read_text(path)
+    if text is None:
+        return errors
+    names = README_SKILL_ROW_RE.findall(text)
+    return [*errors, *_inventory_drift_errors(path, "README inventory", names)]
+
+
+def _validate_project_catalog(path: Path) -> list[str]:
+    text, errors = _read_text(path)
+    if text is None:
+        return errors
+    rows = CATALOG_SKILL_ROW_RE.findall(text)
+    names = [name for name, _ in rows]
+    errors.extend(_inventory_drift_errors(path, "CATALOG inventory", names))
+    for name, canonical_path in rows:
+        expected = f"skills/waterfallhunter/{name}/SKILL.md"
+        if canonical_path != expected:
+            errors.append(
+                f"{path}: CATALOG skill {name} path {canonical_path!r} must equal {expected!r}"
+            )
+    return errors
+
+
+def _validate_public_skill_catalogs(root: Path, readme: Path) -> list[str]:
+    catalog = root / "docs" / "chatgpt-project" / "01-WFH-SKILL-CATALOG-v2.md"
+    errors = _validate_readme_inventory(readme)
+    if not catalog.is_file():
+        errors.append(f"{catalog}: missing Project Source skill CATALOG")
+    else:
+        errors.extend(_validate_project_catalog(catalog))
     return errors
 
 
@@ -255,6 +312,7 @@ def validate(root: Path) -> list[str]:
         errors.append(f"{readme}: missing system README")
     else:
         errors.extend(_validate_shared_readme(readme))
+        errors.extend(_validate_public_skill_catalogs(root, readme))
 
     for name in sorted(EXPECTED_SKILLS):
         skill_file = skill_root / name / "SKILL.md"

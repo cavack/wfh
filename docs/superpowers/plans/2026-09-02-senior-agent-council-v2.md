@@ -362,7 +362,7 @@ Require generated bundle to contain exactly the seven overlay files, current can
 
 - [ ] **Step 2: Implement deterministic exporter**
 
-`export_chatgpt_project_sources.py` writes a target directory, normalizes LF newlines, computes SHA-256 over UTF-8 bytes, and writes `PROJECT-SOURCE-MANIFEST.json` last. It must refuse to copy canonical `SKILL.md` bodies into the export.
+Security-review implementation note: `export_chatgpt_project_sources.py` writes only to the fixed repository-local `.work/chatgpt-project-sources-v2` directory, normalizes LF newlines, computes SHA-256 over UTF-8 bytes, records source Git provenance, and writes `PROJECT-SOURCE-MANIFEST.json` last. It accepts no caller-controlled destination path and refuses unexpected stale content or escaped symlink targets. Canonical `SKILL.md` bodies are not copied into the export.
 
 - [ ] **Step 3: Author Project Sources documents**
 
@@ -371,10 +371,9 @@ Router v2 must require current GitHub SHA resolution before work, smallest relev
 - [ ] **Step 4: Verify deterministic export**
 
 ```bash
-rm -rf /tmp/wfh-project-sources-a /tmp/wfh-project-sources-b
-python scripts/export_chatgpt_project_sources.py /tmp/wfh-project-sources-a
-python scripts/export_chatgpt_project_sources.py /tmp/wfh-project-sources-b
-diff -ru /tmp/wfh-project-sources-a /tmp/wfh-project-sources-b
+python scripts/export_chatgpt_project_sources.py
+find .work/chatgpt-project-sources-v2 -maxdepth 1 -type f -print
+python -m pytest -q backend/tests/test_chatgpt_project_export.py
 ```
 
 Expected: no diff.

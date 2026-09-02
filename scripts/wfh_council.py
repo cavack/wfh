@@ -24,6 +24,18 @@ EXPECTED_INVARIANTS = {
 }
 
 
+EXPECTED_V2_SKILL_SYSTEM_ROUTE = [
+    "chief_orchestrator",
+    "capability_scout",
+    "skill_system_curator",
+    "adversarial_prompt_tester",
+    "regression_lead",
+]
+EXPECTED_V2_ROLE_SKILLS = {
+    "skill_system_curator": ["skill-system-curator"],
+}
+
+
 def load_manifest(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as handle:
         value = json.load(handle)
@@ -85,6 +97,25 @@ def _validate_routes(manifest: dict[str, Any], roles: dict[str, dict[str, Any]])
     return errors
 
 
+def _validate_role_reachability(
+    manifest: dict[str, Any], roles: dict[str, dict[str, Any]]
+) -> list[str]:
+    routes = manifest.get("routes")
+    if not isinstance(routes, dict):
+        return []
+    referenced = {
+        role_id
+        for route in routes.values()
+        if isinstance(route, list)
+        for role_id in route
+        if isinstance(role_id, str)
+    }
+    return [
+        f"role {role_id}: unreachable because no Council route references it"
+        for role_id in sorted(set(roles) - referenced)
+    ]
+
+
 def _validate_production_authority(
     manifest: dict[str, Any], roles: dict[str, dict[str, Any]]
 ) -> list[str]:
@@ -109,6 +140,23 @@ def _validate_invariants(manifest: dict[str, Any]) -> list[str]:
         if invariants.get(key) != expected:
             errors.append(f"protected invariant {key} must equal {expected!r}")
     return errors
+
+def _validate_tool_inventory(manifest: dict[str, Any]) -> list[str]:
+    tools = manifest.get("tools")
+    if not isinstance(tools, dict):
+        return ["manifest tools must be an object"]
+    errors: list[str] = []
+    for key in ("required", "optional"):
+        values = tools.get(key)
+        if not isinstance(values, list):
+            errors.append(f"tools.{key} must be a list of strings")
+            continue
+        for index, value in enumerate(values):
+            if not isinstance(value, str) or not value:
+                errors.append(f"tools.{key}[{index}] must be a non-empty string")
+    return errors
+
+
 
 def _declared_tool_ids(manifest: dict[str, Any]) -> list[str]:
     tools = manifest.get("tools")
@@ -157,6 +205,28 @@ def _validate_capabilities(manifest: dict[str, Any]) -> list[str]:
     return errors
 
 
+def _validate_v2_required_contract(
+    manifest: dict[str, Any], roles: dict[str, dict[str, Any]]
+) -> list[str]:
+    errors: list[str] = []
+    for role_id, expected_skills in EXPECTED_V2_ROLE_SKILLS.items():
+        role = roles.get(role_id)
+        if role is None:
+            errors.append(f"required Council v2 role {role_id} is missing")
+        elif role.get("skills") != expected_skills:
+            errors.append(
+                f"required Council v2 role {role_id} skills must equal {expected_skills}"
+            )
+    routes = manifest.get("routes")
+    route = routes.get("skill_system_audit") if isinstance(routes, dict) else None
+    if route != EXPECTED_V2_SKILL_SYSTEM_ROUTE:
+        errors.append(
+            "required Council v2 route skill_system_audit must match the canonical order"
+        )
+    return errors
+
+
+
 def validate_manifest(repo_root: Path, manifest: dict[str, Any]) -> list[str]:
     repo_root = repo_root.resolve()
     errors: list[str] = []
@@ -166,8 +236,11 @@ def validate_manifest(repo_root: Path, manifest: dict[str, Any]) -> list[str]:
     roles = _role_index(manifest, errors)
     errors.extend(_validate_skills(repo_root, roles))
     errors.extend(_validate_routes(manifest, roles))
+    errors.extend(_validate_role_reachability(manifest, roles))
+    errors.extend(_validate_v2_required_contract(manifest, roles))
     errors.extend(_validate_production_authority(manifest, roles))
     errors.extend(_validate_invariants(manifest))
+    errors.extend(_validate_tool_inventory(manifest))
     errors.extend(_validate_capabilities(manifest))
 
     routes = manifest.get("routes")
@@ -216,64 +289,118 @@ def _git_output(repo_root: Path, *args: str) -> str:
         ["git", *args], cwd=repo_root, text=True, stderr=subprocess.DEVNULL
     ).strip()
 
-LOCAL_TOOL_COMMANDS = {
+LOCAL_CAPABILITY_COMMANDS = {
     "git": "git",
     "python": "python3",
     "docker": "docker",
-    "node": "node",
-    "npm": "npm",
-    "coderabbit": "coderabbit",
+    "playwright": "playwright",
+    "pytest": "pytest",
 }
-REQUIRED_LOCAL_TOOLS = {"git", "python"}
-EXTERNAL_CAPABILITY_IDS = (
-    "github_connector",
-    "remote_desktop_commander_mcp",
-    "web_research",
-    "coderabbit",
-    "mermaid",
-    "prometheus",
-    "grafana",
-    "alertmanager",
-    "codeql",
-    "sonar",
-    "market_data_connectors",
-)
-CAPABILITY_STATUSES = {"AVAILABLE", "AUTHORIZED_READ", "AUTHORIZED_WRITE", "UNAVAILABLE", "BLOCKED"}
+CAPABILITY_STATUSES = {
+    "AVAILABLE", "AUTHORIZED_READ", "AUTHORIZED_WRITE", "UNAVAILABLE", "BLOCKED"
+}
+READY_CAPABILITY_STATUSES = {"AVAILABLE", "AUTHORIZED_READ", "AUTHORIZED_WRITE"}
+AUTHORITY_ALLOWED_STATUSES = {
+    "AVAILABLE": {"AVAILABLE", "UNAVAILABLE", "BLOCKED"},
+    "AUTHORIZED_READ": {"AUTHORIZED_READ", "UNAVAILABLE", "BLOCKED"},
+    "AUTHORIZED_WRITE": {"AUTHORIZED_READ", "AUTHORIZED_WRITE", "UNAVAILABLE", "BLOCKED"},
+    "READ_WRITE_REPO": {"AUTHORIZED_READ", "AUTHORIZED_WRITE", "UNAVAILABLE", "BLOCKED"},
+    "UNAVAILABLE": {"UNAVAILABLE", "BLOCKED"},
+    "BLOCKED": {"UNAVAILABLE", "BLOCKED"},
+}
+
+
+def _doctor_manifest(repo_root: Path, manifest: dict[str, Any] | None) -> dict[str, Any]:
+    if manifest is not None:
+        return manifest
+    return load_manifest(repo_root / ".agents" / "wfh-council" / "manifest.json")
+
+
+def _validate_supplied_capability_statuses(
+    manifest: dict[str, Any], supplied: dict[str, str]
+) -> None:
+    capabilities = manifest.get("capabilities", {})
+    for capability_id, status in supplied.items():
+        record = capabilities.get(capability_id)
+        if not isinstance(record, dict):
+            raise ValueError(f"unknown capability: {capability_id}")
+        authority = record.get("authority")
+        allowed = AUTHORITY_ALLOWED_STATUSES.get(str(authority), set())
+        if status not in allowed:
+            raise ValueError(
+                f"capability {capability_id}: status {status} exceeds declared authority {authority}"
+            )
+
+
+def _detected_capability_status(capability_id: str) -> tuple[str, str | None]:
+    command = LOCAL_CAPABILITY_COMMANDS.get(capability_id)
+    if command is None:
+        return "UNAVAILABLE", None
+    path = shutil.which(command)
+    return ("AVAILABLE" if path else "UNAVAILABLE"), path
+
+
+def _capability_inventory(
+    manifest: dict[str, Any], supplied: dict[str, str]
+) -> tuple[dict[str, dict[str, Any]], dict[str, str | None]]:
+    capabilities: dict[str, dict[str, Any]] = {}
+    paths: dict[str, str | None] = {}
+    for capability_id, record in manifest["capabilities"].items():
+        detected_status, path = _detected_capability_status(capability_id)
+        status = supplied.get(capability_id, detected_status)
+        capabilities[capability_id] = {
+            "status": status,
+            "required": record["required"],
+            "declared_authority": record["authority"],
+            "evidence_role": record["evidence_role"],
+        }
+        paths[capability_id] = path
+    return capabilities, paths
+
+
+def _tool_inventory(
+    manifest: dict[str, Any],
+    capabilities: dict[str, dict[str, Any]],
+    paths: dict[str, str | None],
+) -> dict[str, dict[str, Any]]:
+    return {
+        tool_id: {
+            "status": capabilities[tool_id]["status"],
+            "path": paths.get(tool_id),
+        }
+        for tool_id in _declared_tool_ids(manifest)
+        if tool_id in capabilities
+    }
+
+
+def _repo_identity(repo_root: Path) -> tuple[str, str | None, str | None]:
+    try:
+        git_sha = _git_output(repo_root, "rev-parse", "HEAD")
+        branch = _git_output(repo_root, "branch", "--show-current") or None
+    except (OSError, subprocess.CalledProcessError):
+        return "UNAVAILABLE", None, None
+    return "AVAILABLE", git_sha, branch
 
 
 def doctor(
     repo_root: Path,
     *,
+    manifest: dict[str, Any] | None = None,
     capability_statuses: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     repo_root = repo_root.resolve()
-    repo_status = "UNAVAILABLE"
-    git_sha: str | None = None
-    branch: str | None = None
-    try:
-        git_sha = _git_output(repo_root, "rev-parse", "HEAD")
-        branch = _git_output(repo_root, "branch", "--show-current") or None
-        repo_status = "AVAILABLE"
-    except (OSError, subprocess.CalledProcessError):
-        pass
-
-    tools: dict[str, dict[str, Any]] = {}
-    missing_required: list[str] = []
-    for tool_id, command in LOCAL_TOOL_COMMANDS.items():
-        path = shutil.which(command)
-        status = "AVAILABLE" if path else "UNAVAILABLE"
-        tools[tool_id] = {"status": status, "path": path}
-        if tool_id in REQUIRED_LOCAL_TOOLS and path is None:
-            missing_required.append(tool_id)
-
+    manifest = _doctor_manifest(repo_root, manifest)
     supplied = capability_statuses or {}
-    capabilities: dict[str, dict[str, str]] = {}
-    for capability_id in EXTERNAL_CAPABILITY_IDS:
-        status = supplied.get(capability_id, "UNAVAILABLE")
-        if status not in CAPABILITY_STATUSES:
-            status = "BLOCKED"
-        capabilities[capability_id] = {"status": status}
+    _validate_supplied_capability_statuses(manifest, supplied)
 
+    repo_status, git_sha, branch = _repo_identity(repo_root)
+    capabilities, paths = _capability_inventory(manifest, supplied)
+    tools = _tool_inventory(manifest, capabilities, paths)
+    missing_required = sorted(
+        capability_id
+        for capability_id, record in capabilities.items()
+        if record["required"] and record["status"] not in READY_CAPABILITY_STATUSES
+    )
     ready = repo_status == "AVAILABLE" and not missing_required
     return {
         "contract_version": "wfh_council_doctor_v2",
@@ -517,7 +644,7 @@ def build_snapshot(
     production_revision: str | None = None,
 ) -> dict[str, Any]:
     repo_root = repo_root.resolve()
-    repo = doctor(repo_root)["repo"]
+    repo = doctor(repo_root, manifest=manifest)["repo"]
     research = (
         summarize_research_evidence(research_dir)
         if research_dir is not None
@@ -634,13 +761,19 @@ def _run_route(manifest: dict[str, Any], args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_doctor(repo_root: Path, args: argparse.Namespace) -> int:
+def _run_doctor(repo_root: Path, manifest: dict[str, Any], args: argparse.Namespace) -> int:
     try:
         capability_statuses = _parse_capability_statuses(args.capability)
     except ValueError as exc:
         _emit({"status": "INVALID", "error": str(exc)}, args.json)
         return 2
-    result = doctor(repo_root, capability_statuses=capability_statuses)
+    try:
+        result = doctor(
+            repo_root, manifest=manifest, capability_statuses=capability_statuses
+        )
+    except ValueError as exc:
+        _emit({"status": "INVALID", "error": str(exc)}, args.json)
+        return 2
     _emit(result, args.json)
     return 0 if result["status"] == "READY" else 3
 
@@ -656,7 +789,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "route":
         return _run_route(manifest, args)
     if args.command == "doctor":
-        return _run_doctor(repo_root, args)
+        return _run_doctor(repo_root, manifest, args)
     if args.command == "research-snapshot":
         _emit(summarize_research_evidence(args.research_dir), args.json)
         return 0

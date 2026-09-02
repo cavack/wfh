@@ -24,6 +24,11 @@ def test_export_is_lightweight_complete_and_hash_verified(monkeypatch, tmp_path:
     out = export_root / "sources"
     monkeypatch.setattr(exporter, "EXPORT_ROOT", export_root)
     monkeypatch.setattr(exporter, "DEFAULT_EXPORT_DIR", out)
+    monkeypatch.setattr(exporter, "_source_provenance", lambda: {
+        "source_commit_sha": "a" * 40,
+        "source_ref": "test",
+        "source_worktree_dirty": False,
+    })
     exporter.export_project_sources()
 
     assert {path.name for path in out.iterdir()} == EXPECTED_FILES
@@ -46,6 +51,11 @@ def test_export_is_deterministic_for_same_repository_state(monkeypatch, tmp_path
     out = export_root / "sources"
     monkeypatch.setattr(exporter, "EXPORT_ROOT", export_root)
     monkeypatch.setattr(exporter, "DEFAULT_EXPORT_DIR", out)
+    monkeypatch.setattr(exporter, "_source_provenance", lambda: {
+        "source_commit_sha": "a" * 40,
+        "source_ref": "test",
+        "source_worktree_dirty": False,
+    })
     exporter.export_project_sources()
     first = {name: (out / name).read_bytes() for name in EXPECTED_FILES}
     exporter.export_project_sources()
@@ -80,7 +90,8 @@ def test_export_rejects_symlink_target_escape(monkeypatch, tmp_path: Path) -> No
     try:
         exporter.export_project_sources()
     except ValueError as exc:
-        assert "escape" in str(exc).lower() or "allowed" in str(exc).lower()
+        message = str(exc).lower()
+        assert "symlink" in message or "escape" in message or "allowed" in message
     else:
         raise AssertionError("export must reject symlink targets escaping the destination")
 
@@ -97,3 +108,112 @@ def test_cli_rejects_user_controlled_destination_argument() -> None:
 def test_export_api_does_not_accept_destination_paths() -> None:
     signature = inspect.signature(exporter.export_project_sources)
     assert list(signature.parameters) == []
+
+
+def test_export_fails_closed_on_unexpected_stale_content(monkeypatch, tmp_path: Path) -> None:
+    export_root = tmp_path / "exports"
+    out = export_root / "sources"
+    out.mkdir(parents=True)
+    (out / "obsolete-v1.md").write_text("stale\n", encoding="utf-8")
+    monkeypatch.setattr(exporter, "EXPORT_ROOT", export_root)
+    monkeypatch.setattr(exporter, "DEFAULT_EXPORT_DIR", out)
+    try:
+        exporter.export_project_sources()
+    except ValueError as exc:
+        assert "unexpected" in str(exc).lower() or "stale" in str(exc).lower()
+    else:
+        raise AssertionError("export must fail closed when stale files are present")
+
+
+def test_export_manifest_records_source_git_provenance(monkeypatch, tmp_path: Path) -> None:
+    export_root = tmp_path / "exports"
+    out = export_root / "sources"
+    monkeypatch.setattr(exporter, "EXPORT_ROOT", export_root)
+    monkeypatch.setattr(exporter, "DEFAULT_EXPORT_DIR", out)
+    monkeypatch.setattr(
+        exporter,
+        "_source_provenance",
+        lambda: {
+            "source_commit_sha": "a" * 40,
+            "source_ref": "feat/test",
+            "source_worktree_dirty": False,
+        },
+        raising=False,
+    )
+    manifest_path = exporter.export_project_sources()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["source_commit_sha"] == "a" * 40
+    assert manifest["source_ref"] == "feat/test"
+    assert manifest["source_worktree_dirty"] is False
+
+
+def test_checked_in_manifest_hashes_match_generated_overlay(monkeypatch, tmp_path: Path) -> None:
+    export_root = tmp_path / "exports"
+    out = export_root / "sources"
+    monkeypatch.setattr(exporter, "EXPORT_ROOT", export_root)
+    monkeypatch.setattr(exporter, "DEFAULT_EXPORT_DIR", out)
+    monkeypatch.setattr(
+        exporter,
+        "_source_provenance",
+        lambda: {
+            "source_commit_sha": "b" * 40,
+            "source_ref": "test",
+            "source_worktree_dirty": False,
+        },
+        raising=False,
+    )
+    generated = json.loads(exporter.export_project_sources().read_text(encoding="utf-8"))
+    tracked = json.loads(
+        (exporter.SOURCE_DIR / "PROJECT-SOURCE-MANIFEST.json").read_text(encoding="utf-8")
+    )
+    for key in (
+        "contract_version",
+        "canonical_repository",
+        "canonical_ref_policy",
+        "canonical_skill_root",
+        "council_contract",
+        "skills",
+        "overlay_files",
+        "sha256",
+    ):
+        assert tracked[key] == generated[key]
+
+
+def test_project_sources_freeze_one_canonical_sha_per_audit() -> None:
+    router = (exporter.SOURCE_DIR / "00-WFH-CHATGPT-ROUTER-v2.md").read_text(encoding="utf-8")
+    install = (exporter.SOURCE_DIR / "INSTALL-FA-v2.md").read_text(encoding="utf-8")
+    assert "source_commit_sha" in router
+    assert "source_worktree_dirty" in router
+    assert "source_commit_sha" in install
+    assert "source_worktree_dirty" in install
+    assert "همان SHA" in install or "same SHA" in install
+
+
+def test_v2_spec_names_the_exact_export_artifacts() -> None:
+    spec = (exporter.REPO_ROOT / "docs/superpowers/specs/2026-09-02-senior-agent-council-v2.md").read_text(encoding="utf-8")
+    for name in EXPECTED_FILES:
+        assert name in spec
+
+
+def test_install_guide_names_all_seven_bundle_files() -> None:
+    install = (exporter.SOURCE_DIR / "INSTALL-FA-v2.md").read_text(encoding="utf-8")
+    for name in EXPECTED_FILES:
+        assert name in install
+
+
+def test_export_rejects_in_root_symlink_alias(monkeypatch, tmp_path: Path) -> None:
+    export_root = tmp_path / "exports"
+    out = export_root / "sources"
+    out.mkdir(parents=True)
+    catalog = out / "01-WFH-SKILL-CATALOG-v2.md"
+    catalog.write_text("sentinel\n", encoding="utf-8")
+    (out / "00-WFH-CHATGPT-ROUTER-v2.md").symlink_to(catalog.name)
+    monkeypatch.setattr(exporter, "EXPORT_ROOT", export_root)
+    monkeypatch.setattr(exporter, "DEFAULT_EXPORT_DIR", out)
+    try:
+        exporter.export_project_sources()
+    except ValueError as exc:
+        assert "symlink" in str(exc).lower()
+    else:
+        raise AssertionError("export must reject existing symlink aliases inside the destination")
+    assert catalog.read_text(encoding="utf-8") == "sentinel\n"
