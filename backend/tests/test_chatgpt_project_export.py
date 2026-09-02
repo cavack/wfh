@@ -73,3 +73,12 @@ def test_export_rejects_symlink_target_escape(tmp_path: Path) -> None:
         assert "escape" in str(exc).lower() or "allowed" in str(exc).lower()
     else:
         raise AssertionError("export must reject symlink targets escaping the destination")
+
+
+def test_cli_rejects_user_controlled_destination_argument() -> None:
+    try:
+        exporter.main(["../../escape"])
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("CLI must not accept a user-controlled filesystem destination")
