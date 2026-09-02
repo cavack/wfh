@@ -37,10 +37,12 @@ EVIDENCE_CLASSES = {
     "DEBT",
     "PROPOSAL",
 }
+MISSION_STATE_FILE = "MISSION_STATE.json"
 STEP_JOURNAL_FILE = "STEP_JOURNAL.json"
+GITHUB_ISSUE_NUMBER_ERROR = "GitHub issue number must be positive"
 
 DURABLE_STATE_FILES = (
-    "MISSION_STATE.json",
+    MISSION_STATE_FILE,
     "TASK_GRAPH.json",
     "EVIDENCE_LEDGER.json",
     "BRANCH_REGISTRY.json",
@@ -328,7 +330,7 @@ def _validate_checkpoint_control_bundle(root: Path) -> list[str]:
 def create_checkpoint(mission_dir: Path, *, created_at: str | None = None) -> dict[str, Any]:
     root = Path(mission_dir).resolve(strict=True)
     with _mission_lock(root):
-        state_path = _confined_path(root / "MISSION_STATE.json", root)
+        state_path = _confined_path(root / MISSION_STATE_FILE, root)
         state = _load_json(state_path)
         errors = validate_mission_state(state) + _validate_checkpoint_control_bundle(root)
         if errors:
@@ -704,7 +706,7 @@ def resolve_active_mission(control_root: Path) -> Path:
     target = _confined_path(root / mission_path, root)
     if not target.is_dir():
         raise ValueError("active mission directory is unavailable")
-    state = _load_json(_confined_path(target / "MISSION_STATE.json", target))
+    state = _load_json(_confined_path(target / MISSION_STATE_FILE, target))
     if state.get("mission_id") != mission_id:
         raise ValueError("active mission pointer mission identity mismatch")
     return target
@@ -874,7 +876,7 @@ def _github_request(
 
 def _github_edit_issue(repository: str, issue_number: int, body: str, token: str) -> None:
     if issue_number <= 0:
-        raise ValueError("GitHub issue number must be positive")
+        raise ValueError(GITHUB_ISSUE_NUMBER_ERROR)
     _github_request(
         repository,
         f"/issues/{issue_number}",
@@ -886,7 +888,7 @@ def _github_edit_issue(repository: str, issue_number: int, body: str, token: str
 
 def _github_get_issue(repository: str, issue_number: int, token: str) -> dict[str, Any]:
     if issue_number <= 0:
-        raise ValueError("GitHub issue number must be positive")
+        raise ValueError(GITHUB_ISSUE_NUMBER_ERROR)
     data = _github_request(repository, f"/issues/{issue_number}", method="GET", token=token)
     if not isinstance(data, dict):
         raise ValueError("GitHub issue response must be an object")
@@ -897,7 +899,7 @@ def _github_list_issue_comments(
     repository: str, issue_number: int, token: str
 ) -> list[dict[str, Any]]:
     if issue_number <= 0:
-        raise ValueError("GitHub issue number must be positive")
+        raise ValueError(GITHUB_ISSUE_NUMBER_ERROR)
     comments: list[dict[str, Any]] = []
     for page in range(1, 101):
         data = _github_request(
@@ -918,7 +920,7 @@ def _github_comment_issue(
     repository: str, issue_number: int, body: str, token: str
 ) -> None:
     if issue_number <= 0:
-        raise ValueError("GitHub issue number must be positive")
+        raise ValueError(GITHUB_ISSUE_NUMBER_ERROR)
     _github_request(
         repository,
         f"/issues/{issue_number}/comments",

@@ -12,28 +12,25 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_DIR = REPO_ROOT / "docs" / "chatgpt-project"
 EXPORT_ROOT = REPO_ROOT / ".work"
 DEFAULT_EXPORT_DIR = EXPORT_ROOT / "chatgpt-project-sources-v2"
+ROUTER_FILE = "00-WFH-CHATGPT-ROUTER-v2.md"
+CATALOG_FILE = "01-WFH-SKILL-CATALOG-v2.md"
+CAPABILITY_FILE = "02-WFH-CAPABILITY-MAP-v2.md"
+AUDIT_FILE = "03-WFH-SKILL-AUDIT-SUMMARY-v2.md"
+INSTRUCTIONS_FILE = "PROJECT-INSTRUCTIONS-v2.txt"
+INSTALL_FILE = "INSTALL-FA-v2.md"
+RESUME_FILE = "TWFH-RESUME.md"
+
 OVERLAY_FILES = (
-    "00-WFH-CHATGPT-ROUTER-v2.md",
-    "01-WFH-SKILL-CATALOG-v2.md",
-    "02-WFH-CAPABILITY-MAP-v2.md",
-    "03-WFH-SKILL-AUDIT-SUMMARY-v2.md",
-    "PROJECT-INSTRUCTIONS-v2.txt",
-    "INSTALL-FA-v2.md",
-    "TWFH-RESUME.md",
+    ROUTER_FILE,
+    CATALOG_FILE,
+    CAPABILITY_FILE,
+    AUDIT_FILE,
+    INSTRUCTIONS_FILE,
+    INSTALL_FILE,
+    RESUME_FILE,
 )
+
 EXPECTED_EXPORT_FILES = {*OVERLAY_FILES, "PROJECT-SOURCE-MANIFEST.json"}
-
-
-def _overlay_paths() -> tuple[tuple[str, Path, Path], ...]:
-    return (
-        ("00-WFH-CHATGPT-ROUTER-v2.md", SOURCE_DIR / "00-WFH-CHATGPT-ROUTER-v2.md", DEFAULT_EXPORT_DIR / "00-WFH-CHATGPT-ROUTER-v2.md"),
-        ("01-WFH-SKILL-CATALOG-v2.md", SOURCE_DIR / "01-WFH-SKILL-CATALOG-v2.md", DEFAULT_EXPORT_DIR / "01-WFH-SKILL-CATALOG-v2.md"),
-        ("02-WFH-CAPABILITY-MAP-v2.md", SOURCE_DIR / "02-WFH-CAPABILITY-MAP-v2.md", DEFAULT_EXPORT_DIR / "02-WFH-CAPABILITY-MAP-v2.md"),
-        ("03-WFH-SKILL-AUDIT-SUMMARY-v2.md", SOURCE_DIR / "03-WFH-SKILL-AUDIT-SUMMARY-v2.md", DEFAULT_EXPORT_DIR / "03-WFH-SKILL-AUDIT-SUMMARY-v2.md"),
-        ("PROJECT-INSTRUCTIONS-v2.txt", SOURCE_DIR / "PROJECT-INSTRUCTIONS-v2.txt", DEFAULT_EXPORT_DIR / "PROJECT-INSTRUCTIONS-v2.txt"),
-        ("INSTALL-FA-v2.md", SOURCE_DIR / "INSTALL-FA-v2.md", DEFAULT_EXPORT_DIR / "INSTALL-FA-v2.md"),
-        ("TWFH-RESUME.md", SOURCE_DIR / "TWFH-RESUME.md", DEFAULT_EXPORT_DIR / "TWFH-RESUME.md"),
-    )
 
 
 def _normalized_bytes(path: Path) -> bytes:
@@ -101,14 +98,31 @@ def export_project_sources() -> Path:
     _assert_no_unexpected_export_content()
     DEFAULT_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
-    payloads: dict[str, bytes] = {}
-    for name, source_path, target_path in _overlay_paths():
-        source = _confined_path(source_path, SOURCE_DIR, label="source", strict=True)
-        target = _confined_path(target_path, DEFAULT_EXPORT_DIR, label="export target")
-        payload = _normalized_bytes(source)
-        target.write_bytes(payload)
-        payloads[name] = payload
+    router = _normalized_bytes(_confined_path(SOURCE_DIR / ROUTER_FILE, SOURCE_DIR, label="source", strict=True))
+    catalog = _normalized_bytes(_confined_path(SOURCE_DIR / CATALOG_FILE, SOURCE_DIR, label="source", strict=True))
+    capability = _normalized_bytes(_confined_path(SOURCE_DIR / CAPABILITY_FILE, SOURCE_DIR, label="source", strict=True))
+    audit = _normalized_bytes(_confined_path(SOURCE_DIR / AUDIT_FILE, SOURCE_DIR, label="source", strict=True))
+    instructions = _normalized_bytes(_confined_path(SOURCE_DIR / INSTRUCTIONS_FILE, SOURCE_DIR, label="source", strict=True))
+    install = _normalized_bytes(_confined_path(SOURCE_DIR / INSTALL_FILE, SOURCE_DIR, label="source", strict=True))
+    resume = _normalized_bytes(_confined_path(SOURCE_DIR / RESUME_FILE, SOURCE_DIR, label="source", strict=True))
 
+    _confined_path(DEFAULT_EXPORT_DIR / ROUTER_FILE, DEFAULT_EXPORT_DIR, label="export target").write_bytes(router)
+    _confined_path(DEFAULT_EXPORT_DIR / CATALOG_FILE, DEFAULT_EXPORT_DIR, label="export target").write_bytes(catalog)
+    _confined_path(DEFAULT_EXPORT_DIR / CAPABILITY_FILE, DEFAULT_EXPORT_DIR, label="export target").write_bytes(capability)
+    _confined_path(DEFAULT_EXPORT_DIR / AUDIT_FILE, DEFAULT_EXPORT_DIR, label="export target").write_bytes(audit)
+    _confined_path(DEFAULT_EXPORT_DIR / INSTRUCTIONS_FILE, DEFAULT_EXPORT_DIR, label="export target").write_bytes(instructions)
+    _confined_path(DEFAULT_EXPORT_DIR / INSTALL_FILE, DEFAULT_EXPORT_DIR, label="export target").write_bytes(install)
+    _confined_path(DEFAULT_EXPORT_DIR / RESUME_FILE, DEFAULT_EXPORT_DIR, label="export target").write_bytes(resume)
+
+    payloads = {
+        ROUTER_FILE: router,
+        CATALOG_FILE: catalog,
+        CAPABILITY_FILE: capability,
+        AUDIT_FILE: audit,
+        INSTRUCTIONS_FILE: instructions,
+        INSTALL_FILE: install,
+        RESUME_FILE: resume,
+    }
     hashes = {name: hashlib.sha256(payload).hexdigest() for name, payload in payloads.items()}
     manifest = {
         "contract_version": "wfh_chatgpt_project_sources_v2",
