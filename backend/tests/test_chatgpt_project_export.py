@@ -248,6 +248,15 @@ def test_exporter_does_not_route_file_destinations_through_generic_path_helper(
     out = export_root / "sources"
     monkeypatch.setattr(exporter, "EXPORT_ROOT", export_root)
     monkeypatch.setattr(exporter, "DEFAULT_EXPORT_DIR", out)
+    monkeypatch.setattr(
+        exporter,
+        "_source_provenance",
+        lambda: {
+            "source_commit_sha": "b" * 40,
+            "source_ref": "test",
+            "source_worktree_dirty": False,
+        },
+    )
     original = exporter._confined_path
 
     def guarded(path: Path, allowed_root: Path, *, label: str, strict: bool = False) -> Path:
