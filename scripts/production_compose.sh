@@ -4,6 +4,7 @@ set -euo pipefail
 PROJECT_DIR="${WFH_PROJECT_DIR:-/srv/waterfallhunter/app}"
 ENV_FILE="${WFH_ENV_FILE:-/etc/waterfallhunter/waterfallhunter.env}"
 OVERRIDE="${WFH_PRODUCTION_COMPOSE_OVERRIDE:-/srv/waterfallhunter/runtime/production-volumes.override.yml}"
+IMAGE_OVERRIDE="${WFH_PRODUCTION_IMAGE_OVERRIDE:-/srv/waterfallhunter/runtime/production-images.override.yml}"
 
 export WFH_ENV_FILE="$ENV_FILE"
 
@@ -23,6 +24,9 @@ compose_args=(
 )
 if [[ -f "$OVERRIDE" ]]; then
   compose_args+=(-f "$OVERRIDE")
+fi
+if [[ -f "$IMAGE_OVERRIDE" ]]; then
+  compose_args+=(-f "$IMAGE_OVERRIDE")
 fi
 
 cd "$PROJECT_DIR"

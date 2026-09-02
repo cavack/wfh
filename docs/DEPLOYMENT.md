@@ -19,3 +19,7 @@ Rollback is permitted only when the previous runtime is schema-compatible with t
 ## Operator rule
 
 There is deliberately no unreviewed `make deploy` shortcut. After exact-SHA release certification, use the guarded GitHub `CI` workflow dispatch on protected `main` with `deploy_production=true`; do not rely on a push to trigger deployment.
+
+## Immutable Production image pinning
+
+The deployer copies each exact CI-tested image to a release-specific `wfh-release-*:<sha>` tag and composes Production through `/srv/waterfallhunter/runtime/production-images.override.yml`. This prevents unrelated worktree builds from changing a mutable repository tag underneath an in-progress deploy or a later systemd restart. Before loading a target bundle, the currently running certified images are also pinned by immutable container image identity for bounded rollback. A release cannot be certified if the running OCI revisions differ from the dispatched SHA.
