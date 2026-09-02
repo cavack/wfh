@@ -122,8 +122,13 @@ def export_project_sources() -> Path:
     install = _normalized_bytes(_confined_path(SOURCE_DIR / INSTALL_FILE, SOURCE_DIR, label=SOURCE_LABEL, strict=True))
     resume = _normalized_bytes(_confined_path(SOURCE_DIR / RESUME_FILE, SOURCE_DIR, label=SOURCE_LABEL, strict=True))
 
-    file_flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
-    dir_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        no_follow = os.O_NOFOLLOW
+        directory = os.O_DIRECTORY
+    except AttributeError as exc:
+        raise RuntimeError("secure export requires O_NOFOLLOW and O_DIRECTORY") from exc
+    file_flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | no_follow
+    dir_flags = os.O_RDONLY | directory | no_follow
     export_dir_fd = os.open(DEFAULT_EXPORT_DIR, dir_flags)
     try:
         _write_all(os.open(ROUTER_FILE, file_flags, 0o600, dir_fd=export_dir_fd), router)

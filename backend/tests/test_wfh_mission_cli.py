@@ -82,7 +82,7 @@ def test_cli_canonical_phrase_returns_json_from_active_mission(tmp_path: Path) -
 
 def test_cli_normalizes_unicode_whitespace_for_canonical_phrase(tmp_path: Path) -> None:
     control = _control_root(tmp_path)
-    proc = _run(control, "resume", "--intent", "  ادامه   کار\tگروهی  ", "--json", "--observed-main-sha", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+    proc = _run(control, "resume", "--intent", "  ادامه\u00a0کار\u2003گروهی  ", "--json", "--observed-main-sha", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
 
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout)["disposition"] == "RESUME_READY"

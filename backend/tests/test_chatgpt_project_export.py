@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+
+import pytest
 from pathlib import Path
 
 from scripts import export_chatgpt_project_sources as exporter
@@ -268,3 +270,48 @@ def test_exporter_does_not_route_file_destinations_through_generic_path_helper(
 
     assert manifest == out / "PROJECT-SOURCE-MANIFEST.json"
     assert {path.name for path in out.iterdir()} == exporter.EXPECTED_EXPORT_FILES
+
+
+def _mock_export_provenance(monkeypatch) -> None:
+    monkeypatch.setattr(
+        exporter,
+        "_source_provenance",
+        lambda: {
+            "source_commit_sha": "b" * 40,
+            "source_ref": "test",
+            "source_worktree_dirty": False,
+        },
+    )
+
+
+def test_exporter_fails_closed_without_o_nofollow(monkeypatch, tmp_path: Path) -> None:
+    export_root = tmp_path / "exports"
+    out = export_root / "sources"
+    monkeypatch.setattr(exporter, "EXPORT_ROOT", export_root)
+    monkeypatch.setattr(exporter, "DEFAULT_EXPORT_DIR", out)
+    _mock_export_provenance(monkeypatch)
+    monkeypatch.delattr(exporter.os, "O_NOFOLLOW", raising=False)
+
+    with pytest.raises(RuntimeError, match="O_NOFOLLOW"):
+        exporter.export_project_sources()
+
+
+def test_exporter_opens_export_directory_with_o_nofollow(monkeypatch, tmp_path: Path) -> None:
+    export_root = tmp_path / "exports"
+    out = export_root / "sources"
+    monkeypatch.setattr(exporter, "EXPORT_ROOT", export_root)
+    monkeypatch.setattr(exporter, "DEFAULT_EXPORT_DIR", out)
+    _mock_export_provenance(monkeypatch)
+    original_open = exporter.os.open
+    directory_flags: list[int] = []
+
+    def tracked_open(path, flags, mode=0o777, *, dir_fd=None):
+        if Path(path) == out and dir_fd is None:
+            directory_flags.append(flags)
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(exporter.os, "open", tracked_open)
+    exporter.export_project_sources()
+
+    assert directory_flags
+    assert all(flags & exporter.os.O_NOFOLLOW for flags in directory_flags)
