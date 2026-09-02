@@ -294,7 +294,7 @@ test("observational technical shadow fills reference levels without becoming an 
   const payload = snapshot(11);
   const beta = payload.candidates["BETA/USDT:USDT"];
   beta.metrics.entry_decision.trade_plan = null;
-  beta.metrics.technical_trade_plan_shadow = {
+  (beta.metrics as Record<string, unknown>).technical_trade_plan_shadow = {
     version: "technical_trade_plan_shadow_v1",
     observational_only: true,
     hard_gating_allowed: false,
