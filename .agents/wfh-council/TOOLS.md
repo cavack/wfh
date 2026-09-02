@@ -99,3 +99,19 @@ Exact commands may differ with lockfile/CI policy; the owning canonical skill an
 - No web source may overwrite repository/runtime facts without local reproduction.
 - No CodeRabbit/Sonar/CodeQL result substitutes for focused regression and runtime verification.
 - No CI success is called `PRODUCTION_VERIFIED` without release certification.
+
+## Council v2 capability and authorization model
+
+Council v2 separates **presence** from **authorization**. Local executables may be `AVAILABLE`; connected capabilities may be `AUTHORIZED_READ` or `AUTHORIZED_WRITE` only when the active environment exposes that authorization. Otherwise they are `UNAVAILABLE` or `BLOCKED`.
+
+The manifest's `production_mutation=false` is mandatory for every capability record. Production mutation remains a release workflow decision and is never inherited from an MCP/plugin's technical write surface.
+
+External evidence precedence for engineering work is:
+
+1. current exact repository object for repository claims;
+2. current runtime/host evidence for runtime/deployment claims;
+3. official external documentation for external API/protocol contracts;
+4. peer-reviewed/high-quality research for falsifiable hypotheses;
+5. secondary summaries only as navigation/context.
+
+Current MCP guidance is treated as an external protocol contract, not as a WaterfallHunter domain rule. Authorization must be explicit, and missing capability/authorization is reported rather than guessed.

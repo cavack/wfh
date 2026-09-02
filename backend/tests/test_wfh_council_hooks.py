@@ -108,6 +108,8 @@ def _write_fake_validators(repo: Path) -> None:
     tests.mkdir(parents=True, exist_ok=True)
     (tests / "test_wfh_council.py").write_text("def test_ok(): assert True\n", encoding="utf-8")
     (tests / "test_wfh_council_hooks.py").write_text("def test_ok(): assert True\n", encoding="utf-8")
+    (tests / "test_wfh_skill_system_v2.py").write_text("def test_ok(): assert True\n", encoding="utf-8")
+    (tests / "test_chatgpt_project_export.py").write_text("def test_ok(): assert True\n", encoding="utf-8")
 
 
 def _configure_identity(repo: Path) -> None:
@@ -227,3 +229,9 @@ def test_declared_allowlists_are_sufficient_for_real_hook_execution(tmp_path: Pa
     hook_input = f"refs/heads/main {local_sha} refs/heads/main {ZERO_SHA}\n"
     result = subprocess.run(["/bin/sh", str(repo / ".githooks/pre-push"), "origin", "unused"], cwd=repo, input=hook_input, text=True, env=push_env)
     assert result.returncode == 0
+
+
+def test_pre_push_runs_v2_skill_system_regression() -> None:
+    text = PRE_PUSH.read_text(encoding="utf-8")
+    assert "backend/tests/test_wfh_skill_system_v2.py" in text
+    assert "backend/tests/test_chatgpt_project_export.py" in text
