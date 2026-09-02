@@ -7,6 +7,8 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
 import tempfile
 import unicodedata
 from datetime import datetime, timezone
@@ -517,6 +519,153 @@ def _resume_exit_code(disposition: str) -> int:
     }.get(disposition, 2)
 
 
+
+
+def render_pointer_issue(
+    *, mission_id: str, mission_issue_number: int, pointer: dict[str, Any]
+) -> str:
+    marker = f"<!-- wfh-mission-pointer:v1 mission={mission_id} -->"
+    return "\n".join(
+        [
+            marker,
+            "# TWFH Active Mission",
+            "",
+            f"Mission: `{mission_id}`",
+            f"Mission issue: #{mission_issue_number}",
+            f"Latest checkpoint: `{pointer['checkpoint_id']}`",
+            f"Checkpoint SHA-256: `{pointer['sha256']}`",
+            "Repository: `cavack/wfh`",
+            f"Resume intent: `{CANONICAL_RESUME_INTENT}`",
+            "",
+            "This issue is a compact control-plane pointer; host checkpoint evidence remains authoritative.",
+            "",
+        ]
+    )
+
+
+def render_mission_issue(checkpoint: dict[str, Any], pointer: dict[str, Any]) -> str:
+    state = checkpoint["mission_state"]
+    marker = f"<!-- wfh-mission-state:v1 mission={checkpoint['mission_id']} -->"
+    return "\n".join(
+        [
+            marker,
+            f"# {checkpoint['mission_id']} — Model Excellence v3",
+            "",
+            f"Current phase: `{state.get('current_phase', 'UNAVAILABLE')}`",
+            f"Current task: `{state.get('current_task', 'UNAVAILABLE')}`",
+            f"Current main: `{state.get('current_main_sha', 'UNAVAILABLE')}`",
+            f"Production: `{state.get('production_sha', 'UNAVAILABLE')}`",
+            f"Active branch: `{state.get('active_branch', 'UNAVAILABLE')}`",
+            f"Active worktree: `{state.get('active_worktree', 'UNAVAILABLE')}`",
+            f"Active PR: `{state.get('active_pr', 'UNAVAILABLE')}`",
+            f"Latest checkpoint: `{pointer['checkpoint_id']}`",
+            f"Checkpoint SHA-256: `{pointer['sha256']}`",
+            "",
+            "## Exact next action",
+            str(state.get("next_action", "UNAVAILABLE")),
+            "",
+            "## Resume rule",
+            f"Use `{CANONICAL_RESUME_INTENT}` and validate the durable checkpoint before continuing.",
+            "",
+        ]
+    )
+
+
+def _checkpoint_marker(pointer: dict[str, Any]) -> str:
+    return (
+        "<!-- wfh-mission-checkpoint:v1 "
+        f"mission={pointer['mission_id']} checkpoint={pointer['checkpoint_id']} "
+        f"sha256={pointer['sha256']} -->"
+    )
+
+
+def render_checkpoint_comment(
+    checkpoint: dict[str, Any], pointer: dict[str, Any]
+) -> str:
+    state = checkpoint["mission_state"]
+    return "\n".join(
+        [
+            _checkpoint_marker(pointer),
+            f"Checkpoint `{pointer['checkpoint_id']}` synchronized.",
+            f"Task: `{state.get('current_task', 'UNAVAILABLE')}`",
+            f"Main: `{state.get('current_main_sha', 'UNAVAILABLE')}`",
+            f"Next action: {state.get('next_action', 'UNAVAILABLE')}",
+        ]
+    )
+
+
+def _run_gh(args: list[str]) -> str:
+    return subprocess.check_output(
+        ["gh", *args],
+        text=True,
+        stderr=subprocess.PIPE,
+    ).strip()
+
+
+def _validate_github_target(repository: str, pointer_issue: int, mission_issue: int) -> None:
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        raise ValueError("repository must be owner/name")
+    if pointer_issue <= 0 or mission_issue <= 0:
+        raise ValueError("GitHub issue numbers must be positive")
+
+
+def sync_github(
+    mission_dir: Path,
+    *,
+    repository: str,
+    pointer_issue: int,
+    mission_issue: int,
+) -> dict[str, Any]:
+    _validate_github_target(repository, pointer_issue, mission_issue)
+    if shutil.which("gh") is None:
+        return {"status": "UNAVAILABLE", "reason": "gh_cli_unavailable"}
+    loaded = load_latest_checkpoint(mission_dir)
+    if loaded.get("disposition") != "RESUME_READY":
+        return {
+            "status": "BLOCKED",
+            "reason": str(loaded.get("reason") or loaded.get("disposition")),
+        }
+    checkpoint = loaded["checkpoint"]
+    pointer = loaded["pointer"]
+    pointer_body = render_pointer_issue(
+        mission_id=checkpoint["mission_id"],
+        mission_issue_number=mission_issue,
+        pointer=pointer,
+    )
+    mission_body = render_mission_issue(checkpoint, pointer)
+    _run_gh(["issue", "edit", str(pointer_issue), "--repo", repository, "--body", pointer_body])
+    _run_gh(["issue", "edit", str(mission_issue), "--repo", repository, "--body", mission_body])
+    comments_raw = _run_gh(
+        ["api", f"repos/{repository}/issues/{mission_issue}/comments", "--paginate"]
+    )
+    comments = json.loads(comments_raw or "[]")
+    if not isinstance(comments, list):
+        raise ValueError("GitHub comments response must be an array")
+    marker = _checkpoint_marker(pointer)
+    already_recorded = any(
+        isinstance(comment, dict) and marker in str(comment.get("body") or "")
+        for comment in comments
+    )
+    if not already_recorded:
+        _run_gh(
+            [
+                "issue",
+                "comment",
+                str(mission_issue),
+                "--repo",
+                repository,
+                "--body",
+                render_checkpoint_comment(checkpoint, pointer),
+            ]
+        )
+    return {
+        "status": "SYNCED",
+        "reason": None,
+        "checkpoint_id": pointer["checkpoint_id"],
+        "checkpoint_comment_created": not already_recorded,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="WaterfallHunter mission continuity controller")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -526,31 +675,53 @@ def main(argv: list[str] | None = None) -> int:
     resume.add_argument("--observed-main-sha")
     resume.add_argument("--observed-production-sha")
     resume.add_argument("--capability", action="append", default=[])
+    sync = subparsers.add_parser("sync-github", help="mirror active mission state to existing GitHub issues")
+    sync.add_argument("--repository", required=True)
+    sync.add_argument("--pointer-issue", required=True, type=int)
+    sync.add_argument("--mission-issue", required=True, type=int)
+    sync.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
-
-    normalized = normalize_resume_intent(args.intent)
-    if normalized != CANONICAL_RESUME_INTENT:
-        result = {"disposition": "RESUME_BLOCKED", "reason": "resume_intent_mismatch"}
-        _emit_result(result, as_json=args.json)
-        return 2
     control_root = Path(os.environ.get("WFH_MISSION_CONTROL_ROOT", DEFAULT_CONTROL_ROOT))
+
+    if args.command == "resume":
+        normalized = normalize_resume_intent(args.intent)
+        if normalized != CANONICAL_RESUME_INTENT:
+            result = {"disposition": "RESUME_BLOCKED", "reason": "resume_intent_mismatch"}
+            _emit_result(result, as_json=args.json)
+            return 2
+        try:
+            mission_dir = resolve_active_mission(control_root)
+            capabilities = _parse_capabilities(args.capability)
+            result = resume_guard(
+                mission_dir,
+                observed_main_sha=args.observed_main_sha,
+                observed_production_sha=args.observed_production_sha,
+                capabilities=capabilities,
+            )
+        except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+            result = {
+                "disposition": "RESUME_BLOCKED",
+                "reason": "active_mission_resolution_failed",
+                "error_type": type(exc).__name__,
+            }
+        _emit_result(result, as_json=args.json)
+        return _resume_exit_code(str(result.get("disposition")))
+
     try:
         mission_dir = resolve_active_mission(control_root)
-        capabilities = _parse_capabilities(args.capability)
-        result = resume_guard(
+        result = sync_github(
             mission_dir,
-            observed_main_sha=args.observed_main_sha,
-            observed_production_sha=args.observed_production_sha,
-            capabilities=capabilities,
+            repository=args.repository,
+            pointer_issue=args.pointer_issue,
+            mission_issue=args.mission_issue,
         )
-    except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
-        result = {
-            "disposition": "RESUME_BLOCKED",
-            "reason": "active_mission_resolution_failed",
-            "error_type": type(exc).__name__,
-        }
-    _emit_result(result, as_json=args.json)
-    return _resume_exit_code(str(result.get("disposition")))
+    except (OSError, ValueError, KeyError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+        result = {"status": "BLOCKED", "reason": type(exc).__name__}
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    else:
+        print(f"{result.get('status')}: {result.get('reason') or 'ok'}")
+    return 0 if result.get("status") == "SYNCED" else 2
 
 
 if __name__ == "__main__":
