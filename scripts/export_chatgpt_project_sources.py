@@ -24,6 +24,18 @@ OVERLAY_FILES = (
 EXPECTED_EXPORT_FILES = {*OVERLAY_FILES, "PROJECT-SOURCE-MANIFEST.json"}
 
 
+def _overlay_paths() -> tuple[tuple[str, Path, Path], ...]:
+    return (
+        ("00-WFH-CHATGPT-ROUTER-v2.md", SOURCE_DIR / "00-WFH-CHATGPT-ROUTER-v2.md", DEFAULT_EXPORT_DIR / "00-WFH-CHATGPT-ROUTER-v2.md"),
+        ("01-WFH-SKILL-CATALOG-v2.md", SOURCE_DIR / "01-WFH-SKILL-CATALOG-v2.md", DEFAULT_EXPORT_DIR / "01-WFH-SKILL-CATALOG-v2.md"),
+        ("02-WFH-CAPABILITY-MAP-v2.md", SOURCE_DIR / "02-WFH-CAPABILITY-MAP-v2.md", DEFAULT_EXPORT_DIR / "02-WFH-CAPABILITY-MAP-v2.md"),
+        ("03-WFH-SKILL-AUDIT-SUMMARY-v2.md", SOURCE_DIR / "03-WFH-SKILL-AUDIT-SUMMARY-v2.md", DEFAULT_EXPORT_DIR / "03-WFH-SKILL-AUDIT-SUMMARY-v2.md"),
+        ("PROJECT-INSTRUCTIONS-v2.txt", SOURCE_DIR / "PROJECT-INSTRUCTIONS-v2.txt", DEFAULT_EXPORT_DIR / "PROJECT-INSTRUCTIONS-v2.txt"),
+        ("INSTALL-FA-v2.md", SOURCE_DIR / "INSTALL-FA-v2.md", DEFAULT_EXPORT_DIR / "INSTALL-FA-v2.md"),
+        ("TWFH-RESUME.md", SOURCE_DIR / "TWFH-RESUME.md", DEFAULT_EXPORT_DIR / "TWFH-RESUME.md"),
+    )
+
+
 def _normalized_bytes(path: Path) -> bytes:
     text = path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
     if not text.endswith("\n"):
@@ -90,9 +102,9 @@ def export_project_sources() -> Path:
     DEFAULT_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
     payloads: dict[str, bytes] = {}
-    for name in OVERLAY_FILES:
-        source = _confined_path(SOURCE_DIR / name, SOURCE_DIR, label="source", strict=True)
-        target = _confined_path(DEFAULT_EXPORT_DIR / name, DEFAULT_EXPORT_DIR, label="export target")
+    for name, source_path, target_path in _overlay_paths():
+        source = _confined_path(source_path, SOURCE_DIR, label="source", strict=True)
+        target = _confined_path(target_path, DEFAULT_EXPORT_DIR, label="export target")
         payload = _normalized_bytes(source)
         target.write_bytes(payload)
         payloads[name] = payload

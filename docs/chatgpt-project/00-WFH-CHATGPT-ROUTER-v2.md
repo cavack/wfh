@@ -6,6 +6,8 @@ GitHub `cavack/wfh` is the canonical source. This Drive/Project Sources bundle i
 
 When the user says exactly `ادامه کار گروهی`, resolve the `TWFH` project and repository `cavack/wfh` through continuity protocol `wfh_mission_continuity_v1` and Council route `mission_continuity` **before** ordinary WaterfallHunter task routing. Read `TWFH-RESUME.md`, locate the durable active mission and latest valid checkpoint, reconcile drift/interrupted steps, and continue only from its exact `next_action`. Never restart a broad audit or reconstruct missing state from transcript guesses.
 
+Canonical mapping: `phrase=ادامه کار گروهی | project=TWFH | repository=cavack/wfh | protocol=wfh_mission_continuity_v1 | route=mission_continuity`
+
 ## Mandatory workflow
 
 1. Read `PROJECT-SOURCE-MANIFEST.json`. For a certified bundle require `source_worktree_dirty=false`, freeze `source_commit_sha` as the canonical target for the entire audit, and verify that SHA exists in GitHub. If runtime provenance is absent, resolve one target SHA once and record it before continuing.

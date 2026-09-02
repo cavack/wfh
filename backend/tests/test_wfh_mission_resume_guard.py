@@ -32,6 +32,8 @@ def _mission_dir(tmp_path: Path, **overrides: object) -> Path:
     root = tmp_path / "WFH-ME-V3-20260902"
     root.mkdir()
     mission.atomic_write_json(root / "MISSION_STATE.json", _state(**overrides), allowed_root=root)
+    mission.atomic_write_json(root / "TASK_GRAPH.json", {"tasks": []}, allowed_root=root)
+    mission.atomic_write_json(root / "EVIDENCE_LEDGER.json", {"records": []}, allowed_root=root)
     return root
 
 
@@ -132,6 +134,11 @@ def test_completed_journal_step_allows_ready_resume(tmp_path: Path) -> None:
     mission.journal_step_complete(root, "S-002", completed_at="2026-09-02T15:04:01Z")
     mission.create_checkpoint(root, created_at="2026-09-02T15:04:02Z")
 
-    result = mission.resume_guard(root, capabilities={"git": "AVAILABLE"})
+    result = mission.resume_guard(
+        root,
+        observed_main_sha="b" * 40,
+        observed_production_sha="c" * 40,
+        capabilities={"git": "AVAILABLE"},
+    )
 
     assert result["disposition"] == "RESUME_READY"

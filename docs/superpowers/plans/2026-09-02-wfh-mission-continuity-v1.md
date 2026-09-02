@@ -92,7 +92,7 @@
 
 **Files:** create `scripts/wfh_mission.py` and `backend/tests/test_wfh_mission_cli.py`.
 
-**Produces:** `init`, `validate`, `checkpoint`, `begin-step`, `finish-step`, `resume`; canonical entry is `resume --phrase "ادامه کار گروهی" --json`.
+**Produces:** `init`, `validate`, `checkpoint`, `begin-step`, `finish-step`, `resume`; canonical entry is `resume --intent "ادامه کار گروهی" --json`.
 
 - [ ] RED CLI tests: wrong phrase nonzero; canonical phrase JSON; corrupt pointer nonzero; no explicit mission dir resolves configured `ACTIVE_MISSION.json`.
 - [ ] Implement argparse CLI; confine all writable mission paths under allowed mission root and reject traversal/symlink escape.

@@ -226,3 +226,19 @@ def test_install_guide_documents_cold_resume_phrase() -> None:
     assert "TWFH-RESUME.md" in install
     assert "RESUME_READY" in install
     assert "cold" in install.lower() or "چت جدید" in install
+
+
+def test_exporter_prebinds_overlay_paths_from_fixed_allowlist(monkeypatch, tmp_path: Path) -> None:
+    export_root = tmp_path / "exports"
+    out = export_root / "sources"
+    monkeypatch.setattr(exporter, "EXPORT_ROOT", export_root)
+    monkeypatch.setattr(exporter, "DEFAULT_EXPORT_DIR", out)
+
+    entries = exporter._overlay_paths()
+
+    assert [name for name, _source, _target in entries] == list(exporter.OVERLAY_FILES)
+    for name, source, target in entries:
+        assert source.parent == exporter.SOURCE_DIR
+        assert source.name == name
+        assert target.parent == out
+        assert target.name == name

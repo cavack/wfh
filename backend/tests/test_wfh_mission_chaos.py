@@ -31,7 +31,22 @@ def _root(tmp_path: Path, **overrides: object) -> Path:
     root = tmp_path / "WFH-ME-V3-20260902"
     root.mkdir()
     mission.atomic_write_json(root / "MISSION_STATE.json", _state(**overrides), allowed_root=root)
+    mission.atomic_write_json(root / "TASK_GRAPH.json", {"tasks": []}, allowed_root=root)
+    mission.atomic_write_json(root / "EVIDENCE_LEDGER.json", {"records": []}, allowed_root=root)
     return root
+
+
+
+def _observations(**overrides: object) -> dict[str, object]:
+    values: dict[str, object] = {
+        "observed_main_sha": "b" * 40,
+        "observed_production_sha": "c" * 40,
+        "observed_branch_head": "d" * 40,
+        "observed_branch": "feat/mission-continuity-v1-20260902",
+        "observed_worktree": "/srv/wfh-worktrees/mission-continuity-v1-20260902",
+    }
+    values.update(overrides)
+    return values
 
 def test_latest_pointer_cannot_regress_to_older_valid_checkpoint(tmp_path: Path) -> None:
     root = _root(tmp_path)
@@ -86,11 +101,7 @@ def test_branch_head_drift_is_named(tmp_path: Path) -> None:
     mission.create_checkpoint(root, created_at="2026-09-02T15:30:00Z")
 
     result = mission.resume_guard(
-        root,
-        observed_main_sha="b" * 40,
-        observed_production_sha="c" * 40,
-        observed_branch_head="e" * 40,
-        capabilities={},
+        root, capabilities={}, **_observations(observed_branch_head="e" * 40)
     )
 
     assert result["disposition"] == "DRIFT_DETECTED"
@@ -103,9 +114,11 @@ def test_registered_branch_and_worktree_drift_are_named(tmp_path: Path) -> None:
 
     result = mission.resume_guard(
         root,
-        observed_branch="other-branch",
-        observed_worktree="/tmp/other-worktree",
         capabilities={},
+        **_observations(
+            observed_branch="other-branch",
+            observed_worktree="/tmp/other-worktree",
+        ),
     )
 
     assert result["disposition"] == "DRIFT_DETECTED"

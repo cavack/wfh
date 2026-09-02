@@ -30,6 +30,8 @@ def _mission_dir(tmp_path: Path) -> Path:
     root = tmp_path / "WFH-ME-V3-20260902"
     root.mkdir()
     mission.atomic_write_json(root / "MISSION_STATE.json", _state(), allowed_root=root)
+    mission.atomic_write_json(root / "TASK_GRAPH.json", {"tasks": []}, allowed_root=root)
+    mission.atomic_write_json(root / "EVIDENCE_LEDGER.json", {"records": []}, allowed_root=root)
     mission.create_checkpoint(root, created_at="2026-09-02T15:20:00Z")
     return root
 
@@ -73,6 +75,7 @@ def test_sync_reports_unavailable_without_invalidating_local_checkpoint(
 ) -> None:
     root = _mission_dir(tmp_path)
     monkeypatch.setattr(mission.shutil, "which", lambda _: None)
+    monkeypatch.setattr(mission, "_github_token", lambda: None, raising=False)
 
     result = mission.sync_github(
         root,
@@ -81,7 +84,7 @@ def test_sync_reports_unavailable_without_invalidating_local_checkpoint(
         mission_issue=101,
     )
 
-    assert result == {"status": "UNAVAILABLE", "reason": "gh_cli_unavailable"}
+    assert result == {"status": "UNAVAILABLE", "reason": "github_auth_unavailable"}
     assert mission.load_latest_checkpoint(root)["disposition"] == "RESUME_READY"
 
 
@@ -89,39 +92,60 @@ def test_sync_is_idempotent_and_checkpoint_comment_is_not_duplicated(
     monkeypatch, tmp_path: Path
 ) -> None:
     root = _mission_dir(tmp_path)
-    monkeypatch.setattr(mission.shutil, "which", lambda _: "/usr/bin/gh")
-    calls: list[list[str]] = []
+    calls: list[tuple[str, int, str]] = []
     checkpoint_comment: list[str] = []
 
-    def fake_run(args: list[str]) -> str:
-        calls.append(args)
-        if args[0] == "api":
-            return json.dumps([{"body": checkpoint_comment[0]}] if checkpoint_comment else [])
-        if args[:2] == ["issue", "comment"]:
-            checkpoint_comment.append(args[args.index("--body") + 1])
-        return ""
+    monkeypatch.setattr(mission, "_github_token", lambda: "test-token", raising=False)
 
-    monkeypatch.setattr(mission, "_run_gh", fake_run)
+    def fake_get(repository: str, issue_number: int, token: str) -> dict[str, str]:
+        assert repository == "cavack/wfh"
+        assert token == "test-token"
+        if issue_number == 100:
+            return {
+                "title": "[MISSION][POINTER] TWFH Active Mission",
+                "body": "<!-- wfh-mission-pointer:v1 mission=WFH-ME-V3-20260902 -->",
+            }
+        return {
+            "title": "[MISSION] WFH-ME-V3-20260902 — Model Excellence v3",
+            "body": "<!-- wfh-mission-state:v1 mission=WFH-ME-V3-20260902 -->",
+        }
+
+    monkeypatch.setattr(mission, "_github_get_issue", fake_get, raising=False)
+    assert not hasattr(mission, "_run_gh")
+
+    def fake_edit(repository: str, issue_number: int, body: str, token: str) -> None:
+        assert repository == "cavack/wfh"
+        assert token == "test-token"
+        calls.append(("edit", issue_number, body))
+
+    def fake_list(repository: str, issue_number: int, token: str) -> list[dict[str, str]]:
+        assert repository == "cavack/wfh"
+        assert token == "test-token"
+        calls.append(("list", issue_number, ""))
+        return [{"body": checkpoint_comment[0]}] if checkpoint_comment else []
+
+    def fake_comment(repository: str, issue_number: int, body: str, token: str) -> None:
+        assert repository == "cavack/wfh"
+        assert token == "test-token"
+        calls.append(("comment", issue_number, body))
+        checkpoint_comment.append(body)
+
+    monkeypatch.setattr(mission, "_github_edit_issue", fake_edit, raising=False)
+    monkeypatch.setattr(mission, "_github_list_issue_comments", fake_list, raising=False)
+    monkeypatch.setattr(mission, "_github_comment_issue", fake_comment, raising=False)
+
     first = mission.sync_github(
-        root,
-        repository="cavack/wfh",
-        pointer_issue=100,
-        mission_issue=101,
+        root, repository="cavack/wfh", pointer_issue=100, mission_issue=101
     )
     second = mission.sync_github(
-        root,
-        repository="cavack/wfh",
-        pointer_issue=100,
-        mission_issue=101,
+        root, repository="cavack/wfh", pointer_issue=100, mission_issue=101
     )
 
     assert first["status"] == "SYNCED"
     assert second["status"] == "SYNCED"
-    comment_calls = [call for call in calls if call[:2] == ["issue", "comment"]]
-    edit_calls = [call for call in calls if call[:2] == ["issue", "edit"]]
-    assert len(comment_calls) == 1
-    assert len(edit_calls) == 4
-    flattened = "\n".join(" ".join(call) for call in calls)
+    assert len([call for call in calls if call[0] == "comment"]) == 1
+    assert len([call for call in calls if call[0] == "edit"]) == 4
+    flattened = "\n".join(str(call) for call in calls)
     assert "workflow run" not in flattened
     assert "deploy" not in flattened.lower()
 

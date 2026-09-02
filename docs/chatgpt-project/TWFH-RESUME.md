@@ -6,6 +6,8 @@ Protocol: `wfh_mission_continuity_v1`
 Council route: `mission_continuity`
 Canonical phrase: `ادامه کار گروهی`
 
+Canonical mapping: `phrase=ادامه کار گروهی | project=TWFH | repository=cavack/wfh | protocol=wfh_mission_continuity_v1 | route=mission_continuity`
+
 When this phrase is used in the TWFH ChatGPT Project, Chat, Work, Codex, or another authorized project-aware agent surface, resolve:
 
 `TWFH -> cavack/wfh -> active mission -> latest certified checkpoint -> exact next action`
@@ -14,10 +16,10 @@ Required behavior:
 1. Do not restart from zero.
 2. Do not rely on transcript memory as the source of truth.
 3. Resolve the active mission and latest checkpoint from durable mission control.
-4. Verify checkpoint integrity, current repository/Production provenance, registered branch/head/worktree, and worktree cleanliness when the required capabilities are available.
+4. Verify checkpoint integrity and supply independently observed values for every checkpointed repository/Production/branch/head/worktree/cleanliness field required by the active task. Never reuse the expected checkpoint value as the observation.
 5. If work stopped mid-step, return `RECONCILIATION_REQUIRED` and reconcile side effects before retrying.
 6. If state drifted, return `DRIFT_DETECTED`; do not silently reuse stale evidence.
-7. If a required capability/control source is unavailable, return `RESUME_BLOCKED` with the exact missing prerequisite.
+7. If a required capability, control source, or checkpointed observation is unavailable, return `RESUME_BLOCKED` with the exact missing prerequisite; absence is not permission to skip a drift check.
 8. If valid, return `RESUME_READY` and continue from the checkpoint's exact `next_action`.
 
 Current initial active mission contract: `WFH-ME-V3-20260902` (`WaterfallHunter Model Excellence v3`). The active-mission pointer may later select a successor without changing the meaning of the resume phrase.

@@ -10,6 +10,10 @@ PROJECT = "TWFH"
 REPOSITORY = "cavack/wfh"
 PROTOCOL = "wfh_mission_continuity_v1"
 ROUTE = "mission_continuity"
+CANONICAL_MAPPING = (
+    "phrase=ادامه کار گروهی | project=TWFH | repository=cavack/wfh | "
+    "protocol=wfh_mission_continuity_v1 | route=mission_continuity"
+)
 
 
 def _read(path: str) -> str:
@@ -25,11 +29,7 @@ def test_group_work_resume_phrase_is_cross_surface_and_unambiguous() -> None:
     }
 
     for name, text in surfaces.items():
-        assert PHRASE in text, name
-        assert PROJECT in text, name
-        assert REPOSITORY in text, name
-        assert PROTOCOL in text, name
-        assert ROUTE in text, name
+        assert CANONICAL_MAPPING in text, name
 
 
 def test_council_manifest_maps_phrase_to_existing_continuity_route() -> None:

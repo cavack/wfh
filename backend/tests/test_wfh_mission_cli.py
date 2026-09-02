@@ -32,6 +32,8 @@ def _control_root(tmp_path: Path) -> Path:
     mission_dir = control / "WFH-ME-V3-20260902"
     mission_dir.mkdir(parents=True)
     mission.atomic_write_json(mission_dir / "MISSION_STATE.json", _state(), allowed_root=mission_dir)
+    mission.atomic_write_json(mission_dir / "TASK_GRAPH.json", {"tasks": []}, allowed_root=mission_dir)
+    mission.atomic_write_json(mission_dir / "EVIDENCE_LEDGER.json", {"records": []}, allowed_root=mission_dir)
     mission.create_checkpoint(mission_dir, created_at="2026-09-02T15:10:00Z")
     mission.atomic_write_json(
         control / "ACTIVE_MISSION.json",
@@ -69,7 +71,7 @@ def test_cli_rejects_noncanonical_resume_phrase(tmp_path: Path) -> None:
 
 def test_cli_canonical_phrase_returns_json_from_active_mission(tmp_path: Path) -> None:
     control = _control_root(tmp_path)
-    proc = _run(control, "resume", "--intent", "ادامه کار گروهی", "--json")
+    proc = _run(control, "resume", "--intent", "ادامه کار گروهی", "--json", "--observed-main-sha", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
 
     assert proc.returncode == 0, proc.stderr
     output = json.loads(proc.stdout)
@@ -80,7 +82,7 @@ def test_cli_canonical_phrase_returns_json_from_active_mission(tmp_path: Path) -
 
 def test_cli_normalizes_unicode_whitespace_for_canonical_phrase(tmp_path: Path) -> None:
     control = _control_root(tmp_path)
-    proc = _run(control, "resume", "--intent", "  ادامه   کار\tگروهی  ", "--json")
+    proc = _run(control, "resume", "--intent", "  ادامه   کار\tگروهی  ", "--json", "--observed-main-sha", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
 
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout)["disposition"] == "RESUME_READY"
@@ -92,7 +94,7 @@ def test_cli_corrupt_checkpoint_pointer_returns_nonzero(tmp_path: Path) -> None:
         "{not-json}\n", encoding="utf-8"
     )
 
-    proc = _run(control, "resume", "--intent", "ادامه کار گروهی", "--json")
+    proc = _run(control, "resume", "--intent", "ادامه کار گروهی", "--json", "--observed-main-sha", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
 
     assert proc.returncode != 0
     output = json.loads(proc.stdout)

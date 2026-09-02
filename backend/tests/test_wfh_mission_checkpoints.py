@@ -34,6 +34,8 @@ def _init_mission_dir(tmp_path: Path) -> Path:
     root = tmp_path / "WFH-ME-V3-20260902"
     root.mkdir()
     mission.atomic_write_json(root / "MISSION_STATE.json", _state(), allowed_root=root)
+    mission.atomic_write_json(root / "TASK_GRAPH.json", {"tasks": []}, allowed_root=root)
+    mission.atomic_write_json(root / "EVIDENCE_LEDGER.json", {"records": []}, allowed_root=root)
     return root
 
 
