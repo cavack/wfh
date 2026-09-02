@@ -750,7 +750,7 @@ class EntryOutcomeResolutionWorker:
         self.interval_seconds = max(60.0, float(interval_seconds))
         self._running = False
 
-    async def run_once(self, *, now: int | None = None) -> int:
+    def run_once(self, *, now: int | None = None) -> int:
         current = int(time.time() if now is None else now)
         return self.store.resolve_matured_outcomes(
             self.resolver, mature_before=current - 86_400, limit=self.batch_size
@@ -759,10 +759,9 @@ class EntryOutcomeResolutionWorker:
     async def run_forever(self) -> None:
         self._running = True
         try:
-            await asyncio.sleep(0)
             while self._running:
                 try:
-                    await self.run_once()
+                    await asyncio.to_thread(self.run_once)
                 except asyncio.CancelledError:
                     raise
                 except Exception:

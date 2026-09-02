@@ -304,7 +304,7 @@ def test_entry_outcome_worker_runs_bounded_cycle_and_stops(tmp_path) -> None:
 
     assert worker.batch_size == 2
     assert worker.interval_seconds == 60.0
-    assert asyncio.run(worker.run_once(now=100_000)) == 1
+    assert worker.run_once(now=100_000) == 1
     assert calls == [7]
     worker.stop()
     assert worker._running is False
