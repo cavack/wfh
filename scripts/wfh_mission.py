@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -159,3 +161,162 @@ def update_scientific_state(
     if retired:
         updated["final_holdout_retired"] = True
     return updated
+
+
+def _canonical_json_bytes(payload: dict[str, Any]) -> bytes:
+    return (
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _sha256_bytes(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _atomic_write_bytes(path: Path, payload: bytes, *, allowed_root: Path) -> Path:
+    target = _confined_path(Path(path), Path(allowed_root))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=target.parent, prefix=f".{target.name}.tmp-", delete=False
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, target)
+        temp_path = None
+        return target
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _next_checkpoint_id(mission_dir: Path) -> str:
+    checkpoints = mission_dir / "checkpoints"
+    checkpoints.mkdir(parents=True, exist_ok=True)
+    highest = 0
+    for path in checkpoints.glob("CP-*.json"):
+        match = re.fullmatch(r"CP-(\d{6})\.json", path.name)
+        if match:
+            highest = max(highest, int(match.group(1)))
+    return f"CP-{highest + 1:06d}"
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"expected JSON object: {path}")
+    return data
+
+
+def _resume_projection(checkpoint: dict[str, Any]) -> str:
+    state = checkpoint["mission_state"]
+    completed = ", ".join(state.get("completed_tasks", [])) or "none"
+    no_repeat = ", ".join(state.get("do_not_repeat", [])) or "none"
+    blockers = ", ".join(state.get("blocked_tasks", [])) or "none"
+    defects = ", ".join(state.get("open_defects", [])) or "none"
+    return "\n".join(
+        [
+            "# TWFH Mission Resume",
+            "",
+            f"Mission: {checkpoint['mission_id']}",
+            f"Checkpoint: {checkpoint['checkpoint_id']}",
+            f"Main SHA: {state.get('current_main_sha', 'UNAVAILABLE')}",
+            f"Production SHA: {state.get('production_sha', 'UNAVAILABLE')}",
+            f"Phase: {state.get('current_phase', 'UNAVAILABLE')}",
+            f"Current task: {state.get('current_task', 'UNAVAILABLE')}",
+            f"Completed: {completed}",
+            f"Do not repeat: {no_repeat}",
+            f"Open defects: {defects}",
+            f"Blocked: {blockers}",
+            f"Active branch: {state.get('active_branch', 'UNAVAILABLE')}",
+            f"Active worktree: {state.get('active_worktree', 'UNAVAILABLE')}",
+            f"Active PR: {state.get('active_pr', 'UNAVAILABLE')}",
+            f"In-progress operation: {state.get('in_progress_operation', 'none')}",
+            f"Next action: {state.get('next_action', 'UNAVAILABLE')}",
+            f"Preconditions: {', '.join(state.get('next_action_preconditions', [])) or 'none'}",
+            f"Do not: {', '.join(state.get('do_not', [])) or 'none'}",
+            "",
+        ]
+    )
+
+
+def create_checkpoint(mission_dir: Path, *, created_at: str | None = None) -> dict[str, Any]:
+    root = Path(mission_dir).resolve(strict=True)
+    state_path = _confined_path(root / "MISSION_STATE.json", root)
+    state = _load_json(state_path)
+    errors = validate_mission_state(state)
+    if errors:
+        raise ValueError("; ".join(errors))
+    checkpoint_id = _next_checkpoint_id(root)
+    checkpoint = {
+        "contract_version": "wfh_mission_checkpoint_v1",
+        "mission_id": state["mission_id"],
+        "checkpoint_id": checkpoint_id,
+        "created_at": created_at or _utc_now(),
+        "mission_state": state,
+        "state_files": {
+            "MISSION_STATE.json": _sha256_bytes(state_path.read_bytes()),
+        },
+    }
+    checkpoint_rel = Path("checkpoints") / f"{checkpoint_id}.json"
+    checkpoint_path = root / checkpoint_rel
+    checkpoint_bytes = _canonical_json_bytes(checkpoint)
+    _atomic_write_bytes(checkpoint_path, checkpoint_bytes, allowed_root=root)
+    pointer = {
+        "contract_version": "wfh_latest_checkpoint_v1",
+        "mission_id": state["mission_id"],
+        "checkpoint_id": checkpoint_id,
+        "path": checkpoint_rel.as_posix(),
+        "sha256": _sha256_bytes(checkpoint_bytes),
+    }
+    atomic_write_json(root / "LATEST_CHECKPOINT.json", pointer, allowed_root=root)
+    _atomic_write_bytes(
+        root / "RESUME.md",
+        _resume_projection(checkpoint).encode("utf-8"),
+        allowed_root=root,
+    )
+    return pointer
+
+
+def load_latest_checkpoint(mission_dir: Path) -> dict[str, Any]:
+    root = Path(mission_dir).resolve(strict=True)
+    pointer_path = _confined_path(root / "LATEST_CHECKPOINT.json", root)
+    if not pointer_path.exists():
+        return {"disposition": "RESUME_BLOCKED", "reason": "latest_checkpoint_missing"}
+    try:
+        pointer = _load_json(pointer_path)
+        checkpoint_path = _confined_path(root / str(pointer["path"]), root)
+    except (KeyError, ValueError, json.JSONDecodeError):
+        return {"disposition": "RESUME_BLOCKED", "reason": "latest_checkpoint_pointer_invalid"}
+    if not checkpoint_path.exists():
+        return {"disposition": "RESUME_BLOCKED", "reason": "checkpoint_missing"}
+    payload = checkpoint_path.read_bytes()
+    if _sha256_bytes(payload) != pointer.get("sha256"):
+        return {"disposition": "RESUME_BLOCKED", "reason": "checkpoint_hash_mismatch"}
+    try:
+        checkpoint = json.loads(payload)
+    except json.JSONDecodeError:
+        return {"disposition": "RESUME_BLOCKED", "reason": "checkpoint_json_invalid"}
+    if checkpoint.get("mission_id") != pointer.get("mission_id"):
+        return {"disposition": "RESUME_BLOCKED", "reason": "checkpoint_mission_mismatch"}
+    if checkpoint.get("checkpoint_id") != pointer.get("checkpoint_id"):
+        return {"disposition": "RESUME_BLOCKED", "reason": "checkpoint_sequence_mismatch"}
+    return {
+        "disposition": "RESUME_READY",
+        "reason": None,
+        "pointer": pointer,
+        "checkpoint": checkpoint,
+    }
