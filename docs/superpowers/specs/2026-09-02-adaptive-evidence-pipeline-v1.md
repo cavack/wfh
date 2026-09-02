@@ -89,3 +89,8 @@ Threshold/weight/gate/Anti-Chase optimization is also separate. It requires prod
 ## Blast radius
 
 Wave A may modify the hunter scheduler, WebSocket evidence cache, microstructure acquisition adapter, candle analyzer cache, Prometheus telemetry, focused tests and documentation. It must not modify decision thresholds, score weights, lifecycle transition rules, EntryDecisionPolicy semantics, notification eligibility, immutable signal-ledger rules, or live-trading configuration.
+## Conditional Wave C — WATCH fairness
+
+After the shared-membership churn fix reached Production, FUEL-RICH p95 fell to about 82 seconds and PRE-TRIGGER p95 to about 30 seconds, but global usable p95 remained about 384 seconds because WATCH work was starved behind continuously due heavy states. Production histograms showed 128 of 136 WATCH evaluations completed below 0.1 seconds while FUEL-RICH/PRE-TRIGGER averaged about 21 seconds and all 12 evaluation slots remained occupied.
+
+Wave C keeps `DEFAULT_EVALUATION_CONCURRENCY=12` and all lifecycle/score/entry/Anti-Chase semantics unchanged. When WATCH work is due and no WATCH evaluation is already in flight, the deadline scheduler reserves at most one of the existing slots for WATCH. This is a fairness reservation, not an extra concurrency lane: near-trigger work continues to own the other slots and a second WATCH slot is never reserved while one WATCH evaluation is active.
