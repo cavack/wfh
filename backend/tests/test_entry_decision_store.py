@@ -129,6 +129,53 @@ def test_outcome_capture_rejects_decision_mutation(tmp_path) -> None:
         )
 
 
+def test_initial_capture_resolves_in_separate_immutable_table(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    decision_event_id = store.append_if_changed(
+        "SXT/USDT:USDT", packet("ENTRY_READY", 84.0, 100)
+    )
+    assert decision_event_id is not None
+    capture_id = store.append_outcome_capture(
+        decision_event_id,
+        {"observational_only": True, "decision_mutated": False},
+        captured_at=101,
+    )
+    resolution_id = store.resolve_outcome_capture(
+        decision_event_id,
+        {"outcome_status": "OBSERVED", "mfe_pct": 1.0},
+        resolved_at=200,
+    )
+    assert capture_id > 0
+    assert resolution_id > 0
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT outcome_status FROM decision_outcome_capture WHERE id=?",
+            (capture_id,),
+        ).fetchone()[0] == "UNOBSERVED"
+
+
+def test_pending_and_resolution_are_idempotent_and_isolate_research_failures(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    event_id = store.append_if_changed("SXT/USDT:USDT", packet("ENTRY_READY", 84.0, 100))
+    assert event_id is not None
+    store.append_outcome_capture(
+        event_id, {"observational_only": True, "decision_mutated": False},
+        captured_at=101,
+    )
+    assert len(store.pending_outcome_captures(mature_before=101)) == 1
+    assert store.resolve_matured_outcomes(
+        lambda _: {"outcome_status": "UNAVAILABLE", "cost": None, "provenance": None},
+        mature_before=101,
+    ) == 1
+    assert store.pending_outcome_captures(mature_before=101) == []
+    assert store.resolve_matured_outcomes(
+        lambda _: (_ for _ in ()).throw(RuntimeError("research unavailable")),
+        mature_before=101,
+    ) == 0
+
+
 def test_latest_transition_uses_append_order_when_clock_moves_backward(tmp_path) -> None:
     db_path = migrate_test_database(tmp_path / "registry.db")
     store = EntryDecisionStore(db_path)

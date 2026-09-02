@@ -416,6 +416,93 @@ class EntryDecisionStore:
                 raise ValueError("decision outcome capture already exists") from exc
             return int(cursor.lastrowid)
 
+    def pending_outcome_captures(
+        self, *, mature_before: int, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Return immutable initial captures whose horizon has matured."""
+        if isinstance(mature_before, bool) or not isinstance(mature_before, int):
+            raise ValueError("maturity timestamp invalid")
+        with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT c.id, c.decision_event_id, c.captured_at, c.capture_json
+                FROM decision_outcome_capture c
+                LEFT JOIN decision_outcome_resolution r
+                  ON r.decision_event_id = c.decision_event_id
+                WHERE r.id IS NULL AND c.captured_at <= ?
+                ORDER BY c.captured_at, c.id LIMIT ?
+                """,
+                (mature_before, max(1, min(int(limit), 1000))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    matured_outcome_captures = pending_outcome_captures
+
+    def resolve_outcome_capture(
+        self,
+        decision_event_id: int,
+        resolution: dict[str, Any],
+        *,
+        resolved_at: int,
+    ) -> int:
+        """Append the final observation without mutating the initial capture."""
+        if isinstance(decision_event_id, bool) or not isinstance(decision_event_id, int) or decision_event_id <= 0:
+            raise ValueError("decision event id invalid")
+        if isinstance(resolved_at, bool) or not isinstance(resolved_at, int) or resolved_at < 0:
+            raise ValueError("resolution timestamp invalid")
+        if not isinstance(resolution, dict):
+            raise ValueError("resolution must be an object")
+        status = str(resolution.get("outcome_status") or "")
+        if status not in {"OBSERVED", "UNOBSERVABLE", "UNAVAILABLE"}:
+            raise ValueError("outcome status invalid")
+        # Explicitly preserve unavailable cost/provenance rather than inventing values.
+        persisted = {
+            **resolution,
+            "resolution_version": "decision_outcome_resolution_v1",
+            "resolved_at": resolved_at,
+            "outcome_status": status,
+            "cost": resolution.get("cost"),
+            "provenance": resolution.get("provenance"),
+        }
+        payload, payload_hash = self._encode(persisted)
+        with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
+            if conn.execute(
+                "SELECT 1 FROM decision_outcome_capture WHERE decision_event_id=?",
+                (decision_event_id,),
+            ).fetchone() is None:
+                raise ValueError("initial outcome capture missing")
+            try:
+                cursor = conn.execute(
+                    """INSERT INTO decision_outcome_resolution
+                    (decision_event_id,resolution_version,resolved_at,outcome_status,
+                     resolution_json,resolution_hash,created_at)
+                    VALUES (?,?,?,?,?,?,?)""",
+                    (decision_event_id, "decision_outcome_resolution_v1", resolved_at,
+                     status, payload, payload_hash, int(time.time())),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("decision outcome resolution already exists") from exc
+        return int(cursor.lastrowid)
+
+    def resolve_matured_outcomes(
+        self, resolver: Any, *, mature_before: int, limit: int = 100
+    ) -> int:
+        """Resolve research outcomes; failures are isolated per capture."""
+        resolved = 0
+        for capture in self.pending_outcome_captures(mature_before=mature_before, limit=limit):
+            try:
+                result = resolver(capture)
+                if result is not None:
+                    self.resolve_outcome_capture(
+                        int(capture["decision_event_id"]), result,
+                        resolved_at=int(time.time()),
+                    )
+                    resolved += 1
+            except Exception:
+                continue
+        return resolved
+
     @staticmethod
     def _history_select(where: str = "") -> str:
         return (

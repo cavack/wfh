@@ -14,7 +14,7 @@ from waterfallhunter.core.schema_unique_constraints import (
 )
 
 
-CURRENT_RUNTIME_SCHEMA_VERSION = 8
+CURRENT_RUNTIME_SCHEMA_VERSION = 9
 NON_NEGATIVE_INTEGER_CREATED_AT_CHECK = (
     "check(typeof(created_at) = 'integer' and created_at >= 0)"
 )
@@ -848,6 +848,35 @@ _RUNTIME_SCHEMA: dict[str, ManagedTableSpec] = {
         triggers=_immutable(
             "decision_outcome_capture",
             message="decision outcome captures are immutable",
+        ),
+    ),
+    "decision_outcome_resolution": ManagedTableSpec(
+        name="decision_outcome_resolution",
+        columns=(
+            _c("id", "INTEGER", pk=1, autoincrement=True),
+            _c("decision_event_id", "INTEGER", not_null=True),
+            _c("resolution_version", "TEXT", not_null=True),
+            _c("resolved_at", "INTEGER", not_null=True),
+            _c("outcome_status", "TEXT", not_null=True),
+            _c("resolution_json", "TEXT", not_null=True),
+            _c("resolution_hash", "TEXT", not_null=True),
+            _c("created_at", "INTEGER", not_null=True),
+        ),
+        indexes=(
+            IndexSpec("idx_decision_outcome_resolution_status_at", ("outcome_status", "resolved_at")),
+        ),
+        foreign_keys=(ForeignKeySpec("decision_event_id", "entry_decision_events", "id"),),
+        check_fragments=(
+            "check(resolution_version = 'decision_outcome_resolution_v1')",
+            "check(typeof(resolved_at) = 'integer' and resolved_at >= 0)",
+            "check(outcome_status in ('OBSERVED','UNOBSERVABLE','UNAVAILABLE'))",
+            "check(json_valid(resolution_json))",
+            "check(length(resolution_hash) = 64 and resolution_hash not glob '*[^0-9a-f]*')",
+            NON_NEGATIVE_INTEGER_CREATED_AT_CHECK,
+        ),
+        triggers=_immutable(
+            "decision_outcome_resolution",
+            message="decision outcome resolutions are immutable",
         ),
     ),
     "entry_notification_outbox": ManagedTableSpec(
