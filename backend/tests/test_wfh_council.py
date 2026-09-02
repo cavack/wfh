@@ -422,3 +422,18 @@ def test_research_registry_covers_remaining_challenger_families() -> None:
     assert "relative weakness" in text
     assert "regime" in text
     assert "attention" in text
+
+
+def test_research_snapshot_rejects_boolean_outcome_integrity_counts(tmp_path: Path) -> None:
+    _write_promotion_candidate_artifacts(tmp_path)
+    outcome_path = tmp_path / "OUTCOME_INTEGRITY.json"
+    outcome = json.loads(outcome_path.read_text(encoding="utf-8"))
+    outcome["causal_entry_before_observation_count"] = False
+    outcome["duplicate_snapshot_ids"] = False
+    _write_json(outcome_path, outcome)
+
+    summary = council.summarize_research_evidence(tmp_path)
+
+    assert summary["promotion_disposition"] == "NO_PROMOTION_EVIDENCE"
+    assert "causal_outcome_integrity_failed" in summary["blockers"]
+    assert "duplicate_outcome_snapshots" in summary["blockers"]

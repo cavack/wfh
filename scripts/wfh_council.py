@@ -286,6 +286,10 @@ def _research_provenance_blockers(
     return blockers
 
 
+def _strict_zero_count(value: Any) -> bool:
+    return type(value) is int and value == 0
+
+
 def _research_semantic_integrity_blockers(
     dataset: dict[str, Any],
     outcome: dict[str, Any],
@@ -293,9 +297,9 @@ def _research_semantic_integrity_blockers(
     blockers: list[str] = []
     if not str(dataset.get("evidence_tier") or "").startswith("TIER_1"):
         blockers.append("insufficient_evidence_tier")
-    if outcome.get("causal_entry_before_observation_count") != 0:
+    if not _strict_zero_count(outcome.get("causal_entry_before_observation_count")):
         blockers.append("causal_outcome_integrity_failed")
-    if outcome.get("duplicate_snapshot_ids") != 0:
+    if not _strict_zero_count(outcome.get("duplicate_snapshot_ids")):
         blockers.append("duplicate_outcome_snapshots")
     return blockers
 
