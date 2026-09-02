@@ -115,6 +115,12 @@ from waterfallhunter.core.request_body_limit import RequestBodyLimitMiddleware
 from waterfallhunter.core.lbank_execution_outcome_report import (
     LBankExecutionOutcomeReport,
 )
+from waterfallhunter.core.hunter_schedule import (
+    DEFAULT_EVALUATION_CONCURRENCY,
+    ordered_hunter_candidates,
+    remaining_cycle_delay,
+)
+from waterfallhunter.core.runtime_memory import trim_process_heap
 
 logging.basicConfig(level=settings.log_level)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -3019,6 +3025,7 @@ async def hunter_loop(
     )
 
     while _hunter_running:
+        cycle_started_at = time.monotonic()
         try:
             await (
                 scanner
@@ -3048,10 +3055,8 @@ async def hunter_loop(
                 )
 
             if candidates:
-                semaphore = (
-                    asyncio.Semaphore(
-                        6
-                    )
+                semaphore = asyncio.Semaphore(
+                    DEFAULT_EVALUATION_CONCURRENCY
                 )
                 evaluations_since_flush = 0
 
@@ -3092,14 +3097,17 @@ async def hunter_loop(
                                 .flush_evaluations
                             )
 
+                ordered_candidates = ordered_hunter_candidates(
+                    candidates,
+                    scanner.active_candidates,
+                )
                 results = await asyncio.gather(
                     *(
                         evaluate_bounded(
                             symbol,
                             data,
                         )
-                        for symbol, data
-                        in candidates.items()
+                        for symbol, data in ordered_candidates
                     ),
                     return_exceptions=True,
                 )
@@ -3140,14 +3148,27 @@ async def hunter_loop(
                 time.time()
             )
 
+            trim_result = await asyncio.to_thread(trim_process_heap)
+            if trim_result.get("malloc_trim_released"):
+                logger.debug(
+                    "Hunter cycle heap trim released free pages (gc=%s)",
+                    trim_result.get("gc_collected"),
+                )
+
             if _hunter_running:
-                try:
-                    await asyncio.wait_for(
-                        _hunter_stop_event.wait(),
-                        timeout=interval_seconds,
-                    )
-                except TimeoutError:
-                    pass
+                delay = remaining_cycle_delay(
+                    cycle_started_at,
+                    time.monotonic(),
+                    interval_seconds,
+                )
+                if delay > 0:
+                    try:
+                        await asyncio.wait_for(
+                            _hunter_stop_event.wait(),
+                            timeout=delay,
+                        )
+                    except TimeoutError:
+                        pass
 
         except asyncio.CancelledError:
             break
