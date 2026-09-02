@@ -183,6 +183,67 @@ def test_canonical_append_with_capture_and_observed_not_pending(tmp_path) -> Non
     assert payload["promotion_allowed"] is False
 
 
+def test_unchanged_retry_repairs_capture_after_initial_capture_failure(tmp_path, monkeypatch):
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    original = store.append_outcome_capture
+    failed = True
+
+    def fail_once(*args, **kwargs):
+        nonlocal failed
+        if failed:
+            failed = False
+            raise sqlite3.OperationalError("research store down")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(store, "append_outcome_capture", fail_once)
+    p = packet("ENTRY_READY", 84.0, 100)
+    event_id = store.append_if_changed_with_capture("SXT/USDT:USDT", p, captured_at=101)
+    assert event_id is not None
+    assert store.append_if_changed_with_capture("SXT/USDT:USDT", p, captured_at=101) == event_id
+    assert len(store.pending_outcome_captures(mature_before=101)) == 1
+
+
+def test_tampered_capture_is_rejected_before_resolver(tmp_path, caplog):
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    event_id = store.append_if_changed("SXT/USDT:USDT", packet("ENTRY_READY", 84.0, 100))
+    assert event_id is not None
+    store.append_outcome_capture(
+        event_id, {"observational_only": True, "decision_mutated": False}, captured_at=101
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TRIGGER decision_outcome_capture_no_update")
+        conn.execute(
+            "UPDATE decision_outcome_capture SET capture_json=? WHERE decision_event_id=?",
+            ('{"observational_only":true,"decision_mutated":false}', event_id),
+        )
+    with caplog.at_level("ERROR"):
+        assert store.resolve_matured_outcomes(lambda _: pytest.fail("resolver called"), mature_before=101) == 0
+    assert "Rejecting tampered outcome capture" in caplog.text
+
+
+def test_resolution_persistence_failure_remains_retryable(tmp_path, monkeypatch, caplog):
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    event_id = store.append_if_changed_with_capture(
+        "SXT/USDT:USDT", packet("ENTRY_READY", 84.0, 100), captured_at=101
+    )
+    assert event_id is not None
+    original = store.resolve_outcome_capture
+    monkeypatch.setattr(
+        store, "resolve_outcome_capture",
+        lambda *args, **kwargs: (_ for _ in ()).throw(sqlite3.OperationalError("database is locked")),
+    )
+    with caplog.at_level("WARNING"):
+        assert store.resolve_matured_outcomes(
+            lambda _: {"outcome_status": "OBSERVED", "mfe_pct": 1.0},
+            mature_before=101,
+        ) == 0
+    assert store.pending_outcome_captures(mature_before=101)
+    monkeypatch.setattr(store, "resolve_outcome_capture", original)
+
+
 @pytest.mark.parametrize(
     "failure",
     [sqlite3.OperationalError("database is locked"), RuntimeError("research store down")],

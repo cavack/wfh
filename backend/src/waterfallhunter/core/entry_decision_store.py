@@ -449,21 +449,59 @@ class EntryDecisionStore:
         event_id = self.append_if_changed(
             symbol, packet, expected_lifecycle_id=expected_lifecycle_id
         )
+        # The canonical append and research capture deliberately use separate
+        # transactions.  If the capture write was interrupted, a retry sees an
+        # unchanged canonical packet; use that event as the repair target.
         if event_id is None:
-            return None
+            with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
+                row = conn.execute(
+                    "SELECT id,decision,packet_json,packet_hash "
+                    "FROM entry_decision_events WHERE symbol=? "
+                    "ORDER BY id DESC LIMIT 1",
+                    (str(symbol),),
+                ).fetchone()
+            if row is None:
+                return None
+            try:
+                existing_packet = self._verified_record(
+                    row[2], row[3], label="unchanged entry decision packet"
+                )
+            except ValueError:
+                logger.exception(
+                    "Unable to repair outcome capture for invalid canonical packet",
+                    extra={"symbol": str(symbol), "capture_failure_type": "persistence"},
+                )
+                return None
+            if (
+                str(row[1]) != str(packet.get("decision"))
+                or canonical_sha256(self._material_projection(existing_packet))
+                != canonical_sha256(self._material_projection(packet))
+            ):
+                # A different transition won the race after the no-op append;
+                # never attach this capture to that event.
+                return None
+            event_id = int(row[0])
+        capture = {
+            _OBSERVATIONAL_ONLY: True,
+            _DECISION_MUTATED: False,
+            "decision": packet.get("decision"),
+            "symbol": str(symbol),
+            "lifecycle_id": packet.get("lifecycle_id"),
+            "outcome_status": _OUTCOME_UNOBSERVED,
+        }
         try:
             self.append_outcome_capture(
-                event_id,
-                {
-                    _OBSERVATIONAL_ONLY: True,
-                    _DECISION_MUTATED: False,
-                    "decision": packet.get("decision"),
-                    "symbol": str(symbol),
-                    "lifecycle_id": packet.get("lifecycle_id"),
-                    "outcome_status": _OUTCOME_UNOBSERVED,
-                },
+                event_id, capture,
                 captured_at=captured_at,
             )
+        except ValueError as exc:
+            # A concurrent repair may have inserted the unique capture.
+            if "already exists" not in str(exc):
+                logger.exception(
+                    "Research outcome capture persistence failed",
+                    extra={"symbol": str(symbol), "decision_event_id": event_id,
+                           "capture_failure_type": "persistence"},
+                )
         except Exception:
             # Outcome capture is research observability, never part of the
             # canonical decision/outbox transaction.  Keep the exception and
@@ -488,7 +526,8 @@ class EntryDecisionStore:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
-                SELECT c.id, c.decision_event_id, c.captured_at, c.capture_json
+                SELECT c.id, c.decision_event_id, c.captured_at,
+                       c.capture_json, c.capture_hash
                 FROM decision_outcome_capture c
                 LEFT JOIN decision_outcome_resolution r
                   ON r.decision_event_id = c.decision_event_id
@@ -498,7 +537,29 @@ class EntryDecisionStore:
                 """,
                 (mature_before, max(1, min(int(limit), 1000))),
             ).fetchall()
-        return [dict(row) for row in rows]
+        valid: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                self._verified_record(
+                    item["capture_json"], item["capture_hash"],
+                    label="outcome capture",
+                )
+            except ValueError as exc:
+                # Do not invoke user/provider code with tampered research data,
+                # and do not manufacture a terminal outcome for corrupted data.
+                logger.error(
+                    "Rejecting tampered outcome capture",
+                    extra={
+                        "decision_event_id": item.get("decision_event_id"),
+                        "capture_id": item.get("id"),
+                        "failure_disposition": OutcomeFailureDisposition.RETRYABLE.value,
+                        "error": str(exc),
+                    },
+                )
+                continue
+            valid.append(item)
+        return valid
 
     matured_outcome_captures = pending_outcome_captures
 
@@ -613,10 +674,6 @@ class EntryDecisionStore:
             result = resolver(capture)
             if result is None:
                 return False
-            self.resolve_outcome_capture(
-                int(capture["decision_event_id"]), result, resolved_at=int(time.time())
-            )
-            return True
         except Exception as exc:
             disposition = self.classify_outcome_failure(exc)
             decision_event_id = int(capture["decision_event_id"])
@@ -640,6 +697,27 @@ class EntryDecisionStore:
             )
             if disposition is OutcomeFailureDisposition.TERMINAL_UNAVAILABLE:
                 self._persist_unavailable_resolution(decision_event_id, exc)
+            return False
+        # Persistence/validation/storage failures are never resolver-source
+        # failures: keep the observation pending so a later cycle can retry it.
+        try:
+            self.resolve_outcome_capture(
+                int(capture["decision_event_id"]), result, resolved_at=int(time.time())
+            )
+            return True
+        except Exception as exc:
+            logger.warning(
+                "Matured outcome persistence failed; leaving capture pending",
+                extra={
+                    "decision_event_id": int(capture["decision_event_id"]),
+                    "failure_type": type(exc).__name__,
+                    "error": str(exc),
+                    "failure_disposition": OutcomeFailureDisposition.RETRYABLE.value,
+                    "retryable": True,
+                    "batch_attempt": attempt,
+                    "batch_limit": batch_limit,
+                },
+            )
             return False
 
     def _persist_unavailable_resolution(
