@@ -1247,8 +1247,9 @@ def _decision_outcome_gross_r(
     return None
 
 
-async def _resolve_entry_outcome(capture: dict) -> dict | None:
-    """Resolve an exact LBank perpetual capture from a complete closed 1m window."""
+def _entry_outcome_capture_parts(
+    capture: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     contract = capture.get("contract") if isinstance(capture.get("contract"), dict) else {}
     plan = capture.get("trade_plan") if isinstance(capture.get("trade_plan"), dict) else {}
     outcome_contract = (
@@ -1256,17 +1257,56 @@ async def _resolve_entry_outcome(capture: dict) -> dict | None:
         if isinstance(capture.get("outcome_contract"), dict)
         else {}
     )
-    if (
-        contract.get("available") is not True
-        or str(contract.get("exchange") or "").lower() != "lbank"
-        or contract.get("market_type") != "linear_usdt_perpetual"
-        or not contract.get("mapped_symbol")
-        or outcome_contract.get("closed_candles_only") is not True
-        or outcome_contract.get("complete_window_required") is not True
-        or not all(plan.get(key) is not None for key in (
-            "entry_price", "stop_loss", "take_profit_1", "take_profit_2"
-        ))
-    ):
+    return contract, plan, outcome_contract
+
+
+def _entry_outcome_contract_available(
+    contract: dict[str, Any],
+    plan: dict[str, Any],
+    outcome_contract: dict[str, Any],
+) -> bool:
+    required_levels = ("entry_price", "stop_loss", "take_profit_1", "take_profit_2")
+    return bool(
+        contract.get("available") is True
+        and str(contract.get("exchange") or "").lower() == "lbank"
+        and contract.get("market_type") == "linear_usdt_perpetual"
+        and contract.get("mapped_symbol")
+        and outcome_contract.get("closed_candles_only") is True
+        and outcome_contract.get("complete_window_required") is True
+        and all(plan.get(key) is not None for key in required_levels)
+    )
+
+
+def _entry_outcome_costs_complete(costs: dict[str, Any]) -> bool:
+    required = ("fees", "entry_slippage", "exit_slippage", "funding")
+    return bool(
+        costs
+        and all(
+            isinstance(costs.get(name), dict) and costs[name].get("available") is True
+            for name in required
+        )
+    )
+
+
+def _entry_outcome_provenance_complete(
+    capture: dict[str, Any], classification: str, gross_r: float | None
+) -> bool:
+    source_revision = capture.get("source_revision")
+    decision_contract_sha256 = capture.get("decision_contract_sha256")
+    return bool(
+        isinstance(source_revision, str)
+        and len(source_revision) == 40
+        and isinstance(decision_contract_sha256, str)
+        and len(decision_contract_sha256) == 64
+        and classification in {"WIN", "STOP", "TIMEOUT"}
+        and gross_r is not None
+    )
+
+
+async def _resolve_entry_outcome(capture: dict) -> dict | None:
+    """Resolve an exact LBank perpetual capture from a complete closed 1m window."""
+    contract, plan, outcome_contract = _entry_outcome_capture_parts(capture)
+    if not _entry_outcome_contract_available(contract, plan, outcome_contract):
         return {
             "outcome_status": "UNAVAILABLE",
             "classification": "UNAVAILABLE",
@@ -1312,21 +1352,9 @@ async def _resolve_entry_outcome(capture: dict) -> dict | None:
     classification = _decision_outcome_classification(status)
     gross_r = _decision_outcome_gross_r(classification, status, plan, candles)
     costs = capture.get("costs") if isinstance(capture.get("costs"), dict) else {}
-    cost_complete = bool(
-        costs
-        and all(
-            isinstance(costs.get(name), dict)
-            and costs[name].get("available") is True
-            for name in ("fees", "entry_slippage", "exit_slippage", "funding")
-        )
-    )
-    provenance_complete = bool(
-        isinstance(capture.get("source_revision"), str)
-        and len(capture["source_revision"]) == 40
-        and isinstance(capture.get("decision_contract_sha256"), str)
-        and len(capture["decision_contract_sha256"]) == 64
-        and classification in {"WIN", "STOP", "TIMEOUT"}
-        and gross_r is not None
+    cost_complete = _entry_outcome_costs_complete(costs)
+    provenance_complete = _entry_outcome_provenance_complete(
+        capture, classification, gross_r
     )
     return {
         "outcome_status": "OBSERVED",

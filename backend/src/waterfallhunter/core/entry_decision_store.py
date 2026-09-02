@@ -106,53 +106,61 @@ class EntryDecisionStore:
         return payload, canonical_sha256(packet)
 
     @staticmethod
-    def _normalized_outcome_costs(
-        costs: Any, *, captured_at: int
-    ) -> dict[str, dict[str, Any]]:
-        """Return four explicit cost records; unavailable never means zero."""
-        source = costs if isinstance(costs, dict) else {}
-        normalized: dict[str, dict[str, Any]] = {}
+    def _normalize_outcome_cost_component(
+        name: str, item: dict[str, Any], *, captured_at: int
+    ) -> dict[str, Any]:
+        classification = str(item.get("classification") or _OUTCOME_UNAVAILABLE)
         allowed = {
             "OBSERVED_COST",
             "RECONSTRUCTED_COST",
             "MODELED_COST",
             _OUTCOME_UNAVAILABLE,
         }
-        for name in ("fees", "entry_slippage", "exit_slippage", "funding"):
-            item = source.get(name) if isinstance(source.get(name), dict) else {}
-            classification = str(item.get("classification") or _OUTCOME_UNAVAILABLE)
-            if classification not in allowed:
-                raise ValueError(f"{name} cost classification invalid")
-            value = item.get("value")
-            available_value = bool(
-                isinstance(value, (int, float))
-                and not isinstance(value, bool)
-                and math.isfinite(float(value))
-                and float(value) >= 0
-            )
-            if classification == _OUTCOME_UNAVAILABLE:
-                normalized[name] = {
-                    "value": None,
-                    "source": None,
-                    "classification": _OUTCOME_UNAVAILABLE,
-                    "observed_at": None,
-                    "interval": None,
-                    "available": False,
-                    "reason": str(item.get("reason") or f"{name} unavailable"),
-                }
-                continue
-            if not available_value or not str(item.get("source") or "").strip():
-                raise ValueError(f"{name} available cost provenance invalid")
-            normalized[name] = {
-                **item,
-                "value": float(value),
-                "classification": classification,
-                "observed_at": item.get("observed_at", captured_at),
-                "interval": item.get("interval") or "decision_time_estimate",
-                "available": True,
-                "reason": None,
+        if classification not in allowed:
+            raise ValueError(f"{name} cost classification invalid")
+        if classification == _OUTCOME_UNAVAILABLE:
+            return {
+                "value": None,
+                "source": None,
+                "classification": _OUTCOME_UNAVAILABLE,
+                "observed_at": None,
+                "interval": None,
+                "available": False,
+                "reason": str(item.get("reason") or f"{name} unavailable"),
             }
-        return normalized
+        value = item.get("value")
+        available_value = (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+            and float(value) >= 0
+        )
+        if not available_value or not str(item.get("source") or "").strip():
+            raise ValueError(f"{name} available cost provenance invalid")
+        return {
+            **item,
+            "value": float(value),
+            "classification": classification,
+            "observed_at": item.get("observed_at", captured_at),
+            "interval": item.get("interval") or "decision_time_estimate",
+            "available": True,
+            "reason": None,
+        }
+
+    @classmethod
+    def _normalized_outcome_costs(
+        cls, costs: Any, *, captured_at: int
+    ) -> dict[str, dict[str, Any]]:
+        """Return four explicit cost records; unavailable never means zero."""
+        source = costs if isinstance(costs, dict) else {}
+        return {
+            name: cls._normalize_outcome_cost_component(
+                name,
+                source.get(name) if isinstance(source.get(name), dict) else {},
+                captured_at=captured_at,
+            )
+            for name in ("fees", "entry_slippage", "exit_slippage", "funding")
+        }
 
     @staticmethod
     def _material_projection(packet: dict[str, Any]) -> dict[str, Any]:
@@ -441,6 +449,35 @@ class EntryDecisionStore:
             )
             return int(cursor.lastrowid)
 
+    @staticmethod
+    def _validate_outcome_capture_request(
+        decision_event_id: int, capture: Any, *, captured_at: int
+    ) -> str:
+        if (
+            isinstance(decision_event_id, bool)
+            or not isinstance(decision_event_id, int)
+            or decision_event_id <= 0
+        ):
+            raise ValueError(_DECISION_EVENT_ID_INVALID)
+        if isinstance(captured_at, bool) or not isinstance(captured_at, int) or captured_at < 0:
+            raise ValueError("capture timestamp invalid")
+        if not isinstance(capture, dict):
+            raise ValueError("capture must be an object")
+        policy_safe = (
+            capture.get(_OBSERVATIONAL_ONLY) is True
+            and capture.get(_DECISION_MUTATED) is False
+            and not any(
+                capture.get(field) is True
+                for field in ("trade_eligible", "eligibility", "promotion_allowed")
+            )
+        )
+        if not policy_safe:
+            raise ValueError("capture must be observational only")
+        outcome_status = str(capture.get("outcome_status") or _OUTCOME_UNOBSERVED)
+        if outcome_status not in {_OUTCOME_UNOBSERVED, "OBSERVED"}:
+            raise ValueError("outcome status invalid")
+        return outcome_status
+
     def append_outcome_capture(
         self,
         decision_event_id: int,
@@ -449,29 +486,9 @@ class EntryDecisionStore:
         captured_at: int,
     ) -> int:
         """Persist one observational outcome capture for a canonical decision."""
-        if isinstance(decision_event_id, bool) or not isinstance(decision_event_id, int) or decision_event_id <= 0:
-            raise ValueError(_DECISION_EVENT_ID_INVALID)
-        if (
-            isinstance(captured_at, bool)
-            or not isinstance(captured_at, int)
-            or captured_at < 0
-        ):
-            raise ValueError("capture timestamp invalid")
-        if not isinstance(capture, dict):
-            raise ValueError("capture must be an object")
-        if (
-            capture.get(_OBSERVATIONAL_ONLY) is not True
-            or capture.get(_DECISION_MUTATED) is not False
-        ):
-            raise ValueError("capture must be observational only")
-        if any(
-            field in capture and capture[field] is True
-            for field in ("trade_eligible", "eligibility", "promotion_allowed")
-        ):
-            raise ValueError("capture must be observational only")
-        outcome_status = str(capture.get("outcome_status") or _OUTCOME_UNOBSERVED)
-        if outcome_status not in {_OUTCOME_UNOBSERVED, "OBSERVED"}:
-            raise ValueError("outcome status invalid")
+        outcome_status = self._validate_outcome_capture_request(
+            decision_event_id, capture, captured_at=captured_at
+        )
         created_at = int(time.time())
         with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
             decision = conn.execute(
@@ -521,76 +538,59 @@ class EntryDecisionStore:
                 raise ValueError("decision outcome capture already exists") from exc
             return int(cursor.lastrowid)
 
-    def append_if_changed_with_capture(
+    def _repair_capture_target(
+        self, symbol: str, packet: dict[str, Any]
+    ) -> tuple[int, dict[str, Any]] | None:
+        with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
+            row = conn.execute(
+                "SELECT id,decision,packet_json,packet_hash "
+                "FROM entry_decision_events WHERE symbol=? "
+                "ORDER BY id DESC LIMIT 1",
+                (str(symbol),),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            existing_packet = self._verified_record(
+                row[2], row[3], label="unchanged entry decision packet"
+            )
+        except ValueError:
+            logger.exception(
+                "Unable to repair outcome capture for invalid canonical packet",
+                extra={"symbol": str(symbol), "capture_failure_type": "persistence"},
+            )
+            return None
+        same_transition = (
+            str(row[1]) == str(packet.get("decision"))
+            and canonical_sha256(self._material_projection(existing_packet))
+            == canonical_sha256(self._material_projection(packet))
+        )
+        return (int(row[0]), existing_packet) if same_transition else None
+
+    def _build_outcome_capture_payload(
         self,
         symbol: str,
-        packet: dict[str, Any],
+        capture_packet: dict[str, Any],
         *,
-        captured_at: int,
-        expected_lifecycle_id: int | None = None,
-    ) -> int | None:
-        """Append a canonical decision and its observational capture together."""
-        event_id = self.append_if_changed(
-            symbol, packet, expected_lifecycle_id=expected_lifecycle_id
-        )
-        capture_event_id = event_id
-        capture_packet = packet
-        # The canonical append and research capture deliberately use separate
-        # transactions.  If the capture write was interrupted, a retry sees an
-        # unchanged canonical packet; use that event as the repair target.
-        if capture_event_id is None:
-            with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
-                row = conn.execute(
-                    "SELECT id,decision,packet_json,packet_hash "
-                    "FROM entry_decision_events WHERE symbol=? "
-                    "ORDER BY id DESC LIMIT 1",
-                    (str(symbol),),
-                ).fetchone()
-            if row is None:
-                return None
-            try:
-                existing_packet = self._verified_record(
-                    row[2], row[3], label="unchanged entry decision packet"
-                )
-            except ValueError:
-                logger.exception(
-                    "Unable to repair outcome capture for invalid canonical packet",
-                    extra={"symbol": str(symbol), "capture_failure_type": "persistence"},
-                )
-                return None
-            if (
-                str(row[1]) != str(packet.get("decision"))
-                or canonical_sha256(self._material_projection(existing_packet))
-                != canonical_sha256(self._material_projection(packet))
-            ):
-                # A different transition won the race after the no-op append;
-                # never attach this capture to that event.
-                return None
-            capture_event_id = int(row[0])
-            capture_packet = existing_packet
+        new_event: bool,
+    ) -> dict[str, Any]:
         provenance = (
             capture_packet.get("research_provenance")
             if isinstance(capture_packet.get("research_provenance"), dict)
             else {}
         )
         embedded_revision = provenance.get("source_revision")
-        if event_id is not None:
-            revision = self.source_revision
-            decision_contract_sha256 = (
-                provenance.get("decision_contract_sha256")
-                if embedded_revision == self.source_revision
-                else None
-            )
-        else:
-            revision = embedded_revision
-            decision_contract_sha256 = provenance.get("decision_contract_sha256")
+        revision = self.source_revision if new_event else embedded_revision
+        decision_contract_sha256 = provenance.get("decision_contract_sha256")
+        if new_event and embedded_revision != self.source_revision:
+            decision_contract_sha256 = None
         revision = str(revision) if revision is not None else None
         revision_verified = bool(
             revision
             and len(revision) == 40
             and all(character in "0123456789abcdef" for character in revision)
         )
-        capture = {
+        return {
             _OBSERVATIONAL_ONLY: True,
             _DECISION_MUTATED: False,
             "decision": capture_packet.get("decision"),
@@ -608,31 +608,62 @@ class EntryDecisionStore:
             "costs": provenance.get("costs"),
             "outcome_contract": provenance.get("outcome_contract"),
         }
+
+    def _persist_outcome_capture_best_effort(
+        self,
+        symbol: str,
+        decision_event_id: int,
+        capture: dict[str, Any],
+        *,
+        captured_at: int,
+    ) -> None:
         try:
-            self.append_outcome_capture(
-                capture_event_id, capture,
-                captured_at=captured_at,
-            )
+            self.append_outcome_capture(decision_event_id, capture, captured_at=captured_at)
         except ValueError as exc:
-            # A concurrent repair may have inserted the unique capture.
             if "already exists" not in str(exc):
                 logger.exception(
                     "Research outcome capture persistence failed",
-                    extra={"symbol": str(symbol), "decision_event_id": capture_event_id,
-                           "capture_failure_type": "persistence"},
+                    extra={
+                        "symbol": str(symbol),
+                        "decision_event_id": decision_event_id,
+                        "capture_failure_type": "persistence",
+                    },
                 )
         except Exception:
-            # Outcome capture is research observability, never part of the
-            # canonical decision/outbox transaction.  Keep the exception and
-            # structured context in logs, but always return the canonical id.
             logger.exception(
                 "Research outcome capture persistence failed",
                 extra={
                     "symbol": str(symbol),
-                    "decision_event_id": capture_event_id,
+                    "decision_event_id": decision_event_id,
                     "capture_failure_type": "persistence",
                 },
             )
+
+    def append_if_changed_with_capture(
+        self,
+        symbol: str,
+        packet: dict[str, Any],
+        *,
+        captured_at: int,
+        expected_lifecycle_id: int | None = None,
+    ) -> int | None:
+        """Append a canonical decision and best-effort observational capture."""
+        event_id = self.append_if_changed(
+            symbol, packet, expected_lifecycle_id=expected_lifecycle_id
+        )
+        if event_id is None:
+            repair_target = self._repair_capture_target(symbol, packet)
+            if repair_target is None:
+                return None
+            capture_event_id, capture_packet = repair_target
+        else:
+            capture_event_id, capture_packet = event_id, packet
+        capture = self._build_outcome_capture_payload(
+            symbol, capture_packet, new_event=event_id is not None
+        )
+        self._persist_outcome_capture_best_effort(
+            symbol, capture_event_id, capture, captured_at=captured_at
+        )
         return event_id
 
     def pending_outcome_captures(
@@ -937,6 +968,76 @@ class EntryOutcomeResolutionWorker:
         self._running = False
         self._scan_after_id = 0
 
+    async def _load_pending_batch(self, *, mature_before: int) -> list[dict[str, Any]]:
+        captures = await asyncio.to_thread(
+            self.store.pending_outcome_captures,
+            mature_before=mature_before,
+            limit=self.batch_size,
+            after_id=self._scan_after_id,
+        )
+        if captures or not self._scan_after_id:
+            return captures
+        self._scan_after_id = 0
+        return await asyncio.to_thread(
+            self.store.pending_outcome_captures,
+            mature_before=mature_before,
+            limit=self.batch_size,
+            after_id=0,
+        )
+
+    async def _resolve_pending_capture(
+        self,
+        capture: dict[str, Any],
+        *,
+        attempt: int,
+        batch_limit: int,
+        resolved_at: int,
+    ) -> bool:
+        decision_event_id = int(capture["decision_event_id"])
+        try:
+            result = self.resolver(capture)
+            if inspect.isawaitable(result):
+                result = await result
+        except Exception as exc:
+            disposition = self.store.classify_outcome_failure(exc)
+            logger.warning(
+                "Matured outcome resolver failed",
+                extra={
+                    "decision_event_id": decision_event_id,
+                    "failure_type": type(exc).__name__,
+                    "failure_disposition": disposition.value,
+                    "retryable": disposition is OutcomeFailureDisposition.RETRYABLE,
+                    "batch_attempt": attempt,
+                    "batch_limit": batch_limit,
+                },
+            )
+            if disposition is OutcomeFailureDisposition.TERMINAL_UNAVAILABLE:
+                await asyncio.to_thread(
+                    self.store._persist_unavailable_resolution, decision_event_id, exc
+                )
+            return False
+        if result is None:
+            return False
+        try:
+            await asyncio.to_thread(
+                self.store.resolve_outcome_capture,
+                decision_event_id,
+                result,
+                resolved_at=resolved_at,
+            )
+            return True
+        except Exception as exc:
+            logger.warning(
+                "Matured outcome persistence failed; leaving capture pending",
+                extra={
+                    "decision_event_id": decision_event_id,
+                    "failure_type": type(exc).__name__,
+                    "failure_disposition": OutcomeFailureDisposition.RETRYABLE.value,
+                    "retryable": True,
+                },
+            )
+            return False
+
     async def run_once(self, *, now: int | None = None) -> int:
         """Resolve one sequential bounded batch without blocking the event loop."""
         current = int(time.time() if now is None else now)
@@ -948,67 +1049,18 @@ class EntryOutcomeResolutionWorker:
                 mature_before=mature_before,
                 limit=self.batch_size,
             )
-        captures = await asyncio.to_thread(
-            self.store.pending_outcome_captures,
-            mature_before=mature_before,
-            limit=self.batch_size,
-            after_id=self._scan_after_id,
-        )
-        if not captures and self._scan_after_id:
-            self._scan_after_id = 0
-            captures = await asyncio.to_thread(
-                self.store.pending_outcome_captures,
-                mature_before=mature_before,
-                limit=self.batch_size,
-                after_id=0,
-            )
+        captures = await self._load_pending_batch(mature_before=mature_before)
         resolved = 0
         for attempt, capture in enumerate(captures, start=1):
             self._scan_after_id = int(capture["id"])
-            try:
-                result = self.resolver(capture)
-                if inspect.isawaitable(result):
-                    result = await result
-                if result is None:
-                    continue
-            except Exception as exc:
-                disposition = self.store.classify_outcome_failure(exc)
-                logger.warning(
-                    "Matured outcome resolver failed",
-                    extra={
-                        "decision_event_id": int(capture["decision_event_id"]),
-                        "failure_type": type(exc).__name__,
-                        "failure_disposition": disposition.value,
-                        "retryable": disposition is OutcomeFailureDisposition.RETRYABLE,
-                        "batch_attempt": attempt,
-                        "batch_limit": len(captures),
-                    },
-                )
-                if disposition is OutcomeFailureDisposition.TERMINAL_UNAVAILABLE:
-                    await asyncio.to_thread(
-                        self.store._persist_unavailable_resolution,
-                        int(capture["decision_event_id"]),
-                        exc,
-                    )
-                continue
-            try:
-                await asyncio.to_thread(
-                    self.store.resolve_outcome_capture,
-                    int(capture["decision_event_id"]),
-                    result,
+            resolved += int(
+                await self._resolve_pending_capture(
+                    capture,
+                    attempt=attempt,
+                    batch_limit=len(captures),
                     resolved_at=current,
                 )
-                resolved += 1
-            except Exception as exc:
-                logger.warning(
-                    "Matured outcome persistence failed; leaving capture pending",
-                    extra={
-                        "decision_event_id": int(capture["decision_event_id"]),
-                        "failure_type": type(exc).__name__,
-                        "failure_disposition": OutcomeFailureDisposition.RETRYABLE.value,
-                        "retryable": True,
-                    },
-                )
+            )
         return resolved
 
     async def run_forever(self) -> None:

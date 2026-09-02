@@ -579,7 +579,8 @@ def test_file_not_found_and_temporary_provider_failures_remain_retryable(tmp_pat
     second = store.append_if_changed_with_capture(
         "SECOND", packet("ENTRY_READY", 84.0, 100), captured_at=101
     )
-    assert first is not None and second is not None
+    assert first is not None
+    assert second is not None
     failures = iter((FileNotFoundError("mount not ready"), TimeoutError("provider timeout")))
 
     def resolver(_capture):
@@ -622,7 +623,8 @@ def test_entry_outcome_worker_round_robin_prevents_retryable_row_starvation(tmp_
     second = store.append_if_changed_with_capture(
         "SECOND", packet("ENTRY_READY", 84.0, 100), captured_at=101
     )
-    assert first is not None and second is not None
+    assert first is not None
+    assert second is not None
     calls = []
 
     async def resolver(capture):
