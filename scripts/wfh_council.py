@@ -215,26 +215,33 @@ def doctor(repo_root: Path) -> dict[str, Any]:
     }
 
 
+DATASET_AUDIT_ARTIFACT = "DATASET_AUDIT.json"
+OOS_VALIDATION_ARTIFACT = "OOS_VALIDATION.json"
+BEST_DEVELOPMENT_CONFIG_ARTIFACT = "BEST_DEVELOPMENT_CONFIG.json"
+PRODUCTION_VS_CHALLENGERS_ARTIFACT = "PRODUCTION_VS_CHALLENGERS.json"
+GATE_REJECTION_FUNNEL_ARTIFACT = "GATE_REJECTION_FUNNEL.json"
+OUTCOME_INTEGRITY_ARTIFACT = "OUTCOME_INTEGRITY.json"
+
 RESEARCH_ARTIFACTS = (
-    "DATASET_AUDIT.json",
-    "OOS_VALIDATION.json",
-    "BEST_DEVELOPMENT_CONFIG.json",
-    "PRODUCTION_VS_CHALLENGERS.json",
-    "GATE_REJECTION_FUNNEL.json",
-    "OUTCOME_INTEGRITY.json",
+    DATASET_AUDIT_ARTIFACT,
+    OOS_VALIDATION_ARTIFACT,
+    BEST_DEVELOPMENT_CONFIG_ARTIFACT,
+    PRODUCTION_VS_CHALLENGERS_ARTIFACT,
+    GATE_REJECTION_FUNNEL_ARTIFACT,
+    OUTCOME_INTEGRITY_ARTIFACT,
 )
 
 EXPECTED_RESEARCH_CONTRACTS = {
-    "DATASET_AUDIT.json": "DATASET_AUDIT.v1",
-    "OOS_VALIDATION.json": "OOS_VALIDATION.v1",
-    "BEST_DEVELOPMENT_CONFIG.json": "BEST_DEVELOPMENT_CONFIG.v1",
-    "PRODUCTION_VS_CHALLENGERS.json": "PRODUCTION_VS_CHALLENGERS.v1",
-    "GATE_REJECTION_FUNNEL.json": "GATE_REJECTION_FUNNEL.v1",
-    "OUTCOME_INTEGRITY.json": "OUTCOME_INTEGRITY.v1",
+    DATASET_AUDIT_ARTIFACT: "DATASET_AUDIT.v1",
+    OOS_VALIDATION_ARTIFACT: "OOS_VALIDATION.v1",
+    BEST_DEVELOPMENT_CONFIG_ARTIFACT: "BEST_DEVELOPMENT_CONFIG.v1",
+    PRODUCTION_VS_CHALLENGERS_ARTIFACT: "PRODUCTION_VS_CHALLENGERS.v1",
+    GATE_REJECTION_FUNNEL_ARTIFACT: "GATE_REJECTION_FUNNEL.v1",
+    OUTCOME_INTEGRITY_ARTIFACT: "OUTCOME_INTEGRITY.v1",
 }
 
 
-def _research_integrity_blockers(
+def _artifact_contract_blockers(
     values: dict[str, dict[str, Any] | None],
     artifact_status: dict[str, dict[str, Any]],
 ) -> list[str]:
@@ -244,30 +251,46 @@ def _research_integrity_blockers(
         value = values.get(name) or {}
         if status.get("status") != "AVAILABLE":
             blockers.append(f"invalid_research_artifact:{name}")
-            continue
-        if value.get("contract") != expected_contract:
+        elif value.get("contract") != expected_contract:
             blockers.append(f"invalid_research_artifact_contract:{name}")
+    return blockers
 
-    dataset = values.get("DATASET_AUDIT.json") or {}
-    oos = values.get("OOS_VALIDATION.json") or {}
-    outcome = values.get("OUTCOME_INTEGRITY.json") or {}
+
+def _present_sha(value: Any) -> bool:
+    return isinstance(value, str) and bool(value)
+
+
+def _research_provenance_blockers(
+    dataset: dict[str, Any],
+    oos: dict[str, Any],
+    outcome: dict[str, Any],
+) -> list[str]:
+    blockers: list[str] = []
     dataset_hash = dataset.get("data_sha256")
     oos_dataset_hash = oos.get("dataset_sha256")
     oos_outcome_hash = oos.get("outcome_cache_sha256")
     outcome_hash = outcome.get("cache_sha256")
 
-    if not isinstance(dataset_hash, str) or not dataset_hash:
+    if not _present_sha(dataset_hash):
         blockers.append("missing_dataset_provenance")
-    if not isinstance(oos_dataset_hash, str) or not oos_dataset_hash:
+    if not _present_sha(oos_dataset_hash):
         blockers.append("missing_oos_dataset_provenance")
-    elif isinstance(dataset_hash, str) and dataset_hash and oos_dataset_hash != dataset_hash:
+    elif _present_sha(dataset_hash) and oos_dataset_hash != dataset_hash:
         blockers.append("dataset_provenance_mismatch")
-    if not isinstance(oos_outcome_hash, str) or not oos_outcome_hash:
+    if not _present_sha(oos_outcome_hash):
         blockers.append("missing_oos_outcome_provenance")
-    if not isinstance(outcome_hash, str) or not outcome_hash:
+    if not _present_sha(outcome_hash):
         blockers.append("missing_outcome_cache_provenance")
-    elif isinstance(oos_outcome_hash, str) and oos_outcome_hash and outcome_hash != oos_outcome_hash:
+    elif _present_sha(oos_outcome_hash) and outcome_hash != oos_outcome_hash:
         blockers.append("outcome_provenance_mismatch")
+    return blockers
+
+
+def _research_semantic_integrity_blockers(
+    dataset: dict[str, Any],
+    outcome: dict[str, Any],
+) -> list[str]:
+    blockers: list[str] = []
     if not str(dataset.get("evidence_tier") or "").startswith("TIER_1"):
         blockers.append("insufficient_evidence_tier")
     if outcome.get("causal_entry_before_observation_count") != 0:
@@ -275,6 +298,20 @@ def _research_integrity_blockers(
     if outcome.get("duplicate_snapshot_ids") != 0:
         blockers.append("duplicate_outcome_snapshots")
     return blockers
+
+
+def _research_integrity_blockers(
+    values: dict[str, dict[str, Any] | None],
+    artifact_status: dict[str, dict[str, Any]],
+) -> list[str]:
+    dataset = values.get(DATASET_AUDIT_ARTIFACT) or {}
+    oos = values.get(OOS_VALIDATION_ARTIFACT) or {}
+    outcome = values.get(OUTCOME_INTEGRITY_ARTIFACT) or {}
+    return [
+        *_artifact_contract_blockers(values, artifact_status),
+        *_research_provenance_blockers(dataset, oos, outcome),
+        *_research_semantic_integrity_blockers(dataset, outcome),
+    ]
 
 
 def _read_research_artifact(path: Path) -> tuple[dict[str, Any] | None, dict[str, Any]]:
@@ -298,12 +335,12 @@ def summarize_research_evidence(research_dir: Path) -> dict[str, Any]:
         values[name] = value
         artifact_status[name] = status
 
-    dataset = values["DATASET_AUDIT.json"] or {}
-    oos = values["OOS_VALIDATION.json"] or {}
-    champion = values["BEST_DEVELOPMENT_CONFIG.json"] or {}
-    comparison = values["PRODUCTION_VS_CHALLENGERS.json"] or {}
-    funnel = values["GATE_REJECTION_FUNNEL.json"] or {}
-    outcome = values["OUTCOME_INTEGRITY.json"] or {}
+    dataset = values[DATASET_AUDIT_ARTIFACT] or {}
+    oos = values[OOS_VALIDATION_ARTIFACT] or {}
+    champion = values[BEST_DEVELOPMENT_CONFIG_ARTIFACT] or {}
+    comparison = values[PRODUCTION_VS_CHALLENGERS_ARTIFACT] or {}
+    funnel = values[GATE_REJECTION_FUNNEL_ARTIFACT] or {}
+    outcome = values[OUTCOME_INTEGRITY_ARTIFACT] or {}
 
     blockers = _research_integrity_blockers(values, artifact_status)
     span = dataset.get("span_days")

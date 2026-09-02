@@ -417,6 +417,8 @@ def test_manifest_inventory_covers_declared_operational_capabilities() -> None:
 def test_research_registry_covers_remaining_challenger_families() -> None:
     text = (REPO / ".agents/wfh-council/RESEARCH.md").read_text(encoding="utf-8").lower()
 
-    assert "liquidity" in text and "cascade" in text
-    assert "relative weakness" in text and "regime" in text
+    assert "liquidity" in text
+    assert "cascade" in text
+    assert "relative weakness" in text
+    assert "regime" in text
     assert "attention" in text

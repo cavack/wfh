@@ -194,7 +194,8 @@ def test_hook_sources_declare_closed_external_command_allowlists() -> None:
         assert "sh -c" not in text
         assert "bash -c" not in text
         assert "source " not in text
-        assert "/usr/bin/" not in text and "/bin/" not in "\n".join(text.splitlines()[1:])
+        assert "/usr/bin/" not in text
+        assert "/bin/" not in "\n".join(text.splitlines()[1:])
 
 
 def _closed_allowlist_env(root: Path, source: Path) -> dict[str, str]:
