@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
 from waterfallhunter.core.managed_sqlite import connect_managed_sqlite
 from waterfallhunter.core.schema_contract import require_managed_schema
 from waterfallhunter.core.signal_metadata import canonical_sha256
+
+
+logger = logging.getLogger("WaterfallHunter.EntryDecisionStore")
 
 
 _ALLOWED = {
@@ -22,6 +27,13 @@ _ALLOWED = {
     "INVALIDATED",
     "EXPIRED",
 }
+
+
+class OutcomeFailureDisposition(str, Enum):
+    """Safe handling class for failures while resolving research outcomes."""
+
+    RETRYABLE = "RETRYABLE"
+    TERMINAL_UNAVAILABLE = "TERMINAL_UNAVAILABLE"
 
 
 class StaleCandidateLifecycleError(RuntimeError):
@@ -443,11 +455,18 @@ class EntryDecisionStore:
                 },
                 captured_at=captured_at,
             )
-        except ValueError as exc:
-            # Preserve the canonical append result if an older database has not
-            # installed the outcome-capture migration yet.
-            if "decision event missing" not in str(exc):
-                raise
+        except Exception:
+            # Outcome capture is research observability, never part of the
+            # canonical decision/outbox transaction.  Keep the exception and
+            # structured context in logs, but always return the canonical id.
+            logger.exception(
+                "Research outcome capture persistence failed",
+                extra={
+                    "symbol": str(symbol),
+                    "decision_event_id": event_id,
+                    "capture_failure_type": "persistence",
+                },
+            )
         return event_id
 
     def pending_outcome_captures(
@@ -540,12 +559,52 @@ class EntryDecisionStore:
                 raise ValueError("decision outcome resolution already exists") from exc
         return int(cursor.lastrowid)
 
+    @staticmethod
+    def classify_outcome_failure(exc: BaseException) -> OutcomeFailureDisposition:
+        """Classify resolver failures conservatively.
+
+        Only errors that clearly identify a permanently unavailable scientific
+        source are terminal.  Unknown errors remain retryable so a transient
+        provider regression cannot permanently discard evidence.
+        """
+        text = str(exc).casefold()
+        exception_name = type(exc).__name__.casefold()
+        if (
+            getattr(exc, "terminal", False)
+            or isinstance(exc, (FileNotFoundError, NotImplementedError))
+            or any(
+                marker in exception_name
+                for marker in ("scientificdataunavailable", "outcomeunavailable", "nodata")
+            )
+            or any(
+                marker in text
+                for marker in (
+                    "scientific unavailable",
+                    "permanently unavailable",
+                    "unsupported provider",
+                    "no scientific data",
+                    "not found",
+                    "status code 404",
+                    "status code 410",
+                    "http 404",
+                    "http 410",
+                )
+            )
+        ):
+            return OutcomeFailureDisposition.TERMINAL_UNAVAILABLE
+        return OutcomeFailureDisposition.RETRYABLE
+
     def resolve_matured_outcomes(
         self, resolver: Any, *, mature_before: int, limit: int = 100
     ) -> int:
-        """Resolve research outcomes; failures are isolated per capture."""
+        """Resolve matured outcomes without allowing transient failures to starve.
+
+        This is deliberately bounded to the requested batch.  Retryable rows
+        stay in ``UNOBSERVED`` and are picked up by a later invocation.
+        """
         resolved = 0
-        for capture in self.pending_outcome_captures(mature_before=mature_before, limit=limit):
+        captures = self.pending_outcome_captures(mature_before=mature_before, limit=limit)
+        for attempt, capture in enumerate(captures, start=1):
             try:
                 result = resolver(capture)
                 if result is not None:
@@ -555,21 +614,45 @@ class EntryDecisionStore:
                     )
                     resolved += 1
             except Exception as exc:
-                # A permanently unavailable research dependency must not hold the
-                # queue head forever. Finalize this row and continue the batch.
-                try:
-                    self.resolve_outcome_capture(
-                        int(capture["decision_event_id"]),
-                        {
-                            "outcome_status": "UNAVAILABLE",
-                            "cost": None,
-                            "provenance": None,
-                            "reason": f"resolver failure: {type(exc).__name__}",
-                        },
-                        resolved_at=int(time.time()),
-                    )
-                except Exception:
-                    pass
+                disposition = self.classify_outcome_failure(exc)
+                logger.warning(
+                    "Matured outcome resolver failed",
+                    extra={
+                        "decision_event_id": int(capture["decision_event_id"]),
+                        "failure_type": type(exc).__name__,
+                        "error": str(exc),
+                        "failure_disposition": disposition.value,
+                        "retryable": disposition is OutcomeFailureDisposition.RETRYABLE,
+                        "retry_after_seconds": (
+                            min(300, 2 ** min(attempt - 1, 8))
+                            if disposition is OutcomeFailureDisposition.RETRYABLE
+                            else None
+                        ),
+                        "batch_attempt": attempt,
+                        "batch_limit": len(captures),
+                    },
+                    exc_info=disposition is OutcomeFailureDisposition.TERMINAL_UNAVAILABLE,
+                )
+                if disposition is OutcomeFailureDisposition.TERMINAL_UNAVAILABLE:
+                    try:
+                        self.resolve_outcome_capture(
+                            int(capture["decision_event_id"]),
+                            {
+                                "outcome_status": "UNAVAILABLE",
+                                "cost": None,
+                                "provenance": None,
+                                "reason": f"resolver unavailable: {type(exc).__name__}",
+                            },
+                            resolved_at=int(time.time()),
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Unable to persist terminal unavailable outcome resolution",
+                            extra={
+                                "decision_event_id": int(capture["decision_event_id"]),
+                                "failure_disposition": disposition.value,
+                            },
+                        )
                 continue
         return resolved
 

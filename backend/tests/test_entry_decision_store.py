@@ -180,6 +180,27 @@ def test_canonical_append_with_capture_and_observed_not_pending(tmp_path) -> Non
     assert payload["promotion_allowed"] is False
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [sqlite3.OperationalError("database is locked"), RuntimeError("research store down")],
+)
+def test_capture_persistence_failure_does_not_change_canonical_result(
+    tmp_path, monkeypatch, caplog, failure
+) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    monkeypatch.setattr(store, "append_outcome_capture", lambda *args, **kwargs: (_ for _ in ()).throw(failure))
+
+    with caplog.at_level("ERROR"):
+        event_id = store.append_if_changed_with_capture(
+            "SXT/USDT:USDT", packet("ENTRY_READY", 84.0, 100), captured_at=101
+        )
+
+    assert event_id is not None
+    assert store.latest_for_symbol("SXT/USDT:USDT")["decision"] == "ENTRY_READY"
+    assert "Research outcome capture persistence failed" in caplog.text
+
+
 def test_resolution_rejects_mutating_policy_fields(tmp_path) -> None:
     db_path = migrate_test_database(tmp_path / "registry.db")
     store = EntryDecisionStore(db_path)
@@ -217,7 +238,7 @@ def test_pending_and_resolution_are_idempotent_and_isolate_research_failures(tmp
     ) == 0
 
 
-def test_failed_resolution_is_finalized_and_does_not_starve_later_rows(tmp_path) -> None:
+def test_unknown_resolution_failure_is_retryable_and_does_not_starve_later_rows(tmp_path) -> None:
     db_path = migrate_test_database(tmp_path / "registry.db")
     store = EntryDecisionStore(db_path)
     first = store.append_if_changed("FIRST", packet("ENTRY_READY", 84.0, 100))
@@ -237,7 +258,28 @@ def test_failed_resolution_is_finalized_and_does_not_starve_later_rows(tmp_path)
 
     assert store.resolve_matured_outcomes(resolver, mature_before=101, limit=2) == 1
     assert calls == [first, second]
+    assert [row["decision_event_id"] for row in store.pending_outcome_captures(mature_before=101)] == [first]
+
+
+def test_terminal_scientific_unavailable_resolution_is_finalized(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    event_id = store.append_if_changed("FIRST", packet("ENTRY_READY", 84.0, 100))
+    assert event_id is not None
+    store.append_outcome_capture(
+        event_id, {"observational_only": True, "decision_mutated": False}, captured_at=101
+    )
+
+    assert store.resolve_matured_outcomes(
+        lambda _: (_ for _ in ()).throw(RuntimeError("scientific data permanently unavailable")),
+        mature_before=101,
+    ) == 0
     assert store.pending_outcome_captures(mature_before=101) == []
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT outcome_status FROM decision_outcome_resolution WHERE decision_event_id=?",
+            (event_id,),
+        ).fetchone()[0] == "UNAVAILABLE"
 
 
 def test_latest_transition_uses_append_order_when_clock_moves_backward(tmp_path) -> None:
