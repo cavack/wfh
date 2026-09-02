@@ -168,24 +168,24 @@
   "forward_capture": {
     "status": "CODE_READY_SEPARATE_CHILD_BRANCH",
     "branch": "feat/model-excellence-forward-capture-20260902",
-    "commit": "5486252",
+    "commit": "c21bf6c",
     "worktree": "/srv/wfh-worktrees/model-excellence-forward-capture-20260902",
     "schema_version": "decision_outcome_capture_v1",
-    "tests": "1361 full backend tests passed on 87b4380; review-fix focused tests passed on 5486252",
+    "tests": "1368 full backend tests passed on c21bf6c; migration/outcome focused regression 88 passed",
     "deployed": false,
     "pr": "https://github.com/cavack/wfh/pull/116",
-    "final_pr_head": "5486252",
+    "final_pr_head": "c21bf6cdc15411fbda90b04abffae550c5cb59ba",
     "ci": {
       "backend": "IN_PROGRESS",
-      "frontend": "QUEUED",
+      "frontend": "IN_PROGRESS",
       "codeql": "IN_PROGRESS",
-      "sonar": "PENDING_REFRESH",
+      "sonar": "PENDING_REFRESH; 4 SQLite plsql findings classified false positive",
       "dependency_audit": "IN_PROGRESS",
       "repository_hygiene": "IN_PROGRESS",
-      "github_advanced_security": "IN_PROGRESS",
+      "github_advanced_security": "IN_PROGRESS; prior failure classified UNAVAILABLE_EXTERNAL_CAPABILITY",
       "container_validation": "IN_PROGRESS"
     },
-    "reviews": "Five Copilot review findings fixed in 5486252; threads resolved; refreshed checks pending"
+    "reviews": "Five Copilot findings fixed and resolved; fresh Copilot/Codex requested on c21bf6c; CodeRabbit requested"
   },
   "reproduced_defects": [],
   "fixed_defects": [
@@ -194,6 +194,9 @@
     "excluded OBSERVED captures from pending resolution",
     "enforced observational-only resolution policy fields",
     "finalized persistent resolver failures as UNAVAILABLE to prevent queue starvation"
+    ,"isolated all research persistence failures from canonical decision/outbox results"
+    ,"kept transient and unknown resolver failures retryable"
+    ,"added supervised bounded entry outcome resolver worker"
   ],
   "open_blockers": [
     "no closed OHLCV window keyed to decision_event_id",
@@ -201,11 +204,11 @@
     "no fee/slippage/funding ledger with provenance",
     "source revision is not persisted per decision event"
   ],
-  "next_exact_action": "Investigate the github-advanced-security required-check failure on PR #116, wait for container-validation, and resolve any valid finding before merge; do not deploy until release certification passes.",
+  "next_exact_action": "Wait for exact-head CI and fresh reviews, inspect refreshed Sonar issue set, obtain an independent backup/restore certification, then use protected-main merge and release-production-certification only if every gate passes.",
   "tests": [
     "PYTHONPATH=backend/src backend/.venv/bin/pytest -q backend/tests/test_normalized_research_compiler.py (6 passed)",
     "PYTHONPATH=backend/src:backend/tests python3 -m pytest -q backend/tests/test_scientific_eligibility_funnel.py backend/tests/test_normalized_research_compiler.py backend/tests/test_schema_contract.py (50 passed)"
   ],
-  "verified_head": "dd42092",
+  "verified_head": "c21bf6cdc15411fbda90b04abffae550c5cb59ba",
   "version": "v1"
 }
