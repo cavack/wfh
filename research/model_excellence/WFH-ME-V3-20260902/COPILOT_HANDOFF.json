@@ -16,14 +16,46 @@
     "scientifically_eligible": 0
   },
   "dataset_manifest": {
+    "canonical_decision_counts": {
+      "FORMING": 26,
+      "LATE": 77714,
+      "NO_TRADE": 5057
+    },
+    "compiler_commit_sha": "10cd6fc7e1ac031a32d4d8bf6dacd4d0860e6eb5",
+    "complete_outcomes": 0,
+    "cost_completeness": {
+      "complete_fraction": 0.0,
+      "complete_rows": 0,
+      "total_rows": 82797
+    },
     "crosswalk_sha256": "39c12efae742bd180e26e66d2dc104457618267734d43e3b76ead0b406297728",
     "database": "production_snapshot.db",
+    "dataset_sha256": "f1ffe405b112f72914fdd0282f25ecabd04d36c1dc09f3c352a2e3a4838d88e7",
+    "exclusion_counts": {
+      "DUPLICATE_LINK": 0,
+      "INSUFFICIENT_WINDOW": 0,
+      "MISSING_COSTS": 0,
+      "MISSING_MARKET_DATA": 63665,
+      "OTHER": 19132,
+      "PROVENANCE_MISMATCH": 0,
+      "STALE_EVIDENCE": 0
+    },
     "jsonl_bytes": 202825391,
     "jsonl_sha256": "f1ffe405b112f72914fdd0282f25ecabd04d36c1dc09f3c352a2e3a4838d88e7",
     "manifest_version": "normalized_research_manifest_v1",
     "nulls_require_reasons": true,
+    "outcome_rows": 2573,
+    "production_sha": "d129264b22bacbe4601c2ee8a373a9c1e2cbac30",
     "record_count": 82797,
+    "row_count": 82797,
+    "scientific_count": 0,
     "scientifically_eligible_count": 0,
+    "signal_outcome_linked": 2573,
+    "signal_rows": 3346,
+    "source_code_sha": null,
+    "source_code_sha_reason": "not persisted in decision-event packets; per-row code provenance is unavailable",
+    "source_db_sha256": "d82adb75836bb091cd0a0007f2838218314c540ef284f948e172540ff38c5195",
+    "source_db_user_version": 7,
     "status_counts": {
       "COMPLETE": 0,
       "DUPLICATE_LINK": 0,
@@ -58,14 +90,18 @@
       "signal_decisions",
       "signal_metadata",
       "sqlite_sequence"
-    ]
+    ],
+    "time_max": 1787744919,
+    "time_min": 1786687439,
+    "unique_lifecycles": 4,
+    "unique_symbols": 214
   },
   "head_expected": "8502e06",
   "head_expected_reconciled": "8502e06",
   "origin_main": "d129264",
   "production_main_drift": "HEAD is 7 commits ahead of origin/main; no PR #115/main changes",
   "pushed_ref": "origin/feat/model-excellence-v3-phase0-20260902",
-  "result_commit": "93a001d",
+  "result_commit": "pending-final-manifest-commit",
   "semantic_fixes": [
     "decision events are primary candidate rows",
     "decision and entry_readiness read from persisted packet_json",
