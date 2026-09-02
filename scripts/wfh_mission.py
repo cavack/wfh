@@ -34,6 +34,15 @@ EVIDENCE_CLASSES = {
     "DEBT",
     "PROPOSAL",
 }
+DURABLE_STATE_FILES = (
+    "MISSION_STATE.json",
+    "TASK_GRAPH.json",
+    "EVIDENCE_LEDGER.json",
+    "BRANCH_REGISTRY.json",
+    "SCIENTIFIC_STATE.json",
+    "DECISION_LOG.jsonl",
+    "STEP_JOURNAL.json",
+)
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -207,7 +216,7 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def _next_checkpoint_id(mission_dir: Path) -> str:
+def _highest_checkpoint_number(mission_dir: Path) -> int:
     checkpoints = mission_dir / "checkpoints"
     checkpoints.mkdir(parents=True, exist_ok=True)
     highest = 0
@@ -215,7 +224,11 @@ def _next_checkpoint_id(mission_dir: Path) -> str:
         match = re.fullmatch(r"CP-(\d{6})\.json", path.name)
         if match:
             highest = max(highest, int(match.group(1)))
-    return f"CP-{highest + 1:06d}"
+    return highest
+
+
+def _next_checkpoint_id(mission_dir: Path) -> str:
+    return f"CP-{_highest_checkpoint_number(mission_dir) + 1:06d}"
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -266,10 +279,11 @@ def create_checkpoint(mission_dir: Path, *, created_at: str | None = None) -> di
         raise ValueError("; ".join(errors))
     checkpoint_id = _next_checkpoint_id(root)
     journal = _load_journal(root)
-    state_files = {"MISSION_STATE.json": _sha256_bytes(state_path.read_bytes())}
-    journal_path = root / "STEP_JOURNAL.json"
-    if journal_path.exists():
-        state_files["STEP_JOURNAL.json"] = _sha256_bytes(journal_path.read_bytes())
+    state_files: dict[str, str] = {}
+    for name in DURABLE_STATE_FILES:
+        candidate = _confined_path(root / name, root)
+        if candidate.exists():
+            state_files[name] = _sha256_bytes(candidate.read_bytes())
     checkpoint = {
         "contract_version": "wfh_mission_checkpoint_v1",
         "mission_id": state["mission_id"],
@@ -322,6 +336,17 @@ def load_latest_checkpoint(mission_dir: Path) -> dict[str, Any]:
         return {"disposition": "RESUME_BLOCKED", "reason": "checkpoint_mission_mismatch"}
     if checkpoint.get("checkpoint_id") != pointer.get("checkpoint_id"):
         return {"disposition": "RESUME_BLOCKED", "reason": "checkpoint_sequence_mismatch"}
+    match = re.fullmatch(r"CP-(\d{6})", str(pointer.get("checkpoint_id") or ""))
+    if match is None:
+        return {"disposition": "RESUME_BLOCKED", "reason": "checkpoint_sequence_invalid"}
+    highest = _highest_checkpoint_number(root)
+    if int(match.group(1)) < highest:
+        return {
+            "disposition": "RESUME_BLOCKED",
+            "reason": "checkpoint_sequence_regression",
+            "pointer_checkpoint_id": pointer.get("checkpoint_id"),
+            "highest_checkpoint_id": f"CP-{highest:06d}",
+        }
     return {
         "disposition": "RESUME_READY",
         "reason": None,
@@ -394,6 +419,25 @@ def journal_step_complete(
     raise ValueError(f"unknown step_id: {step_id}")
 
 
+def _live_state_file_changes(
+    mission_dir: Path, checkpoint: dict[str, Any]
+) -> tuple[list[str], list[str]]:
+    root = Path(mission_dir).resolve(strict=True)
+    changed: list[str] = []
+    missing: list[str] = []
+    state_files = checkpoint.get("state_files", {})
+    if not isinstance(state_files, dict):
+        return ["<state_files_invalid>"], []
+    for name, expected_hash in state_files.items():
+        path = _confined_path(root / str(name), root)
+        if not path.exists():
+            missing.append(str(name))
+            continue
+        if _sha256_bytes(path.read_bytes()) != expected_hash:
+            changed.append(str(name))
+    return sorted(changed), sorted(missing)
+
+
 _USABLE_CAPABILITY_STATES = {
     "AVAILABLE",
     "AUTHORIZED_READ",
@@ -407,15 +451,27 @@ def resume_guard(
     *,
     observed_main_sha: str | None = None,
     observed_production_sha: str | None = None,
+    observed_branch_head: str | None = None,
+    observed_branch: str | None = None,
+    observed_worktree: str | None = None,
+    observed_worktree_dirty: bool | None = None,
     capabilities: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    loaded = load_latest_checkpoint(mission_dir)
+    root = Path(mission_dir).resolve(strict=True)
+    loaded = load_latest_checkpoint(root)
     if loaded.get("disposition") != "RESUME_READY":
         return loaded
     checkpoint = loaded["checkpoint"]
     state = checkpoint["mission_state"]
-    steps = checkpoint.get("step_journal", {}).get("steps", [])
-    interrupted = [step for step in steps if step.get("status") == "IN_PROGRESS"]
+
+    # Read the live journal as well as the checkpoint snapshot. This closes the
+    # crash window between journal_step_start() and the next checkpoint write.
+    live_journal = _load_journal(root)
+    live_steps = live_journal.get("steps", [])
+    interrupted = [step for step in live_steps if step.get("status") == "IN_PROGRESS"]
+    if not interrupted:
+        snapshot_steps = checkpoint.get("step_journal", {}).get("steps", [])
+        interrupted = [step for step in snapshot_steps if step.get("status") == "IN_PROGRESS"]
     if interrupted:
         return {
             "disposition": "RECONCILIATION_REQUIRED",
@@ -423,6 +479,36 @@ def resume_guard(
             "interrupted_step": interrupted[-1],
             "retry_allowed": False,
         }
+
+    changed_state_files, missing_state_files = _live_state_file_changes(root, checkpoint)
+    if missing_state_files:
+        return {
+            "disposition": "RESUME_BLOCKED",
+            "reason": "checkpoint_state_file_missing",
+            "missing_state_files": missing_state_files,
+        }
+    if changed_state_files:
+        return {
+            "disposition": "RECONCILIATION_REQUIRED",
+            "reason": "uncheckpointed_state_change",
+            "changed_state_files": changed_state_files,
+            "retry_allowed": False,
+        }
+
+    expected_worktree_dirty = state.get("active_worktree_dirty")
+    if observed_worktree_dirty is True:
+        return {
+            "disposition": "RECONCILIATION_REQUIRED",
+            "reason": "uncommitted_worktree_changes",
+            "retry_allowed": False,
+        }
+    if observed_worktree_dirty is False and expected_worktree_dirty is True:
+        return {
+            "disposition": "RECONCILIATION_REQUIRED",
+            "reason": "worktree_cleanliness_changed_since_checkpoint",
+            "retry_allowed": False,
+        }
+
     capability_states = capabilities or {}
     required = list(state.get("required_capabilities", []))
     unavailable = sorted(
@@ -436,6 +522,7 @@ def resume_guard(
             "reason": "required_capability_unavailable",
             "unavailable_capabilities": unavailable,
         }
+
     drift: list[dict[str, str]] = []
     expected_main = state.get("current_main_sha")
     if observed_main_sha is not None and observed_main_sha != expected_main:
@@ -457,6 +544,41 @@ def resume_guard(
                 "scope": "production_revision",
                 "expected": str(expected_production),
                 "observed": observed_production_sha,
+            }
+        )
+    expected_branch_head = state.get("active_branch_head")
+    if (
+        observed_branch_head is not None
+        and expected_branch_head is not None
+        and observed_branch_head != expected_branch_head
+    ):
+        drift.append(
+            {
+                "scope": "branch_head",
+                "expected": str(expected_branch_head),
+                "observed": observed_branch_head,
+            }
+        )
+    expected_branch = state.get("active_branch")
+    if observed_branch is not None and expected_branch is not None and observed_branch != expected_branch:
+        drift.append(
+            {
+                "scope": "active_branch",
+                "expected": str(expected_branch),
+                "observed": observed_branch,
+            }
+        )
+    expected_worktree = state.get("active_worktree")
+    if (
+        observed_worktree is not None
+        and expected_worktree is not None
+        and observed_worktree != expected_worktree
+    ):
+        drift.append(
+            {
+                "scope": "active_worktree",
+                "expected": str(expected_worktree),
+                "observed": observed_worktree,
             }
         )
     if drift:
@@ -674,6 +796,10 @@ def main(argv: list[str] | None = None) -> int:
     resume.add_argument("--json", action="store_true")
     resume.add_argument("--observed-main-sha")
     resume.add_argument("--observed-production-sha")
+    resume.add_argument("--observed-branch-head")
+    resume.add_argument("--observed-branch")
+    resume.add_argument("--observed-worktree")
+    resume.add_argument("--observed-worktree-status", choices=("clean", "dirty"))
     resume.add_argument("--capability", action="append", default=[])
     sync = subparsers.add_parser("sync-github", help="mirror active mission state to existing GitHub issues")
     sync.add_argument("--repository", required=True)
@@ -696,6 +822,14 @@ def main(argv: list[str] | None = None) -> int:
                 mission_dir,
                 observed_main_sha=args.observed_main_sha,
                 observed_production_sha=args.observed_production_sha,
+                observed_branch_head=args.observed_branch_head,
+                observed_branch=args.observed_branch,
+                observed_worktree=args.observed_worktree,
+                observed_worktree_dirty=(
+                    None
+                    if args.observed_worktree_status is None
+                    else args.observed_worktree_status == "dirty"
+                ),
                 capabilities=capabilities,
             )
         except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:

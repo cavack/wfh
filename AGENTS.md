@@ -11,9 +11,11 @@ Do not interpret it as “start a WaterfallHunter audit” and do not ask the us
 Before repository work:
 1. Read `docs/chatgpt-project/00-WFH-CHATGPT-ROUTER-v2.md`.
 2. Read `docs/mission-control/README.md` when present.
-3. Run `python scripts/wfh_mission.py resume --phrase "ادامه کار گروهی" --json` when the mission-control CLI is available.
-4. Reconcile any `RECONCILIATION_REQUIRED`, `DRIFT_DETECTED`, or `RESUME_BLOCKED` result before continuing.
-5. Continue only from the exact `next_action` and required preconditions in the latest valid checkpoint.
+3. Reconcile `git status --porcelain`, current branch/head, registered worktree, current `origin/main`, required capability authorization, and Production revision when that evidence is available.
+4. Run `python3 scripts/wfh_mission.py resume --intent "ادامه کار گروهی" --json` and pass the observed SHA/branch/worktree/capability values supported by the current surface.
+5. A dirty registered worktree or an interrupted journal step requires `RECONCILIATION_REQUIRED`; inspect side effects before retry.
+6. Reconcile any `RECONCILIATION_REQUIRED`, `DRIFT_DETECTED`, or `RESUME_BLOCKED` result before continuing.
+7. Continue only from the exact `next_action` and required preconditions in the latest valid checkpoint.
 
 ## Persistent context
 

@@ -53,3 +53,11 @@ def test_council_manifest_maps_phrase_to_existing_continuity_route() -> None:
         "route": ROUTE,
         "resolution": "active_mission_latest_certified_checkpoint",
     }
+
+
+def test_codex_entry_uses_real_resume_cli_contract() -> None:
+    text = _read("AGENTS.md")
+
+    assert "python3 scripts/wfh_mission.py resume --intent" in text
+    assert "--phrase" not in text
+    assert "git status" in text or "worktree" in text.lower()

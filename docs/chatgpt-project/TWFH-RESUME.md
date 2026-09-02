@@ -14,7 +14,7 @@ Required behavior:
 1. Do not restart from zero.
 2. Do not rely on transcript memory as the source of truth.
 3. Resolve the active mission and latest checkpoint from durable mission control.
-4. Verify checkpoint integrity and current repository/Production provenance when the required capabilities are available.
+4. Verify checkpoint integrity, current repository/Production provenance, registered branch/head/worktree, and worktree cleanliness when the required capabilities are available.
 5. If work stopped mid-step, return `RECONCILIATION_REQUIRED` and reconcile side effects before retrying.
 6. If state drifted, return `DRIFT_DETECTED`; do not silently reuse stale evidence.
 7. If a required capability/control source is unavailable, return `RESUME_BLOCKED` with the exact missing prerequisite.
