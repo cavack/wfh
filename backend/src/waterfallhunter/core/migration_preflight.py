@@ -277,7 +277,7 @@ def _applied_runtime_schema_valid(
     if applied == (1, 2, 3, 4):
         return _verified_schema_result(
             conn,
-            allow_missing_tables=frozenset({"lifecycle_v2_shadow_events", "entry_decision_events", "entry_notification_outbox", "entry_decision_advisories", "decision_outcome_capture"}),
+            allow_missing_tables=frozenset({"lifecycle_v2_shadow_events", "entry_decision_events", "entry_notification_outbox", "entry_decision_advisories", "decision_outcome_capture", "decision_outcome_resolution"}),
             check_user_version=4,
         )
     if applied == (1, 2):
@@ -294,6 +294,7 @@ def _applied_runtime_schema_valid(
                     "entry_notification_outbox",
                     "entry_decision_advisories",
                     "decision_outcome_capture",
+                    "decision_outcome_resolution",
                 }
             ),
             check_user_version=2,
