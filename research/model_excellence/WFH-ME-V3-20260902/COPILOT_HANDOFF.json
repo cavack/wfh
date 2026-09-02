@@ -168,28 +168,32 @@
   "forward_capture": {
     "status": "CODE_READY_SEPARATE_CHILD_BRANCH",
     "branch": "feat/model-excellence-forward-capture-20260902",
-    "commit": "2d161a6e0301df68c9314cffa97c214c6e91682c",
+    "commit": "5486252",
     "worktree": "/srv/wfh-worktrees/model-excellence-forward-capture-20260902",
     "schema_version": "decision_outcome_capture_v1",
-    "tests": "191 focused tests passed",
+    "tests": "1361 full backend tests passed on 87b4380; review-fix focused tests passed on 5486252",
     "deployed": false,
     "pr": "https://github.com/cavack/wfh/pull/116",
-    "final_pr_head": "87b43800b5660309545351a35ee4a5198a7a547a",
+    "final_pr_head": "5486252",
     "ci": {
-      "backend": "PASS",
-      "frontend": "PASS",
-      "codeql": "PASS",
-      "sonar": "PASS",
-      "dependency_audit": "PASS",
-      "repository_hygiene": "PASS",
-      "github_advanced_security": "FAILURE",
+      "backend": "IN_PROGRESS",
+      "frontend": "QUEUED",
+      "codeql": "IN_PROGRESS",
+      "sonar": "PENDING_REFRESH",
+      "dependency_audit": "IN_PROGRESS",
+      "repository_hygiene": "IN_PROGRESS",
+      "github_advanced_security": "IN_PROGRESS",
       "container_validation": "IN_PROGRESS"
     },
-    "reviews": "No unresolved review threads; automated security failure requires investigation before merge"
+    "reviews": "Five Copilot review findings fixed in 5486252; threads resolved; refreshed checks pending"
   },
   "reproduced_defects": [],
   "fixed_defects": [
-    "rejected nearest-by-symbol/time outcome linkage as INVALID_FOR_SCIENCE in funnel"
+    "rejected nearest-by-symbol/time outcome linkage as INVALID_FOR_SCIENCE in funnel",
+    "ensured observational capture for all canonical decision insertion paths",
+    "excluded OBSERVED captures from pending resolution",
+    "enforced observational-only resolution policy fields",
+    "finalized persistent resolver failures as UNAVAILABLE to prevent queue starvation"
   ],
   "open_blockers": [
     "no closed OHLCV window keyed to decision_event_id",
