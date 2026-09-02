@@ -429,7 +429,7 @@ def main(argv: list[str] | None = None) -> int:
     manifest_path = repo_root / ".agents" / "wfh-council" / "manifest.json"
     try:
         manifest = load_manifest(manifest_path)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError) as exc:
         _emit({"status": "INVALID", "errors": [str(exc)]}, getattr(args, "json", False))
         return 2
 
