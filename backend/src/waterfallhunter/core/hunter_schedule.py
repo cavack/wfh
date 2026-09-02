@@ -98,7 +98,25 @@ class HunterDeadlineSchedule:
             )
 
         due.sort(key=sort_key)
-        return due[: int(limit)]
+        selected = due[: int(limit)]
+
+        watch_in_flight = any(
+            str(candidates.get(symbol, {}).get("status") or "WATCH").upper() == "WATCH"
+            for symbol in in_flight
+        )
+        if not watch_in_flight:
+            watch_due = next(
+                (
+                    item
+                    for item in due
+                    if str(item[1].get("status") or "WATCH").upper() == "WATCH"
+                ),
+                None,
+            )
+            if watch_due is not None and watch_due not in selected:
+                selected[-1] = watch_due
+
+        return selected
 
     def seconds_until_next_due(
         self,

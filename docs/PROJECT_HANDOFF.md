@@ -58,3 +58,4 @@ curl -fsS http://127.0.0.1:3000/dashboard/ >/dev/null
 ```
 
 Secrets are host/GitHub Environment owned and are never included in this handoff.
+Runtime freshness follow-up (2026-09-02): Production evidence after shared-evidence membership-delta stabilization showed FUEL-RICH/PRE-TRIGGER freshness within target but global p95 still failed because absolute state priority starved cheap WATCH evaluations. The follow-up scheduler fix reserves at most one existing evaluation slot for due WATCH work when no WATCH is in flight; total concurrency remains 12 and strategy/calibration semantics are unchanged.
