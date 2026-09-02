@@ -596,3 +596,40 @@ def test_ci_tested_image_bundle_upload_path_is_not_hidden() -> None:
     )[0]
     assert "path: ci-artifacts/" in container_job
     assert ".ci-artifacts/" not in container_job
+
+
+def test_deploy_pins_target_images_to_release_specific_tags_before_compose_activation() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    assert 'RELEASE_BACKEND_IMAGE="wfh-release-backend:${WFH_DEPLOY_SHA}"' in text
+    assert 'RELEASE_FRONTEND_IMAGE="wfh-release-frontend:${WFH_DEPLOY_SHA}"' in text
+    assert 'RELEASE_WATCHDOG_IMAGE="wfh-release-watchdog:${WFH_DEPLOY_SHA}"' in text
+    helper = text.split("pin_target_release_images() {", maxsplit=1)[1].split("}\n", maxsplit=1)[0]
+    assert 'docker tag waterfallhunter-waterfall-backend "$RELEASE_BACKEND_IMAGE"' in helper
+    assert 'docker tag waterfallhunter-frontend "$RELEASE_FRONTEND_IMAGE"' in helper
+    assert 'docker tag waterfallhunter-watchdog "$RELEASE_WATCHDOG_IMAGE"' in helper
+    assert "write_release_image_override" in helper
+    main_sequence = _main_deploy_sequence(text)
+    assert main_sequence.index("pin_target_release_images") < main_sequence.index("backup_database")
+    assert main_sequence.index("activate_target_image_override") < main_sequence.index("backup_database")
+
+
+def test_deploy_rollback_pins_previous_running_images_before_loading_target_bundle() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    main_sequence = _main_deploy_sequence(text)
+    assert "pin_previous_running_images" in main_sequence
+    assert main_sequence.index("pin_previous_running_images") < main_sequence.index("load_tested_release_artifacts")
+    rollback = text.split("rollback_previous_revision() {", maxsplit=1)[1].split("terminate_with_cleanup() {", maxsplit=1)[0]
+    assert "activate_rollback_image_override" in rollback
+    assert rollback.index("activate_rollback_image_override") < rollback.index("docker compose up -d")
+
+
+def test_successful_deploy_promotes_immutable_image_override_for_systemd_restarts() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    main_sequence = _main_deploy_sequence(text)
+    assert "promote_target_image_override" in main_sequence
+    assert main_sequence.index("verify_running_revision") < main_sequence.index("promote_target_image_override")
+    assert main_sequence.index("promote_target_image_override") < main_sequence.index("install_systemd_units")
+    wrapper = (ROOT / "scripts/production_compose.sh").read_text(encoding="utf-8")
+    assert 'IMAGE_OVERRIDE="${WFH_PRODUCTION_IMAGE_OVERRIDE:-/srv/waterfallhunter/runtime/production-images.override.yml}"' in wrapper
+    assert 'if [[ -f "$IMAGE_OVERRIDE" ]]; then' in wrapper
+    assert 'compose_args+=(-f "$IMAGE_OVERRIDE")' in wrapper
