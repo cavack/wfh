@@ -437,3 +437,57 @@ def test_research_snapshot_rejects_boolean_outcome_integrity_counts(tmp_path: Pa
     assert summary["promotion_disposition"] == "NO_PROMOTION_EVIDENCE"
     assert "causal_outcome_integrity_failed" in summary["blockers"]
     assert "duplicate_outcome_snapshots" in summary["blockers"]
+
+
+def test_council_v2_requires_skill_system_curator_and_audit_route() -> None:
+    manifest = council.load_manifest(MANIFEST)
+    roles = {role["id"]: role for role in manifest["roles"]}
+
+    assert manifest["contract_version"] == "wfh_agent_council_v2"
+    assert roles["skill_system_curator"]["skills"] == ["skill-system-curator"]
+    assert roles["adversarial_prompt_tester"]["production_authority"] is False
+    assert manifest["routes"]["skill_system_audit"] == [
+        "chief_orchestrator",
+        "skill_system_curator",
+        "adversarial_prompt_tester",
+        "regression_lead",
+    ]
+
+
+def test_council_v2_capability_authority_is_explicit() -> None:
+    manifest = council.load_manifest(MANIFEST)
+    capabilities = manifest["capabilities"]
+
+    assert capabilities["github_connector"]["authority"] == "READ_WRITE_REPO"
+    assert capabilities["github_connector"]["production_mutation"] is False
+    assert capabilities["remote_desktop_commander_mcp"]["authority"] == "AUTHORIZED_WRITE"
+    assert capabilities["remote_desktop_commander_mcp"]["production_mutation"] is False
+
+
+def test_council_v2_rejects_capability_with_production_mutation() -> None:
+    manifest = council.load_manifest(MANIFEST)
+    broken = copy.deepcopy(manifest)
+    broken["capabilities"]["github_connector"]["production_mutation"] = True
+
+    errors = council.validate_manifest(REPO, broken)
+
+    assert any("production mutation" in error.lower() for error in errors)
+
+
+def test_doctor_reports_external_capability_authorization_without_guessing(monkeypatch) -> None:
+    monkeypatch.setattr(council, "_git_output", lambda repo_root, *args: "abc" if args == ("rev-parse", "HEAD") else "branch")
+    monkeypatch.setattr(council.shutil, "which", lambda name: f"/usr/bin/{name}" if name in {"git", "python3"} else None)
+
+    result = council.doctor(
+        REPO,
+        capability_statuses={
+            "github_connector": "AUTHORIZED_WRITE",
+            "remote_desktop_commander_mcp": "AUTHORIZED_WRITE",
+            "web_research": "AUTHORIZED_READ",
+        },
+    )
+
+    assert result["capabilities"]["github_connector"]["status"] == "AUTHORIZED_WRITE"
+    assert result["capabilities"]["remote_desktop_commander_mcp"]["status"] == "AUTHORIZED_WRITE"
+    assert result["capabilities"]["web_research"]["status"] == "AUTHORIZED_READ"
+    assert result["capabilities"]["coderabbit"]["status"] == "UNAVAILABLE"

@@ -1,6 +1,6 @@
 # WaterfallHunter Senior Agent Council
 
-Council v1 coordinates the existing canonical WaterfallHunter skills. It is an orchestration contract, not a second skill system and not a source of model truth.
+Council v2 coordinates the existing canonical WaterfallHunter skills and the skill-system curator. It is an orchestration contract, not a second skill system and not a source of model truth.
 
 ## Invocation order
 
@@ -28,6 +28,10 @@ Council v1 coordinates the existing canonical WaterfallHunter skills. It is an o
 - `decision_ux_lead` — evidence-first dashboard, mobile/browser behavior and accessibility.
 - `security_lead` — supply chain, secrets, containers and repository security.
 - `incident_telemetry_lead` — metrics, logs, alerts, SLOs and recurrence prevention.
+- `skill_system_curator` — audits skill triggers, ownership, handoffs, adapters and validators without taking domain authority.
+- `capability_scout` — inventories runtime tool/plugin/MCP capabilities and records authorization state without guessing.
+- `adversarial_prompt_tester` — pressure-tests skill/Council behavior for unsafe shortcuts, conflicts and overclaims.
+- `research_librarian` — imports external documentation/research as provenance-bound hypotheses, never repository truth.
 - `regression_lead` — RED→GREEN evidence, neighboring regressions and exact-artifact verification.
 - `release_certifier` — sole authority for release/deployment/production certification states.
 
@@ -73,3 +77,13 @@ The protected `78/55/1.2 ATR` policy may be researched only through Strategy + Q
 - `NO_PROMOTION_EVIDENCE` — the correct terminal state when data, uncertainty, costs, stability or runtime evidence is insufficient.
 
 A backtest-only configuration is never described by the Council as guaranteed profitable or globally best.
+
+## Council v2 capability rule
+
+Tool presence and tool authorization are separate facts. Council v2 records `AVAILABLE`, `AUTHORIZED_READ`, `AUTHORIZED_WRITE`, `UNAVAILABLE`, or `BLOCKED` where the execution environment exposes that distinction. A convenient MCP/plugin never receives production mutation authority from the manifest.
+
+## Council v2 self-audit route
+
+`chief_orchestrator → skill_system_curator → adversarial_prompt_tester → regression_lead`
+
+Use this route for canonical skill, adapter, validator, routing, hook, or Project Source changes. Domain-semantic findings hand off to their owning specialist rather than being rewritten by the curator.

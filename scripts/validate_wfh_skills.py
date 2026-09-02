@@ -16,6 +16,7 @@ EXPECTED_SKILLS = {
     "market-data-evidence-quality",
     "verification-regression",
     "security-supply-chain",
+    "skill-system-curator",
     "observability-incident-response",
     "release-production-certification",
 }
@@ -30,6 +31,11 @@ REQUIRED_HEADINGS = {
     "## Verification",
     "## Handoffs",
     "## Common Mistakes",
+    "## Input Contract",
+    "## Required Evidence",
+    "## Tool Preference",
+    "## Output Contract",
+    "## Stop and Escalation Conditions",
 }
 
 REQUIRED_SHARED_SECTIONS = {

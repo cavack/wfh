@@ -110,17 +110,39 @@ def _validate_invariants(manifest: dict[str, Any]) -> list[str]:
             errors.append(f"protected invariant {key} must equal {expected!r}")
     return errors
 
+def _validate_capabilities(manifest: dict[str, Any]) -> list[str]:
+    capabilities = manifest.get("capabilities")
+    if not isinstance(capabilities, dict) or not capabilities:
+        return ["manifest capabilities must be a non-empty object"]
+    errors: list[str] = []
+    allowed_authority = {"AVAILABLE", "AUTHORIZED_READ", "AUTHORIZED_WRITE", "READ_WRITE_REPO", "UNAVAILABLE", "BLOCKED"}
+    for capability_id, capability in capabilities.items():
+        if not isinstance(capability, dict):
+            errors.append(f"capability {capability_id}: must be an object")
+            continue
+        if capability.get("authority") not in allowed_authority:
+            errors.append(f"capability {capability_id}: invalid authority")
+        if type(capability.get("required")) is not bool:
+            errors.append(f"capability {capability_id}: required must be boolean")
+        if capability.get("production_mutation") is not False:
+            errors.append(f"capability {capability_id}: production mutation is forbidden in Council capability declarations")
+        if not isinstance(capability.get("evidence_role"), str) or not capability.get("evidence_role"):
+            errors.append(f"capability {capability_id}: evidence_role must be a non-empty string")
+    return errors
+
+
 def validate_manifest(repo_root: Path, manifest: dict[str, Any]) -> list[str]:
     repo_root = repo_root.resolve()
     errors: list[str] = []
-    if manifest.get("contract_version") != "wfh_agent_council_v1":
-        errors.append("contract_version must be wfh_agent_council_v1")
+    if manifest.get("contract_version") != "wfh_agent_council_v2":
+        errors.append("contract_version must be wfh_agent_council_v2")
 
     roles = _role_index(manifest, errors)
     errors.extend(_validate_skills(repo_root, roles))
     errors.extend(_validate_routes(manifest, roles))
     errors.extend(_validate_production_authority(manifest, roles))
     errors.extend(_validate_invariants(manifest))
+    errors.extend(_validate_capabilities(manifest))
 
     routes = manifest.get("routes")
     model_route = routes.get("model_optimization", []) if isinstance(routes, dict) else []
@@ -177,9 +199,27 @@ LOCAL_TOOL_COMMANDS = {
     "coderabbit": "coderabbit",
 }
 REQUIRED_LOCAL_TOOLS = {"git", "python"}
+EXTERNAL_CAPABILITY_IDS = (
+    "github_connector",
+    "remote_desktop_commander_mcp",
+    "web_research",
+    "coderabbit",
+    "mermaid",
+    "prometheus",
+    "grafana",
+    "alertmanager",
+    "codeql",
+    "sonar",
+    "market_data_connectors",
+)
+CAPABILITY_STATUSES = {"AVAILABLE", "AUTHORIZED_READ", "AUTHORIZED_WRITE", "UNAVAILABLE", "BLOCKED"}
 
 
-def doctor(repo_root: Path) -> dict[str, Any]:
+def doctor(
+    repo_root: Path,
+    *,
+    capability_statuses: dict[str, str] | None = None,
+) -> dict[str, Any]:
     repo_root = repo_root.resolve()
     repo_status = "UNAVAILABLE"
     git_sha: str | None = None
@@ -200,9 +240,17 @@ def doctor(repo_root: Path) -> dict[str, Any]:
         if tool_id in REQUIRED_LOCAL_TOOLS and path is None:
             missing_required.append(tool_id)
 
+    supplied = capability_statuses or {}
+    capabilities: dict[str, dict[str, str]] = {}
+    for capability_id in EXTERNAL_CAPABILITY_IDS:
+        status = supplied.get(capability_id, "UNAVAILABLE")
+        if status not in CAPABILITY_STATUSES:
+            status = "BLOCKED"
+        capabilities[capability_id] = {"status": status}
+
     ready = repo_status == "AVAILABLE" and not missing_required
     return {
-        "contract_version": "wfh_council_doctor_v1",
+        "contract_version": "wfh_council_doctor_v2",
         "status": "READY" if ready else "BLOCKED",
         "repo": {
             "status": repo_status,
@@ -211,6 +259,7 @@ def doctor(repo_root: Path) -> dict[str, Any]:
             "branch": branch,
         },
         "tools": tools,
+        "capabilities": capabilities,
         "missing_required": missing_required,
     }
 

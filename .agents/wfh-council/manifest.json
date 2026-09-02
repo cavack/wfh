@@ -1,5 +1,5 @@
 {
-  "contract_version": "wfh_agent_council_v1",
+  "contract_version": "wfh_agent_council_v2",
   "canonical_skill_root": "skills/waterfallhunter",
   "adapter_skill_root": ".agents/skills",
   "production_authority_role": "release_certifier",
@@ -17,77 +17,139 @@
   "roles": [
     {
       "id": "chief_orchestrator",
-      "skills": ["engineering-orchestrator"],
+      "skills": [
+        "engineering-orchestrator"
+      ],
       "production_authority": false
     },
     {
       "id": "architecture_adversary",
-      "skills": ["repository-architecture-auditor"],
+      "skills": [
+        "repository-architecture-auditor"
+      ],
       "production_authority": false
     },
     {
       "id": "market_evidence_forensics",
-      "skills": ["market-data-evidence-quality"],
+      "skills": [
+        "market-data-evidence-quality"
+      ],
       "production_authority": false
     },
     {
       "id": "strategy_owner",
-      "skills": ["strategy-score-lifecycle"],
+      "skills": [
+        "strategy-score-lifecycle"
+      ],
       "production_authority": false
     },
     {
       "id": "quant_validation_lead",
-      "skills": ["scientific-backtest-validation"],
+      "skills": [
+        "scientific-backtest-validation"
+      ],
       "production_authority": false
     },
     {
       "id": "false_positive_hunter",
-      "skills": ["market-data-evidence-quality", "scientific-backtest-validation"],
+      "skills": [
+        "market-data-evidence-quality",
+        "scientific-backtest-validation"
+      ],
       "production_authority": false
     },
     {
       "id": "false_negative_hunter",
-      "skills": ["strategy-score-lifecycle", "scientific-backtest-validation"],
+      "skills": [
+        "strategy-score-lifecycle",
+        "scientific-backtest-validation"
+      ],
       "production_authority": false
     },
     {
       "id": "runtime_lead",
-      "skills": ["runtime-reliability-performance"],
+      "skills": [
+        "runtime-reliability-performance"
+      ],
       "production_authority": false
     },
     {
       "id": "backend_data_lead",
-      "skills": ["backend-data-architecture"],
+      "skills": [
+        "backend-data-architecture"
+      ],
       "production_authority": false
     },
     {
       "id": "contract_guardian",
-      "skills": ["api-contract-schema-guardian"],
+      "skills": [
+        "api-contract-schema-guardian"
+      ],
       "production_authority": false
     },
     {
       "id": "decision_ux_lead",
-      "skills": ["frontend-dashboard-ux"],
+      "skills": [
+        "frontend-dashboard-ux"
+      ],
       "production_authority": false
     },
     {
       "id": "security_lead",
-      "skills": ["security-supply-chain"],
+      "skills": [
+        "security-supply-chain"
+      ],
       "production_authority": false
     },
     {
       "id": "incident_telemetry_lead",
-      "skills": ["observability-incident-response"],
+      "skills": [
+        "observability-incident-response"
+      ],
+      "production_authority": false
+    },
+    {
+      "id": "skill_system_curator",
+      "skills": [
+        "skill-system-curator"
+      ],
+      "production_authority": false
+    },
+    {
+      "id": "capability_scout",
+      "skills": [
+        "skill-system-curator"
+      ],
+      "production_authority": false
+    },
+    {
+      "id": "adversarial_prompt_tester",
+      "skills": [
+        "skill-system-curator",
+        "verification-regression"
+      ],
+      "production_authority": false
+    },
+    {
+      "id": "research_librarian",
+      "skills": [
+        "market-data-evidence-quality",
+        "scientific-backtest-validation"
+      ],
       "production_authority": false
     },
     {
       "id": "regression_lead",
-      "skills": ["verification-regression"],
+      "skills": [
+        "verification-regression"
+      ],
       "production_authority": false
     },
     {
       "id": "release_certifier",
-      "skills": ["release-production-certification"],
+      "skills": [
+        "release-production-certification"
+      ],
       "production_authority": true
     }
   ],
@@ -137,6 +199,38 @@
       "chief_orchestrator",
       "regression_lead",
       "release_certifier"
+    ],
+    "skill_system_audit": [
+      "chief_orchestrator",
+      "skill_system_curator",
+      "adversarial_prompt_tester",
+      "regression_lead"
+    ],
+    "data_integrity": [
+      "chief_orchestrator",
+      "market_evidence_forensics",
+      "backend_data_lead",
+      "contract_guardian",
+      "regression_lead"
+    ],
+    "browser_e2e": [
+      "chief_orchestrator",
+      "contract_guardian",
+      "decision_ux_lead",
+      "regression_lead"
+    ],
+    "dependency_upgrade": [
+      "chief_orchestrator",
+      "security_lead",
+      "regression_lead",
+      "release_certifier"
+    ],
+    "release_recovery": [
+      "chief_orchestrator",
+      "incident_telemetry_lead",
+      "runtime_lead",
+      "regression_lead",
+      "release_certifier"
     ]
   },
   "tools": {
@@ -171,5 +265,103 @@
     "INFERENCE",
     "DEBT",
     "PROPOSAL"
-  ]
+  ],
+  "capabilities": {
+    "git": {
+      "required": true,
+      "authority": "AVAILABLE",
+      "production_mutation": false,
+      "evidence_role": "exact_git_object"
+    },
+    "python": {
+      "required": true,
+      "authority": "AVAILABLE",
+      "production_mutation": false,
+      "evidence_role": "deterministic_validation"
+    },
+    "github_connector": {
+      "required": false,
+      "authority": "READ_WRITE_REPO",
+      "production_mutation": false,
+      "evidence_role": "repository_state"
+    },
+    "remote_desktop_commander_mcp": {
+      "required": false,
+      "authority": "AUTHORIZED_WRITE",
+      "production_mutation": false,
+      "evidence_role": "host_and_runtime"
+    },
+    "web_research": {
+      "required": false,
+      "authority": "AUTHORIZED_READ",
+      "production_mutation": false,
+      "evidence_role": "external_contracts"
+    },
+    "coderabbit": {
+      "required": false,
+      "authority": "AUTHORIZED_READ",
+      "production_mutation": false,
+      "evidence_role": "independent_review"
+    },
+    "mermaid": {
+      "required": false,
+      "authority": "AUTHORIZED_WRITE",
+      "production_mutation": false,
+      "evidence_role": "diagram_artifact"
+    },
+    "docker": {
+      "required": false,
+      "authority": "AVAILABLE",
+      "production_mutation": false,
+      "evidence_role": "artifact_runtime"
+    },
+    "prometheus": {
+      "required": false,
+      "authority": "AUTHORIZED_READ",
+      "production_mutation": false,
+      "evidence_role": "runtime_metrics"
+    },
+    "grafana": {
+      "required": false,
+      "authority": "AUTHORIZED_READ",
+      "production_mutation": false,
+      "evidence_role": "metrics_presentation"
+    },
+    "alertmanager": {
+      "required": false,
+      "authority": "AUTHORIZED_READ",
+      "production_mutation": false,
+      "evidence_role": "alert_state"
+    },
+    "playwright": {
+      "required": false,
+      "authority": "AVAILABLE",
+      "production_mutation": false,
+      "evidence_role": "browser_verification"
+    },
+    "codeql": {
+      "required": false,
+      "authority": "AUTHORIZED_READ",
+      "production_mutation": false,
+      "evidence_role": "security_review"
+    },
+    "sonar": {
+      "required": false,
+      "authority": "AUTHORIZED_READ",
+      "production_mutation": false,
+      "evidence_role": "quality_review"
+    },
+    "pytest": {
+      "required": false,
+      "authority": "AVAILABLE",
+      "production_mutation": false,
+      "evidence_role": "regression"
+    },
+    "market_data_connectors": {
+      "required": false,
+      "authority": "AUTHORIZED_READ",
+      "production_mutation": false,
+      "evidence_role": "research_market_data"
+    }
+  }
 }
