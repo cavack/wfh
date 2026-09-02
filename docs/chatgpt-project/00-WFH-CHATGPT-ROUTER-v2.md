@@ -2,6 +2,10 @@
 
 GitHub `cavack/wfh` is the canonical source. This Drive/Project Sources bundle is routing and installation metadata only; it intentionally does not duplicate canonical skill bodies.
 
+## Canonical TWFH resume intent
+
+When the user says exactly `ادامه کار گروهی`, resolve the `TWFH` project and repository `cavack/wfh` through continuity protocol `wfh_mission_continuity_v1` and Council route `mission_continuity` **before** ordinary WaterfallHunter task routing. Read `TWFH-RESUME.md`, locate the durable active mission and latest valid checkpoint, reconcile drift/interrupted steps, and continue only from its exact `next_action`. Never restart a broad audit or reconstruct missing state from transcript guesses.
+
 ## Mandatory workflow
 
 1. Read `PROJECT-SOURCE-MANIFEST.json`. For a certified bundle require `source_worktree_dirty=false`, freeze `source_commit_sha` as the canonical target for the entire audit, and verify that SHA exists in GitHub. If runtime provenance is absent, resolve one target SHA once and record it before continuing.
@@ -49,6 +53,7 @@ GitHub `cavack/wfh` is the canonical source. This Drive/Project Sources bundle i
 - `dependency_upgrade`: `chief_orchestrator → security_lead → regression_lead → release_certifier`
 - `release_recovery`: `chief_orchestrator → incident_telemetry_lead → runtime_lead → regression_lead → release_certifier`
 - `external_research`: `chief_orchestrator → research_librarian → market_evidence_forensics → quant_validation_lead → regression_lead`
+- `mission_continuity`: `chief_orchestrator → capability_scout → skill_system_curator → regression_lead`
 
 ## Safety
 

@@ -82,6 +82,10 @@ A backtest-only configuration is never described by the Council as guaranteed pr
 
 Tool presence and tool authorization are separate facts. Council v2 records `AVAILABLE`, `AUTHORIZED_READ`, `AUTHORIZED_WRITE`, `UNAVAILABLE`, or `BLOCKED` where the execution environment exposes that distinction. A convenient MCP/plugin never receives production mutation authority from the manifest.
 
+## Mission continuity route
+
+The exact phrase `ادامه کار گروهی` resolves project `TWFH` / repository `cavack/wfh` under protocol `wfh_mission_continuity_v1`. Route: `chief_orchestrator → capability_scout → skill_system_curator → regression_lead`. This route locates and validates durable active-mission/checkpoint state; it does not authorize domain/model/Production changes.
+
 ## Council v2 self-audit route
 
 `chief_orchestrator → skill_system_curator → adversarial_prompt_tester → regression_lead`

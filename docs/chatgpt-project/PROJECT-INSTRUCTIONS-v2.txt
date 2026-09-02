@@ -1,6 +1,7 @@
 WaterfallHunter engineering sources are attached to this ChatGPT Project as a lightweight routing overlay. Canonical skill bodies live in GitHub repository cavack/wfh.
 
 MANDATORY:
+- Exact phrase `ادامه کار گروهی` is the canonical TWFH resume intent under `wfh_mission_continuity_v1`; resolve route `mission_continuity`, read `TWFH-RESUME.md`, and continue from durable active-mission/latest-checkpoint state instead of transcript memory.
 - Read 00-WFH-CHATGPT-ROUTER-v2.md first for every WaterfallHunter engineering task.
 - Read 01-WFH-SKILL-CATALOG-v2.md and fetch every selected canonical skills/waterfallhunter/<skill>/SKILL.md completely from the current target GitHub SHA.
 - Resolve relevant current PRs/issues/commits before treating historical audits as current facts.

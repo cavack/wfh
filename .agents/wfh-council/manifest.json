@@ -239,6 +239,12 @@
       "market_evidence_forensics",
       "quant_validation_lead",
       "regression_lead"
+    ],
+    "mission_continuity": [
+      "chief_orchestrator",
+      "capability_scout",
+      "skill_system_curator",
+      "regression_lead"
     ]
   },
   "tools": {
@@ -370,6 +376,15 @@
       "authority": "AUTHORIZED_READ",
       "production_mutation": false,
       "evidence_role": "research_market_data"
+    }
+  },
+  "resume_intents": {
+    "ادامه کار گروهی": {
+      "project": "TWFH",
+      "repository": "cavack/wfh",
+      "protocol": "wfh_mission_continuity_v1",
+      "route": "mission_continuity",
+      "resolution": "active_mission_latest_certified_checkpoint"
     }
   }
 }
