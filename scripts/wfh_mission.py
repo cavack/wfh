@@ -261,15 +261,19 @@ def create_checkpoint(mission_dir: Path, *, created_at: str | None = None) -> di
     if errors:
         raise ValueError("; ".join(errors))
     checkpoint_id = _next_checkpoint_id(root)
+    journal = _load_journal(root)
+    state_files = {"MISSION_STATE.json": _sha256_bytes(state_path.read_bytes())}
+    journal_path = root / "STEP_JOURNAL.json"
+    if journal_path.exists():
+        state_files["STEP_JOURNAL.json"] = _sha256_bytes(journal_path.read_bytes())
     checkpoint = {
         "contract_version": "wfh_mission_checkpoint_v1",
         "mission_id": state["mission_id"],
         "checkpoint_id": checkpoint_id,
         "created_at": created_at or _utc_now(),
         "mission_state": state,
-        "state_files": {
-            "MISSION_STATE.json": _sha256_bytes(state_path.read_bytes()),
-        },
+        "step_journal": journal,
+        "state_files": state_files,
     }
     checkpoint_rel = Path("checkpoints") / f"{checkpoint_id}.json"
     checkpoint_path = root / checkpoint_rel
@@ -320,3 +324,137 @@ def load_latest_checkpoint(mission_dir: Path) -> dict[str, Any]:
         "pointer": pointer,
         "checkpoint": checkpoint,
     }
+
+
+def _journal_path(mission_dir: Path) -> Path:
+    return Path(mission_dir).resolve(strict=True) / "STEP_JOURNAL.json"
+
+
+def _load_journal(mission_dir: Path) -> dict[str, Any]:
+    root = Path(mission_dir).resolve(strict=True)
+    path = _confined_path(root / "STEP_JOURNAL.json", root)
+    if not path.exists():
+        return {"contract_version": "wfh_step_journal_v1", "steps": []}
+    journal = _load_json(path)
+    if not isinstance(journal.get("steps"), list):
+        raise ValueError("step journal steps must be an array")
+    return journal
+
+
+def journal_step_start(
+    mission_dir: Path,
+    *,
+    task_id: str,
+    step_id: str,
+    action: str,
+    expected_state_change: str,
+    pre_step_sha: str,
+    required_capabilities: list[str],
+    retry_policy: str,
+    reconciliation_procedure: str,
+    started_at: str | None = None,
+) -> dict[str, Any]:
+    root = Path(mission_dir).resolve(strict=True)
+    journal = _load_journal(root)
+    if any(step.get("step_id") == step_id for step in journal["steps"]):
+        raise ValueError(f"duplicate step_id: {step_id}")
+    record = {
+        "task_id": task_id,
+        "step_id": step_id,
+        "action": action,
+        "expected_state_change": expected_state_change,
+        "pre_step_sha": pre_step_sha,
+        "required_capabilities": list(required_capabilities),
+        "retry_policy": retry_policy,
+        "reconciliation_procedure": reconciliation_procedure,
+        "status": "IN_PROGRESS",
+        "started_at": started_at or _utc_now(),
+        "completed_at": None,
+    }
+    journal["steps"].append(record)
+    atomic_write_json(root / "STEP_JOURNAL.json", journal, allowed_root=root)
+    return record
+
+
+def journal_step_complete(
+    mission_dir: Path, step_id: str, *, completed_at: str | None = None
+) -> dict[str, Any]:
+    root = Path(mission_dir).resolve(strict=True)
+    journal = _load_journal(root)
+    for record in journal["steps"]:
+        if record.get("step_id") == step_id:
+            record["status"] = "COMPLETE"
+            record["completed_at"] = completed_at or _utc_now()
+            atomic_write_json(root / "STEP_JOURNAL.json", journal, allowed_root=root)
+            return record
+    raise ValueError(f"unknown step_id: {step_id}")
+
+
+_USABLE_CAPABILITY_STATES = {
+    "AVAILABLE",
+    "AUTHORIZED_READ",
+    "AUTHORIZED_WRITE",
+    "READ_WRITE_REPO",
+}
+
+
+def resume_guard(
+    mission_dir: Path,
+    *,
+    observed_main_sha: str | None = None,
+    observed_production_sha: str | None = None,
+    capabilities: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    loaded = load_latest_checkpoint(mission_dir)
+    if loaded.get("disposition") != "RESUME_READY":
+        return loaded
+    checkpoint = loaded["checkpoint"]
+    state = checkpoint["mission_state"]
+    steps = checkpoint.get("step_journal", {}).get("steps", [])
+    interrupted = [step for step in steps if step.get("status") == "IN_PROGRESS"]
+    if interrupted:
+        return {
+            "disposition": "RECONCILIATION_REQUIRED",
+            "reason": "interrupted_step",
+            "interrupted_step": interrupted[-1],
+            "retry_allowed": False,
+        }
+    capability_states = capabilities or {}
+    required = list(state.get("required_capabilities", []))
+    unavailable = sorted(
+        capability
+        for capability in required
+        if capability_states.get(capability) not in _USABLE_CAPABILITY_STATES
+    )
+    if unavailable:
+        return {
+            "disposition": "RESUME_BLOCKED",
+            "reason": "required_capability_unavailable",
+            "unavailable_capabilities": unavailable,
+        }
+    drift: list[dict[str, str]] = []
+    expected_main = state.get("current_main_sha")
+    if observed_main_sha is not None and observed_main_sha != expected_main:
+        drift.append(
+            {
+                "scope": "repository_main",
+                "expected": str(expected_main),
+                "observed": observed_main_sha,
+            }
+        )
+    expected_production = state.get("production_sha")
+    if (
+        observed_production_sha is not None
+        and expected_production is not None
+        and observed_production_sha != expected_production
+    ):
+        drift.append(
+            {
+                "scope": "production_revision",
+                "expected": str(expected_production),
+                "observed": observed_production_sha,
+            }
+        )
+    if drift:
+        return {"disposition": "DRIFT_DETECTED", "reason": "revision_drift", "drift": drift}
+    return loaded
