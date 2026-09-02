@@ -101,18 +101,18 @@
     "unique_lifecycles": 4,
     "unique_symbols": 214
   },
-  "head_expected": "ac82b0d",
-  "head_expected_reconciled": "ac82b0d",
+  "head_expected": "dd42092",
+  "head_expected_reconciled": "dd42092",
   "historical_head_expected": "8502e06",
   "historical_head_expected_reconciled": "8502e06",
   "historical_result_commit": "15bbcd3",
-  "latest_verified_head": "ac82b0d",
-  "latest_verified_head_verified_at": "2026-09-02T19:58:00Z",
+  "latest_verified_head": "dd42092",
+  "latest_verified_head_verified_at": "2026-09-02T21:20:00Z",
   "origin_main_sha": "d129264b22bacbe4601c2ee8a373a9c1e2cbac30",
   "origin_main": "d129264",
   "production_main_drift": "HEAD is 7 commits ahead of origin/main; no PR #115/main changes",
   "pushed_ref": "origin/feat/model-excellence-v3-phase0-20260902",
-  "result_commit": "ac82b0d",
+  "result_commit": "dd42092",
   "semantic_fixes": [
     "decision events are primary candidate rows",
     "decision and entry_readiness read from persisted packet_json",
@@ -202,6 +202,6 @@
     "PYTHONPATH=backend/src backend/.venv/bin/pytest -q backend/tests/test_normalized_research_compiler.py (6 passed)",
     "PYTHONPATH=backend/src:backend/tests python3 -m pytest -q backend/tests/test_scientific_eligibility_funnel.py backend/tests/test_normalized_research_compiler.py backend/tests/test_schema_contract.py (50 passed)"
   ],
-  "verified_head": "ac82b0d",
+  "verified_head": "dd42092",
   "version": "v1"
 }
