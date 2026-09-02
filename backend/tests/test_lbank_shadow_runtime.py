@@ -716,3 +716,43 @@ def test_live_reference_loop_propagates_task_cancellation(monkeypatch):
         return False
 
     assert asyncio.run(scenario()) is True
+
+
+def test_entry_outcome_resolver_terminalizes_no_candles_after_bounded_retry_age(monkeypatch):
+    import waterfallhunter.main as main
+
+    async def fetch(*_args):
+        return []
+
+    monkeypatch.setattr(main, "_fetch_signal_outcome_candles", fetch)
+    captured_at = 1_000
+    monkeypatch.setattr(main.time, "time", lambda: captured_at + 72 * 3600 + 1)
+    capture = {
+        "decision_event_id": 7,
+        "decision_event_at": 900,
+        "captured_at": captured_at,
+        "symbol": "SXT/USDT:USDT",
+        "contract": {
+            "available": True,
+            "exchange": "lbank",
+            "mapped_symbol": "SXT/USDT:USDT",
+            "market_type": "linear_usdt_perpetual",
+        },
+        "trade_plan": {
+            "entry_price": 100.0,
+            "stop_loss": 105.0,
+            "take_profit_1": 95.0,
+            "take_profit_2": 90.0,
+        },
+        "outcome_contract": {
+            "horizon_seconds": 86_400,
+            "closed_candles_only": True,
+            "complete_window_required": True,
+        },
+    }
+
+    result = asyncio.run(main._resolve_entry_outcome(capture))
+    assert result is not None
+    assert result["outcome_status"] == "UNAVAILABLE"
+    assert result["classification"] == "UNAVAILABLE"
+    assert "retry window exhausted" in result["reason"]

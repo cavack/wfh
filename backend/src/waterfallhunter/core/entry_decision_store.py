@@ -666,12 +666,13 @@ class EntryDecisionStore:
         )
         return event_id
 
-    def pending_outcome_captures(
+    def scan_pending_outcome_captures(
         self, *, mature_before: int, limit: int = 100, after_id: int = 0
-    ) -> list[dict[str, Any]]:
-        """Return immutable initial captures whose horizon has matured."""
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Return verified captures plus the highest raw capture id scanned."""
         if isinstance(mature_before, bool) or not isinstance(mature_before, int):
             raise ValueError("maturity timestamp invalid")
+        bounded_after = max(0, int(after_id))
         with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
@@ -689,8 +690,9 @@ class EntryDecisionStore:
                   AND c.id > ?
                 ORDER BY c.id LIMIT ?
                 """,
-                (mature_before, max(0, int(after_id)), max(1, min(int(limit), 1000))),
+                (mature_before, bounded_after, max(1, min(int(limit), 1000))),
             ).fetchall()
+        scanned_through = int(rows[-1]["id"]) if rows else bounded_after
         valid: list[dict[str, Any]] = []
         for row in rows:
             item = dict(row)
@@ -702,8 +704,6 @@ class EntryDecisionStore:
                 if decoded.get("decision_packet_sha256") != item["decision_packet_hash"]:
                     raise ValueError("parent decision packet hash mismatch")
             except ValueError as exc:
-                # Do not invoke user/provider code with tampered research data,
-                # and do not manufacture a terminal outcome for corrupted data.
                 logger.exception(
                     "Rejecting tampered outcome capture: %s",
                     exc,
@@ -716,7 +716,16 @@ class EntryDecisionStore:
                 )
                 continue
             valid.append({**decoded, **item})
-        return valid
+        return valid, scanned_through
+
+    def pending_outcome_captures(
+        self, *, mature_before: int, limit: int = 100, after_id: int = 0
+    ) -> list[dict[str, Any]]:
+        """Return verified immutable captures whose horizon has matured."""
+        captures, _ = self.scan_pending_outcome_captures(
+            mature_before=mature_before, limit=limit, after_id=after_id
+        )
+        return captures
 
     matured_outcome_captures = pending_outcome_captures
 
@@ -969,21 +978,33 @@ class EntryOutcomeResolutionWorker:
         self._scan_after_id = 0
 
     async def _load_pending_batch(self, *, mature_before: int) -> list[dict[str, Any]]:
-        captures = await asyncio.to_thread(
-            self.store.pending_outcome_captures,
+        if not hasattr(self.store, "scan_pending_outcome_captures"):
+            return await asyncio.to_thread(
+                self.store.pending_outcome_captures,
+                mature_before=mature_before,
+                limit=self.batch_size,
+                after_id=self._scan_after_id,
+            )
+        captures, scanned_through = await asyncio.to_thread(
+            self.store.scan_pending_outcome_captures,
             mature_before=mature_before,
             limit=self.batch_size,
             after_id=self._scan_after_id,
         )
-        if captures or not self._scan_after_id:
+        if scanned_through > self._scan_after_id:
+            self._scan_after_id = scanned_through
+            return captures
+        if not self._scan_after_id:
             return captures
         self._scan_after_id = 0
-        return await asyncio.to_thread(
-            self.store.pending_outcome_captures,
+        captures, scanned_through = await asyncio.to_thread(
+            self.store.scan_pending_outcome_captures,
             mature_before=mature_before,
             limit=self.batch_size,
             after_id=0,
         )
+        self._scan_after_id = scanned_through
+        return captures
 
     async def _resolve_pending_capture(
         self,

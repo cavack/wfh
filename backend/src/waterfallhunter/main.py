@@ -1288,6 +1288,30 @@ def _entry_outcome_costs_complete(costs: dict[str, Any]) -> bool:
     )
 
 
+_ENTRY_OUTCOME_MAX_CAPTURE_AGE_SECONDS = 72 * 60 * 60
+
+
+def _entry_outcome_no_candles_result(capture: dict[str, Any], contract: dict) -> dict | None:
+    """Keep fresh gaps retryable, but bound exact-window retries by capture age."""
+    captured_at = capture.get("captured_at")
+    if isinstance(captured_at, bool) or not isinstance(captured_at, int):
+        return None
+    if int(time.time()) - captured_at <= _ENTRY_OUTCOME_MAX_CAPTURE_AGE_SECONDS:
+        return None
+    return {
+        "outcome_status": "UNAVAILABLE",
+        "classification": "UNAVAILABLE",
+        "cost": capture.get("costs"),
+        "provenance": {
+            "decision_packet_sha256": capture.get("decision_packet_sha256"),
+            "decision_contract_sha256": capture.get("decision_contract_sha256"),
+            "source_revision": capture.get("source_revision"),
+            "contract": contract or None,
+        },
+        "reason": "exact-contract candle retry window exhausted",
+    }
+
+
 def _entry_outcome_provenance_complete(
     capture: dict[str, Any], classification: str, gross_r: float | None
 ) -> bool:
@@ -1342,7 +1366,7 @@ async def _resolve_entry_outcome(capture: dict) -> dict | None:
         observation_start_ms + horizon_seconds * 1000,
     )
     if not candles:
-        return None
+        return _entry_outcome_no_candles_result(capture, contract)
     outcome = LBankSignalOutcomeEvaluator.evaluate(
         signal, candles, horizon_seconds=horizon_seconds
     )

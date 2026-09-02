@@ -640,6 +640,38 @@ def test_entry_outcome_worker_round_robin_prevents_retryable_row_starvation(tmp_
     assert [row["decision_event_id"] for row in store.pending_outcome_captures(mature_before=101)] == [first]
 
 
+
+def test_worker_advances_cursor_past_three_tampered_captures(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    event_ids = []
+    for index in range(4):
+        event_id = store.append_if_changed_with_capture(
+            f"SYM{index}", packet("ENTRY_READY", 84.0, 100 + index), captured_at=110 + index
+        )
+        assert event_id is not None
+        event_ids.append(event_id)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TRIGGER decision_outcome_capture_no_update")
+        for event_id in event_ids[:3]:
+            conn.execute(
+                "UPDATE decision_outcome_capture SET capture_json=? WHERE decision_event_id=?",
+                ('{"observational_only":true,"decision_mutated":false}', event_id),
+            )
+
+    resolved = []
+
+    async def resolver(capture):
+        resolved.append(capture["decision_event_id"])
+        return {"outcome_status": "OBSERVED"}
+
+    worker = EntryOutcomeResolutionWorker(store, resolver, batch_size=3, interval_seconds=60)
+    assert asyncio.run(worker.run_once(now=100_000)) == 0
+    assert asyncio.run(worker.run_once(now=100_000)) == 1
+    assert resolved == [event_ids[3]]
+
+
 def test_latest_transition_uses_append_order_when_clock_moves_backward(tmp_path) -> None:
     db_path = migrate_test_database(tmp_path / "registry.db")
     store = EntryDecisionStore(db_path)
