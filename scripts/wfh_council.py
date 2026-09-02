@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import json
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -131,3 +135,149 @@ def validate_manifest(repo_root: Path, manifest: dict[str, Any]) -> list[str]:
     if model_route != required:
         errors.append("model_optimization route must match the canonical Council order")
     return errors
+
+def route_task(manifest: dict[str, Any], task_type: str) -> list[dict[str, Any]]:
+    routes = manifest.get("routes")
+    if not isinstance(routes, dict) or task_type not in routes:
+        raise KeyError(f"unknown Council route: {task_type}")
+
+    role_map = {
+        role["id"]: role
+        for role in manifest.get("roles", [])
+        if isinstance(role, dict) and isinstance(role.get("id"), str)
+    }
+    packets: list[dict[str, Any]] = []
+    for role_id in routes[task_type]:
+        role = role_map.get(role_id)
+        if role is None:
+            raise ValueError(f"route references unknown role: {role_id}")
+        packets.append(
+            {
+                "role": role_id,
+                "skills": list(role.get("skills", [])),
+                "production_authority": role.get("production_authority") is True,
+            }
+        )
+    return packets
+
+
+def _git_output(repo_root: Path, *args: str) -> str:
+    return subprocess.check_output(
+        ["git", *args], cwd=repo_root, text=True, stderr=subprocess.DEVNULL
+    ).strip()
+
+LOCAL_TOOL_COMMANDS = {
+    "git": "git",
+    "python": "python3",
+    "docker": "docker",
+    "node": "node",
+    "npm": "npm",
+    "coderabbit": "coderabbit",
+}
+REQUIRED_LOCAL_TOOLS = {"git", "python"}
+
+
+def doctor(repo_root: Path) -> dict[str, Any]:
+    repo_root = repo_root.resolve()
+    repo_status = "UNAVAILABLE"
+    git_sha: str | None = None
+    branch: str | None = None
+    try:
+        git_sha = _git_output(repo_root, "rev-parse", "HEAD")
+        branch = _git_output(repo_root, "branch", "--show-current") or None
+        repo_status = "AVAILABLE"
+    except (OSError, subprocess.CalledProcessError):
+        pass
+
+    tools: dict[str, dict[str, Any]] = {}
+    missing_required: list[str] = []
+    for tool_id, command in LOCAL_TOOL_COMMANDS.items():
+        path = shutil.which(command)
+        status = "AVAILABLE" if path else "UNAVAILABLE"
+        tools[tool_id] = {"status": status, "path": path}
+        if tool_id in REQUIRED_LOCAL_TOOLS and path is None:
+            missing_required.append(tool_id)
+
+    ready = repo_status == "AVAILABLE" and not missing_required
+    return {
+        "contract_version": "wfh_council_doctor_v1",
+        "status": "READY" if ready else "BLOCKED",
+        "repo": {
+            "status": repo_status,
+            "path": str(repo_root),
+            "git_sha": git_sha,
+            "branch": branch,
+        },
+        "tools": tools,
+        "missing_required": missing_required,
+    }
+
+
+def _emit(value: Any, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(value, indent=2, sort_keys=True))
+    elif isinstance(value, list):
+        for item in value:
+            print(item)
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            print(f"{key}={item}")
+    else:
+        print(value)
+
+
+def _default_repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="WaterfallHunter Senior Agent Council")
+    parser.add_argument("--repo-root", type=Path, default=_default_repo_root())
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    validate_cmd = sub.add_parser("validate", help="validate the Council contract")
+    validate_cmd.add_argument("--json", action="store_true")
+
+    route_cmd = sub.add_parser("route", help="resolve a Council route")
+    route_cmd.add_argument("task_type")
+    route_cmd.add_argument("--json", action="store_true")
+
+    doctor_cmd = sub.add_parser("doctor", help="inspect local deterministic capabilities")
+    doctor_cmd.add_argument("--json", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    repo_root = args.repo_root.resolve()
+    manifest_path = repo_root / ".agents" / "wfh-council" / "manifest.json"
+    try:
+        manifest = load_manifest(manifest_path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        _emit({"status": "INVALID", "errors": [str(exc)]}, getattr(args, "json", False))
+        return 2
+
+    if args.command == "validate":
+        errors = validate_manifest(repo_root, manifest)
+        result = {"status": "VALID" if not errors else "INVALID", "errors": errors}
+        _emit(result, args.json)
+        return 0 if not errors else 2
+
+    if args.command == "route":
+        try:
+            route = route_task(manifest, args.task_type)
+        except (KeyError, ValueError) as exc:
+            _emit({"status": "INVALID", "error": str(exc)}, args.json)
+            return 2
+        _emit({"status": "OK", "task_type": args.task_type, "route": route}, args.json)
+        return 0
+
+    if args.command == "doctor":
+        result = doctor(repo_root)
+        _emit(result, args.json)
+        return 0 if result["status"] == "READY" else 3
+
+    raise AssertionError(f"unhandled command: {args.command}")
+
+
+if __name__ == "__main__":
+    sys.exit(main())
