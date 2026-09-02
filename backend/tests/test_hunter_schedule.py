@@ -120,3 +120,39 @@ def test_state_evaluation_intervals_are_bounded_runtime_budgets() -> None:
     assert interval("FUEL-RICH") == 90.0
     assert interval("WATCH") == 150.0
     assert interval("UNKNOWN") == 150.0
+
+
+def test_deadline_schedule_reserves_one_slot_for_due_watch_work() -> None:
+    factory = getattr(hunter_schedule, "HunterDeadlineSchedule", None)
+    assert factory is not None
+    schedule = factory()
+    candidates = {
+        **{f"FUEL_{i}": {"status": "FUEL-RICH"} for i in range(12)},
+        "WATCH_DUE": {"status": "WATCH"},
+    }
+    schedule.sync(candidates, now=100.0)
+    in_flight = {f"FUEL_{i}" for i in range(11)}
+
+    due = schedule.due_candidates(
+        candidates, {}, now=100.0, in_flight=in_flight, limit=1
+    )
+
+    assert [symbol for symbol, _ in due] == ["WATCH_DUE"]
+
+
+def test_deadline_schedule_does_not_reserve_second_watch_slot() -> None:
+    factory = getattr(hunter_schedule, "HunterDeadlineSchedule", None)
+    assert factory is not None
+    schedule = factory()
+    candidates = {
+        "FUEL_DUE": {"status": "FUEL-RICH"},
+        "WATCH_RUNNING": {"status": "WATCH"},
+        "WATCH_DUE": {"status": "WATCH"},
+    }
+    schedule.sync(candidates, now=100.0)
+
+    due = schedule.due_candidates(
+        candidates, {}, now=100.0, in_flight={"WATCH_RUNNING"}, limit=1
+    )
+
+    assert [symbol for symbol, _ in due] == ["FUEL_DUE"]
