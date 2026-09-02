@@ -155,6 +155,47 @@ def test_initial_capture_resolves_in_separate_immutable_table(tmp_path) -> None:
         ).fetchone()[0] == "UNOBSERVED"
 
 
+def test_canonical_append_with_capture_and_observed_not_pending(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    event_id = store.append_if_changed_with_capture(
+        "SXT/USDT:USDT", packet("ENTRY_READY", 84.0, 100), captured_at=101
+    )
+    assert event_id is not None
+    assert len(store.pending_outcome_captures(mature_before=101)) == 1
+    store.resolve_outcome_capture(
+        event_id, {"outcome_status": "OBSERVED", "mfe_pct": 1.0}, resolved_at=200
+    )
+    assert store.pending_outcome_captures(mature_before=200) == []
+    with sqlite3.connect(db_path) as conn:
+        payload = json.loads(
+            conn.execute(
+                "SELECT resolution_json FROM decision_outcome_resolution WHERE decision_event_id=?",
+                (event_id,),
+            ).fetchone()[0]
+        )
+    assert payload["observational_only"] is True
+    assert payload["decision_mutated"] is False
+    assert payload["trade_eligible"] is False
+    assert payload["promotion_allowed"] is False
+
+
+def test_resolution_rejects_mutating_policy_fields(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    event_id = store.append_if_changed("SXT/USDT:USDT", packet("ENTRY_READY", 84.0, 100))
+    assert event_id is not None
+    store.append_outcome_capture(
+        event_id, {"observational_only": True, "decision_mutated": False}, captured_at=101
+    )
+    with pytest.raises(ValueError, match="observational only"):
+        store.resolve_outcome_capture(
+            event_id,
+            {"outcome_status": "OBSERVED", "decision_mutated": True},
+            resolved_at=200,
+        )
+
+
 def test_pending_and_resolution_are_idempotent_and_isolate_research_failures(tmp_path) -> None:
     db_path = migrate_test_database(tmp_path / "registry.db")
     store = EntryDecisionStore(db_path)
@@ -174,6 +215,29 @@ def test_pending_and_resolution_are_idempotent_and_isolate_research_failures(tmp
         lambda _: (_ for _ in ()).throw(RuntimeError("research unavailable")),
         mature_before=101,
     ) == 0
+
+
+def test_failed_resolution_is_finalized_and_does_not_starve_later_rows(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    first = store.append_if_changed("FIRST", packet("ENTRY_READY", 84.0, 100))
+    second = store.append_if_changed("SECOND", packet("ENTRY_READY", 84.0, 100))
+    assert first is not None and second is not None
+    for event_id in (first, second):
+        store.append_outcome_capture(
+            event_id, {"observational_only": True, "decision_mutated": False}, captured_at=101
+        )
+    calls = []
+
+    def resolver(capture):
+        calls.append(capture["decision_event_id"])
+        if capture["decision_event_id"] == first:
+            raise RuntimeError("permanent")
+        return {"outcome_status": "OBSERVED"}
+
+    assert store.resolve_matured_outcomes(resolver, mature_before=101, limit=2) == 1
+    assert calls == [first, second]
+    assert store.pending_outcome_captures(mature_before=101) == []
 
 
 def test_latest_transition_uses_append_order_when_clock_moves_backward(tmp_path) -> None:

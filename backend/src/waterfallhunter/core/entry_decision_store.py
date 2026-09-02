@@ -416,6 +416,40 @@ class EntryDecisionStore:
                 raise ValueError("decision outcome capture already exists") from exc
             return int(cursor.lastrowid)
 
+    def append_if_changed_with_capture(
+        self,
+        symbol: str,
+        packet: dict[str, Any],
+        *,
+        captured_at: int,
+        expected_lifecycle_id: int | None = None,
+    ) -> int | None:
+        """Append a canonical decision and its observational capture together."""
+        event_id = self.append_if_changed(
+            symbol, packet, expected_lifecycle_id=expected_lifecycle_id
+        )
+        if event_id is None:
+            return None
+        try:
+            self.append_outcome_capture(
+                event_id,
+                {
+                    "observational_only": True,
+                    "decision_mutated": False,
+                    "decision": packet.get("decision"),
+                    "symbol": str(symbol),
+                    "lifecycle_id": packet.get("lifecycle_id"),
+                    "outcome_status": "UNOBSERVED",
+                },
+                captured_at=captured_at,
+            )
+        except ValueError as exc:
+            # Preserve the canonical append result if an older database has not
+            # installed the outcome-capture migration yet.
+            if "decision event missing" not in str(exc):
+                raise
+        return event_id
+
     def pending_outcome_captures(
         self, *, mature_before: int, limit: int = 100
     ) -> list[dict[str, Any]]:
@@ -430,7 +464,8 @@ class EntryDecisionStore:
                 FROM decision_outcome_capture c
                 LEFT JOIN decision_outcome_resolution r
                   ON r.decision_event_id = c.decision_event_id
-                WHERE r.id IS NULL AND c.captured_at <= ?
+                WHERE r.id IS NULL AND c.outcome_status = 'UNOBSERVED'
+                  AND c.captured_at <= ?
                 ORDER BY c.captured_at, c.id LIMIT ?
                 """,
                 (mature_before, max(1, min(int(limit), 1000))),
@@ -453,18 +488,38 @@ class EntryDecisionStore:
             raise ValueError("resolution timestamp invalid")
         if not isinstance(resolution, dict):
             raise ValueError("resolution must be an object")
+        if (
+            "observational_only" in resolution
+            and resolution.get("observational_only") is not True
+        ):
+            raise ValueError("resolution must be observational only")
+        if (
+            "decision_mutated" in resolution
+            and resolution.get("decision_mutated") is not False
+        ):
+            raise ValueError("resolution must be observational only")
+        for field in ("trade_eligible", "eligibility", "promotion_allowed"):
+            if field in resolution and resolution[field] is True:
+                raise ValueError("resolution must be observational only")
         status = str(resolution.get("outcome_status") or "")
         if status not in {"OBSERVED", "UNOBSERVABLE", "UNAVAILABLE"}:
             raise ValueError("outcome status invalid")
         # Explicitly preserve unavailable cost/provenance rather than inventing values.
         persisted = {
             **resolution,
+            "observational_only": True,
+            "decision_mutated": False,
             "resolution_version": "decision_outcome_resolution_v1",
             "resolved_at": resolved_at,
             "outcome_status": status,
             "cost": resolution.get("cost"),
             "provenance": resolution.get("provenance"),
         }
+        # Outcome resolution is evidence only and can never promote a decision.
+        persisted["trade_eligible"] = False
+        persisted["eligibility"] = None
+        persisted["promotion_allowed"] = False
+        persisted["promotion_decision"] = "DO_NOT_PROMOTE"
         payload, payload_hash = self._encode(persisted)
         with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
             if conn.execute(
@@ -499,7 +554,22 @@ class EntryDecisionStore:
                         resolved_at=int(time.time()),
                     )
                     resolved += 1
-            except Exception:
+            except Exception as exc:
+                # A permanently unavailable research dependency must not hold the
+                # queue head forever. Finalize this row and continue the batch.
+                try:
+                    self.resolve_outcome_capture(
+                        int(capture["decision_event_id"]),
+                        {
+                            "outcome_status": "UNAVAILABLE",
+                            "cost": None,
+                            "provenance": None,
+                            "reason": f"resolver failure: {type(exc).__name__}",
+                        },
+                        resolved_at=int(time.time()),
+                    )
+                except Exception:
+                    pass
                 continue
         return resolved
 

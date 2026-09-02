@@ -1603,7 +1603,9 @@ def _reconcile_explicit_entry_expirations(*, evaluated_at: int) -> int:
         expired = build_expired_entry_decision(previous, evaluated_at=evaluated_at)
         if expired is None:
             continue
-        event_id = entry_decision_store.append_if_changed(symbol, expired)
+        event_id = entry_decision_store.append_if_changed_with_capture(
+            symbol, expired, captured_at=evaluated_at
+        )
         if event_id is None:
             continue
         expired["event_id"] = event_id
@@ -1634,7 +1636,9 @@ def _reconcile_inactive_actionable_decisions(
         )
         if invalidated is None:
             continue
-        event_id = entry_decision_store.append_if_changed(symbol, invalidated)
+        event_id = entry_decision_store.append_if_changed_with_capture(
+            symbol, invalidated, captured_at=evaluated_at
+        )
         if event_id is None:
             continue
         reconciled += 1
@@ -2255,9 +2259,10 @@ async def evaluate_candidate(
                     previous_decision=previous_entry_decision,
                 )
                 try:
-                    decision_event_id = entry_decision_store.append_if_changed(
+                    decision_event_id = entry_decision_store.append_if_changed_with_capture(
                         symbol,
                         invalidated_decision,
+                        captured_at=decision_now,
                         expected_lifecycle_id=int(data.get("lifecycle_id") or 1),
                     )
                 except StaleCandidateLifecycleError:
@@ -2516,9 +2521,10 @@ async def evaluate_candidate(
         if isinstance(trade_plan, dict):
             trade_plan["leverage"] = leverage_projection.get("leverage")
     try:
-        event_id = entry_decision_store.append_if_changed(
+        event_id = entry_decision_store.append_if_changed_with_capture(
             symbol,
             entry_decision,
+            captured_at=decision_now,
             expected_lifecycle_id=int(data.get("lifecycle_id") or 1),
         )
     except StaleCandidateLifecycleError:
@@ -2539,25 +2545,6 @@ async def evaluate_candidate(
             persisted_decision,
         )
     result_metrics["entry_decision"] = entry_decision
-
-    if event_id is not None:
-        try:
-            entry_decision_store.append_outcome_capture(
-                int(event_id),
-                {
-                    "observational_only": True,
-                    "decision_mutated": False,
-                    "decision": entry_decision.get("decision"),
-                    "symbol": symbol,
-                    "lifecycle_id": int(data.get("lifecycle_id") or 1),
-                    "outcome_status": "UNOBSERVED",
-                },
-                captured_at=decision_now,
-            )
-        except Exception:
-            logger.exception(
-                "Unable to persist decision outcome capture for %s", symbol
-            )
 
     try:
         technical_trade_plan_shadow = validator.build_technical_trade_plan_shadow(
