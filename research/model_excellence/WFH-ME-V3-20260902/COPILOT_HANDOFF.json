@@ -174,7 +174,18 @@
     "tests": "191 focused tests passed",
     "deployed": false,
     "pr": "https://github.com/cavack/wfh/pull/116",
-    "final_pr_head": "b324bf4b04e0482d57fa1f1f382296fb409903ba"
+    "final_pr_head": "87b43800b5660309545351a35ee4a5198a7a547a",
+    "ci": {
+      "backend": "PASS",
+      "frontend": "PASS",
+      "codeql": "PASS",
+      "sonar": "PASS",
+      "dependency_audit": "PASS",
+      "repository_hygiene": "PASS",
+      "github_advanced_security": "FAILURE",
+      "container_validation": "IN_PROGRESS"
+    },
+    "reviews": "No unresolved review threads; automated security failure requires investigation before merge",
   },
   "reproduced_defects": [],
   "fixed_defects": [
@@ -186,7 +197,7 @@
     "no fee/slippage/funding ledger with provenance",
     "source revision is not persisted per decision event"
   ],
-  "next_exact_action": "Persist immutable decision_outcome_capture keyed by decision_event_id with closed-candle window identity/hash, TP/SL, MAE/MFE, fee/slippage/funding components, source revision, and decision contract hash; then compile a new immutable snapshot.",
+  "next_exact_action": "Investigate the github-advanced-security required-check failure on PR #116, wait for container-validation, and resolve any valid finding before merge; do not deploy until release certification passes.",
   "tests": [
     "PYTHONPATH=backend/src backend/.venv/bin/pytest -q backend/tests/test_normalized_research_compiler.py (6 passed)",
     "PYTHONPATH=backend/src:backend/tests python3 -m pytest -q backend/tests/test_scientific_eligibility_funnel.py backend/tests/test_normalized_research_compiler.py backend/tests/test_schema_contract.py (50 passed)"
