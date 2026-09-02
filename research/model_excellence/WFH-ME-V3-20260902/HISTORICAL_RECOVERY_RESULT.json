@@ -1,0 +1,26 @@
+{
+  "artifact": "HISTORICAL_RECOVERY_RESULT",
+  "version": "v1",
+  "status": "NOT_RECOVERABLE",
+  "candidate_trade_plan_events": 68812,
+  "same_contract_candle_coverage": 0,
+  "complete_future_windows": 0,
+  "funding_history_coverage": 0,
+  "unique_revision_provenance": 0,
+  "tier_a": 0,
+  "tier_b": 0,
+  "tier_c": 0,
+  "unavailable": 68812,
+  "evidence": {
+    "feasibility_artifact": "HISTORICAL_RECOVERY_FEASIBILITY.json",
+    "snapshot_sha256": "d82adb75836bb091cd0a0007f2838218314c540ef284f948e172540ff38c5195",
+    "reason": "No verified same-contract historical LBank perpetual candle/funding source is available in the snapshot or existing public adapter path."
+  },
+  "excluded_substitutes": [
+    "spot candles",
+    "Binance/MEXC/other venue perpetuals",
+    "synthetic index",
+    "nearest-symbol/time linkage"
+  ],
+  "smallest_forward_change": "Persist immutable decision_outcome_capture keyed by decision_event_id and resolve it against captured closed LBank perpetual candles, funding events, cost components, and source revision."
+}

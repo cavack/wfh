@@ -1,0 +1,82 @@
+{
+  "artifact": "HISTORICAL_RECOVERY_FEASIBILITY",
+  "version": "v1",
+  "provider": "LBank",
+  "endpoint": {
+    "value": "https://lbkperp.lbank.com/cfd/openApi/v1/pub",
+    "classification": "VERIFIED_FACT",
+    "evidence": [
+      "GET /cfd/openApi/v1/pub/getTime returned HTTP 200",
+      "GET /cfd/openApi/v1/pub/marketData returned HTTP 200 with an empty data list"
+    ]
+  },
+  "authentication_required": {
+    "value": false,
+    "classification": "VERIFIED_FACT",
+    "scope": "documented public endpoints only"
+  },
+  "instrument_identity": {
+    "value": "LBank linear USDT perpetual (lbkperp); exact symbol, margin, settlement and historical contract metadata are not persisted per decision row",
+    "classification": "VERIFIED_FACT"
+  },
+  "available_symbols": {
+    "value": [],
+    "classification": "UNAVAILABLE",
+    "reason": "public marketData response contained no contract rows in this run"
+  },
+  "unavailable_symbols": {
+    "value": 214,
+    "classification": "VERIFIED_FACT",
+    "reason": "all 214 normalized symbols in the candidate export lack a verified same-contract historical source"
+  },
+  "oldest_available_timestamp": {
+    "value": null,
+    "classification": "UNAVAILABLE"
+  },
+  "newest_available_timestamp": {
+    "value": null,
+    "classification": "UNAVAILABLE"
+  },
+  "5m_candle_coverage": {
+    "value": null,
+    "classification": "UNAVAILABLE",
+    "reason": "no documented or callable historical perpetual OHLCV endpoint was found in the existing adapter/docs; spot kline endpoints are not an acceptable substitute"
+  },
+  "funding_history_coverage": {
+    "value": null,
+    "classification": "UNAVAILABLE",
+    "reason": "marketData exposes current quotation fields only; no historical funding cashflow endpoint is available in the inspected contract API"
+  },
+  "mark_index_price_history": {
+    "value": null,
+    "classification": "UNAVAILABLE"
+  },
+  "rate_limits": {
+    "value": null,
+    "classification": "UNAVAILABLE",
+    "reason": "no historical endpoint was callable, so no rate-limit contract was inferred"
+  },
+  "pagination_contract": {
+    "value": null,
+    "classification": "UNAVAILABLE"
+  },
+  "delisted_contract_behavior": {
+    "value": null,
+    "classification": "UNAVAILABLE"
+  },
+  "historical_recovery_scope": {
+    "candidate_trade_plan_events": 68812,
+    "same_contract_candle_coverage": 0,
+    "complete_future_windows": 0,
+    "funding_history_coverage": 0,
+    "unique_revision_provenance": 0,
+    "classification": "VERIFIED_FACT"
+  },
+  "scientifically_recoverable_event_count_estimate": {
+    "value": 0,
+    "classification": "VERIFIED_FACT",
+    "reason": "zero events have a verified same-contract historical market source in the available snapshot/API evidence; this is not a cross-venue estimate"
+  },
+  "disposition": "NOT_RECOVERABLE",
+  "disposition_reason": "The current persisted evidence plus callable public LBank perpetual API cannot produce a promotion-grade historical cohort. Spot, cross-venue, or nearest-time data is explicitly excluded."
+}

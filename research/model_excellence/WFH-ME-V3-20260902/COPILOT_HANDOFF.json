@@ -2,6 +2,9 @@
   "artifact": "COPILOT_HANDOFF",
   "artifacts": [
     "RUNTIME_SCHEMA_CROSSWALK.json",
+    "HISTORICAL_RECOVERY_FEASIBILITY.json",
+    "HISTORICAL_RECOVERY_RESULT.json",
+    "DEPLOYMENT_REVISION_TIMELINE.json",
     "MODEL_LAYER_CROSSWALK.json",
     "EVIDENCE_REUSE_MATRIX.json",
     "SCIENTIFIC_ELIGIBILITY_FUNNEL.json",
@@ -135,6 +138,22 @@
       "valid_point_in_time_provenance_count=0"
     ]
   },
+  "historical_recovery": {
+    "provider": "LBank",
+    "status": "NOT_RECOVERABLE",
+    "candidate_trade_plan_events": 68812,
+    "same_contract_candle_coverage": 0,
+    "complete_future_windows": 0,
+    "funding_history_coverage": 0,
+    "unique_revision_provenance": 0,
+    "tier_a": 0,
+    "tier_b": 0,
+    "tier_c": 0,
+    "unavailable": 68812,
+    "feasibility_artifact": "HISTORICAL_RECOVERY_FEASIBILITY.json",
+    "result_artifact": "HISTORICAL_RECOVERY_RESULT.json",
+    "dataset_hash": "f1ffe405b112f72914fdd0282f25ecabd04d36c1dc09f3c352a2e3a4838d88e7"
+  },
   "outcomes": {
     "manifest": "MODEL_EXCELLENCE_OUTCOME_MANIFEST.json",
     "complete": 0,
@@ -146,6 +165,11 @@
   "fp_fn_status": "NOT_RUN_INSUFFICIENT_EVIDENCE",
   "ablation_status": "NOT_RUN_INSUFFICIENT_EVIDENCE",
   "parameter_search_status": "PARAMETER_SEARCH_NOT_READY",
+  "forward_capture": {
+    "status": "IN_PROGRESS_SEPARATE_CHILD_BRANCH",
+    "schema_version": "decision_outcome_capture_v1",
+    "deployed": false
+  },
   "reproduced_defects": [],
   "fixed_defects": [
     "rejected nearest-by-symbol/time outcome linkage as INVALID_FOR_SCIENCE in funnel"

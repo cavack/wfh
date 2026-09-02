@@ -1,0 +1,10 @@
+{
+  "artifact": "DEPLOYMENT_REVISION_TIMELINE",
+  "version": "v1",
+  "status": "PROVENANCE_INCOMPLETE",
+  "intervals": [],
+  "reason": "No durable deployment interval or per-event source revision is persisted in the snapshot; production_sha alone cannot be assigned to historical decisions.",
+  "unique_revision_event_count": 0,
+  "ambiguous_revision_event_count": 0,
+  "unavailable_revision_event_count": 82797
+}
