@@ -92,3 +92,97 @@ def test_doctor_reports_repo_identity_and_optional_unavailable(monkeypatch) -> N
     assert result["tools"]["python"]["status"] == "AVAILABLE"
     assert result["tools"]["coderabbit"]["status"] == "UNAVAILABLE"
     assert result["status"] == "READY"
+
+def _write_json(path: Path, value: dict) -> None:
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+
+def test_research_snapshot_refuses_sparse_development_evidence(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / "DATASET_AUDIT.json",
+        {
+            "contract": "DATASET_AUDIT.v1",
+            "evidence_tier": "TIER_2_DEVELOPMENT_GRADE_NOT_PROMOTION_EVIDENCE",
+            "data_sha256": "abc",
+            "rows": 204338,
+            "episodes": 773,
+            "symbols": 281,
+            "span_days": 15.9,
+            "limitations": ["Tier-2 causal reconstruction is development-only"],
+        },
+    )
+    _write_json(
+        tmp_path / "OOS_VALIDATION.json",
+        {
+            "contract": "OOS_VALIDATION.v1",
+            "status": "BLOCKED_NOT_RUN_AS_SELECTION_EVIDENCE",
+            "maximum_complete_outcomes_any_stage2_config": 2,
+            "reason": "insufficient promotion evidence",
+        },
+    )
+    _write_json(
+        tmp_path / "BEST_DEVELOPMENT_CONFIG.json",
+        {
+            "contract": "BEST_DEVELOPMENT_CONFIG.v1",
+            "status": "NO_SCIENTIFIC_CHAMPION",
+            "promotion_allowed": False,
+            "maximum_complete_outcomes_any_stage2_config": 2,
+            "reasons": ["Tier-2 dataset only"],
+        },
+    )
+    _write_json(
+        tmp_path / "PRODUCTION_VS_CHALLENGERS.json",
+        {"contract": "PRODUCTION_VS_CHALLENGERS.v1", "promotion_allowed": False},
+    )
+    _write_json(
+        tmp_path / "OUTCOME_INTEGRITY.json",
+        {
+            "contract": "OUTCOME_INTEGRITY.v1",
+            "outcome_complete": 210,
+            "unavailable": 580,
+            "net_cost_adjusted_r_available": False,
+            "limitations": ["gross_r is not net"],
+        },
+    )
+
+    summary = council.summarize_research_evidence(tmp_path)
+
+    assert summary["promotion_disposition"] == "NO_PROMOTION_EVIDENCE"
+    assert "insufficient_oos_evidence" in summary["blockers"]
+    assert "insufficient_promotion_span" in summary["blockers"]
+    assert "missing_net_cost_adjusted_r" in summary["blockers"]
+    assert summary["dataset"]["span_days"] == 15.9
+    assert summary["dataset"]["data_sha256"] == "abc"
+
+def test_research_snapshot_marks_missing_artifacts_without_guessing(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / "DATASET_AUDIT.json",
+        {"contract": "DATASET_AUDIT.v1", "span_days": 60.0},
+    )
+
+    summary = council.summarize_research_evidence(tmp_path)
+
+    assert summary["promotion_disposition"] == "NO_PROMOTION_EVIDENCE"
+    assert summary["artifacts"]["OOS_VALIDATION.json"]["status"] == "MISSING_ARTIFACT"
+    assert "insufficient_oos_evidence" in summary["blockers"]
+
+def test_research_snapshot_cli_emits_json(tmp_path: Path, capsys) -> None:
+    _write_json(
+        tmp_path / "DATASET_AUDIT.json",
+        {"contract": "DATASET_AUDIT.v1", "span_days": 10.0},
+    )
+
+    rc = council.main(
+        [
+            "--repo-root",
+            str(REPO),
+            "research-snapshot",
+            "--research-dir",
+            str(tmp_path),
+            "--json",
+        ]
+    )
+    output = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert output["promotion_disposition"] == "NO_PROMOTION_EVIDENCE"

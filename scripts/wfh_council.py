@@ -213,6 +213,131 @@ def doctor(repo_root: Path) -> dict[str, Any]:
     }
 
 
+RESEARCH_ARTIFACTS = (
+    "DATASET_AUDIT.json",
+    "OOS_VALIDATION.json",
+    "BEST_DEVELOPMENT_CONFIG.json",
+    "PRODUCTION_VS_CHALLENGERS.json",
+    "GATE_REJECTION_FUNNEL.json",
+    "OUTCOME_INTEGRITY.json",
+)
+
+
+def _read_research_artifact(path: Path) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    if not path.is_file():
+        return None, {"status": "MISSING_ARTIFACT"}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return None, {"status": "INVALID_ARTIFACT", "error": str(exc)}
+    if not isinstance(value, dict):
+        return None, {"status": "INVALID_ARTIFACT", "error": "root must be a JSON object"}
+    return value, {"status": "AVAILABLE", "contract": value.get("contract")}
+
+
+def summarize_research_evidence(research_dir: Path) -> dict[str, Any]:
+    research_dir = research_dir.resolve()
+    values: dict[str, dict[str, Any] | None] = {}
+    artifact_status: dict[str, dict[str, Any]] = {}
+    for name in RESEARCH_ARTIFACTS:
+        value, status = _read_research_artifact(research_dir / name)
+        values[name] = value
+        artifact_status[name] = status
+
+    dataset = values["DATASET_AUDIT.json"] or {}
+    oos = values["OOS_VALIDATION.json"] or {}
+    champion = values["BEST_DEVELOPMENT_CONFIG.json"] or {}
+    comparison = values["PRODUCTION_VS_CHALLENGERS.json"] or {}
+    funnel = values["GATE_REJECTION_FUNNEL.json"] or {}
+    outcome = values["OUTCOME_INTEGRITY.json"] or {}
+
+    blockers: list[str] = []
+    span = dataset.get("span_days")
+    if not isinstance(span, (int, float)) or span < 42.0:
+        blockers.append("insufficient_promotion_span")
+
+    accepted_oos = {"PASSED", "VALIDATED", "COMPLETE"}
+    if oos.get("status") not in accepted_oos:
+        blockers.append("insufficient_oos_evidence")
+
+    if champion.get("promotion_allowed") is not True:
+        blockers.append("no_scientific_champion")
+    if comparison.get("promotion_allowed") is not True:
+        blockers.append("production_promotion_not_allowed")
+    if outcome.get("net_cost_adjusted_r_available") is not True:
+        blockers.append("missing_net_cost_adjusted_r")
+
+    disposition = "PROMOTION_EVIDENCE_CANDIDATE" if not blockers else "NO_PROMOTION_EVIDENCE"
+
+    return {
+        "contract_version": "wfh_council_research_snapshot_v1",
+        "research_dir": str(research_dir),
+        "promotion_disposition": disposition,
+        "blockers": blockers,
+        "artifacts": artifact_status,
+        "dataset": _research_dataset_summary(dataset),
+        "oos": _research_oos_summary(oos),
+        "champion": _research_champion_summary(champion),
+        "production_comparison": _research_comparison_summary(comparison),
+        "gate_funnel": _research_funnel_summary(funnel),
+        "outcome_integrity": _research_outcome_summary(outcome),
+    }
+
+
+def _select(source: dict[str, Any], *keys: str) -> dict[str, Any]:
+    return {key: source.get(key) for key in keys if key in source}
+
+
+def _research_dataset_summary(source: dict[str, Any]) -> dict[str, Any]:
+    return _select(
+        source,
+        "contract", "evidence_tier", "data_sha256", "rows", "episodes", "symbols",
+        "span_days", "fresh_production_like_rows", "production_like_episodes",
+        "fresh_tier2_strict_rows", "tier2_strict_episodes", "limitations",
+    )
+
+
+def _research_oos_summary(source: dict[str, Any]) -> dict[str, Any]:
+    return _select(
+        source,
+        "contract", "status", "reason", "dataset_sha256", "outcome_cache_sha256",
+        "maximum_complete_outcomes_any_stage2_config", "span_days", "required_properties",
+    )
+
+
+def _research_champion_summary(source: dict[str, Any]) -> dict[str, Any]:
+    return _select(
+        source,
+        "contract", "status", "promotion_allowed", "reasons",
+        "maximum_complete_outcomes_any_stage2_config", "best_observed_safety_preserving_by_entry_count",
+    )
+
+
+def _research_comparison_summary(source: dict[str, Any]) -> dict[str, Any]:
+    return _select(
+        source,
+        "contract", "production", "development_profiles", "promotion_allowed", "why_not",
+    )
+
+
+def _research_funnel_summary(source: dict[str, Any]) -> dict[str, Any]:
+    return _select(
+        source,
+        "contract", "anti_chase_atr", "episodes_total", "episodes_with_prelate_row",
+        "episodes_without_fresh_prelate_row", "episodes_ever_passing_gate_prelate",
+        "episodes_reaching_threshold", "prelate_max_readiness", "most_common_best_row_failure_sets",
+    )
+
+
+def _research_outcome_summary(source: dict[str, Any]) -> dict[str, Any]:
+    return _select(
+        source,
+        "contract", "cache_sha256", "label_contract", "rows", "outcome_complete",
+        "unavailable", "unavailable_reasons", "outcomes", "net_cost_adjusted_r_available",
+        "causal_entry_before_observation_count", "duplicate_snapshot_ids", "limitations",
+    )
+
+
 def _emit(value: Any, as_json: bool) -> None:
     if as_json:
         print(json.dumps(value, indent=2, sort_keys=True))
@@ -243,6 +368,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor_cmd = sub.add_parser("doctor", help="inspect local deterministic capabilities")
     doctor_cmd.add_argument("--json", action="store_true")
+
+    research_cmd = sub.add_parser("research-snapshot", help="summarize existing research evidence")
+    research_cmd.add_argument("--research-dir", type=Path, required=True)
+    research_cmd.add_argument("--json", action="store_true")
     return parser
 
 
@@ -275,6 +404,11 @@ def main(argv: list[str] | None = None) -> int:
         result = doctor(repo_root)
         _emit(result, args.json)
         return 0 if result["status"] == "READY" else 3
+
+    if args.command == "research-snapshot":
+        result = summarize_research_evidence(args.research_dir)
+        _emit(result, args.json)
+        return 0
 
     raise AssertionError(f"unhandled command: {args.command}")
 
