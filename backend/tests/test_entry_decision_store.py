@@ -6,7 +6,10 @@ import sqlite3
 import pytest
 
 from schema_test_support import migrate_test_database
-from waterfallhunter.core.entry_decision_store import EntryDecisionStore
+from waterfallhunter.core.entry_decision_store import (
+    EntryDecisionStore,
+    EntryOutcomeResolutionWorker,
+)
 
 
 def packet(decision: str, readiness: float, now: int) -> dict:
@@ -281,6 +284,30 @@ def test_terminal_scientific_unavailable_resolution_is_finalized(tmp_path) -> No
             "SELECT outcome_status FROM decision_outcome_resolution WHERE decision_event_id=?",
             (event_id,),
         ).fetchone()[0] == "UNAVAILABLE"
+
+
+def test_entry_outcome_worker_runs_bounded_cycle_and_stops(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    calls = []
+    class StubStore:
+        def resolve_matured_outcomes(self, resolver, *, mature_before, limit):
+            assert limit == 2
+            return resolver({"decision_event_id": 7}) or 1
+
+    worker = EntryOutcomeResolutionWorker(
+        StubStore(),
+        lambda capture: calls.append(capture["decision_event_id"]) or None,
+        batch_size=2,
+        interval_seconds=0,
+    )
+
+    assert worker.batch_size == 2
+    assert worker.interval_seconds == 60.0
+    assert asyncio.run(worker.run_once(now=100_000)) == 1
+    assert calls == [7]
+    worker.stop()
+    assert worker._running is False
 
 
 def test_latest_transition_uses_append_order_when_clock_moves_backward(tmp_path) -> None:

@@ -6,6 +6,7 @@ import json
 import logging
 import sqlite3
 import time
+import asyncio
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -725,3 +726,44 @@ class EntryDecisionStore:
                 (bounded,),
             ).fetchall()
         return [self._row_packet(row) for row in rows]
+
+
+class EntryOutcomeResolutionWorker:
+    """Small, bounded lifecycle wrapper for forward outcome resolution."""
+
+    def __init__(
+        self,
+        store: EntryDecisionStore,
+        resolver: Any,
+        *,
+        batch_size: int = 3,
+        interval_seconds: float = 900.0,
+    ):
+        self.store = store
+        self.resolver = resolver
+        self.batch_size = max(1, min(int(batch_size), 100))
+        self.interval_seconds = max(60.0, float(interval_seconds))
+        self._running = False
+
+    async def run_once(self, *, now: int | None = None) -> int:
+        current = int(time.time() if now is None else now)
+        return self.store.resolve_matured_outcomes(
+            self.resolver, mature_before=current - 86_400, limit=self.batch_size
+        )
+
+    async def run_forever(self) -> None:
+        self._running = True
+        try:
+            while self._running:
+                try:
+                    await self.run_once()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("Entry outcome resolution cycle failed")
+                await asyncio.sleep(self.interval_seconds)
+        finally:
+            self._running = False
+
+    def stop(self) -> None:
+        self._running = False

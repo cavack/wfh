@@ -31,6 +31,7 @@ from waterfallhunter.core.entry_decision import (
 )
 from waterfallhunter.core.entry_decision_store import (
     EntryDecisionStore,
+    EntryOutcomeResolutionWorker,
     StaleCandidateLifecycleError,
 )
 from waterfallhunter.core.notifier import TelegramNotifier, TelegramSignalTransport
@@ -315,6 +316,7 @@ _HUNTER_STARTUP_DELAY_SECONDS = 5.0
 _HUNTER_SHUTDOWN_GRACE_SECONDS = 5.0
 _lbank_execution_shadow_worker: LBankExecutionShadowWorker | None = None
 _signal_settlement_worker: LBankSignalSettlementWorker | None = None
+_entry_outcome_resolution_worker: EntryOutcomeResolutionWorker | None = None
 _entry_notification_worker: DurableNotificationWorker | None = None
 _entry_notification_probe: dict | None = None
 _signal_evidence_metrics_last_refresh = 0.0
@@ -1110,6 +1112,27 @@ def _build_signal_settlement_worker(
         horizon_seconds=86400,
         close_delay_seconds=120,
         batch_size=3,
+    )
+
+
+def _resolve_entry_outcome(capture: dict) -> dict:
+    """Resolve only when the immutable capture contains exact LBank geometry."""
+    # Current forward captures intentionally contain decision metadata only.
+    # Never infer entry/TP/SL from spot or another venue.
+    return {
+        "outcome_status": "UNAVAILABLE",
+        "cost": None,
+        "provenance": None,
+        "reason": "scientific unavailable: exact LBank outcome geometry was not captured",
+    }
+
+
+def _build_entry_outcome_resolution_worker() -> EntryOutcomeResolutionWorker:
+    return EntryOutcomeResolutionWorker(
+        entry_decision_store,
+        _resolve_entry_outcome,
+        batch_size=3,
+        interval_seconds=900.0,
     )
 
 
@@ -3463,6 +3486,7 @@ async def startup_event():
     global _hunter_stop_event
     global _lbank_execution_shadow_worker
     global _signal_settlement_worker
+    global _entry_outcome_resolution_worker
     global _entry_notification_worker
     global _entry_notification_probe
 
@@ -3595,12 +3619,17 @@ async def startup_event():
         "(batch=3 interval=900s)"
     )
 
+    _entry_outcome_resolution_worker = _build_entry_outcome_resolution_worker()
+    _start_background_task(_entry_outcome_resolution_worker.run_forever())
+    logger.info("Entry outcome resolution enabled (batch=3 interval=900s)")
+
 
 async def shutdown_event():
     global _hunter_running
     global _hunter_task
     global _lbank_execution_shadow_worker
     global _signal_settlement_worker
+    global _entry_outcome_resolution_worker
     global _entry_notification_worker
 
     _hunter_running = False
@@ -3618,6 +3647,8 @@ async def shutdown_event():
 
     if _signal_settlement_worker is not None:
         _signal_settlement_worker.stop()
+    if _entry_outcome_resolution_worker is not None:
+        _entry_outcome_resolution_worker.stop()
 
     hunter_task = _hunter_task
     if (
@@ -3660,6 +3691,7 @@ async def shutdown_event():
         _lbank_execution_shadow_worker = None
 
     _signal_settlement_worker = None
+    _entry_outcome_resolution_worker = None
     _hunter_task = None
 
     await scanner.close()
