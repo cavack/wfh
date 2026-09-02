@@ -61,8 +61,11 @@
     ]
   },
   "head_expected": "8502e06",
+  "head_expected_reconciled": "8502e06",
   "origin_main": "d129264",
   "production_main_drift": "HEAD is 7 commits ahead of origin/main; no PR #115/main changes",
+  "pushed_ref": "origin/feat/model-excellence-v3-phase0-20260902",
+  "result_commit": "93a001d",
   "semantic_fixes": [
     "decision events are primary candidate rows",
     "decision and entry_readiness read from persisted packet_json",
