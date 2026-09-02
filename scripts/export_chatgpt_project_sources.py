@@ -19,6 +19,7 @@ OVERLAY_FILES = (
     "03-WFH-SKILL-AUDIT-SUMMARY-v2.md",
     "PROJECT-INSTRUCTIONS-v2.txt",
     "INSTALL-FA-v2.md",
+    "TWFH-RESUME.md",
 )
 EXPECTED_EXPORT_FILES = {*OVERLAY_FILES, "PROJECT-SOURCE-MANIFEST.json"}
 
@@ -88,44 +89,15 @@ def export_project_sources() -> Path:
     _assert_no_unexpected_export_content()
     DEFAULT_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
-    _confined_path(SOURCE_DIR / "00-WFH-CHATGPT-ROUTER-v2.md", SOURCE_DIR, label="source", strict=True)
-    _confined_path(DEFAULT_EXPORT_DIR / "00-WFH-CHATGPT-ROUTER-v2.md", DEFAULT_EXPORT_DIR, label="export target")
-    router = _normalized_bytes(SOURCE_DIR / "00-WFH-CHATGPT-ROUTER-v2.md")
-    (DEFAULT_EXPORT_DIR / "00-WFH-CHATGPT-ROUTER-v2.md").write_bytes(router)
+    payloads: dict[str, bytes] = {}
+    for name in OVERLAY_FILES:
+        source = _confined_path(SOURCE_DIR / name, SOURCE_DIR, label="source", strict=True)
+        target = _confined_path(DEFAULT_EXPORT_DIR / name, DEFAULT_EXPORT_DIR, label="export target")
+        payload = _normalized_bytes(source)
+        target.write_bytes(payload)
+        payloads[name] = payload
 
-    _confined_path(SOURCE_DIR / "01-WFH-SKILL-CATALOG-v2.md", SOURCE_DIR, label="source", strict=True)
-    _confined_path(DEFAULT_EXPORT_DIR / "01-WFH-SKILL-CATALOG-v2.md", DEFAULT_EXPORT_DIR, label="export target")
-    catalog = _normalized_bytes(SOURCE_DIR / "01-WFH-SKILL-CATALOG-v2.md")
-    (DEFAULT_EXPORT_DIR / "01-WFH-SKILL-CATALOG-v2.md").write_bytes(catalog)
-
-    _confined_path(SOURCE_DIR / "02-WFH-CAPABILITY-MAP-v2.md", SOURCE_DIR, label="source", strict=True)
-    _confined_path(DEFAULT_EXPORT_DIR / "02-WFH-CAPABILITY-MAP-v2.md", DEFAULT_EXPORT_DIR, label="export target")
-    capabilities = _normalized_bytes(SOURCE_DIR / "02-WFH-CAPABILITY-MAP-v2.md")
-    (DEFAULT_EXPORT_DIR / "02-WFH-CAPABILITY-MAP-v2.md").write_bytes(capabilities)
-
-    _confined_path(SOURCE_DIR / "03-WFH-SKILL-AUDIT-SUMMARY-v2.md", SOURCE_DIR, label="source", strict=True)
-    _confined_path(DEFAULT_EXPORT_DIR / "03-WFH-SKILL-AUDIT-SUMMARY-v2.md", DEFAULT_EXPORT_DIR, label="export target")
-    audit = _normalized_bytes(SOURCE_DIR / "03-WFH-SKILL-AUDIT-SUMMARY-v2.md")
-    (DEFAULT_EXPORT_DIR / "03-WFH-SKILL-AUDIT-SUMMARY-v2.md").write_bytes(audit)
-
-    _confined_path(SOURCE_DIR / "PROJECT-INSTRUCTIONS-v2.txt", SOURCE_DIR, label="source", strict=True)
-    _confined_path(DEFAULT_EXPORT_DIR / "PROJECT-INSTRUCTIONS-v2.txt", DEFAULT_EXPORT_DIR, label="export target")
-    instructions = _normalized_bytes(SOURCE_DIR / "PROJECT-INSTRUCTIONS-v2.txt")
-    (DEFAULT_EXPORT_DIR / "PROJECT-INSTRUCTIONS-v2.txt").write_bytes(instructions)
-
-    _confined_path(SOURCE_DIR / "INSTALL-FA-v2.md", SOURCE_DIR, label="source", strict=True)
-    _confined_path(DEFAULT_EXPORT_DIR / "INSTALL-FA-v2.md", DEFAULT_EXPORT_DIR, label="export target")
-    install = _normalized_bytes(SOURCE_DIR / "INSTALL-FA-v2.md")
-    (DEFAULT_EXPORT_DIR / "INSTALL-FA-v2.md").write_bytes(install)
-
-    hashes = {
-        "00-WFH-CHATGPT-ROUTER-v2.md": hashlib.sha256(router).hexdigest(),
-        "01-WFH-SKILL-CATALOG-v2.md": hashlib.sha256(catalog).hexdigest(),
-        "02-WFH-CAPABILITY-MAP-v2.md": hashlib.sha256(capabilities).hexdigest(),
-        "03-WFH-SKILL-AUDIT-SUMMARY-v2.md": hashlib.sha256(audit).hexdigest(),
-        "PROJECT-INSTRUCTIONS-v2.txt": hashlib.sha256(instructions).hexdigest(),
-        "INSTALL-FA-v2.md": hashlib.sha256(install).hexdigest(),
-    }
+    hashes = {name: hashlib.sha256(payload).hexdigest() for name, payload in payloads.items()}
     manifest = {
         "contract_version": "wfh_chatgpt_project_sources_v2",
         "canonical_repository": "cavack/wfh",
@@ -137,13 +109,14 @@ def export_project_sources() -> Path:
         "sha256": hashes,
         **_source_provenance(),
     }
-    _confined_path(
+    manifest_path = _confined_path(
         DEFAULT_EXPORT_DIR / "PROJECT-SOURCE-MANIFEST.json",
         DEFAULT_EXPORT_DIR,
         label="manifest target",
     )
-    manifest_path = DEFAULT_EXPORT_DIR / "PROJECT-SOURCE-MANIFEST.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     return manifest_path
 
 

@@ -15,6 +15,7 @@ EXPECTED_FILES = {
     "03-WFH-SKILL-AUDIT-SUMMARY-v2.md",
     "PROJECT-INSTRUCTIONS-v2.txt",
     "INSTALL-FA-v2.md",
+    "TWFH-RESUME.md",
     "PROJECT-SOURCE-MANIFEST.json",
 }
 
@@ -195,7 +196,7 @@ def test_v2_spec_names_the_exact_export_artifacts() -> None:
         assert name in spec
 
 
-def test_install_guide_names_all_seven_bundle_files() -> None:
+def test_install_guide_names_all_bundle_files() -> None:
     install = (exporter.SOURCE_DIR / "INSTALL-FA-v2.md").read_text(encoding="utf-8")
     for name in EXPECTED_FILES:
         assert name in install
@@ -217,3 +218,11 @@ def test_export_rejects_in_root_symlink_alias(monkeypatch, tmp_path: Path) -> No
     else:
         raise AssertionError("export must reject existing symlink aliases inside the destination")
     assert catalog.read_text(encoding="utf-8") == "sentinel\n"
+
+
+def test_install_guide_documents_cold_resume_phrase() -> None:
+    install = (exporter.SOURCE_DIR / "INSTALL-FA-v2.md").read_text(encoding="utf-8")
+    assert "ادامه کار گروهی" in install
+    assert "TWFH-RESUME.md" in install
+    assert "RESUME_READY" in install
+    assert "cold" in install.lower() or "چت جدید" in install
