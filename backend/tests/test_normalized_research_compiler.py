@@ -1,0 +1,71 @@
+import importlib.util
+import json
+import sqlite3
+from pathlib import Path
+
+SPEC = importlib.util.spec_from_file_location("compiler", Path(__file__).parents[2] / "scripts/research/compile_normalized_dataset.py")
+compiler = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(compiler)
+
+
+def db(tmp_path):
+    p = tmp_path / "source.db"
+    with sqlite3.connect(p) as c:
+        c.executescript("""
+        CREATE TABLE lbank_signal_ledger (id INTEGER PRIMARY KEY, symbol TEXT, triggered_at INTEGER, state_before TEXT, score REAL, entry_price REAL, position_setup_json TEXT);
+        CREATE TABLE lbank_signal_outcomes (id INTEGER PRIMARY KEY, signal_id INTEGER, symbol TEXT, outcome_status TEXT, horizon_seconds INTEGER, observation_started_at INTEGER, min_price REAL, max_price REAL, observed_candles INTEGER, expected_candles INTEGER, details_json TEXT, price_source TEXT, resolved_at INTEGER, gross_realized_r REAL);
+        CREATE TABLE production_evidence_snapshots (id INTEGER PRIMARY KEY, symbol TEXT, observed_at REAL, code_sha256_v5 TEXT, evidence_zlib BLOB, valid_candle_timeframes INTEGER, suggested_status TEXT);
+        """)
+        c.execute("INSERT INTO lbank_signal_ledger VALUES (1,'BTC',100,'TRIGGERED',80,10,'{}')")
+        c.execute("INSERT INTO lbank_signal_ledger VALUES (2,'ETH',200,'ARMED',50,20,'{}')")
+        c.execute("INSERT INTO lbank_signal_ledger VALUES (3,'XRP',300,'ARMED',50,20,'{}')")
+        c.execute("INSERT INTO lbank_signal_ledger VALUES (4,'SOL',400,'ARMED',50,20,'{}')")
+    return p
+
+
+def test_compilation_is_deterministic_and_manifest_has_all_statuses(tmp_path):
+    p = db(tmp_path)
+    with sqlite3.connect(p) as c:
+        c.execute("INSERT INTO lbank_signal_outcomes VALUES (1,1,'BTC','COMPLETE',60,101,9,12,3,3,'{\"gross_r\":1,\"fees\":0.1,\"slippage\":0.1,\"funding\":0,\"net_r\":0.8}','ohlcv',200,1)")
+        c.execute("INSERT INTO lbank_signal_outcomes VALUES (2,2,'ETH','COMPLETE',60,201,9,12,2,3,'{}','ohlcv',300,1)")
+        c.execute("INSERT INTO lbank_signal_outcomes VALUES (3,3,'XRP','COMPLETE',60,301,9,12,3,3,'{}','ohlcv',400,1)")
+        c.execute("INSERT INTO lbank_signal_outcomes VALUES (4,3,'XRP','COMPLETE',60,301,9,12,3,3,'{}','ohlcv',400,1)")
+        c.execute("INSERT INTO lbank_signal_outcomes VALUES (5,4,'SOL','COMPLETE',60,399,'nan',12,3,3,'{}','ohlcv',500,1)")
+    a = compiler.compile_dataset(p, tmp_path / "a")
+    b = compiler.compile_dataset(p, tmp_path / "b")
+    assert a["jsonl_sha256"] == b["jsonl_sha256"]
+    assert a["status_counts"] == {"PENDING": 0, "COMPLETE": 1, "INSUFFICIENT_WINDOW": 1, "MISSING_MARKET_DATA": 0, "INVALID_LEVELS": 1, "DUPLICATE_LINK": 1, "PROVENANCE_MISMATCH": 0}
+    assert a["scientifically_eligible_count"] == 1
+    assert (tmp_path / "a/manifest.json").read_bytes() == (tmp_path / "b/manifest.json").read_bytes()
+
+
+def test_null_fields_have_explicit_reasons_and_provenance_mismatch(tmp_path):
+    p = db(tmp_path)
+    with sqlite3.connect(p) as c:
+        c.execute("INSERT INTO lbank_signal_outcomes VALUES (1,1,'BTC','COMPLETE',60,101,9,12,3,3,'{}','ohlcv',200,1)")
+        import zlib
+        payload = json.dumps({"source_tree_sha256": "b" * 64}).encode()
+        c.execute("INSERT INTO production_evidence_snapshots VALUES (1,'BTC',101,?, ?, 1, 'ARMED')", ("a" * 64, zlib.compress(payload)))
+    m = compiler.compile_dataset(p, tmp_path / "out")
+    row = json.loads((tmp_path / "out/normalized_research.jsonl").read_text().splitlines()[0])
+    assert row["outcome"]["status"] == "PROVENANCE_MISMATCH"
+    assert row["lifecycle_v2_shadow"] == {"value": None, "reason": "no_linked_shadow_event"}
+    assert row["outcome"]["costs"]["fees"]["reason"] == "cost_not_recorded"
+
+
+def test_missing_and_stale_outcomes_are_not_promoted(tmp_path):
+    p = db(tmp_path)
+    with sqlite3.connect(p) as c:
+        c.execute(
+            "INSERT INTO lbank_signal_outcomes VALUES "
+            "(1,1,'BTC','COMPLETE',60,99,9,12,3,3,'{}','ohlcv',200,1)"
+        )
+    compiler.compile_dataset(p, tmp_path / "out")
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "out/normalized_research.jsonl").read_text().splitlines()
+    ]
+    by_id = {row["signal_id"]: row for row in rows}
+    assert by_id[1]["outcome"]["status"] == "INVALID_LEVELS"
+    assert by_id[2]["outcome"]["status"] == "MISSING_MARKET_DATA"
+    assert by_id[2]["outcome"]["reasons"] == ["outcome_row_unavailable"]
