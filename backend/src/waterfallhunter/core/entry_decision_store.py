@@ -24,6 +24,8 @@ _OUTCOME_UNAVAILABLE = "UNAVAILABLE"
 _OUTCOME_UNOBSERVED = "UNOBSERVED"
 _OBSERVATIONAL_ONLY = "observational_only"
 _DECISION_MUTATED = "decision_mutated"
+_DECISION_EVENT_ID_INVALID = "decision event id invalid"
+_RESOLUTION_OBSERVATIONAL_ONLY = "resolution must be observational only"
 
 _ALLOWED = {
     "NO_TRADE",
@@ -286,7 +288,7 @@ class EntryDecisionStore:
             or not isinstance(decision_event_id, int)
             or decision_event_id <= 0
         ):
-            raise ValueError("decision event id invalid")
+            raise ValueError(_DECISION_EVENT_ID_INVALID)
         if isinstance(advisory_at, bool) or not isinstance(advisory_at, int) or advisory_at < 0:
             raise ValueError("advisory timestamp invalid")
         if advisory.get(_OBSERVATIONAL_ONLY) is not True or advisory.get(_DECISION_MUTATED) is not False:
@@ -320,7 +322,7 @@ class EntryDecisionStore:
             or not isinstance(decision_event_id, int)
             or decision_event_id <= 0
         ):
-            raise ValueError("decision event id invalid")
+            raise ValueError(_DECISION_EVENT_ID_INVALID)
         if (
             isinstance(advisory_at, bool)
             or not isinstance(advisory_at, int)
@@ -384,7 +386,7 @@ class EntryDecisionStore:
     ) -> int:
         """Persist one observational outcome capture for a canonical decision."""
         if isinstance(decision_event_id, bool) or not isinstance(decision_event_id, int) or decision_event_id <= 0:
-            raise ValueError("decision event id invalid")
+            raise ValueError(_DECISION_EVENT_ID_INVALID)
         if (
             isinstance(captured_at, bool)
             or not isinstance(captured_at, int)
@@ -509,24 +511,12 @@ class EntryDecisionStore:
     ) -> int:
         """Append the final observation without mutating the initial capture."""
         if isinstance(decision_event_id, bool) or not isinstance(decision_event_id, int) or decision_event_id <= 0:
-            raise ValueError("decision event id invalid")
+            raise ValueError(_DECISION_EVENT_ID_INVALID)
         if isinstance(resolved_at, bool) or not isinstance(resolved_at, int) or resolved_at < 0:
             raise ValueError("resolution timestamp invalid")
         if not isinstance(resolution, dict):
             raise ValueError("resolution must be an object")
-        if (
-            _OBSERVATIONAL_ONLY in resolution
-            and resolution.get(_OBSERVATIONAL_ONLY) is not True
-        ):
-            raise ValueError("resolution must be observational only")
-        if (
-            _DECISION_MUTATED in resolution
-            and resolution.get(_DECISION_MUTATED) is not False
-        ):
-            raise ValueError("resolution must be observational only")
-        for field in ("trade_eligible", "eligibility", "promotion_allowed"):
-            if field in resolution and resolution[field] is True:
-                raise ValueError("resolution must be observational only")
+        self._validate_observational_resolution(resolution)
         status = str(resolution.get("outcome_status") or "")
         if status not in {"OBSERVED", "UNOBSERVABLE", _OUTCOME_UNAVAILABLE}:
             raise ValueError("outcome status invalid")
@@ -565,6 +555,21 @@ class EntryDecisionStore:
             except sqlite3.IntegrityError as exc:
                 raise ValueError("decision outcome resolution already exists") from exc
         return int(cursor.lastrowid)
+
+    @staticmethod
+    def _validate_observational_resolution(resolution: dict[str, Any]) -> None:
+        invalid_flags = (
+            (_OBSERVATIONAL_ONLY in resolution
+             and resolution.get(_OBSERVATIONAL_ONLY) is not True)
+            or (_DECISION_MUTATED in resolution
+                and resolution.get(_DECISION_MUTATED) is not False)
+            or any(
+                field in resolution and resolution[field] is True
+                for field in ("trade_eligible", "eligibility", "promotion_allowed")
+            )
+        )
+        if invalid_flags:
+            raise ValueError(_RESOLUTION_OBSERVATIONAL_ONLY)
 
     @staticmethod
     def classify_outcome_failure(exc: BaseException) -> OutcomeFailureDisposition:
@@ -754,6 +759,7 @@ class EntryOutcomeResolutionWorker:
     async def run_forever(self) -> None:
         self._running = True
         try:
+            await asyncio.sleep(0)
             while self._running:
                 try:
                     await self.run_once()
