@@ -122,8 +122,8 @@ def test_packaged_migrations_create_current_metadata_and_view(
             "WHERE type='view' AND name='canonical_signal_view'"
         ).fetchone()
 
-    assert CURRENT_RUNTIME_SCHEMA_VERSION == 7
-    assert user_version == 7
+    assert CURRENT_RUNTIME_SCHEMA_VERSION == 8
+    assert user_version == 8
     assert columns == EXPECTED_METADATA_COLUMNS
     assert view_sql is not None
     normalized = " ".join(str(view_sql[0]).split()).upper()

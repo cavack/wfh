@@ -262,7 +262,11 @@ class EntryDecisionStore:
         *,
         advisory_at: int,
     ) -> int:
-        if isinstance(decision_event_id, bool) or not isinstance(decision_event_id, int) or decision_event_id <= 0:
+        if (
+            isinstance(decision_event_id, bool)
+            or not isinstance(decision_event_id, int)
+            or decision_event_id <= 0
+        ):
             raise ValueError("decision event id invalid")
         if isinstance(advisory_at, bool) or not isinstance(advisory_at, int) or advisory_at < 0:
             raise ValueError("advisory timestamp invalid")
@@ -350,6 +354,66 @@ class EntryDecisionStore:
                     created_at,
                 ),
             )
+            return int(cursor.lastrowid)
+
+    def append_outcome_capture(
+        self,
+        decision_event_id: int,
+        capture: dict[str, Any],
+        *,
+        captured_at: int,
+    ) -> int:
+        """Persist one observational outcome capture for a canonical decision."""
+        if isinstance(decision_event_id, bool) or not isinstance(decision_event_id, int) or decision_event_id <= 0:
+            raise ValueError("decision event id invalid")
+        if (
+            isinstance(captured_at, bool)
+            or not isinstance(captured_at, int)
+            or captured_at < 0
+        ):
+            raise ValueError("capture timestamp invalid")
+        if not isinstance(capture, dict):
+            raise ValueError("capture must be an object")
+        if (
+            capture.get("observational_only") is not True
+            or capture.get("decision_mutated") is not False
+        ):
+            raise ValueError("capture must be observational only")
+        outcome_status = str(capture.get("outcome_status") or "UNOBSERVED")
+        if outcome_status not in {"UNOBSERVED", "OBSERVED"}:
+            raise ValueError("outcome status invalid")
+        persisted = {
+            **capture,
+            "capture_version": "decision_outcome_capture_v1",
+            "captured_at": captured_at,
+            "outcome_status": outcome_status,
+        }
+        payload, payload_hash = self._encode(persisted)
+        created_at = int(time.time())
+        with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
+            decision = conn.execute(
+                "SELECT id FROM entry_decision_events WHERE id=?",
+                (decision_event_id,),
+            ).fetchone()
+            if decision is None:
+                raise ValueError("decision event missing")
+            try:
+                cursor = conn.execute(
+                    "INSERT INTO decision_outcome_capture ("
+                    "decision_event_id,capture_version,captured_at,outcome_status,"
+                    "capture_json,capture_hash,created_at) VALUES (?,?,?,?,?,?,?)",
+                    (
+                        decision_event_id,
+                        "decision_outcome_capture_v1",
+                        captured_at,
+                        outcome_status,
+                        payload,
+                        payload_hash,
+                        created_at,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("decision outcome capture already exists") from exc
             return int(cursor.lastrowid)
 
     @staticmethod

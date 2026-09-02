@@ -2540,6 +2540,25 @@ async def evaluate_candidate(
         )
     result_metrics["entry_decision"] = entry_decision
 
+    if event_id is not None:
+        try:
+            entry_decision_store.append_outcome_capture(
+                int(event_id),
+                {
+                    "observational_only": True,
+                    "decision_mutated": False,
+                    "decision": entry_decision.get("decision"),
+                    "symbol": symbol,
+                    "lifecycle_id": int(data.get("lifecycle_id") or 1),
+                    "outcome_status": "UNOBSERVED",
+                },
+                captured_at=decision_now,
+            )
+        except Exception:
+            logger.exception(
+                "Unable to persist decision outcome capture for %s", symbol
+            )
+
     try:
         technical_trade_plan_shadow = validator.build_technical_trade_plan_shadow(
             result_metrics

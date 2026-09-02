@@ -37,6 +37,7 @@ EXPECTED_RUNTIME_TABLES = frozenset(
         "entry_decision_events",
         "entry_notification_outbox",
         "entry_decision_advisories",
+        "decision_outcome_capture",
     }
 )
 
@@ -46,7 +47,7 @@ def _codes(result) -> set[str]:
 
 
 def test_manifest_covers_exact_runtime_tables_and_version():
-    assert CURRENT_RUNTIME_SCHEMA_VERSION == 7
+    assert CURRENT_RUNTIME_SCHEMA_VERSION == 8
     assert managed_runtime_table_names() == EXPECTED_RUNTIME_TABLES
 
 

@@ -61,6 +61,8 @@ _LEGACY_OPTIONAL_TABLES = frozenset(
         "entry_decision_events",
         "entry_notification_outbox",
         "entry_decision_advisories",
+        "decision_outcome_capture",
+        "decision_outcome_capture",
     }
 )
 
@@ -230,17 +232,23 @@ def _applied_runtime_schema_valid(
             conn,
             check_user_version=CURRENT_RUNTIME_SCHEMA_VERSION,
         )
+    if applied == (1, 2, 3, 4, 5, 6, 7):
+        return _verified_schema_result(
+            conn,
+            allow_missing_tables=frozenset({"decision_outcome_capture"}),
+            check_user_version=7,
+        )
     if applied == (1, 2, 3, 4, 5, 6):
         return _verified_schema_result(
             conn,
-            allow_missing_tables=frozenset({"entry_decision_advisories"}),
+            allow_missing_tables=frozenset({"entry_decision_advisories", "decision_outcome_capture"}),
             check_user_version=6,
         )
     if applied == (1, 2, 3, 4, 5):
         return _verified_schema_result(
             conn,
             allow_missing_tables=frozenset(
-                {"entry_decision_events", "entry_notification_outbox", "entry_decision_advisories"}
+                {"entry_decision_events", "entry_notification_outbox", "entry_decision_advisories", "decision_outcome_capture"}
             ),
             check_user_version=5,
         )
@@ -255,6 +263,7 @@ def _applied_runtime_schema_valid(
                     "entry_decision_events",
                     "entry_notification_outbox",
                     "entry_decision_advisories",
+                    "decision_outcome_capture",
                 }
             ),
             check_user_version=3,
@@ -262,7 +271,7 @@ def _applied_runtime_schema_valid(
     if applied == (1, 2, 3, 4):
         return _verified_schema_result(
             conn,
-            allow_missing_tables=frozenset({"lifecycle_v2_shadow_events", "entry_decision_events", "entry_notification_outbox", "entry_decision_advisories"}),
+            allow_missing_tables=frozenset({"lifecycle_v2_shadow_events", "entry_decision_events", "entry_notification_outbox", "entry_decision_advisories", "decision_outcome_capture"}),
             check_user_version=4,
         )
     if applied == (1, 2):
@@ -278,6 +287,7 @@ def _applied_runtime_schema_valid(
                     "entry_decision_events",
                     "entry_notification_outbox",
                     "entry_decision_advisories",
+                    "decision_outcome_capture",
                 }
             ),
             check_user_version=2,

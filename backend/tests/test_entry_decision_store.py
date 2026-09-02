@@ -73,6 +73,62 @@ def test_decision_events_are_immutable(tmp_path) -> None:
             raise AssertionError("entry decision events must be immutable")
 
 
+def test_outcome_capture_is_observational_unique_and_append_only(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    decision_event_id = store.append_if_changed(
+        "SXT/USDT:USDT", packet("ENTRY_READY", 84.0, 100)
+    )
+    assert decision_event_id is not None
+
+    capture_id = store.append_outcome_capture(
+        decision_event_id,
+        {
+            "observational_only": True,
+            "decision_mutated": False,
+            "outcome_status": "UNOBSERVED",
+            "source": "forward_capture",
+        },
+        captured_at=101,
+    )
+    assert capture_id > 0
+    with pytest.raises(ValueError, match="already exists"):
+        store.append_outcome_capture(
+            decision_event_id,
+            {
+                "observational_only": True,
+                "decision_mutated": False,
+            },
+            captured_at=102,
+        )
+    with sqlite3.connect(db_path) as conn:
+        with pytest.raises(sqlite3.DatabaseError, match="immutable"):
+            conn.execute(
+                "UPDATE decision_outcome_capture SET outcome_status='OBSERVED' WHERE id=?",
+                (capture_id,),
+            )
+        with pytest.raises(sqlite3.DatabaseError, match="immutable"):
+            conn.execute(
+                "DELETE FROM decision_outcome_capture WHERE id=?",
+                (capture_id,),
+            )
+
+
+def test_outcome_capture_rejects_decision_mutation(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    decision_event_id = store.append_if_changed(
+        "SXT/USDT:USDT", packet("ENTRY_READY", 84.0, 100)
+    )
+    assert decision_event_id is not None
+    with pytest.raises(ValueError, match="observational only"):
+        store.append_outcome_capture(
+            decision_event_id,
+            {"observational_only": False, "decision_mutated": True},
+            captured_at=101,
+        )
+
+
 def test_latest_transition_uses_append_order_when_clock_moves_backward(tmp_path) -> None:
     db_path = migrate_test_database(tmp_path / "registry.db")
     store = EntryDecisionStore(db_path)
