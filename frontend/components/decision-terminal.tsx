@@ -119,6 +119,12 @@ function DecisionCard({ symbol, candidate }: Readonly<{ symbol: string; candidat
   const readiness = finite(decision.entry_readiness);
   const coverage = finite(decision.evidence_coverage_pct);
   const hasPlan = tradePlanAvailable(plan);
+  let planNotice: string | null = null;
+  if (planKind === "reference") {
+    planNotice = "Reference plan · technical shadow · not an entry command";
+  } else if (state !== "ENTRY_READY") {
+    planNotice = "Reference plan · not an entry command";
+  }
   const advisoryView = advisoryPresentation(advisory);
   const leverageStatus = String(leverageAdvisory.status ?? "");
   const leverageValue = finite(leverageAdvisory.leverage ?? plan.leverage);
@@ -146,10 +152,8 @@ function DecisionCard({ symbol, candidate }: Readonly<{ symbol: string; candidat
         </div>
         {hasPlan ? (
           <>
-            {planKind === "reference" ? (
-              <p className="mt-4 text-xs font-medium text-amber-200/90">Reference plan · technical shadow · not an entry command</p>
-            ) : state !== "ENTRY_READY" ? (
-              <p className="mt-4 text-xs font-medium text-amber-200/90">Reference plan · not an entry command</p>
+            {planNotice ? (
+              <p className="mt-4 text-xs font-medium text-amber-200/90">{planNotice}</p>
             ) : null}
             <SignalLevels plan={plan} />
           </>
