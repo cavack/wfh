@@ -243,7 +243,8 @@ def test_unknown_resolution_failure_is_retryable_and_does_not_starve_later_rows(
     store = EntryDecisionStore(db_path)
     first = store.append_if_changed("FIRST", packet("ENTRY_READY", 84.0, 100))
     second = store.append_if_changed("SECOND", packet("ENTRY_READY", 84.0, 100))
-    assert first is not None and second is not None
+    assert first is not None
+    assert second is not None
     for event_id in (first, second):
         store.append_outcome_capture(
             event_id, {"observational_only": True, "decision_mutated": False}, captured_at=101

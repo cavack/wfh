@@ -17,6 +17,12 @@ from waterfallhunter.core.signal_metadata import canonical_sha256
 
 logger = logging.getLogger("WaterfallHunter.EntryDecisionStore")
 
+_OUTCOME_CAPTURE_VERSION = "decision_outcome_capture_v1"
+_OUTCOME_RESOLUTION_VERSION = "decision_outcome_resolution_v1"
+_OUTCOME_UNAVAILABLE = "UNAVAILABLE"
+_OUTCOME_UNOBSERVED = "UNOBSERVED"
+_OBSERVATIONAL_ONLY = "observational_only"
+_DECISION_MUTATED = "decision_mutated"
 
 _ALLOWED = {
     "NO_TRADE",
@@ -282,12 +288,12 @@ class EntryDecisionStore:
             raise ValueError("decision event id invalid")
         if isinstance(advisory_at, bool) or not isinstance(advisory_at, int) or advisory_at < 0:
             raise ValueError("advisory timestamp invalid")
-        if advisory.get("observational_only") is not True or advisory.get("decision_mutated") is not False:
+        if advisory.get(_OBSERVATIONAL_ONLY) is not True or advisory.get(_DECISION_MUTATED) is not False:
             raise ValueError("advisory must be observational only")
         provider = str(advisory.get("ai_provider") or "none")
         model = str(advisory.get("ai_model") or "none")
-        status = str(advisory.get("ai_status") or "UNAVAILABLE")
-        if status not in {"AVAILABLE", "UNAVAILABLE"}:
+        status = str(advisory.get("ai_status") or _OUTCOME_UNAVAILABLE)
+        if status not in {"AVAILABLE", _OUTCOME_UNAVAILABLE}:
             raise ValueError("advisory status invalid")
         persisted = {**advisory, "advisory_at": advisory_at}
         payload, payload_hash = self._encode(persisted)
@@ -324,14 +330,14 @@ class EntryDecisionStore:
         if not normalized_reason:
             raise ValueError("advisory fallback reason missing")
         advisory = {
-            "observational_only": True,
-            "decision_mutated": False,
-            "ai_advice": "UNAVAILABLE",
+            _OBSERVATIONAL_ONLY: True,
+            _DECISION_MUTATED: False,
+            "ai_advice": _OUTCOME_UNAVAILABLE,
             "ai_confidence": 0,
             "ai_reasoning": normalized_reason,
             "ai_provider": "none",
             "ai_model": "none",
-            "ai_status": "UNAVAILABLE",
+            "ai_status": _OUTCOME_UNAVAILABLE,
             "advisory_at": advisory_at,
         }
         payload, payload_hash = self._encode(advisory)
@@ -387,16 +393,16 @@ class EntryDecisionStore:
         if not isinstance(capture, dict):
             raise ValueError("capture must be an object")
         if (
-            capture.get("observational_only") is not True
-            or capture.get("decision_mutated") is not False
+            capture.get(_OBSERVATIONAL_ONLY) is not True
+            or capture.get(_DECISION_MUTATED) is not False
         ):
             raise ValueError("capture must be observational only")
-        outcome_status = str(capture.get("outcome_status") or "UNOBSERVED")
-        if outcome_status not in {"UNOBSERVED", "OBSERVED"}:
+        outcome_status = str(capture.get("outcome_status") or _OUTCOME_UNOBSERVED)
+        if outcome_status not in {_OUTCOME_UNOBSERVED, "OBSERVED"}:
             raise ValueError("outcome status invalid")
         persisted = {
             **capture,
-            "capture_version": "decision_outcome_capture_v1",
+            "capture_version": _OUTCOME_CAPTURE_VERSION,
             "captured_at": captured_at,
             "outcome_status": outcome_status,
         }
@@ -416,7 +422,7 @@ class EntryDecisionStore:
                     "capture_json,capture_hash,created_at) VALUES (?,?,?,?,?,?,?)",
                     (
                         decision_event_id,
-                        "decision_outcome_capture_v1",
+                        _OUTCOME_CAPTURE_VERSION,
                         captured_at,
                         outcome_status,
                         payload,
@@ -446,12 +452,12 @@ class EntryDecisionStore:
             self.append_outcome_capture(
                 event_id,
                 {
-                    "observational_only": True,
-                    "decision_mutated": False,
+                    _OBSERVATIONAL_ONLY: True,
+                    _DECISION_MUTATED: False,
                     "decision": packet.get("decision"),
                     "symbol": str(symbol),
                     "lifecycle_id": packet.get("lifecycle_id"),
-                    "outcome_status": "UNOBSERVED",
+                    "outcome_status": _OUTCOME_UNOBSERVED,
                 },
                 captured_at=captured_at,
             )
@@ -508,27 +514,27 @@ class EntryDecisionStore:
         if not isinstance(resolution, dict):
             raise ValueError("resolution must be an object")
         if (
-            "observational_only" in resolution
-            and resolution.get("observational_only") is not True
+            _OBSERVATIONAL_ONLY in resolution
+            and resolution.get(_OBSERVATIONAL_ONLY) is not True
         ):
             raise ValueError("resolution must be observational only")
         if (
-            "decision_mutated" in resolution
-            and resolution.get("decision_mutated") is not False
+            _DECISION_MUTATED in resolution
+            and resolution.get(_DECISION_MUTATED) is not False
         ):
             raise ValueError("resolution must be observational only")
         for field in ("trade_eligible", "eligibility", "promotion_allowed"):
             if field in resolution and resolution[field] is True:
                 raise ValueError("resolution must be observational only")
         status = str(resolution.get("outcome_status") or "")
-        if status not in {"OBSERVED", "UNOBSERVABLE", "UNAVAILABLE"}:
+        if status not in {"OBSERVED", "UNOBSERVABLE", _OUTCOME_UNAVAILABLE}:
             raise ValueError("outcome status invalid")
         # Explicitly preserve unavailable cost/provenance rather than inventing values.
         persisted = {
             **resolution,
-            "observational_only": True,
-            "decision_mutated": False,
-            "resolution_version": "decision_outcome_resolution_v1",
+            _OBSERVATIONAL_ONLY: True,
+            _DECISION_MUTATED: False,
+            "resolution_version": _OUTCOME_RESOLUTION_VERSION,
             "resolved_at": resolved_at,
             "outcome_status": status,
             "cost": resolution.get("cost"),
@@ -552,7 +558,7 @@ class EntryDecisionStore:
                     (decision_event_id,resolution_version,resolved_at,outcome_status,
                      resolution_json,resolution_hash,created_at)
                     VALUES (?,?,?,?,?,?,?)""",
-                    (decision_event_id, "decision_outcome_resolution_v1", resolved_at,
+                    (decision_event_id, _OUTCOME_RESOLUTION_VERSION, resolved_at,
                      status, payload, payload_hash, int(time.time())),
                 )
             except sqlite3.IntegrityError as exc:
@@ -594,67 +600,76 @@ class EntryDecisionStore:
             return OutcomeFailureDisposition.TERMINAL_UNAVAILABLE
         return OutcomeFailureDisposition.RETRYABLE
 
+    def _resolve_one_matured_outcome(
+        self, resolver: Any, capture: dict[str, Any], *, attempt: int, batch_limit: int
+    ) -> bool:
+        try:
+            result = resolver(capture)
+            if result is None:
+                return False
+            self.resolve_outcome_capture(
+                int(capture["decision_event_id"]), result, resolved_at=int(time.time())
+            )
+            return True
+        except Exception as exc:
+            disposition = self.classify_outcome_failure(exc)
+            decision_event_id = int(capture["decision_event_id"])
+            logger.warning(
+                "Matured outcome resolver failed",
+                extra={
+                    "decision_event_id": decision_event_id,
+                    "failure_type": type(exc).__name__,
+                    "error": str(exc),
+                    "failure_disposition": disposition.value,
+                    "retryable": disposition is OutcomeFailureDisposition.RETRYABLE,
+                    "retry_after_seconds": (
+                        min(300, 2 ** min(attempt - 1, 8))
+                        if disposition is OutcomeFailureDisposition.RETRYABLE
+                        else None
+                    ),
+                    "batch_attempt": attempt,
+                    "batch_limit": batch_limit,
+                },
+                exc_info=disposition is OutcomeFailureDisposition.TERMINAL_UNAVAILABLE,
+            )
+            if disposition is OutcomeFailureDisposition.TERMINAL_UNAVAILABLE:
+                self._persist_unavailable_resolution(decision_event_id, exc)
+            return False
+
+    def _persist_unavailable_resolution(
+        self, decision_event_id: int, exc: BaseException
+    ) -> None:
+        try:
+            self.resolve_outcome_capture(
+                decision_event_id,
+                {
+                    "outcome_status": _OUTCOME_UNAVAILABLE,
+                    "cost": None,
+                    "provenance": None,
+                    "reason": f"resolver unavailable: {type(exc).__name__}",
+                },
+                resolved_at=int(time.time()),
+            )
+        except Exception:
+            logger.exception(
+                "Unable to persist terminal unavailable outcome resolution",
+                extra={
+                    "decision_event_id": decision_event_id,
+                    "failure_disposition": OutcomeFailureDisposition.TERMINAL_UNAVAILABLE.value,
+                },
+            )
+
     def resolve_matured_outcomes(
         self, resolver: Any, *, mature_before: int, limit: int = 100
     ) -> int:
-        """Resolve matured outcomes without allowing transient failures to starve.
-
-        This is deliberately bounded to the requested batch.  Retryable rows
-        stay in ``UNOBSERVED`` and are picked up by a later invocation.
-        """
-        resolved = 0
+        """Resolve a bounded batch while leaving transient failures pending."""
         captures = self.pending_outcome_captures(mature_before=mature_before, limit=limit)
-        for attempt, capture in enumerate(captures, start=1):
-            try:
-                result = resolver(capture)
-                if result is not None:
-                    self.resolve_outcome_capture(
-                        int(capture["decision_event_id"]), result,
-                        resolved_at=int(time.time()),
-                    )
-                    resolved += 1
-            except Exception as exc:
-                disposition = self.classify_outcome_failure(exc)
-                logger.warning(
-                    "Matured outcome resolver failed",
-                    extra={
-                        "decision_event_id": int(capture["decision_event_id"]),
-                        "failure_type": type(exc).__name__,
-                        "error": str(exc),
-                        "failure_disposition": disposition.value,
-                        "retryable": disposition is OutcomeFailureDisposition.RETRYABLE,
-                        "retry_after_seconds": (
-                            min(300, 2 ** min(attempt - 1, 8))
-                            if disposition is OutcomeFailureDisposition.RETRYABLE
-                            else None
-                        ),
-                        "batch_attempt": attempt,
-                        "batch_limit": len(captures),
-                    },
-                    exc_info=disposition is OutcomeFailureDisposition.TERMINAL_UNAVAILABLE,
-                )
-                if disposition is OutcomeFailureDisposition.TERMINAL_UNAVAILABLE:
-                    try:
-                        self.resolve_outcome_capture(
-                            int(capture["decision_event_id"]),
-                            {
-                                "outcome_status": "UNAVAILABLE",
-                                "cost": None,
-                                "provenance": None,
-                                "reason": f"resolver unavailable: {type(exc).__name__}",
-                            },
-                            resolved_at=int(time.time()),
-                        )
-                    except Exception:
-                        logger.exception(
-                            "Unable to persist terminal unavailable outcome resolution",
-                            extra={
-                                "decision_event_id": int(capture["decision_event_id"]),
-                                "failure_disposition": disposition.value,
-                            },
-                        )
-                continue
-        return resolved
+        return sum(
+            self._resolve_one_matured_outcome(
+                resolver, capture, attempt=attempt, batch_limit=len(captures)
+            )
+            for attempt, capture in enumerate(captures, start=1)
+        )
 
     @staticmethod
     def _history_select(where: str = "") -> str:
