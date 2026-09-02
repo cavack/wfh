@@ -16,6 +16,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     CHECKOUT="$TMP/ref-$COUNT"
     mkdir -p "$CHECKOUT"
     git -C "$ROOT" archive "$local_sha" | tar -x -C "$CHECKOUT"
+    git -C "$ROOT" ls-tree -r --name-only "$local_sha" > "$CHECKOUT/.wfh-source-manifest"
 
     (
         cd "$CHECKOUT"

@@ -96,7 +96,13 @@ def _write_fake_validators(repo: Path) -> None:
     )
     (scripts / "wfh_council.py").write_text(validator, encoding="utf-8")
     (scripts / "validate_wfh_skills.py").write_text(validator, encoding="utf-8")
-    hygiene = "import sys\nsys.exit(0)\n"
+    hygiene = (
+        "from pathlib import Path\n"
+        "import sys\n"
+        "manifest = Path('.wfh-source-manifest')\n"
+        "ok = manifest.is_file() and 'marker.txt' in manifest.read_text().splitlines()\n"
+        "sys.exit(0 if ok else 8)\n"
+    )
     (scripts / "verify_repository_hygiene.py").write_text(hygiene, encoding="utf-8")
     tests = repo / "backend/tests"
     tests.mkdir(parents=True, exist_ok=True)
