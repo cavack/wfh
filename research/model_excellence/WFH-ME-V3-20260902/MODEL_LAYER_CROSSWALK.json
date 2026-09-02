@@ -1,0 +1,6 @@
+{
+  "input": "normalized_research.jsonl",
+  "matched_packet_count": 0,
+  "reason": "no normalized runtime rows with complete outcomes",
+  "status": "NOT_RUN_INSUFFICIENT_EVIDENCE"
+}

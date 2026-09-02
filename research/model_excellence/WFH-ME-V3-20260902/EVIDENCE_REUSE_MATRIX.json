@@ -1,0 +1,7 @@
+{
+  "families": [],
+  "input": "normalized_research.jsonl",
+  "reason": "no normalized runtime rows with complete outcomes",
+  "row_count": 0,
+  "status": "NOT_RUN_INSUFFICIENT_EVIDENCE"
+}

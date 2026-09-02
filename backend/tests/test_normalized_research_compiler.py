@@ -6,6 +6,11 @@ from pathlib import Path
 SPEC = importlib.util.spec_from_file_location("compiler", Path(__file__).parents[2] / "scripts/research/compile_normalized_dataset.py")
 compiler = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(compiler)
+ANALYZER_SPEC = importlib.util.spec_from_file_location(
+    "analyzer", Path(__file__).parents[2] / "scripts/research/analyze_model_crosswalk.py"
+)
+analyzer = importlib.util.module_from_spec(ANALYZER_SPEC)
+ANALYZER_SPEC.loader.exec_module(analyzer)
 
 
 def db(tmp_path):
@@ -69,3 +74,33 @@ def test_missing_and_stale_outcomes_are_not_promoted(tmp_path):
     assert by_id[1]["outcome"]["status"] == "INVALID_LEVELS"
     assert by_id[2]["outcome"]["status"] == "MISSING_MARKET_DATA"
     assert by_id[2]["outcome"]["reasons"] == ["outcome_row_unavailable"]
+
+
+def test_p0d_outputs_explicit_not_run_without_runtime_outcomes(tmp_path):
+    crosswalk, reuse = analyzer.run(tmp_path / "missing.jsonl", tmp_path / "artifacts")
+    assert crosswalk["status"] == analyzer.NOT_RUN
+    assert crosswalk["matched_packet_count"] == 0
+    assert reuse["status"] == analyzer.NOT_RUN
+    assert (tmp_path / "artifacts/MODEL_LAYER_CROSSWALK.json").exists()
+    assert (tmp_path / "artifacts/EVIDENCE_REUSE_MATRIX.json").exists()
+
+
+def test_p0d_reports_matched_transitions_blockers_and_deltas(tmp_path):
+    row = {
+        "packet_id": 1, "lifecycle_v1": {"value": "ARMED", "reason": None},
+        "readiness": {"value": 70, "reason": None}, "coverage": {"value": 80, "reason": None},
+        "availability": {"value": {"ohlcv": True}, "reason": None},
+        "acquisition_path": {"value": {"source": "ws"}, "reason": None},
+        "freshness": {"value": {"age": 1}, "reason": None},
+        "components": {"value": {}, "reason": None}, "gates": {"value": {}, "reason": None},
+        "trade_plan": {"value": {}, "reason": None},
+        "outcome": {"status": "COMPLETE", "reasons": ["cost_not_recorded"],
+                    "expected_candles": {"value": 10}, "observed_candles": {"value": 8}},
+    }
+    crosswalk, reuse = analyzer.analyze([row])
+    assert crosswalk["matched_packet_count"] == 1
+    assert crosswalk["decision_transitions"] == {"ARMED->70": 1}
+    assert crosswalk["first_blockers"] == {"cost_not_recorded": 1}
+    assert crosswalk["readiness_coverage_deltas"]["readiness_minus_coverage"]["mean"] == -10
+    assert crosswalk["readiness_coverage_deltas"]["observed_minus_expected_candles"]["mean"] == -2
+    assert reuse["families"][0]["rows"] == 1
