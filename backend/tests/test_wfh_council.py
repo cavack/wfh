@@ -186,3 +186,28 @@ def test_research_snapshot_cli_emits_json(tmp_path: Path, capsys) -> None:
 
     assert rc == 0
     assert output["promotion_disposition"] == "NO_PROMOTION_EVIDENCE"
+
+def test_council_docs_cover_every_role_and_tool_class() -> None:
+    manifest = council.load_manifest(MANIFEST)
+    council_doc = (REPO / ".agents/wfh-council/COUNCIL.md").read_text(encoding="utf-8")
+    tools_doc = (REPO / ".agents/wfh-council/TOOLS.md").read_text(encoding="utf-8")
+
+    for role in manifest["roles"]:
+        assert role["id"] in council_doc
+    for tool_class in [*manifest["tools"]["required"], *manifest["tools"]["optional"]]:
+        assert tool_class in tools_doc
+
+
+def test_research_registry_is_preregisterable_and_falsifiable() -> None:
+    text = (REPO / ".agents/wfh-council/RESEARCH.md").read_text(encoding="utf-8")
+
+    for label in [
+        "mechanism:",
+        "point_in_time_requirement:",
+        "falsifier:",
+        "promotion_gate:",
+    ]:
+        assert label in text
+    assert "order flow" in text.lower()
+    assert "basis" in text.lower()
+    assert "regime" in text.lower()
