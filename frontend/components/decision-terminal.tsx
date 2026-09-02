@@ -22,6 +22,7 @@ import {
   canonicalLeverageAdvisory,
   pipelineHealthDegraded,
   tradePlanAvailable,
+  decisionPlanPresentation,
 } from "@/lib/decision-terminal-ui";
 
 type Rec = Record<string, unknown>;
@@ -66,10 +67,12 @@ function decisionTone(decision: string): string {
 function evidencePacket(candidate: Candidate) {
   const metrics = record(candidate.metrics);
   const decision = record(metrics.entry_decision);
+  const planPresentation = decisionPlanPresentation(metrics, decision);
   return {
     metrics,
     decision,
-    plan: record(decision.trade_plan),
+    plan: planPresentation.plan,
+    planKind: planPresentation.kind,
     evidence: record(decision.evidence_summary),
     advisory: record(metrics.ai_advisory),
     leverageAdvisory: canonicalLeverageAdvisory(metrics, decision),
@@ -111,7 +114,7 @@ function EvidenceGrid({ evidence }: Readonly<{ evidence: Rec }>) {
 }
 
 function DecisionCard({ symbol, candidate }: Readonly<{ symbol: string; candidate: Candidate }>) {
-  const { decision, plan, evidence, advisory, leverageAdvisory } = evidencePacket(candidate);
+  const { decision, plan, planKind, evidence, advisory, leverageAdvisory } = evidencePacket(candidate);
   const state = String(decision.decision ?? "UNAVAILABLE");
   const readiness = finite(decision.entry_readiness);
   const coverage = finite(decision.evidence_coverage_pct);
@@ -143,7 +146,9 @@ function DecisionCard({ symbol, candidate }: Readonly<{ symbol: string; candidat
         </div>
         {hasPlan ? (
           <>
-            {state !== "ENTRY_READY" ? (
+            {planKind === "reference" ? (
+              <p className="mt-4 text-xs font-medium text-amber-200/90">Reference plan · technical shadow · not an entry command</p>
+            ) : state !== "ENTRY_READY" ? (
               <p className="mt-4 text-xs font-medium text-amber-200/90">Reference plan · not an entry command</p>
             ) : null}
             <SignalLevels plan={plan} />

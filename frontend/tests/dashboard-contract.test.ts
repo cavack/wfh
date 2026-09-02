@@ -5,6 +5,7 @@ import {
   blockedOrOtherBreakdown,
   blockedOrOtherCount,
   candidateFreshness,
+  decisionPlanPresentation,
   canonicalLeverageAdvisory,
   pipelineHealthDegraded,
   rawLeveragePresentation,
@@ -146,3 +147,39 @@ assert.equal(rawLeveragePresentation({ applied_leverage: 8, leverage_advisory: {
 assert.equal(rawLeveragePresentation({ applied_leverage: null, leverage_advisory: { status: "UNAVAILABLE" } }), "UNAVAILABLE");
 assert.equal(rawLeveragePresentation({ applied_leverage: null, leverage_advisory: { status: "NOT_RECOMMENDED" } }), "NOT RECOMMENDED");
 assert.equal(rawLeveragePresentation({}), "—");
+
+
+assert.deepEqual(
+  decisionPlanPresentation(
+    {
+      technical_trade_plan_shadow: {
+        available: true, feasible: true, status: "FEASIBLE",
+        observational_only: true, hard_gating_allowed: false,
+        setup: { entry_price: 1, stop_loss: 1.1, take_profit_1: 0.9, take_profit_2: 0.8 },
+      },
+    },
+    { trade_plan: null },
+  ),
+  {
+    kind: "reference",
+    plan: { entry_price: 1, stop_loss: 1.1, take_profit_1: 0.9, take_profit_2: 0.8 },
+  },
+  "a feasible observational shadow plan should fill non-actionable reference levels",
+);
+
+assert.equal(
+  decisionPlanPresentation(
+    { technical_trade_plan_shadow: { available: true, feasible: false, setup: {} } },
+    { trade_plan: null },
+  ).kind,
+  "unavailable",
+);
+
+assert.equal(
+  decisionPlanPresentation(
+    { technical_trade_plan_shadow: { available: true, feasible: true, setup: { entry_price: 2, stop_loss: 2.1, take_profit_1: 1.9, take_profit_2: 1.8 } } },
+    { trade_plan: { entry_price: 1, stop_loss: 1.1, take_profit_1: 0.9, take_profit_2: 0.8 } },
+  ).kind,
+  "canonical",
+  "canonical decision plan must always win over reference shadow",
+);

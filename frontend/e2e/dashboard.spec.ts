@@ -288,3 +288,33 @@ test("mobile keeps the canonical terminal usable without page-level horizontal o
   expect(overflow).toBeLessThanOrEqual(1);
   expect(errors).toEqual([]);
 });
+
+
+test("observational technical shadow fills reference levels without becoming an entry command", async ({ page }) => {
+  const payload = snapshot(11);
+  const beta = payload.candidates["BETA/USDT:USDT"];
+  beta.metrics.entry_decision.trade_plan = null;
+  beta.metrics.technical_trade_plan_shadow = {
+    version: "technical_trade_plan_shadow_v1",
+    observational_only: true,
+    hard_gating_allowed: false,
+    available: true,
+    feasible: true,
+    status: "FEASIBLE",
+    setup: plan(null),
+    reference: { price: 0.1001, source: "mark" },
+  };
+
+  const errors = errorCollector(page);
+  await routeDashboard(page, payload);
+  await page.goto("/dashboard");
+
+  const formingSection = page.locator("#decision-terminal > section").filter({ has: page.getByRole("heading", { name: /Closest setups/ }) });
+  const betaCard = formingSection.locator("article").filter({ hasText: "BETA/USDT:USDT" });
+  await expect(betaCard).toContainText("Reference plan · technical shadow · not an entry command");
+  await expect(betaCard).toContainText("$0.1005");
+  await expect(betaCard).toContainText("$0.1045");
+  await expect(betaCard).toContainText("$0.0965");
+  await expect(betaCard).toContainText("$0.0925");
+  expect(errors).toEqual([]);
+});
