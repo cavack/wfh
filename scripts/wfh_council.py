@@ -361,10 +361,13 @@ def build_snapshot(
     unknowns: list[str] = []
     if not production_revision:
         unknowns.append("production_revision")
+    repo_classification = "VERIFIED_FACT" if repo.get("status") == "AVAILABLE" else "UNAVAILABLE"
+    if repo_classification == "UNAVAILABLE":
+        unknowns.append("repo_identity")
     return {
         "contract_version": "wfh_council_snapshot_v1",
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "repo": {**repo, "classification": "VERIFIED_FACT"},
+        "repo": {**repo, "classification": repo_classification},
         "runtime": {
             "production_revision": production_fact,
             "live_trading_enabled": {"classification": "POLICY_ASSERTION", "value": False},

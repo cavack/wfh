@@ -76,17 +76,26 @@ def test_route_task_rejects_unknown_task_type() -> None:
         raise AssertionError("unknown route must fail")
 
 def test_doctor_reports_repo_identity_and_optional_unavailable(monkeypatch) -> None:
-    real_which = council.shutil.which
+    def fake_git_output(repo_root: Path, *args: str) -> str:
+        if args == ("rev-parse", "HEAD"):
+            return "abc123"
+        if args == ("branch", "--show-current"):
+            return "test-branch"
+        raise AssertionError(args)
 
     def fake_which(name: str) -> str | None:
-        if name == "coderabbit":
-            return None
-        return real_which(name)
+        if name == "git":
+            return "/usr/bin/git"
+        if name == "python3":
+            return "/usr/bin/python3"
+        return None
 
+    monkeypatch.setattr(council, "_git_output", fake_git_output)
     monkeypatch.setattr(council.shutil, "which", fake_which)
     result = council.doctor(REPO)
 
-    assert result["repo"]["git_sha"]
+    assert result["repo"]["git_sha"] == "abc123"
+    assert result["repo"]["branch"] == "test-branch"
     assert result["repo"]["status"] == "AVAILABLE"
     assert result["tools"]["git"]["status"] == "AVAILABLE"
     assert result["tools"]["python"]["status"] == "AVAILABLE"
@@ -264,3 +273,23 @@ def test_snapshot_cli_emits_stable_json(capsys) -> None:
     assert output["contract_version"] == "wfh_council_snapshot_v1"
     assert output["runtime"]["production_revision"]["value"] == "prod-456"
     assert output["generated_at"].endswith("Z")
+
+
+def test_snapshot_marks_repo_identity_unavailable_when_doctor_cannot_resolve_git(monkeypatch) -> None:
+    manifest = council.load_manifest(MANIFEST)
+    unavailable_repo = {
+        "status": "UNAVAILABLE",
+        "path": str(REPO),
+        "git_sha": None,
+        "branch": None,
+    }
+    monkeypatch.setattr(
+        council,
+        "doctor",
+        lambda repo_root: {"repo": unavailable_repo},
+    )
+
+    snapshot = council.build_snapshot(REPO, manifest)
+
+    assert snapshot["repo"]["classification"] == "UNAVAILABLE"
+    assert "repo_identity" in snapshot["unknowns"]

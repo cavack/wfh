@@ -6,6 +6,8 @@ import stat
 import subprocess
 from pathlib import Path
 
+import pytest
+
 
 REPO = Path(__file__).resolve().parents[2]
 INSTALLER = REPO / "scripts/install_wfh_council_hooks.sh"
@@ -29,6 +31,7 @@ def _make_repo(tmp_path: Path) -> Path:
     return repo
 
 
+@pytest.mark.skipif(shutil.which("git") is None, reason="git hook integration requires git")
 def test_installer_sets_repo_local_hooks_path_and_is_idempotent(tmp_path: Path) -> None:
     repo = _make_repo(tmp_path)
     installer = repo / "scripts/install_wfh_council_hooks.sh"
@@ -53,6 +56,7 @@ def test_hooks_are_validation_only_and_never_deploy() -> None:
         assert marker not in combined
 
 
+@pytest.mark.skipif(shutil.which("git") is None, reason="git worktree integration requires git")
 def test_linked_worktree_install_does_not_set_shared_hooks_path(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
