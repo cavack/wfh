@@ -333,6 +333,11 @@ def _leverage_advisory(metrics: dict[str, Any]) -> dict[str, Any] | None:
     return packet
 
 
+def project_leverage_advisory(metrics: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the bounded leverage advisory persisted with a canonical decision."""
+    return _leverage_advisory(metrics)
+
+
 def _trade_plan(metrics: dict[str, Any]) -> dict[str, Any] | None:
     setup = _record(metrics.get("position_setup"))
     required = ("entry_price", "stop_loss", "take_profit_1", "take_profit_2")

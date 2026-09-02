@@ -294,3 +294,24 @@ def test_incomplete_preloaded_microstructure_evidence_uses_existing_rest_path() 
     assert exchange.book_calls == 2
     assert exchange.trade_calls == 1
     assert result["source_capture"]["orderbook_snapshots_captured"] is True
+
+
+def test_future_dated_preloaded_orderbook_is_rejected_before_reuse() -> None:
+    analyzer = MicrostructureAnalyzer(snapshot_delay_seconds=0.25)
+    now = time.time()
+    snapshots = [
+        {
+            "timestamp": int((now - 0.6 + index * 0.3) * 1000),
+            "_received_at": now - 0.6 + index * 0.3,
+            "bids": [[10.0, 100.0]],
+            "asks": [[10.1, 100.0]],
+        }
+        for index in range(3)
+    ]
+    snapshots[-1]["timestamp"] = int((now + 2.0) * 1000)
+    trades = [
+        {"timestamp": int(now * 1000), "side": "sell", "price": 10.0, "amount": 1.0}
+        for _ in range(20)
+    ]
+
+    assert analyzer._preloaded_evidence_is_usable(snapshots, trades, now=now) is False

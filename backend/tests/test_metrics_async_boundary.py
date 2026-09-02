@@ -126,7 +126,7 @@ def test_adaptive_pipeline_metrics_render_without_symbol_labels(monkeypatch) -> 
         "waterfall_hunter_in_flight_evaluations",
         "waterfall_hunter_due_backlog",
         "waterfall_market_evidence_path_total",
-        "waterfall_candle_cache_events_total",
+        "waterfall_candle_cache_events",
     )
     for name in names:
         assert name in payload

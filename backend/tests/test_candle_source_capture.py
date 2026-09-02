@@ -102,7 +102,8 @@ def test_lagged_closed_ohlcv_response_is_used_but_not_cached():
             analyzer._load_closed_series(exchange, "TEST/USDT:USDT", "15m")
         )
 
-    assert first is not None and second is not None
+    assert first is not None
+    assert second is not None
     assert exchange.fetch_count["15m"] == 2
 
 

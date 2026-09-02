@@ -37,7 +37,7 @@ schedule = HunterDeadlineSchedule()
 schedule.sync(candidates, now=100.0)
 assert [s for s, _ in schedule.due_candidates(candidates, live, now=100.0, in_flight=set(), limit=2)] == ["PRE", "WATCH"]
 schedule.mark_started("PRE", "PRE-TRIGGER", now=100.0)
-assert schedule.seconds_until_next_due(candidates, now=100.0, in_flight=set()) == 30.0
+assert schedule.seconds_until_next_due(candidates, now=100.0, in_flight={"WATCH"}) == 30.0
 ```
 
 - [ ] **Step 2: Run `pytest -q backend/tests/test_hunter_schedule.py` and confirm RED because the deadline scheduler does not exist.**
@@ -68,7 +68,7 @@ assert "PRE" in started_before_slow_watch_finished
 ```
 
 - [ ] **Step 2: Run the four hunter-focused test files and confirm RED on the batch-barrier behavior.**
-- [ ] **Step 3: Implement continuous scheduling** using an `in_flight: dict[str, Task]`, a 30-second maintenance deadline, task reaping via `asyncio.wait`, and scheduler wakeups via `_hunter_stop_event`.
+- [ ] **Step 3: Implement continuous scheduling** using an `in_flight: dict[str, Task]`, a caller-supplied maintenance interval (60 seconds in startup), task reaping via `asyncio.wait`, and scheduler wakeups via `_hunter_stop_event`.
 - [ ] **Step 4: Keep `_hunter_last_progress_at` success-only and `_hunter_last_completed_at` as successful maintenance completion; preserve traceback logging for failed evaluations.**
 - [ ] **Step 5: Re-run hunter-focused tests and confirm GREEN.**
 

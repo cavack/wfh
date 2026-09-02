@@ -86,3 +86,34 @@ def test_hunter_discovers_due_pretrigger_without_waiting_for_slow_watch_batch(
         assert pre_started.is_set()
 
     asyncio.run(scenario())
+
+
+def test_hunter_offloads_candidate_db_read_from_event_loop(monkeypatch) -> None:
+    import threading
+
+    _stub_runtime_maintenance(monkeypatch)
+    caller_thread = threading.get_ident()
+    observed_threads: list[int] = []
+
+    def get_candidates() -> dict:
+        observed_threads.append(threading.get_ident())
+        return {}
+
+    monkeypatch.setattr(main.db, "get_all_active_candidates", get_candidates)
+
+    async def scenario() -> None:
+        main._hunter_stop_event.clear()
+        hunter = asyncio.create_task(main.hunter_loop(interval_seconds=0.01))
+        try:
+            for _ in range(100):
+                if observed_threads:
+                    break
+                await asyncio.sleep(0.01)
+        finally:
+            main._hunter_running = False
+            main._hunter_stop_event.set()
+            await asyncio.wait_for(hunter, timeout=1.0)
+
+    asyncio.run(scenario())
+    assert observed_threads
+    assert observed_threads[0] != caller_thread

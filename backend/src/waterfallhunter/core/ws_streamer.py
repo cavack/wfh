@@ -107,7 +107,7 @@ class WebSocketManager:
     def _trade_fingerprint(trade: Dict[str, Any]) -> tuple[Any, ...]:
         trade_id = trade.get("id")
         if trade_id not in (None, ""):
-            return ("id", str(trade_id))
+            return ("id", str(trade_id), None, None, None)
         return (
             "fields", trade.get("timestamp"), trade.get("side"),
             trade.get("price"), trade.get("amount"),
@@ -661,16 +661,21 @@ class WebSocketManager:
             ),
         }
 
-    def prune_stale_cache(self):
-        now = time.time()
-        cutoff = now - self.ttl_seconds
-        for cache in (self.live_orderbooks, self.live_tickers):
-            for key, entry in list(cache.items()):
-                if entry.get("updated_at", 0) < cutoff:
-                    cache.pop(key, None)
-        for key, history in list(self.live_orderbook_history.items()):
+    @staticmethod
+    def _prune_latest_cache(
+        cache: Dict[str, Dict[str, Any]],
+        *,
+        cutoff: float,
+    ) -> None:
+        for key, entry in tuple(cache.items()):
+            if entry.get("updated_at", 0) < cutoff:
+                cache.pop(key, None)
+
+    def _prune_orderbook_history(self, *, cutoff: float) -> None:
+        for key, history in tuple(self.live_orderbook_history.items()):
             fresh = [
-                snapshot for snapshot in history
+                snapshot
+                for snapshot in history
                 if isinstance(snapshot.get("_received_at"), (int, float))
                 and not isinstance(snapshot.get("_received_at"), bool)
                 and float(snapshot["_received_at"]) >= cutoff
@@ -679,30 +684,51 @@ class WebSocketManager:
                 self.live_orderbook_history[key] = fresh[-self.orderbook_history_limit:]
             else:
                 self.live_orderbook_history.pop(key, None)
-        trade_cutoff_ms = (now - self.trade_ttl_seconds) * 1000.0
-        for key, entry in list(self.live_trades.items()):
+
+    def _prune_trade_history(self, *, cutoff_ms: float, now_ms: float) -> None:
+        for key, entry in tuple(self.live_trades.items()):
             rows = entry.get("data") if isinstance(entry, dict) else None
             fresh = [
-                row for row in (rows or [])
+                row
+                for row in (rows or [])
                 if isinstance(row, dict)
                 and isinstance(row.get("timestamp"), (int, float))
                 and not isinstance(row.get("timestamp"), bool)
-                and float(row["timestamp"]) >= trade_cutoff_ms
+                and cutoff_ms <= float(row["timestamp"]) <= now_ms
             ]
             if fresh:
                 entry["data"] = fresh[-self.trade_history_limit:]
             else:
                 self.live_trades.pop(key, None)
-        liquidation_cutoff_ms = (now - self.liquidation_retention_seconds) * 1000.0
-        for key, entry in list(self.live_liquidations.items()):
+
+    def _prune_liquidation_history(self, *, cutoff_ms: float, now_ms: float) -> None:
+        for key, entry in tuple(self.live_liquidations.items()):
             events = [
-                event for event in entry.get("events", [])
-                if isinstance(event, dict) and float(event.get("timestamp", 0)) >= liquidation_cutoff_ms
+                event
+                for event in entry.get("events", [])
+                if isinstance(event, dict)
+                and cutoff_ms <= float(event.get("timestamp", 0)) <= now_ms
             ]
             if events:
                 entry["events"] = events
             else:
                 self.live_liquidations.pop(key, None)
+
+    def prune_stale_cache(self):
+        """Prune all process-local evidence caches to their causal TTL windows."""
+        now = time.time()
+        cutoff = now - self.ttl_seconds
+        for cache in (self.live_orderbooks, self.live_tickers):
+            self._prune_latest_cache(cache, cutoff=cutoff)
+        self._prune_orderbook_history(cutoff=cutoff)
+        self._prune_trade_history(
+            cutoff_ms=(now - self.trade_ttl_seconds) * 1000.0,
+            now_ms=now * 1000.0,
+        )
+        self._prune_liquidation_history(
+            cutoff_ms=(now - self.liquidation_retention_seconds) * 1000.0,
+            now_ms=now * 1000.0,
+        )
 
     async def close_all(self):
         for task in list(self.active_tasks.values()):

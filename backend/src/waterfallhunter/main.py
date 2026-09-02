@@ -27,6 +27,7 @@ from waterfallhunter.core.entry_decision import (
     build_entry_decision,
     build_expired_entry_decision,
     build_invalidated_entry_decision,
+    project_leverage_advisory,
 )
 from waterfallhunter.core.entry_decision_store import (
     EntryDecisionStore,
@@ -577,7 +578,7 @@ if "market_evidence_path_metric" not in globals():
 
 if "candle_cache_events_metric" not in globals():
     candle_cache_events_metric = Gauge(
-        "waterfall_candle_cache_events_total",
+        "waterfall_candle_cache_events",
         "Process-local causal closed-OHLCV cache events.",
         ("outcome",),
     )
@@ -595,6 +596,39 @@ _EVIDENCE_METRIC_STAGES = ("microstructure", "candles", "context", "total")
 _EVIDENCE_METRIC_OUTCOMES = ("complete", "unavailable")
 
 
+def _nonnegative_finite(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) and number >= 0.0 else None
+
+
+def _record_market_evidence_stage_durations(
+    runtime: dict[str, Any],
+    *,
+    outcome: str,
+) -> None:
+    stages = runtime.get("stage_durations_seconds")
+    if not isinstance(stages, dict):
+        return
+    for stage in _EVIDENCE_METRIC_STAGES:
+        duration = _nonnegative_finite(stages.get(stage))
+        if duration is not None:
+            market_evidence_stage_duration_metric.labels(
+                stage=stage, outcome=outcome
+            ).observe(duration)
+
+
+def _record_market_evidence_paths(runtime: dict[str, Any]) -> None:
+    for path, field in (
+        ("ws_hit", "ws_evidence_hits"),
+        ("rest_fallback", "rest_evidence_fallbacks"),
+    ):
+        count = _nonnegative_finite(runtime.get(field))
+        if count is not None and count > 0.0:
+            market_evidence_path_metric.labels(outcome=path).inc(count)
+
+
 def _record_adaptive_pipeline_observation(
     state: object,
     evaluation_duration_seconds: float | None,
@@ -604,48 +638,22 @@ def _record_adaptive_pipeline_observation(
     if state_label not in _HUNTER_METRIC_STATES:
         state_label = "OTHER"
 
-    if (
-        isinstance(evaluation_duration_seconds, (int, float))
-        and not isinstance(evaluation_duration_seconds, bool)
-        and math.isfinite(float(evaluation_duration_seconds))
-        and float(evaluation_duration_seconds) >= 0.0
-    ):
+    evaluation_duration = _nonnegative_finite(evaluation_duration_seconds)
+    if evaluation_duration is not None:
         hunter_evaluation_duration_metric.labels(state=state_label).observe(
-            float(evaluation_duration_seconds)
+            evaluation_duration
         )
 
     runtime = runtime_diagnostics if isinstance(runtime_diagnostics, dict) else {}
-    attempts = runtime.get("source_attempts")
-    if isinstance(attempts, (int, float)) and not isinstance(attempts, bool):
-        if math.isfinite(float(attempts)) and float(attempts) >= 0.0:
-            primary_source_attempts_metric.observe(float(attempts))
+    attempts = _nonnegative_finite(runtime.get("source_attempts"))
+    if attempts is not None:
+        primary_source_attempts_metric.observe(attempts)
 
     outcome = str(runtime.get("outcome") or "unavailable")
     if outcome not in _EVIDENCE_METRIC_OUTCOMES:
         outcome = "unavailable"
-    stages = runtime.get("stage_durations_seconds")
-    if isinstance(stages, dict):
-        for stage in _EVIDENCE_METRIC_STAGES:
-            duration = stages.get(stage)
-            if (
-                isinstance(duration, (int, float))
-                and not isinstance(duration, bool)
-                and math.isfinite(float(duration))
-                and float(duration) >= 0.0
-            ):
-                market_evidence_stage_duration_metric.labels(
-                    stage=stage, outcome=outcome
-                ).observe(float(duration))
-
-    for path, field in (
-        ("ws_hit", "ws_evidence_hits"),
-        ("rest_fallback", "rest_evidence_fallbacks"),
-    ):
-        count = runtime.get(field)
-        if isinstance(count, (int, float)) and not isinstance(count, bool):
-            if math.isfinite(float(count)) and float(count) > 0.0:
-                market_evidence_path_metric.labels(outcome=path).inc(float(count))
-
+    _record_market_evidence_stage_durations(runtime, outcome=outcome)
+    _record_market_evidence_paths(runtime)
 
 def _update_adaptive_pipeline_metrics() -> None:
     hunter_in_flight_metric.set(float(_hunter_in_flight_count))
@@ -781,6 +789,35 @@ def derivative_packet_metric_labels(
         "outcome": "incomplete",
         "reason": reason_code,
     }
+
+
+def _apply_signal_leverage_advisory(
+    metrics: dict[str, Any],
+    execution_suitability: dict[str, Any] | None,
+    *,
+    decision_status: str,
+) -> dict[str, Any]:
+    """Attach a decision-aware, signal-only leverage advisory to live metrics."""
+    advisory = build_signal_leverage_advisory(
+        metrics,
+        execution_suitability,
+        decision_status=decision_status,
+    )
+    metrics["leverage_advisory"] = advisory
+    metrics["leverage_policy"] = {
+        "version": advisory["policy_version"],
+        "minimum": advisory["minimum"],
+        "maximum": advisory["maximum"],
+        "symbol_agnostic": advisory["symbol_agnostic"],
+        "paper_only": True,
+        "advisory_only": True,
+    }
+    metrics["applied_leverage"] = (
+        advisory.get("leverage")
+        if advisory.get("status") == "AVAILABLE"
+        else None
+    )
+    return advisory
 
 
 def _record_derivative_packet_outcome(
@@ -2423,25 +2460,6 @@ async def evaluate_candidate(
         )
         return
 
-    leverage_advisory = build_signal_leverage_advisory(
-        result_metrics,
-        execution_suitability,
-    )
-    result_metrics["leverage_advisory"] = leverage_advisory
-    result_metrics["leverage_policy"] = {
-        "version": leverage_advisory["policy_version"],
-        "minimum": leverage_advisory["minimum"],
-        "maximum": leverage_advisory["maximum"],
-        "symbol_agnostic": leverage_advisory["symbol_agnostic"],
-        "paper_only": True,
-        "advisory_only": True,
-    }
-    result_metrics["applied_leverage"] = (
-        leverage_advisory.get("leverage")
-        if leverage_advisory.get("status") == "AVAILABLE"
-        else None
-    )
-
     reference_age = causal_age_seconds(decision_now_precise, reference_observed_at)
     previous_entry_decision = entry_decision_store.latest_for_symbol(symbol)
     entry_decision = build_entry_decision(
@@ -2453,6 +2471,17 @@ async def evaluate_candidate(
         lifecycle_id=int(data.get("lifecycle_id") or 1),
         previous_decision=previous_entry_decision,
     )
+    leverage_advisory = _apply_signal_leverage_advisory(
+        result_metrics,
+        execution_suitability,
+        decision_status=str(entry_decision.get("decision") or "UNAVAILABLE"),
+    )
+    leverage_projection = project_leverage_advisory(result_metrics)
+    if leverage_projection is not None:
+        entry_decision["leverage_advisory"] = leverage_projection
+        trade_plan = entry_decision.get("trade_plan")
+        if isinstance(trade_plan, dict):
+            trade_plan["leverage"] = leverage_projection.get("leverage")
     try:
         event_id = entry_decision_store.append_if_changed(
             symbol,
@@ -3207,7 +3236,9 @@ async def hunter_loop(
                             expired_count,
                         )
 
-                    candidates = db.get_all_active_candidates()
+                    candidates = await asyncio.to_thread(
+                        db.get_all_active_candidates
+                    )
 
                     inactive_count = await asyncio.to_thread(
                         _reconcile_inactive_actionable_decisions,
@@ -3225,7 +3256,7 @@ async def hunter_loop(
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    logger.error("⚠️ Hunter maintenance error: %s", exc)
+                    logger.exception("⚠️ Hunter maintenance error: %s", exc)
 
                 next_maintenance_at = loop.time() + maintenance_interval
 
@@ -3384,7 +3415,7 @@ async def live_reference_loop(
             )
 
         except asyncio.CancelledError:
-            break
+            raise
 
         except Exception as exc:
             logger.warning(
