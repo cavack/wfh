@@ -1,0 +1,175 @@
+{
+  "contract_version": "wfh_agent_council_v1",
+  "canonical_skill_root": "skills/waterfallhunter",
+  "adapter_skill_root": ".agents/skills",
+  "production_authority_role": "release_certifier",
+  "protected_invariants": {
+    "live_order_placement": "FORBIDDEN",
+    "live_trading_enabled": false,
+    "missing_evidence_directional_imputation": "FORBIDDEN",
+    "entry_ready_minimum": 78.0,
+    "forming_minimum": 55.0,
+    "anti_chase_atr": 1.2,
+    "persistence_before_notification": true,
+    "immutable_signal_provenance": true,
+    "frontend_decision_logic_authority": "BACKEND_ONLY"
+  },
+  "roles": [
+    {
+      "id": "chief_orchestrator",
+      "skills": ["engineering-orchestrator"],
+      "production_authority": false
+    },
+    {
+      "id": "architecture_adversary",
+      "skills": ["repository-architecture-auditor"],
+      "production_authority": false
+    },
+    {
+      "id": "market_evidence_forensics",
+      "skills": ["market-data-evidence-quality"],
+      "production_authority": false
+    },
+    {
+      "id": "strategy_owner",
+      "skills": ["strategy-score-lifecycle"],
+      "production_authority": false
+    },
+    {
+      "id": "quant_validation_lead",
+      "skills": ["scientific-backtest-validation"],
+      "production_authority": false
+    },
+    {
+      "id": "false_positive_hunter",
+      "skills": ["market-data-evidence-quality", "scientific-backtest-validation"],
+      "production_authority": false
+    },
+    {
+      "id": "false_negative_hunter",
+      "skills": ["strategy-score-lifecycle", "scientific-backtest-validation"],
+      "production_authority": false
+    },
+    {
+      "id": "runtime_lead",
+      "skills": ["runtime-reliability-performance"],
+      "production_authority": false
+    },
+    {
+      "id": "backend_data_lead",
+      "skills": ["backend-data-architecture"],
+      "production_authority": false
+    },
+    {
+      "id": "contract_guardian",
+      "skills": ["api-contract-schema-guardian"],
+      "production_authority": false
+    },
+    {
+      "id": "decision_ux_lead",
+      "skills": ["frontend-dashboard-ux"],
+      "production_authority": false
+    },
+    {
+      "id": "security_lead",
+      "skills": ["security-supply-chain"],
+      "production_authority": false
+    },
+    {
+      "id": "incident_telemetry_lead",
+      "skills": ["observability-incident-response"],
+      "production_authority": false
+    },
+    {
+      "id": "regression_lead",
+      "skills": ["verification-regression"],
+      "production_authority": false
+    },
+    {
+      "id": "release_certifier",
+      "skills": ["release-production-certification"],
+      "production_authority": true
+    }
+  ],
+  "routes": {
+    "deep_audit": [
+      "chief_orchestrator",
+      "architecture_adversary",
+      "market_evidence_forensics",
+      "runtime_lead",
+      "backend_data_lead",
+      "contract_guardian",
+      "security_lead",
+      "incident_telemetry_lead",
+      "regression_lead"
+    ],
+    "model_optimization": [
+      "chief_orchestrator",
+      "market_evidence_forensics",
+      "strategy_owner",
+      "quant_validation_lead",
+      "false_positive_hunter",
+      "false_negative_hunter",
+      "regression_lead",
+      "release_certifier"
+    ],
+    "runtime_incident": [
+      "chief_orchestrator",
+      "incident_telemetry_lead",
+      "runtime_lead",
+      "backend_data_lead",
+      "regression_lead",
+      "release_certifier"
+    ],
+    "frontend_contract": [
+      "chief_orchestrator",
+      "contract_guardian",
+      "decision_ux_lead",
+      "regression_lead"
+    ],
+    "security_review": [
+      "chief_orchestrator",
+      "security_lead",
+      "regression_lead",
+      "release_certifier"
+    ],
+    "production_release": [
+      "chief_orchestrator",
+      "regression_lead",
+      "release_certifier"
+    ]
+  },
+  "tools": {
+    "required": [
+      "git",
+      "python"
+    ],
+    "optional": [
+      "github_connector",
+      "remote_desktop_commander_mcp",
+      "web_research",
+      "coderabbit",
+      "mermaid",
+      "docker",
+      "prometheus",
+      "playwright",
+      "codeql",
+      "sonar",
+      "grafana",
+      "alertmanager",
+      "pytest",
+      "market_data_connectors"
+    ]
+  },
+  "terminal_outcomes": [
+    "PROMOTED_CHAMPION",
+    "NO_PROMOTION_EVIDENCE"
+  ],
+  "evidence_taxonomy": [
+    "VERIFIED_FACT",
+    "REPRODUCED_DEFECT",
+    "INFERENCE",
+    "DEBT",
+    "PROPOSAL"
+  ]
+}
