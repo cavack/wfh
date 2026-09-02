@@ -2,6 +2,7 @@ import asyncio
 import time
 import json
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -95,6 +96,15 @@ def test_outcome_capture_is_observational_unique_and_append_only(tmp_path) -> No
         captured_at=101,
     )
     assert capture_id > 0
+    with sqlite3.connect(db_path) as conn:
+        stored_capture = json.loads(
+            conn.execute(
+                "SELECT capture_json FROM decision_outcome_capture WHERE id=?", (capture_id,)
+            ).fetchone()[0]
+        )
+    assert stored_capture["costs"]["funding"]["value"] is None
+    assert stored_capture["costs"]["funding"]["classification"] == "UNAVAILABLE"
+    assert stored_capture["costs"]["exit_slippage"]["value"] is None
     with pytest.raises(ValueError, match="already exists"):
         store.append_outcome_capture(
             decision_event_id,
@@ -132,6 +142,76 @@ def test_outcome_capture_rejects_decision_mutation(tmp_path) -> None:
         )
 
 
+def test_outcome_capture_rejects_available_cost_without_provenance(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    event_id = store.append_if_changed("SXT/USDT:USDT", packet("ENTRY_READY", 84.0, 100))
+    assert event_id is not None
+    with pytest.raises(ValueError, match="funding available cost provenance invalid"):
+        store.append_outcome_capture(
+            event_id,
+            {
+                "observational_only": True,
+                "decision_mutated": False,
+                "costs": {
+                    "funding": {"classification": "OBSERVED_COST", "value": None}
+                },
+            },
+            captured_at=101,
+        )
+
+
+@pytest.mark.parametrize("field", ["trade_eligible", "eligibility", "promotion_allowed"])
+def test_initial_capture_rejects_policy_changing_flags(tmp_path, field):
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    event_id = store.append_if_changed("SXT/USDT:USDT", packet("ENTRY_READY", 84.0, 100))
+    assert event_id is not None
+    with pytest.raises(ValueError, match="observational only"):
+        store.append_outcome_capture(
+            event_id,
+            {"observational_only": True, "decision_mutated": False, field: True},
+            captured_at=101,
+        )
+
+
+def test_initial_capture_normalizes_policy_flags_and_rejects_early_timestamp(tmp_path):
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    event_id = store.append_if_changed("SXT/USDT:USDT", packet("ENTRY_READY", 84.0, 100))
+    assert event_id is not None
+    with pytest.raises(ValueError, match="precedes decision event"):
+        store.append_outcome_capture(
+            event_id,
+            {
+                "observational_only": True,
+                "decision_mutated": False,
+                "trade_eligible": False,
+                "eligibility": None,
+                "promotion_allowed": False,
+            },
+            captured_at=99,
+        )
+    capture_id = store.append_outcome_capture(
+        event_id,
+        {
+            "observational_only": True,
+            "decision_mutated": False,
+            "trade_eligible": False,
+            "eligibility": "SHOULD_NOT_PERSIST",
+            "promotion_allowed": False,
+        },
+        captured_at=100,
+    )
+    with sqlite3.connect(db_path) as conn:
+        payload = json.loads(
+            conn.execute("SELECT capture_json FROM decision_outcome_capture WHERE id=?", (capture_id,)).fetchone()[0]
+        )
+    assert payload["trade_eligible"] is False
+    assert payload["eligibility"] is None
+    assert payload["promotion_allowed"] is False
+
+
 def test_initial_capture_resolves_in_separate_immutable_table(tmp_path) -> None:
     db_path = migrate_test_database(tmp_path / "registry.db")
     store = EntryDecisionStore(db_path)
@@ -156,6 +236,12 @@ def test_initial_capture_resolves_in_separate_immutable_table(tmp_path) -> None:
             "SELECT outcome_status FROM decision_outcome_capture WHERE id=?",
             (capture_id,),
         ).fetchone()[0] == "UNOBSERVED"
+    with pytest.raises(ValueError, match="already exists"):
+        store.resolve_outcome_capture(
+            decision_event_id,
+            {"outcome_status": "OBSERVED", "mfe_pct": 2.0},
+            resolved_at=201,
+        )
 
 
 def test_canonical_append_with_capture_and_observed_not_pending(tmp_path) -> None:
@@ -200,8 +286,53 @@ def test_unchanged_retry_repairs_capture_after_initial_capture_failure(tmp_path,
     p = packet("ENTRY_READY", 84.0, 100)
     event_id = store.append_if_changed_with_capture("SXT/USDT:USDT", p, captured_at=101)
     assert event_id is not None
-    assert store.append_if_changed_with_capture("SXT/USDT:USDT", p, captured_at=101) == event_id
+    assert store.append_if_changed_with_capture("SXT/USDT:USDT", p, captured_at=101) is None
     assert len(store.pending_outcome_captures(mature_before=101)) == 1
+
+
+def test_automatic_capture_binds_exact_parent_packet_and_runtime_provenance(tmp_path):
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    source_revision = "a" * 40
+    store = EntryDecisionStore(db_path, source_revision=source_revision)
+    p = packet("ENTRY_READY", 84.0, 100)
+    p["research_provenance"] = {
+        "decision_contract_sha256": "b" * 64,
+        "contract": {
+            "exchange": "lbank",
+            "mapped_symbol": "SXT/USDT:USDT",
+            "market_type": "linear_usdt_perpetual",
+        },
+        "costs": {
+            "fees": {"value": None, "classification": "UNAVAILABLE", "reason": "not observed"},
+            "entry_slippage": {
+                "value": 0.05,
+                "source": "decision_time_microstructure",
+                "classification": "MODELED_COST",
+            },
+            "exit_slippage": {"value": None, "classification": "UNAVAILABLE", "reason": "not observed"},
+            "funding": {"value": None, "classification": "UNAVAILABLE", "reason": "not observed"},
+        },
+    }
+
+    event_id = store.append_if_changed_with_capture("SXT/USDT:USDT", p, captured_at=100)
+    assert event_id is not None
+    with sqlite3.connect(db_path) as conn:
+        packet_hash = conn.execute(
+            "SELECT packet_hash FROM entry_decision_events WHERE id=?", (event_id,)
+        ).fetchone()[0]
+        capture = json.loads(
+            conn.execute(
+                "SELECT capture_json FROM decision_outcome_capture WHERE decision_event_id=?",
+                (event_id,),
+            ).fetchone()[0]
+        )
+    assert capture["decision_packet_sha256"] == packet_hash
+    assert capture["source_revision"] == source_revision
+    assert capture["source_revision_status"] == "VERIFIED_GIT_REVISION"
+    assert capture["decision_contract_sha256"] == "b" * 64
+    assert capture["contract"]["exchange"] == "lbank"
+    assert capture["trade_plan"] is None
+    assert set(capture["costs"]) == {"fees", "entry_slippage", "exit_slippage", "funding"}
 
 
 def test_tampered_capture_is_rejected_before_resolver(tmp_path, caplog):
@@ -262,7 +393,32 @@ def test_capture_persistence_failure_does_not_change_canonical_result(
 
     assert event_id is not None
     assert store.latest_for_symbol("SXT/USDT:USDT")["decision"] == "ENTRY_READY"
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM entry_decision_events").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM entry_notification_outbox").fetchone()[0] == 1
     assert "Research outcome capture persistence failed" in caplog.text
+
+
+def test_concurrent_capture_repair_is_unique_and_preserves_noop_result(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    p = packet("ENTRY_READY", 84.0, 100)
+    event_id = store.append_if_changed("SXT/USDT:USDT", p)
+    assert event_id is not None
+
+    def repair():
+        return store.append_if_changed_with_capture(
+            "SXT/USDT:USDT", p, captured_at=101
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _index: repair(), range(2)))
+
+    assert results == [None, None]
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM entry_decision_events").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM decision_outcome_capture").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM entry_notification_outbox").fetchone()[0] == 1
 
 
 def test_resolution_rejects_mutating_policy_fields(tmp_path) -> None:
@@ -279,6 +435,49 @@ def test_resolution_rejects_mutating_policy_fields(tmp_path) -> None:
             {"outcome_status": "OBSERVED", "decision_mutated": True},
             resolved_at=200,
         )
+
+
+def test_resolution_rejects_timestamp_before_capture(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    event_id = store.append_if_changed("SXT/USDT:USDT", packet("ENTRY_READY", 84.0, 100))
+    assert event_id is not None
+    store.append_outcome_capture(
+        event_id, {"observational_only": True, "decision_mutated": False}, captured_at=101
+    )
+    with pytest.raises(ValueError, match="precedes initial capture"):
+        store.resolve_outcome_capture(
+            event_id, {"outcome_status": "OBSERVED"}, resolved_at=100
+        )
+
+
+def test_capture_parent_hash_mismatch_is_rejected_before_resolver(tmp_path, caplog) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path, source_revision="a" * 40)
+    event_id = store.append_if_changed_with_capture(
+        "SXT/USDT:USDT", packet("ENTRY_READY", 84.0, 100), captured_at=101
+    )
+    assert event_id is not None
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TRIGGER decision_outcome_capture_no_update")
+        raw = conn.execute(
+            "SELECT capture_json FROM decision_outcome_capture WHERE decision_event_id=?",
+            (event_id,),
+        ).fetchone()[0]
+        payload = json.loads(raw)
+        payload["decision_packet_sha256"] = "f" * 64
+        encoded = json.dumps(payload, allow_nan=False, sort_keys=True, separators=(",", ":"))
+        from waterfallhunter.core.signal_metadata import canonical_sha256
+
+        conn.execute(
+            "UPDATE decision_outcome_capture SET capture_json=?,capture_hash=? WHERE decision_event_id=?",
+            (encoded, canonical_sha256(payload), event_id),
+        )
+    with caplog.at_level("ERROR"):
+        assert store.resolve_matured_outcomes(
+            lambda _: pytest.fail("resolver called"), mature_before=101
+        ) == 0
+    assert "parent decision packet hash mismatch" in caplog.text
 
 
 def test_pending_and_resolution_are_idempotent_and_isolate_research_failures(tmp_path) -> None:
@@ -335,8 +534,11 @@ def test_terminal_scientific_unavailable_resolution_is_finalized(tmp_path) -> No
         event_id, {"observational_only": True, "decision_mutated": False}, captured_at=101
     )
 
+    class ExplicitScientificAbsence(RuntimeError):
+        terminal = True
+
     assert store.resolve_matured_outcomes(
-        lambda _: (_ for _ in ()).throw(RuntimeError("scientific data permanently unavailable")),
+        lambda _: (_ for _ in ()).throw(ExplicitScientificAbsence("domain proof")),
         mature_before=101,
     ) == 0
     assert store.pending_outcome_captures(mature_before=101) == []
@@ -345,6 +547,25 @@ def test_terminal_scientific_unavailable_resolution_is_finalized(tmp_path) -> No
             "SELECT outcome_status FROM decision_outcome_resolution WHERE decision_event_id=?",
             (event_id,),
         ).fetchone()[0] == "UNAVAILABLE"
+
+
+def test_file_not_found_and_temporary_provider_failures_remain_retryable(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    first = store.append_if_changed_with_capture(
+        "FIRST", packet("ENTRY_READY", 84.0, 100), captured_at=101
+    )
+    second = store.append_if_changed_with_capture(
+        "SECOND", packet("ENTRY_READY", 84.0, 100), captured_at=101
+    )
+    assert first is not None and second is not None
+    failures = iter((FileNotFoundError("mount not ready"), TimeoutError("provider timeout")))
+
+    def resolver(_capture):
+        raise next(failures)
+
+    assert store.resolve_matured_outcomes(resolver, mature_before=101, limit=2) == 0
+    assert [row["decision_event_id"] for row in store.pending_outcome_captures(mature_before=101)] == [first, second]
 
 
 def test_entry_outcome_worker_runs_bounded_cycle_and_stops(tmp_path) -> None:
@@ -365,10 +586,35 @@ def test_entry_outcome_worker_runs_bounded_cycle_and_stops(tmp_path) -> None:
 
     assert worker.batch_size == 2
     assert worker.interval_seconds == 60.0
-    assert worker.run_once(now=100_000) == 1
+    assert asyncio.run(worker.run_once(now=100_000)) == 1
     assert calls == [7]
     worker.stop()
     assert worker._running is False
+
+
+def test_entry_outcome_worker_round_robin_prevents_retryable_row_starvation(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    first = store.append_if_changed_with_capture(
+        "FIRST", packet("ENTRY_READY", 84.0, 100), captured_at=101
+    )
+    second = store.append_if_changed_with_capture(
+        "SECOND", packet("ENTRY_READY", 84.0, 100), captured_at=101
+    )
+    assert first is not None and second is not None
+    calls = []
+
+    async def resolver(capture):
+        calls.append(capture["decision_event_id"])
+        if capture["decision_event_id"] == first:
+            raise TimeoutError("temporary provider timeout")
+        return {"outcome_status": "OBSERVED"}
+
+    worker = EntryOutcomeResolutionWorker(store, resolver, batch_size=1, interval_seconds=60)
+    assert asyncio.run(worker.run_once(now=100_000)) == 0
+    assert asyncio.run(worker.run_once(now=100_000)) == 1
+    assert calls == [first, second]
+    assert [row["decision_event_id"] for row in store.pending_outcome_captures(mature_before=101)] == [first]
 
 
 def test_latest_transition_uses_append_order_when_clock_moves_backward(tmp_path) -> None:

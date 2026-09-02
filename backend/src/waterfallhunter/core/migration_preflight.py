@@ -270,6 +270,7 @@ def _applied_runtime_schema_valid(
                     "entry_notification_outbox",
                     "entry_decision_advisories",
                     "decision_outcome_capture",
+                    "decision_outcome_resolution",
                 }
             ),
             check_user_version=3,

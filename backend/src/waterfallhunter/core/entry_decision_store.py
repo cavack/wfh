@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import inspect
 import logging
+import math
 import sqlite3
 import time
 import asyncio
@@ -50,8 +52,21 @@ class StaleCandidateLifecycleError(RuntimeError):
 
 
 class EntryDecisionStore:
-    def __init__(self, db_path: str | Path, *, verify_schema: bool = True):
+    def __init__(
+        self,
+        db_path: str | Path,
+        *,
+        verify_schema: bool = True,
+        source_revision: str | None = None,
+    ):
         self.db_path = str(db_path)
+        revision = str(source_revision or "").strip()
+        self.source_revision = (
+            revision
+            if len(revision) == 40
+            and all(character in "0123456789abcdef" for character in revision)
+            else None
+        )
         if verify_schema:
             require_managed_schema(
                 self.db_path,
@@ -89,6 +104,55 @@ class EntryDecisionStore:
             separators=(",", ":"),
         )
         return payload, canonical_sha256(packet)
+
+    @staticmethod
+    def _normalized_outcome_costs(
+        costs: Any, *, captured_at: int
+    ) -> dict[str, dict[str, Any]]:
+        """Return four explicit cost records; unavailable never means zero."""
+        source = costs if isinstance(costs, dict) else {}
+        normalized: dict[str, dict[str, Any]] = {}
+        allowed = {
+            "OBSERVED_COST",
+            "RECONSTRUCTED_COST",
+            "MODELED_COST",
+            _OUTCOME_UNAVAILABLE,
+        }
+        for name in ("fees", "entry_slippage", "exit_slippage", "funding"):
+            item = source.get(name) if isinstance(source.get(name), dict) else {}
+            classification = str(item.get("classification") or _OUTCOME_UNAVAILABLE)
+            if classification not in allowed:
+                raise ValueError(f"{name} cost classification invalid")
+            value = item.get("value")
+            available_value = bool(
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(float(value))
+                and float(value) >= 0
+            )
+            if classification == _OUTCOME_UNAVAILABLE:
+                normalized[name] = {
+                    "value": None,
+                    "source": None,
+                    "classification": _OUTCOME_UNAVAILABLE,
+                    "observed_at": None,
+                    "interval": None,
+                    "available": False,
+                    "reason": str(item.get("reason") or f"{name} unavailable"),
+                }
+                continue
+            if not available_value or not str(item.get("source") or "").strip():
+                raise ValueError(f"{name} available cost provenance invalid")
+            normalized[name] = {
+                **item,
+                "value": float(value),
+                "classification": classification,
+                "observed_at": item.get("observed_at", captured_at),
+                "interval": item.get("interval") or "decision_time_estimate",
+                "available": True,
+                "reason": None,
+            }
+        return normalized
 
     @staticmethod
     def _material_projection(packet: dict[str, Any]) -> dict[str, Any]:
@@ -400,24 +464,44 @@ class EntryDecisionStore:
             or capture.get(_DECISION_MUTATED) is not False
         ):
             raise ValueError("capture must be observational only")
+        if any(
+            field in capture and capture[field] is True
+            for field in ("trade_eligible", "eligibility", "promotion_allowed")
+        ):
+            raise ValueError("capture must be observational only")
         outcome_status = str(capture.get("outcome_status") or _OUTCOME_UNOBSERVED)
         if outcome_status not in {_OUTCOME_UNOBSERVED, "OBSERVED"}:
             raise ValueError("outcome status invalid")
-        persisted = {
-            **capture,
-            "capture_version": _OUTCOME_CAPTURE_VERSION,
-            "captured_at": captured_at,
-            "outcome_status": outcome_status,
-        }
-        payload, payload_hash = self._encode(persisted)
         created_at = int(time.time())
         with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
             decision = conn.execute(
-                "SELECT id FROM entry_decision_events WHERE id=?",
+                "SELECT id,event_at,packet_hash FROM entry_decision_events WHERE id=?",
                 (decision_event_id,),
             ).fetchone()
             if decision is None:
                 raise ValueError("decision event missing")
+            if captured_at < int(decision[1]):
+                raise ValueError("capture timestamp precedes decision event")
+            parent_hash = str(decision[2])
+            supplied_parent_hash = capture.get("decision_packet_sha256")
+            if supplied_parent_hash is not None and supplied_parent_hash != parent_hash:
+                raise ValueError("capture parent decision packet hash mismatch")
+            persisted = {
+                **capture,
+                "capture_version": _OUTCOME_CAPTURE_VERSION,
+                "captured_at": captured_at,
+                "decision_event_at": int(decision[1]),
+                "decision_packet_sha256": parent_hash,
+                "outcome_status": outcome_status,
+            }
+            persisted["costs"] = self._normalized_outcome_costs(
+                capture.get("costs"), captured_at=captured_at
+            )
+            # Research evidence is never an eligibility or promotion authority.
+            persisted["trade_eligible"] = False
+            persisted["eligibility"] = None
+            persisted["promotion_allowed"] = False
+            payload, payload_hash = self._encode(persisted)
             try:
                 cursor = conn.execute(
                     "INSERT INTO decision_outcome_capture ("
@@ -449,10 +533,12 @@ class EntryDecisionStore:
         event_id = self.append_if_changed(
             symbol, packet, expected_lifecycle_id=expected_lifecycle_id
         )
+        capture_event_id = event_id
+        capture_packet = packet
         # The canonical append and research capture deliberately use separate
         # transactions.  If the capture write was interrupted, a retry sees an
         # unchanged canonical packet; use that event as the repair target.
-        if event_id is None:
+        if capture_event_id is None:
             with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
                 row = conn.execute(
                     "SELECT id,decision,packet_json,packet_hash "
@@ -480,18 +566,43 @@ class EntryDecisionStore:
                 # A different transition won the race after the no-op append;
                 # never attach this capture to that event.
                 return None
-            event_id = int(row[0])
+            capture_event_id = int(row[0])
+            capture_packet = existing_packet
+        provenance = (
+            capture_packet.get("research_provenance")
+            if isinstance(capture_packet.get("research_provenance"), dict)
+            else {}
+        )
+        revision = provenance.get("source_revision") or (
+            self.source_revision if event_id is not None else None
+        )
+        revision = str(revision) if revision is not None else None
+        revision_verified = bool(
+            revision
+            and len(revision) == 40
+            and all(character in "0123456789abcdef" for character in revision)
+        )
         capture = {
             _OBSERVATIONAL_ONLY: True,
             _DECISION_MUTATED: False,
-            "decision": packet.get("decision"),
+            "decision": capture_packet.get("decision"),
             "symbol": str(symbol),
-            "lifecycle_id": packet.get("lifecycle_id"),
+            "lifecycle_id": capture_packet.get("lifecycle_id"),
             "outcome_status": _OUTCOME_UNOBSERVED,
+            "decision_packet_sha256": canonical_sha256(capture_packet),
+            "source_revision": revision if revision_verified else None,
+            "source_revision_status": (
+                "VERIFIED_GIT_REVISION" if revision_verified else _OUTCOME_UNAVAILABLE
+            ),
+            "decision_contract_sha256": provenance.get("decision_contract_sha256"),
+            "contract": provenance.get("contract"),
+            "trade_plan": capture_packet.get("trade_plan"),
+            "costs": provenance.get("costs"),
+            "outcome_contract": provenance.get("outcome_contract"),
         }
         try:
             self.append_outcome_capture(
-                event_id, capture,
+                capture_event_id, capture,
                 captured_at=captured_at,
             )
         except ValueError as exc:
@@ -499,7 +610,7 @@ class EntryDecisionStore:
             if "already exists" not in str(exc):
                 logger.exception(
                     "Research outcome capture persistence failed",
-                    extra={"symbol": str(symbol), "decision_event_id": event_id,
+                    extra={"symbol": str(symbol), "decision_event_id": capture_event_id,
                            "capture_failure_type": "persistence"},
                 )
         except Exception:
@@ -510,14 +621,14 @@ class EntryDecisionStore:
                 "Research outcome capture persistence failed",
                 extra={
                     "symbol": str(symbol),
-                    "decision_event_id": event_id,
+                    "decision_event_id": capture_event_id,
                     "capture_failure_type": "persistence",
                 },
             )
         return event_id
 
     def pending_outcome_captures(
-        self, *, mature_before: int, limit: int = 100
+        self, *, mature_before: int, limit: int = 100, after_id: int = 0
     ) -> list[dict[str, Any]]:
         """Return immutable initial captures whose horizon has matured."""
         if isinstance(mature_before, bool) or not isinstance(mature_before, int):
@@ -527,29 +638,36 @@ class EntryDecisionStore:
             rows = conn.execute(
                 """
                 SELECT c.id, c.decision_event_id, c.captured_at,
-                       c.capture_json, c.capture_hash
+                       c.capture_json, c.capture_hash,
+                       e.packet_hash AS decision_packet_hash
                 FROM decision_outcome_capture c
+                INNER JOIN entry_decision_events e
+                  ON e.id = c.decision_event_id
                 LEFT JOIN decision_outcome_resolution r
                   ON r.decision_event_id = c.decision_event_id
                 WHERE r.id IS NULL AND c.outcome_status = 'UNOBSERVED'
                   AND c.captured_at <= ?
-                ORDER BY c.captured_at, c.id LIMIT ?
+                  AND c.id > ?
+                ORDER BY c.id LIMIT ?
                 """,
-                (mature_before, max(1, min(int(limit), 1000))),
+                (mature_before, max(0, int(after_id)), max(1, min(int(limit), 1000))),
             ).fetchall()
         valid: list[dict[str, Any]] = []
         for row in rows:
             item = dict(row)
             try:
-                self._verified_record(
+                decoded = self._verified_record(
                     item["capture_json"], item["capture_hash"],
                     label="outcome capture",
                 )
+                if decoded.get("decision_packet_sha256") != item["decision_packet_hash"]:
+                    raise ValueError("parent decision packet hash mismatch")
             except ValueError as exc:
                 # Do not invoke user/provider code with tampered research data,
                 # and do not manufacture a terminal outcome for corrupted data.
-                logger.error(
-                    "Rejecting tampered outcome capture",
+                logger.exception(
+                    "Rejecting tampered outcome capture: %s",
+                    exc,
                     extra={
                         "decision_event_id": item.get("decision_event_id"),
                         "capture_id": item.get("id"),
@@ -558,7 +676,7 @@ class EntryDecisionStore:
                     },
                 )
                 continue
-            valid.append(item)
+            valid.append({**decoded, **item})
         return valid
 
     matured_outcome_captures = pending_outcome_captures
@@ -599,11 +717,14 @@ class EntryDecisionStore:
         persisted["promotion_decision"] = "DO_NOT_PROMOTE"
         payload, payload_hash = self._encode(persisted)
         with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
-            if conn.execute(
-                "SELECT 1 FROM decision_outcome_capture WHERE decision_event_id=?",
+            capture = conn.execute(
+                "SELECT captured_at FROM decision_outcome_capture WHERE decision_event_id=?",
                 (decision_event_id,),
-            ).fetchone() is None:
+            ).fetchone()
+            if capture is None:
                 raise ValueError("initial outcome capture missing")
+            if resolved_at < int(capture[0]):
+                raise ValueError("resolution timestamp precedes initial capture")
             try:
                 cursor = conn.execute(
                     """INSERT INTO decision_outcome_resolution
@@ -640,30 +761,7 @@ class EntryDecisionStore:
         source are terminal.  Unknown errors remain retryable so a transient
         provider regression cannot permanently discard evidence.
         """
-        text = str(exc).casefold()
-        exception_name = type(exc).__name__.casefold()
-        if (
-            getattr(exc, "terminal", False)
-            or isinstance(exc, (FileNotFoundError, NotImplementedError))
-            or any(
-                marker in exception_name
-                for marker in ("scientificdataunavailable", "outcomeunavailable", "nodata")
-            )
-            or any(
-                marker in text
-                for marker in (
-                    "scientific unavailable",
-                    "permanently unavailable",
-                    "unsupported provider",
-                    "no scientific data",
-                    "not found",
-                    "status code 404",
-                    "status code 410",
-                    "http 404",
-                    "http 410",
-                )
-            )
-        ):
+        if getattr(exc, "terminal", False) is True:
             return OutcomeFailureDisposition.TERMINAL_UNAVAILABLE
         return OutcomeFailureDisposition.RETRYABLE
 
@@ -821,25 +919,96 @@ class EntryOutcomeResolutionWorker:
         *,
         batch_size: int = 3,
         interval_seconds: float = 900.0,
+        close_delay_seconds: int = 120,
     ):
         self.store = store
         self.resolver = resolver
         self.batch_size = max(1, min(int(batch_size), 100))
         self.interval_seconds = max(60.0, float(interval_seconds))
+        self.close_delay_seconds = max(60, int(close_delay_seconds))
         self._running = False
+        self._scan_after_id = 0
 
-    def run_once(self, *, now: int | None = None) -> int:
+    async def run_once(self, *, now: int | None = None) -> int:
+        """Resolve one sequential bounded batch without blocking the event loop."""
         current = int(time.time() if now is None else now)
-        return self.store.resolve_matured_outcomes(
-            self.resolver, mature_before=current - 86_400, limit=self.batch_size
+        mature_before = current - 86_400 - self.close_delay_seconds
+        if not hasattr(self.store, "pending_outcome_captures"):
+            return await asyncio.to_thread(
+                self.store.resolve_matured_outcomes,
+                self.resolver,
+                mature_before=mature_before,
+                limit=self.batch_size,
+            )
+        captures = await asyncio.to_thread(
+            self.store.pending_outcome_captures,
+            mature_before=mature_before,
+            limit=self.batch_size,
+            after_id=self._scan_after_id,
         )
+        if not captures and self._scan_after_id:
+            self._scan_after_id = 0
+            captures = await asyncio.to_thread(
+                self.store.pending_outcome_captures,
+                mature_before=mature_before,
+                limit=self.batch_size,
+                after_id=0,
+            )
+        resolved = 0
+        for attempt, capture in enumerate(captures, start=1):
+            self._scan_after_id = int(capture["id"])
+            try:
+                result = self.resolver(capture)
+                if inspect.isawaitable(result):
+                    result = await result
+                if result is None:
+                    continue
+            except Exception as exc:
+                disposition = self.store.classify_outcome_failure(exc)
+                logger.warning(
+                    "Matured outcome resolver failed",
+                    extra={
+                        "decision_event_id": int(capture["decision_event_id"]),
+                        "failure_type": type(exc).__name__,
+                        "failure_disposition": disposition.value,
+                        "retryable": disposition is OutcomeFailureDisposition.RETRYABLE,
+                        "batch_attempt": attempt,
+                        "batch_limit": len(captures),
+                    },
+                )
+                if disposition is OutcomeFailureDisposition.TERMINAL_UNAVAILABLE:
+                    await asyncio.to_thread(
+                        self.store._persist_unavailable_resolution,
+                        int(capture["decision_event_id"]),
+                        exc,
+                    )
+                continue
+            try:
+                await asyncio.to_thread(
+                    self.store.resolve_outcome_capture,
+                    int(capture["decision_event_id"]),
+                    result,
+                    resolved_at=current,
+                )
+                resolved += 1
+            except Exception as exc:
+                logger.warning(
+                    "Matured outcome persistence failed; leaving capture pending",
+                    extra={
+                        "decision_event_id": int(capture["decision_event_id"]),
+                        "failure_type": type(exc).__name__,
+                        "failure_disposition": OutcomeFailureDisposition.RETRYABLE.value,
+                        "retryable": True,
+                    },
+                )
+        return resolved
 
     async def run_forever(self) -> None:
         self._running = True
         try:
             while self._running:
                 try:
-                    await asyncio.to_thread(self.run_once)
+                    await self.run_once()
                 except asyncio.CancelledError:
                     raise
                 except Exception:

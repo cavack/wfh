@@ -92,6 +92,7 @@ from waterfallhunter.core.signal_metadata_store import (
     require_signal_metadata_completeness,
 )
 from waterfallhunter.core.lbank_signal_outcome import (
+    LBankSignalOutcomeEvaluator,
     LBankSignalOutcomeStore,
     LBankSignalSettlementWorker,
 )
@@ -166,6 +167,7 @@ stage_lifecycle_store = StageLifecycleStore(
 entry_decision_store = EntryDecisionStore(
     db_path=db.db_path,
     verify_schema=False,
+    source_revision=settings.source_revision,
 )
 
 lifecycle_v2_shadow_store = LifecycleV2ShadowStore(
@@ -1115,15 +1117,232 @@ def _build_signal_settlement_worker(
     )
 
 
-def _resolve_entry_outcome(capture: dict) -> dict:
-    """Resolve only when the immutable capture contains exact LBank geometry."""
-    # Current forward captures intentionally contain decision metadata only.
-    # Never infer entry/TP/SL from spot or another venue.
+def _cost_component(
+    value: object,
+    *,
+    source: str,
+    observed_at: int,
+    reason: str,
+) -> dict[str, object]:
+    available = bool(
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+        and float(value) >= 0
+    )
     return {
-        "outcome_status": "UNAVAILABLE",
-        "cost": None,
-        "provenance": None,
-        "reason": "scientific unavailable: exact LBank outcome geometry was not captured",
+        "value": float(value) if available else None,
+        "source": source if available else None,
+        "classification": "MODELED_COST" if available else "UNAVAILABLE",
+        "observed_at": observed_at if available else None,
+        "interval": "decision_time_estimate" if available else None,
+        "available": available,
+        "reason": None if available else reason,
+    }
+
+
+def _entry_outcome_research_provenance(
+    metrics: dict[str, Any],
+    *,
+    decision_contract_hash: str,
+    decision_at: int,
+) -> dict[str, Any]:
+    """Freeze decision-time identity and costs without changing model behavior."""
+    exchange = str(metrics.get("exchange") or "").strip().lower()
+    mapped_symbol = str(metrics.get("mapped_symbol") or "").strip()
+    microstructure = (
+        metrics.get("microstructure")
+        if isinstance(metrics.get("microstructure"), dict)
+        else {}
+    )
+    revision = str(settings.source_revision or "").strip()
+    revision_verified = bool(
+        len(revision) == 40
+        and all(character in "0123456789abcdef" for character in revision)
+    )
+    unavailable_cost = {
+        "value": None,
+        "source": None,
+        "classification": "UNAVAILABLE",
+        "observed_at": None,
+        "interval": None,
+        "available": False,
+    }
+    return {
+        "source_revision": revision if revision_verified else None,
+        "source_revision_status": (
+            "VERIFIED_GIT_REVISION" if revision_verified else "UNAVAILABLE"
+        ),
+        "decision_contract_sha256": decision_contract_hash,
+        "contract": {
+            "available": exchange == "lbank" and bool(mapped_symbol),
+            "exchange": exchange or None,
+            "mapped_symbol": mapped_symbol or None,
+            "market_type": "linear_usdt_perpetual",
+            "settlement_asset": "USDT",
+            "spot_substitution_allowed": False,
+            "cross_venue_substitution_allowed": False,
+        },
+        "outcome_contract": {
+            "version": "lbank_linear_perpetual_outcome_v1",
+            "direction": "SHORT",
+            "horizon_seconds": 86_400,
+            "timeframe": "1m",
+            "closed_candles_only": True,
+            "complete_window_required": True,
+            "price_source": "closed_1m_trade_ohlcv_proxy",
+        },
+        "costs": {
+            "fees": {**unavailable_cost, "reason": "fee ledger not observed at decision time"},
+            "entry_slippage": _cost_component(
+                microstructure.get("entry_slippage_pct"),
+                source="decision_time_microstructure",
+                observed_at=decision_at,
+                reason="entry slippage estimate unavailable",
+            ),
+            "exit_slippage": _cost_component(
+                microstructure.get("exit_slippage_pct"),
+                source="decision_time_microstructure",
+                observed_at=decision_at,
+                reason="exit slippage estimate unavailable",
+            ),
+            "funding": {
+                **unavailable_cost,
+                "reason": "future holding-interval funding not yet observed",
+            },
+        },
+    }
+
+
+def _decision_outcome_classification(status: str) -> str:
+    if status == "STOP_FIRST":
+        return "STOP"
+    if status == "NO_LEVEL_HIT_24H":
+        return "TIMEOUT"
+    if status in {"TP1_ONLY_24H", "TP1_THEN_STOP", "TP2_FIRST", "TP2_AFTER_TP1"}:
+        return "WIN"
+    return "UNAVAILABLE"
+
+
+def _decision_outcome_gross_r(
+    classification: str, status: str, plan: dict[str, Any], candles: list
+) -> float | None:
+    try:
+        entry = float(plan["entry_price"])
+        stop = float(plan["stop_loss"])
+        risk = stop - entry
+        if risk <= 0:
+            return None
+        if classification == "STOP":
+            return -1.0
+        if classification == "WIN":
+            target_key = "take_profit_2" if status.startswith("TP2") else "take_profit_1"
+            return (entry - float(plan[target_key])) / risk
+        if classification == "TIMEOUT" and candles:
+            return (entry - float(candles[-1][4])) / risk
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+    return None
+
+
+async def _resolve_entry_outcome(capture: dict) -> dict | None:
+    """Resolve an exact LBank perpetual capture from a complete closed 1m window."""
+    contract = capture.get("contract") if isinstance(capture.get("contract"), dict) else {}
+    plan = capture.get("trade_plan") if isinstance(capture.get("trade_plan"), dict) else {}
+    outcome_contract = (
+        capture.get("outcome_contract")
+        if isinstance(capture.get("outcome_contract"), dict)
+        else {}
+    )
+    if (
+        contract.get("available") is not True
+        or str(contract.get("exchange") or "").lower() != "lbank"
+        or contract.get("market_type") != "linear_usdt_perpetual"
+        or not contract.get("mapped_symbol")
+        or outcome_contract.get("closed_candles_only") is not True
+        or outcome_contract.get("complete_window_required") is not True
+        or not all(plan.get(key) is not None for key in (
+            "entry_price", "stop_loss", "take_profit_1", "take_profit_2"
+        ))
+    ):
+        return {
+            "outcome_status": "UNAVAILABLE",
+            "classification": "UNAVAILABLE",
+            "cost": capture.get("costs"),
+            "provenance": {
+                "decision_packet_sha256": capture.get("decision_packet_sha256"),
+                "source_revision": capture.get("source_revision"),
+                "contract": contract or None,
+            },
+            "reason": "exact LBank linear perpetual capture contract unavailable",
+        }
+    signal = {
+        "id": int(capture["decision_event_id"]),
+        "symbol": str(capture.get("symbol") or ""),
+        "triggered_at": int(capture["decision_event_at"]),
+        "entry_price": plan["entry_price"],
+        "stop_loss": plan["stop_loss"],
+        "take_profit_1": plan["take_profit_1"],
+        "take_profit_2": plan["take_profit_2"],
+        "trigger_metrics_json": json.dumps(
+            {"exchange": "lbank", "mapped_symbol": contract["mapped_symbol"]}
+        ),
+    }
+    trigger_ms = signal["triggered_at"] * 1000
+    fetch_start_ms = (trigger_ms // 60_000) * 60_000
+    observation_start_ms = (
+        trigger_ms if trigger_ms % 60_000 == 0 else fetch_start_ms + 60_000
+    )
+    horizon_seconds = int(outcome_contract.get("horizon_seconds") or 86_400)
+    candles = await _fetch_signal_outcome_candles(
+        signal,
+        fetch_start_ms,
+        observation_start_ms + horizon_seconds * 1000,
+    )
+    if not candles:
+        return None
+    outcome = LBankSignalOutcomeEvaluator.evaluate(
+        signal, candles, horizon_seconds=horizon_seconds
+    )
+    status = str(outcome.get("status") or "")
+    if status == "DATA_INCOMPLETE":
+        return None
+    classification = _decision_outcome_classification(status)
+    gross_r = _decision_outcome_gross_r(classification, status, plan, candles)
+    costs = capture.get("costs") if isinstance(capture.get("costs"), dict) else {}
+    cost_complete = bool(
+        costs
+        and all(
+            isinstance(costs.get(name), dict)
+            and costs[name].get("available") is True
+            for name in ("fees", "entry_slippage", "exit_slippage", "funding")
+        )
+    )
+    provenance_complete = bool(
+        isinstance(capture.get("source_revision"), str)
+        and len(capture["source_revision"]) == 40
+        and isinstance(capture.get("decision_contract_sha256"), str)
+        and len(capture["decision_contract_sha256"]) == 64
+        and classification in {"WIN", "STOP", "TIMEOUT"}
+    )
+    return {
+        "outcome_status": "OBSERVED",
+        "classification": classification,
+        "raw_outcome_status": status,
+        "outcome": outcome,
+        "gross_r": gross_r,
+        "net_r": None,
+        "cost": {"components": costs, "complete": cost_complete},
+        "provenance": {
+            "decision_packet_sha256": capture.get("decision_packet_sha256"),
+            "decision_contract_sha256": capture.get("decision_contract_sha256"),
+            "source_revision": capture.get("source_revision"),
+            "contract": contract,
+            "outcome_contract": outcome_contract,
+        },
+        "scientific_tier": (
+            "TIER_C" if cost_complete and provenance_complete else "UNAVAILABLE"
+        ),
     }
 
 
@@ -2281,6 +2500,13 @@ async def evaluate_candidate(
                     lifecycle_id=int(data.get("lifecycle_id") or 1),
                     previous_decision=previous_entry_decision,
                 )
+                invalidated_decision["research_provenance"] = (
+                    _entry_outcome_research_provenance(
+                        reference_failure_metrics,
+                        decision_contract_hash=decision_contract_hash,
+                        decision_at=decision_now,
+                    )
+                )
                 try:
                     decision_event_id = entry_decision_store.append_if_changed_with_capture(
                         symbol,
@@ -2543,6 +2769,11 @@ async def evaluate_candidate(
         trade_plan = entry_decision.get("trade_plan")
         if isinstance(trade_plan, dict):
             trade_plan["leverage"] = leverage_projection.get("leverage")
+    entry_decision["research_provenance"] = _entry_outcome_research_provenance(
+        result_metrics,
+        decision_contract_hash=decision_contract_hash,
+        decision_at=decision_now,
+    )
     try:
         event_id = entry_decision_store.append_if_changed_with_capture(
             symbol,

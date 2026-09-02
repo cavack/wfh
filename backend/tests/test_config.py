@@ -35,6 +35,13 @@ def test_lbank_execution_shadow_is_disabled_by_default():
         configured.lbank_execution_shadow_enabled
         is False
     )
+    assert configured.source_revision is None
+
+
+def test_exact_build_revision_is_available_to_forward_capture():
+    configured = Settings(_env_file=None, source_revision="a" * 40)
+
+    assert configured.source_revision == "a" * 40
 
 
 def test_lbank_execution_shadow_defaults_are_bounded_operational_values():
