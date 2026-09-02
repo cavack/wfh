@@ -34,10 +34,10 @@ def test_installer_sets_repo_local_hooks_path_and_is_idempotent(tmp_path: Path) 
     installer = repo / "scripts/install_wfh_council_hooks.sh"
 
     subprocess.run(["bash", str(installer)], cwd=repo, check=True)
-    assert _git(repo, "config", "--local", "--get", "core.hooksPath") == ".githooks"
+    assert _git(repo, "config", "--worktree", "--get", "core.hooksPath") == ".githooks"
 
     subprocess.run(["bash", str(installer)], cwd=repo, check=True)
-    assert _git(repo, "config", "--local", "--get", "core.hooksPath") == ".githooks"
+    assert _git(repo, "config", "--worktree", "--get", "core.hooksPath") == ".githooks"
 
 
 def test_hooks_and_installer_are_executable() -> None:
@@ -51,3 +51,32 @@ def test_hooks_are_validation_only_and_never_deploy() -> None:
     combined = "\n".join(path.read_text(encoding="utf-8") for path in (PRE_COMMIT, PRE_PUSH, INSTALLER))
     for marker in forbidden:
         assert marker not in combined
+
+
+def test_linked_worktree_install_does_not_set_shared_hooks_path(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "council@example.invalid"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "Council Test"], cwd=root, check=True)
+    (root / "seed").write_text("seed\n", encoding="utf-8")
+    subprocess.run(["git", "add", "seed"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed"], cwd=root, check=True)
+
+    linked = tmp_path / "linked"
+    subprocess.run(["git", "worktree", "add", "-q", "-b", "council-test", str(linked)], cwd=root, check=True)
+    (linked / ".githooks").mkdir()
+    (linked / "scripts").mkdir()
+    for source, dest in (
+        (PRE_COMMIT, linked / ".githooks/pre-commit"),
+        (PRE_PUSH, linked / ".githooks/pre-push"),
+        (INSTALLER, linked / "scripts/install_wfh_council_hooks.sh"),
+    ):
+        shutil.copy2(source, dest)
+
+    subprocess.run(["bash", str(linked / "scripts/install_wfh_council_hooks.sh")], cwd=linked, check=True)
+    assert _git(linked, "config", "--worktree", "--get", "core.hooksPath") == ".githooks"
+    shared = subprocess.run(
+        ["git", "config", "--local", "--get", "core.hooksPath"], cwd=root, text=True, capture_output=True
+    )
+    assert shared.returncode == 1
