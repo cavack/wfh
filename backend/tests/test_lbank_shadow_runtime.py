@@ -210,6 +210,19 @@ def test_startup_with_shadow_disabled_schedules_no_shadow_task(
         "_build_signal_settlement_worker",
         lambda: fake_settlement,
     )
+    class FakeOutcomeWorker:
+        def run_forever(self):
+            return ("entry_outcome_resolution", 900.0)
+
+        def stop(self):
+            pass
+
+    fake_outcome_worker = FakeOutcomeWorker()
+    monkeypatch.setattr(
+        main,
+        "_build_entry_outcome_resolution_worker",
+        lambda: fake_outcome_worker,
+    )
     monkeypatch.setattr(
         main.feature_replay_worker,
         "run_forever",
@@ -274,9 +287,8 @@ def test_startup_with_shadow_disabled_schedules_no_shadow_task(
         is None
     )
 
-    assert len(
-        scheduled
-    ) == 7
+    assert len(scheduled) == 8
+    assert main._entry_outcome_resolution_worker is fake_outcome_worker
 
     assert (
         "feature_replay",
@@ -287,6 +299,7 @@ def test_startup_with_shadow_disabled_schedules_no_shadow_task(
         "settlement",
         900.0,
     ) in scheduled
+    assert ("entry_outcome_resolution", 900.0) in scheduled
 
     assert not any(
         (
@@ -358,6 +371,19 @@ def test_startup_with_shadow_enabled_schedules_shadow_worker(
         main,
         "_build_signal_settlement_worker",
         lambda: fake_settlement,
+    )
+    class FakeOutcomeWorker:
+        def run_forever(self):
+            return ("entry_outcome_resolution", 900.0)
+
+        def stop(self):
+            pass
+
+    fake_outcome_worker = FakeOutcomeWorker()
+    monkeypatch.setattr(
+        main,
+        "_build_entry_outcome_resolution_worker",
+        lambda: fake_outcome_worker,
     )
     monkeypatch.setattr(
         main.feature_replay_worker,
@@ -440,9 +466,8 @@ def test_startup_with_shadow_enabled_schedules_shadow_worker(
         in scheduled
     )
 
-    assert len(
-        scheduled
-    ) == 8
+    assert len(scheduled) == 9
+    assert main._entry_outcome_resolution_worker is fake_outcome_worker
 
     assert (
         "feature_replay",
@@ -453,6 +478,7 @@ def test_startup_with_shadow_enabled_schedules_shadow_worker(
         "settlement",
         900.0,
     ) in scheduled
+    assert ("entry_outcome_resolution", 900.0) in scheduled
 
 
 def test_shadow_health_is_observational_and_does_not_gate_main_health(
