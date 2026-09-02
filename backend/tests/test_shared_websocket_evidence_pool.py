@@ -389,3 +389,63 @@ def test_failed_shared_unwatch_retries_before_advancing_active_membership() -> N
     asyncio.run(scenario())
     assert unwatch_calls == [(old_symbol,), (old_symbol,)]
     assert watch_calls == [(new_symbol,)]
+
+
+def test_shared_unwatch_purges_retired_symbol_from_ccxt_caches() -> None:
+    manager = WebSocketManager()
+    symbol = "OLD/USDT:USDT"
+
+    class _Exchange:
+        def __init__(self) -> None:
+            self.orderbooks = {symbol: {"bids": []}}
+            self.trades = {symbol: [1]}
+            self.tickers = {symbol: {"last": 1.0}}
+
+    exchange = _Exchange()
+
+    async def unwatch(symbols, params=None):
+        return {}
+
+    async def scenario() -> None:
+        ok = await manager._unwatch_shared_evidence_symbols(
+            unwatch,
+            (symbol,),
+            ex_name="binance",
+            kind="ticker",
+            exchange=exchange,
+        )
+        assert ok is True
+
+    asyncio.run(scenario())
+    assert symbol not in exchange.orderbooks
+    assert symbol not in exchange.trades
+    assert symbol not in exchange.tickers
+
+
+def test_shared_membership_churn_schedules_bounded_client_recycle(monkeypatch) -> None:
+    manager = WebSocketManager()
+    manager.shared_evidence_client_generation_limit = 2
+    # Model post-connect churn; initial population is intentionally not counted.
+    manager.shared_evidence_exchanges["binance"] = object()
+    recycled: list[str] = []
+
+    async def fake_recycle(ex_name: str) -> None:
+        recycled.append(ex_name)
+
+    async def fake_consumer(ex_name: str, kind: str) -> None:
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(manager, "_recycle_shared_evidence_exchange", fake_recycle)
+    monkeypatch.setattr(manager, "_watch_shared_evidence_stream", fake_consumer)
+
+    async def scenario() -> None:
+        manager.subscribe_shared_evidence("binance", "A/USDT:USDT")
+        manager.subscribe_shared_evidence("binance", "B/USDT:USDT")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        for task in list(manager.active_tasks.values()):
+            task.cancel()
+        await asyncio.gather(*manager.active_tasks.values(), return_exceptions=True)
+
+    asyncio.run(scenario())
+    assert recycled == ["binance"]
