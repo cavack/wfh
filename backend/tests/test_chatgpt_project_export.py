@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from pathlib import Path
 
@@ -18,9 +19,12 @@ EXPECTED_FILES = {
 }
 
 
-def test_export_is_lightweight_complete_and_hash_verified(tmp_path: Path) -> None:
-    out = tmp_path / "sources"
-    exporter.export_project_sources(out, allowed_root=tmp_path)
+def test_export_is_lightweight_complete_and_hash_verified(monkeypatch, tmp_path: Path) -> None:
+    export_root = tmp_path / "exports"
+    out = export_root / "sources"
+    monkeypatch.setattr(exporter, "EXPORT_ROOT", export_root)
+    monkeypatch.setattr(exporter, "DEFAULT_EXPORT_DIR", out)
+    exporter.export_project_sources()
 
     assert {path.name for path in out.iterdir()} == EXPECTED_FILES
     assert not list(out.rglob("SKILL.md"))
@@ -37,38 +41,44 @@ def test_export_is_lightweight_complete_and_hash_verified(tmp_path: Path) -> Non
         assert hashlib.sha256(payload).hexdigest() == expected_hash
 
 
-def test_export_is_deterministic_for_same_repository_state(tmp_path: Path) -> None:
-    first = tmp_path / "first"
-    second = tmp_path / "second"
-    exporter.export_project_sources(first, allowed_root=tmp_path)
-    exporter.export_project_sources(second, allowed_root=tmp_path)
+def test_export_is_deterministic_for_same_repository_state(monkeypatch, tmp_path: Path) -> None:
+    export_root = tmp_path / "exports"
+    out = export_root / "sources"
+    monkeypatch.setattr(exporter, "EXPORT_ROOT", export_root)
+    monkeypatch.setattr(exporter, "DEFAULT_EXPORT_DIR", out)
+    exporter.export_project_sources()
+    first = {name: (out / name).read_bytes() for name in EXPECTED_FILES}
+    exporter.export_project_sources()
 
     for name in EXPECTED_FILES:
-        assert (first / name).read_bytes() == (second / name).read_bytes()
+        assert first[name] == (out / name).read_bytes()
 
 
-def test_export_rejects_destination_outside_allowed_root(tmp_path: Path) -> None:
+def test_export_rejects_destination_outside_allowed_root(monkeypatch, tmp_path: Path) -> None:
     allowed = tmp_path / "allowed"
-    allowed.mkdir()
     outside = tmp_path / "outside"
+    monkeypatch.setattr(exporter, "EXPORT_ROOT", allowed)
+    monkeypatch.setattr(exporter, "DEFAULT_EXPORT_DIR", outside)
 
     try:
-        exporter.export_project_sources(outside, allowed_root=allowed)
+        exporter.export_project_sources()
     except ValueError as exc:
         assert "allowed root" in str(exc).lower()
     else:
         raise AssertionError("export must reject destinations outside the allowed root")
 
 
-def test_export_rejects_symlink_target_escape(tmp_path: Path) -> None:
+def test_export_rejects_symlink_target_escape(monkeypatch, tmp_path: Path) -> None:
     allowed = tmp_path / "allowed"
     out = allowed / "sources"
     out.mkdir(parents=True)
     escaped = tmp_path / "escaped.md"
     (out / "00-WFH-CHATGPT-ROUTER-v2.md").symlink_to(escaped)
+    monkeypatch.setattr(exporter, "EXPORT_ROOT", allowed)
+    monkeypatch.setattr(exporter, "DEFAULT_EXPORT_DIR", out)
 
     try:
-        exporter.export_project_sources(out, allowed_root=allowed)
+        exporter.export_project_sources()
     except ValueError as exc:
         assert "escape" in str(exc).lower() or "allowed" in str(exc).lower()
     else:
@@ -82,3 +92,8 @@ def test_cli_rejects_user_controlled_destination_argument() -> None:
         assert exc.code == 2
     else:
         raise AssertionError("CLI must not accept a user-controlled filesystem destination")
+
+
+def test_export_api_does_not_accept_destination_paths() -> None:
+    signature = inspect.signature(exporter.export_project_sources)
+    assert list(signature.parameters) == []

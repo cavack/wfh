@@ -9,7 +9,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_DIR = REPO_ROOT / "docs" / "chatgpt-project"
-DEFAULT_EXPORT_DIR = REPO_ROOT / ".work" / "chatgpt-project-sources-v2"
+EXPORT_ROOT = REPO_ROOT / ".work"
+DEFAULT_EXPORT_DIR = EXPORT_ROOT / "chatgpt-project-sources-v2"
 OVERLAY_FILES = (
     "00-WFH-CHATGPT-ROUTER-v2.md",
     "01-WFH-SKILL-CATALOG-v2.md",
@@ -42,8 +43,9 @@ def _confined_path(path: Path, allowed_root: Path, *, label: str, strict: bool =
     return candidate
 
 
-def export_project_sources(destination: Path, *, allowed_root: Path) -> Path:
-    destination = _confined_path(destination, allowed_root, label="destination")
+def export_project_sources() -> Path:
+    EXPORT_ROOT.mkdir(parents=True, exist_ok=True)
+    destination = _confined_path(DEFAULT_EXPORT_DIR, EXPORT_ROOT, label="destination")
     destination.mkdir(parents=True, exist_ok=True)
     hashes: dict[str, str] = {}
     source_root = SOURCE_DIR.resolve(strict=True)
@@ -76,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
         description="Export the ChatGPT Project Sources overlay to the fixed repository-local .work directory"
     )
     parser.parse_args(argv)
-    export_project_sources(DEFAULT_EXPORT_DIR, allowed_root=REPO_ROOT)
+    export_project_sources()
     return 0
 
 
