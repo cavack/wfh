@@ -1,6 +1,24 @@
 {
+  "artifact": "MODEL_LAYER_CROSSWALK",
+  "availability_differences": null,
+  "decision_transitions": {},
+  "first_blockers": {},
   "input": "normalized_research.jsonl",
+  "joint_blockers": {},
   "matched_packet_count": 0,
+  "readiness_coverage_deltas": {
+    "observed_minus_expected_candles": {
+      "count": 0,
+      "mean": null,
+      "reason": "no normalized runtime rows with complete outcomes"
+    },
+    "readiness_minus_coverage": {
+      "count": 0,
+      "mean": null,
+      "reason": "no normalized runtime rows with complete outcomes"
+    }
+  },
   "reason": "no normalized runtime rows with complete outcomes",
-  "status": "NOT_RUN_INSUFFICIENT_EVIDENCE"
+  "status": "NOT_RUN_INSUFFICIENT_EVIDENCE",
+  "version": "v1"
 }

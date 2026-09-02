@@ -24,8 +24,19 @@ def _artifact_status(rows: list[dict]) -> str:
 def analyze(rows: list[dict], *, input_name: str = "normalized_research.jsonl") -> tuple[dict, dict]:
     status = _artifact_status(rows)
     if status == NOT_RUN:
-        base = {"status": NOT_RUN, "reason": "no normalized runtime rows with complete outcomes", "input": input_name, "matched_packet_count": 0}
-        reuse = {"status": NOT_RUN, "reason": "no normalized runtime rows with complete outcomes", "input": input_name, "row_count": len(rows), "families": []}
+        reason = "no normalized runtime rows with complete outcomes"
+        base = {
+            "artifact": "MODEL_LAYER_CROSSWALK", "version": "v1",
+            "status": NOT_RUN, "reason": reason, "input": input_name,
+            "matched_packet_count": 0,
+            "availability_differences": None, "decision_transitions": {},
+            "first_blockers": {}, "joint_blockers": {},
+            "readiness_coverage_deltas": {
+                "readiness_minus_coverage": {"count": 0, "mean": None, "reason": reason},
+                "observed_minus_expected_candles": {"count": 0, "mean": None, "reason": reason},
+            },
+        }
+        reuse = {"artifact": "EVIDENCE_REUSE_MATRIX", "version": "v1", "status": NOT_RUN, "reason": reason, "input": input_name, "row_count": len(rows), "families": []}
         return base, reuse
     matched = [r for r in rows if r.get("packet_id") is not None]
     availability = collections.Counter()
