@@ -1,0 +1,272 @@
+{
+  "contract_version": "WFH_MODEL_PROBLEM_LEDGER.v3",
+  "items": [
+    {
+      "classification": "VERIFIED_FACT",
+      "id": "ME-P0-001",
+      "severity": "P0_SCIENTIFIC",
+      "statement": "Available historical compiled evidence is Tier-2 development-grade, ~15.94 days, and cannot support promotion."
+    },
+    {
+      "classification": "VERIFIED_FACT",
+      "id": "ME-P0-002",
+      "severity": "P0_SCIENTIFIC",
+      "statement": "Outcome integrity lacks cost-adjusted net-R and has only 210 complete outcomes of 790 cache rows; historical stage2 variants max at 2 complete outcomes."
+    },
+    {
+      "classification": "REPRODUCED_DEFECT",
+      "evidence": {
+        "by_state": {
+          "FUEL-RICH": {
+            "max": 184.4,
+            "n": 20,
+            "p50": 74.4,
+            "p95": 149.4
+          },
+          "PRE-TRIGGER": {
+            "max": 22.4,
+            "n": 1,
+            "p50": 22.4,
+            "p95": 22.4
+          },
+          "WATCH": {
+            "max": 4168.4,
+            "n": 141,
+            "p50": 2113.4,
+            "p95": 4156.4
+          }
+        },
+        "freshness": {
+          "max": 4168.4,
+          "p50": 1908.4,
+          "p95": 4125.4,
+          "p99": 4167.4
+        },
+        "total": 162,
+        "usable_age_n": 162
+      },
+      "id": "ME-P0-003",
+      "severity": "P0_RUNTIME_MEASUREMENT",
+      "statement": "Current Production WATCH freshness is severely delayed while FUEL-RICH is materially fresher; optimization metrics can be contaminated by observation latency."
+    },
+    {
+      "classification": "VERIFIED_FACT",
+      "id": "ME-P1-001",
+      "severity": "P1_MODEL_AUDIT",
+      "statement": "Current callers use distinct ScoreV2 strict/watch and Entry Decision readiness contracts; timing, structure, and execution semantics differ. Intentional specialization versus drift/double-counting remains unresolved and is not a reproduced defect.",
+      "evidence": {
+        "sources": [
+          "backend/src/waterfallhunter/core/score_v2.py",
+          "backend/src/waterfallhunter/core/entry_decision.py",
+          "backend/src/waterfallhunter/core/multi_exchange_validator.py",
+          "backend/src/waterfallhunter/main.py"
+        ],
+        "differences": [
+          "timing: ScoreV2 includes two_closed_candles and volume_acceleration; Entry Decision has separate timing helper and >=10 timing gate",
+          "structure: ScoreV2 maximum 35 with support_broken; Entry Decision maximum 20",
+          "execution: strict ScoreV2 and Entry Decision both require complete/approved microstructure, but spread policy differs (0.50 vs 0.30 documented)"
+        ]
+      },
+      "status": "OPEN_SEMANTIC_AUDIT"
+    },
+    {
+      "classification": "VERIFIED_FACT",
+      "id": "ME-P1-002",
+      "severity": "P1_RUNTIME_MEASUREMENT",
+      "statement": "Current cumulative evidence acquisition is REST-heavy: ws_share=0.036067 with 507 ws hits and 13550 REST fallbacks."
+    },
+    {
+      "classification": "VERIFIED_FACT",
+      "id": "ME-P1-003",
+      "severity": "P1_SIGNAL_OBSERVABILITY",
+      "statement": "Current Production signal_ledger_total and signal_outcomes_total metrics are zero at baseline capture; new natural forward evidence is not yet available from these counters."
+    },
+    {
+      "classification": "VERIFIED_FACT",
+      "evidence": {
+        "caller": "backend/src/waterfallhunter/main.py:2496-2519",
+        "decision_authority": "build_entry_decision then append_if_changed",
+        "shadow_excluded": true
+      },
+      "id": "CANONICAL-DECISION-AUTHORITY",
+      "problem": "Entry Decision is the sole canonical user-facing decision; lifecycle and ScoreV2 outputs are inputs/context, not independent entry instructions.",
+      "severity": "P1_MODEL_SEMANTICS",
+      "solution": "Keep ranking, lifecycle-v2 shadow, leverage, and legacy scores non-authoritative; compare them through explicit crosswalks only.",
+      "status": "PROTECTED_CONTRACT"
+    },
+    {
+      "classification": "VERIFIED_FACT",
+      "evidence": {
+        "watch_p95_age_seconds": 4156.4,
+        "due_backlog": 147,
+        "ws_hits": 507,
+        "rest_fallbacks": 13550,
+        "ws_share": 0.036067
+      },
+      "id": "SEMANTIC-MEASUREMENT-CONTAMINATION",
+      "problem": "Observed WATCH evidence is delayed and acquisition is REST-heavy, so apparent model rejection/readiness differences are confounded by observation latency and availability.",
+      "severity": "P0_RUNTIME_MEASUREMENT",
+      "solution": "Repair/censor freshness and collect matched causal packets before comparing semantics or searching parameters.",
+      "status": "OPEN_BLOCKER"
+    },
+    {
+      "classification": "VERIFIED_FACT",
+      "evidence": {
+        "natural_signal_ledger_total": 0.0,
+        "natural_signal_outcomes_total": 0.0,
+        "complete_outcomes": 210,
+        "outcome_rows": 790,
+        "tier": "TIER_2_DEVELOPMENT_GRADE_NOT_PROMOTION_EVIDENCE",
+        "span_days": 15.942642491106634
+      },
+      "id": "SEMANTIC-PROMOTION-READINESS",
+      "problem": "Available evidence cannot identify whether unresolved layer differences improve outcomes or merely alter availability.",
+      "severity": "P0_SCIENTIFIC",
+      "solution": "Collect immutable natural outcomes with cost-adjusted net-R and run preregistered matched replay/OOS evaluation.",
+      "status": "OPEN_BLOCKER"
+    },
+    {
+      "classification": "INTENTIONAL_SEPARATION",
+      "evidence": {
+        "sources": [
+          "backend/src/waterfallhunter/core/risk_manager.py:74-223",
+          "backend/src/waterfallhunter/main.py:2478-2519"
+        ],
+        "bounds": "4-18x",
+        "advisory_only": true
+      },
+      "id": "LEVERAGE-ADVISORY-SEPARATION",
+      "problem": "Leverage has independent causal/risk bounds and is not a readiness or lifecycle gate.",
+      "severity": "P1_MODEL_SEMANTICS",
+      "solution": "Exclude leverage from model champion scoring; report unavailable/not-recommended without fallback.",
+      "status": "PROTECTED_CONTRACT"
+    },
+    {
+      "classification": "VERIFIED_FACT",
+      "evidence": {
+        "source": "MEASUREMENT_READINESS_AUDIT.md",
+        "source_sha": "d129264b22bacbe4601c2ee8a373a9c1e2cbac30",
+        "blocked_gates": [
+          "WATCH freshness",
+          "natural signal/outcome denominator",
+          "cost-adjusted net-R"
+        ],
+        "protected_gates": [
+          "OOS/final holdout unopened",
+          "repository and production identity"
+        ]
+      },
+      "id": "ME-P0-004",
+      "problem": "Measurement readiness is insufficient for scientific comparison or parameter search even though deterministic replay and layer-divergence measurements are possible.",
+      "severity": "P0_SCIENTIFIC",
+      "solution": "Run a preregistered matched crosswalk with causal freshness, explicit unavailable states, immutable outcome linkage, and cost-adjusted net-R before optimization.",
+      "status": "OPEN_BLOCKER"
+    },
+    {
+      "classification": "PROPOSAL",
+      "evidence": {
+        "artifact": "DATA_OUTCOME_INTEGRITY_PLAN.md",
+        "current_code_sha": "d129264b22bacbe4601c2ee8a373a9c1e2cbac30",
+        "required_controls": [
+          "append-only immutable causal record",
+          "explicit unavailable and insufficiency states",
+          "cost-adjusted net-R reconciliation",
+          "provenance and replay hash validation",
+          "protected final holdout"
+        ]
+      },
+      "id": "ME-P0-005",
+      "problem": "The current evidence pipeline does not yet provide a promotion-ready, point-in-time outcome denominator with complete costs and immutable cross-layer provenance.",
+      "severity": "P0_SCIENTIFIC",
+      "solution": "Implement and validate the staged data/outcome integrity controls in DATA_OUTCOME_INTEGRITY_PLAN.md before any parameter search.",
+      "status": "OPEN_PROPOSAL"
+    },
+    {
+      "classification": "PROPOSAL",
+      "evidence": {
+        "artifact": "FP_FN_DIAGNOSIS_PROTOCOL.md",
+        "unit": "immutable point-in-time candidate packet",
+        "required_strata": [
+          "lifecycle",
+          "freshness",
+          "evidence availability/acquisition path",
+          "symbol/time window",
+          "trade-plan/execution suitability"
+        ],
+        "primary_utility": "cost-adjusted net-R",
+        "status": "NOT_RUN"
+      },
+      "id": "ME-P1-004",
+      "problem": "FP/FN attribution cannot be interpreted until stale/unavailable packets are separated from eligible outcomes and the three layer differences are compared on matched causal packets.",
+      "severity": "P1_SCIENTIFIC",
+      "solution": "Preregister and execute FP_FN_DIAGNOSIS_PROTOCOL.md only after measurement and outcome-integrity gates pass.",
+      "status": "OPEN_PROPOSAL"
+    },
+    {
+      "classification": "PROPOSAL",
+      "evidence": {
+        "artifact": "GATE_ABLATION_PROTOCOL.md",
+        "status": "NOT_RUN",
+        "baseline_contract": {
+          "forming": 55,
+          "entry_ready": 78,
+          "coverage": 65,
+          "anti_chase_atr": 1.2
+        },
+        "safeguards": [
+          "paired immutable packets",
+          "explicit unavailable states",
+          "first-blocking plus joint-failure attribution",
+          "leverage excluded",
+          "final holdout protected"
+        ]
+      },
+      "id": "ME-P1-005",
+      "problem": "Raw gate rejection counts cannot identify causal contribution because score, coverage, freshness, hard gates, trade-plan presence, and Anti-Chase may be mutually binding.",
+      "severity": "P1_SCIENTIFIC",
+      "solution": "Execute the paired single-gate and preregistered interaction ablations only after measurement and outcome-integrity gates pass.",
+      "status": "OPEN_PROPOSAL"
+    },
+    {
+      "classification": "VERIFIED_FACT",
+      "evidence": {
+        "artifact": "DATA_OUTCOME_FIELD_GAP.json",
+        "status_counts": {
+          "AVAILABLE": 18,
+          "DERIVABLE_CAUSALLY": 4,
+          "MISSING": 2,
+          "INVALID_FOR_SCIENCE": 1
+        },
+        "blocking_gaps": [
+          "complete realized fee/slippage/funding packet",
+          "normalized canonical signal/replay/outcome join",
+          "non-zero natural outcome denominator"
+        ]
+      },
+      "id": "ME-P0-006",
+      "problem": "Existing persistence contains most causal decision fields, but complete realized cost fields and a normalized immutable signal-to-outcome export are not guaranteed.",
+      "severity": "P0_SCIENTIFIC",
+      "solution": "Build a research compiler/export from existing append-only records and reject or explicitly exclude incomplete cost/provenance rows.",
+      "status": "OPEN_BLOCKER"
+    },
+    {
+      "classification": "VERIFIED_FACT",
+      "evidence": {
+        "artifact": "MEASUREMENT_ROOT_CAUSE_EVIDENCE.json",
+        "tests": 79,
+        "red_test": false,
+        "watch_policy": "REST-only",
+        "ws_share": 0.036067
+      },
+      "id": "ME-P0-007",
+      "problem": "The stale WATCH population and low WS share are caused by an intentional WATCH acquisition policy plus backlog/throughput conditions; no scheduler/cache/WebSocket implementation defect was reproduced.",
+      "severity": "P0_RUNTIME_MEASUREMENT",
+      "solution": "Censor or repair stale WATCH observations and measure state-specific acquisition separately; do not patch or lower thresholds without a failing reproduction.",
+      "status": "OPEN_BLOCKER"
+    }
+  ],
+  "mission_id": "WFH-ME-V3-20260902",
+  "optimization_disposition": "BLOCKED_PENDING_SEMANTIC_CROSSWALK_AND_MEASUREMENT_READINESS",
+  "source_sha": "d129264b22bacbe4601c2ee8a373a9c1e2cbac30",
+  "semantic_map": "MODEL_SEMANTIC_MAP.md"
+}

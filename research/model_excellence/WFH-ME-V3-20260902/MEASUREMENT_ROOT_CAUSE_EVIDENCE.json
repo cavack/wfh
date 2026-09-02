@@ -1,0 +1,29 @@
+{
+  "contract_version": "WFH_MEASUREMENT_ROOT_CAUSE_EVIDENCE.v1",
+  "mission_id": "WFH-ME-V3-20260902",
+  "source_sha": "d129264b22bacbe4601c2ee8a373a9c1e2cbac30",
+  "classification": "VERIFIED_FACT",
+  "root_cause": "WATCH candidates intentionally retire WebSocket subscriptions and use REST fallback; the observed stale WATCH population and backlog contaminate model measurement but do not reproduce a scheduler, cache, or WebSocket implementation defect.",
+  "observations": {
+    "watch_p95_age_seconds": 4156.4,
+    "watch_due_backlog": 147,
+    "ws_hits": 507,
+    "rest_fallbacks": 13550,
+    "ws_share": 0.036067
+  },
+  "verified_semantics": {
+    "cadence": "deadline-based start-to-start with concurrency 12",
+    "watch_policy": "REST-only acquisition",
+    "pre_trigger_and_armed": "direct WebSocket streams",
+    "fuel_rich": "bounded shared WebSocket pool",
+    "websocket_hit_requirement": "three fresh orderbook samples and at least twenty fresh trades",
+    "fallback": "REST when preload freshness/completeness checks fail"
+  },
+  "test_evidence": {
+    "measurement_path_tests": 52,
+    "scheduler_lifecycle_websocket_consistency_tests": 27,
+    "red_test": false,
+    "implementation_fix_warranted": false
+  },
+  "disposition": "CENSOR_OR_REPAIR_STALE_WATCH_OBSERVATIONS_BEFORE_SCIENTIFIC_COMPARISON; DO_NOT_LOWER_MODEL_THRESHOLDS"
+}
