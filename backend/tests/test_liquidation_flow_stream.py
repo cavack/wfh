@@ -437,6 +437,8 @@ def test_runtime_diagnostics_exposes_liquidation_fanout_shape() -> None:
         "liquidation_tasks": 2,
         "shared_liquidation_tasks": 1,
         "shared_liquidation_subscribers": 2,
+        "shared_evidence_tasks": 0,
+        "shared_evidence_subscribers": 0,
     }
 
 

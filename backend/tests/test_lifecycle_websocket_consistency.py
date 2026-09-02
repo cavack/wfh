@@ -561,3 +561,47 @@ def test_readded_candidate_rejects_queued_stale_lifecycle_before_mutation(monkey
     )
     assert main.scanner.active_candidates[symbol] is current
     assert current["analysis_status"] == "fresh_generation"
+
+
+def test_fuel_rich_uses_shared_market_evidence_pool_without_direct_subscription(monkeypatch) -> None:
+    source = ("binance", "FUEL/USDT:USDT")
+    direct_subscribed: list[tuple[str, str]] = []
+    direct_unsubscribed: list[tuple[str, str]] = []
+    shared_subscribed: list[tuple[str, str]] = []
+    shared_unsubscribed: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        main.validator.ws_manager,
+        "subscribe",
+        lambda exchange, mapped: direct_subscribed.append((exchange, mapped)),
+    )
+    monkeypatch.setattr(
+        main.validator.ws_manager,
+        "unsubscribe",
+        lambda exchange, mapped: direct_unsubscribed.append((exchange, mapped)),
+    )
+    monkeypatch.setattr(
+        main.validator.ws_manager,
+        "subscribe_shared_evidence",
+        lambda exchange, mapped: shared_subscribed.append((exchange, mapped)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        main.validator.ws_manager,
+        "unsubscribe_shared_evidence",
+        lambda exchange, mapped: shared_unsubscribed.append((exchange, mapped)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        main.validator.ws_manager,
+        "has_direct_evidence_subscription",
+        lambda exchange, mapped: False,
+        raising=False,
+    )
+
+    main._sync_websocket_evidence_subscription(source, source, state="FUEL-RICH")
+
+    assert direct_subscribed == []
+    assert direct_unsubscribed == []
+    assert shared_subscribed == [source]
+    assert shared_unsubscribed == []

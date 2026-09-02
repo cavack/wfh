@@ -7,13 +7,10 @@ from waterfallhunter import main
 from waterfallhunter.core.signal_metadata import STRICT_STRATEGY_PROFILE
 
 
-def test_failed_veto_state_persistence_keeps_websocket_subscription(monkeypatch) -> None:
-    symbol = "VETO/USDT:USDT"
+def _prepare_veto_evaluation(monkeypatch, *, symbol: str, state_persisted: bool):
     monkeypatch.setattr(main.scanner, "active_candidates", {symbol: {}})
     monkeypatch.setattr(
-        main.execution_decision_logger,
-        "observe_evaluation",
-        lambda *args, **kwargs: True,
+        main.execution_decision_logger, "observe_evaluation", lambda *args, **kwargs: True
     )
     monkeypatch.setattr(
         main.scanner,
@@ -48,19 +45,34 @@ def test_failed_veto_state_persistence_keeps_websocket_subscription(monkeypatch)
             },
         ),
     )
-    monkeypatch.setattr(main.db, "update_candidate_state", lambda *args: False)
     monkeypatch.setattr(
-        main.production_evidence_recorder,
-        "record",
-        lambda *args, **kwargs: True,
+        main.db, "update_candidate_state", lambda *args: state_persisted
     )
-    unsubscribed = []
+    monkeypatch.setattr(
+        main.production_evidence_recorder, "record", lambda *args, **kwargs: True
+    )
+    monkeypatch.setattr(main.entry_decision_store, "latest_for_symbol", lambda _symbol: None)
+    monkeypatch.setattr(
+        main.entry_decision_store,
+        "append_if_changed",
+        lambda *_args, **_kwargs: 9001,
+    )
+    direct_unsubscribed: list[tuple[str, str]] = []
+    shared_unsubscribed: list[tuple[str, str]] = []
     monkeypatch.setattr(
         main.validator.ws_manager,
         "unsubscribe",
-        lambda *args: unsubscribed.append(args),
+        lambda *args: direct_unsubscribed.append(args),
     )
+    monkeypatch.setattr(
+        main.validator.ws_manager,
+        "unsubscribe_shared_evidence",
+        lambda *args: shared_unsubscribed.append(args),
+    )
+    return direct_unsubscribed, shared_unsubscribed
 
+
+def _evaluate(symbol: str) -> None:
     asyncio.run(
         main.evaluate_candidate(
             symbol,
@@ -68,4 +80,26 @@ def test_failed_veto_state_persistence_keeps_websocket_subscription(monkeypatch)
         )
     )
 
-    assert unsubscribed == []
+
+def test_failed_veto_state_persistence_keeps_websocket_subscription(monkeypatch) -> None:
+    symbol = "VETO/USDT:USDT"
+    direct, shared = _prepare_veto_evaluation(
+        monkeypatch, symbol=symbol, state_persisted=False
+    )
+
+    _evaluate(symbol)
+
+    assert direct == []
+    assert shared == []
+
+
+def test_successful_veto_state_persistence_retires_direct_and_shared_websocket(monkeypatch) -> None:
+    symbol = "VETOCLEAN/USDT:USDT"
+    direct, shared = _prepare_veto_evaluation(
+        monkeypatch, symbol=symbol, state_persisted=True
+    )
+
+    _evaluate(symbol)
+
+    assert direct == [("binance", symbol)]
+    assert shared == [("binance", symbol)]

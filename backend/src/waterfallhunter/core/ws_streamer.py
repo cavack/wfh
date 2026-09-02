@@ -49,6 +49,10 @@ class WebSocketManager:
     def __init__(self):
         self.exchanges_names = ['binance', 'bybit', 'kucoin', 'okx', 'mexc', 'bingx']
         self.exchanges: Dict[str, Any] = {}
+        # Keep shared FUEL-RICH subscriptions on dedicated CCXT Pro clients so
+        # their dynamic unwatch operations cannot cancel PRE-TRIGGER/ARMED
+        # direct subscriptions that use the same venue/message hashes.
+        self.shared_evidence_exchanges: Dict[str, Any] = {}
 
         # ساختار کش: { 'exchange:symbol': {'data': orderbook, 'updated_at': timestamp} }
         self.live_orderbooks: Dict[str, Dict[str, Any]] = {}
@@ -69,6 +73,11 @@ class WebSocketManager:
         # desired symbols separately so PRE-TRIGGER evidence uses one bounded
         # consumer instead of one WebSocket subscription per symbol.
         self.liquidation_subscribers: Dict[str, set[str]] = {}
+        # Wave B: FUEL-RICH symbols may share one bounded multi-symbol
+        # orderbook/trade/ticker task family per capable exchange.
+        self.shared_evidence_subscribers: Dict[str, set[str]] = {}
+        self.unsupported_shared_evidence_exchanges: set[str] = set()
+        self.shared_evidence_symbol_limit = 64
 
         # قانون سخت: دیتای قدیمی‌تر از 5 ثانیه منقضی (Stale) محسوب می‌شود
         self.ttl_seconds = 5.0
@@ -144,17 +153,29 @@ class WebSocketManager:
         )[-self.trade_history_limit:]
         self.live_trades[stream_id] = {"data": fresh, "updated_at": now}
 
-    async def _get_exchange(self, ex_name: str) -> Any:
+    @staticmethod
+    def _new_exchange(ex_name: str) -> Any:
         if ccxt_pro is None:
             raise RuntimeError("CCXT Pro is not installed; WebSocket streaming is unavailable")
+        ccxt_id = MultiExchangeGateway._ccxt_exchange_id(ex_name)
+        ex_class = getattr(ccxt_pro, ccxt_id)
+        return ex_class({
+            'enableRateLimit': True,
+            'options': {'defaultType': 'swap'}
+        })
+
+    async def _get_exchange(self, ex_name: str) -> Any:
         if ex_name not in self.exchanges:
-            ccxt_id = MultiExchangeGateway._ccxt_exchange_id(ex_name)
-            ex_class = getattr(ccxt_pro, ccxt_id)
-            self.exchanges[ex_name] = ex_class({
-                'enableRateLimit': True,
-                'options': {'defaultType': 'swap'}
-            })
+            self.exchanges[ex_name] = self._new_exchange(ex_name)
         return self.exchanges[ex_name]
+
+    async def _get_shared_evidence_exchange(self, ex_name: str) -> Any:
+        # Three shared task kinds start together. Serialize first construction
+        # so exactly one dedicated exchange client exists per venue.
+        async with self._lock:
+            if ex_name not in self.shared_evidence_exchanges:
+                self.shared_evidence_exchanges[ex_name] = self._new_exchange(ex_name)
+            return self.shared_evidence_exchanges[ex_name]
 
     async def watch_orderbook_stream(self, ex_name: str, symbol: str, limit: int = 20):
         """مصرف‌کننده (Consumer) دائمی با پایداری سطح نهادی (Institutional)"""
@@ -459,6 +480,309 @@ class WebSocketManager:
             "baseline_notional_1m": round(baseline_total, 6),
         }
 
+    @staticmethod
+    def _shared_evidence_capable(exchange: Any) -> bool:
+        required = (
+            ("watchOrderBookForSymbols", "watch_order_book_for_symbols"),
+            ("unWatchOrderBookForSymbols", "un_watch_order_book_for_symbols"),
+            ("watchTradesForSymbols", "watch_trades_for_symbols"),
+            ("unWatchTradesForSymbols", "un_watch_trades_for_symbols"),
+            ("watchTickers", "watch_tickers"),
+            ("unWatchTickers", "un_watch_tickers"),
+        )
+        capabilities = getattr(exchange, "has", {})
+        return all(
+            capabilities.get(flag) is True and callable(getattr(exchange, method, None))
+            for flag, method in required
+        )
+
+    @staticmethod
+    def _shared_payload_rows(payload: Any) -> list[Dict[str, Any]]:
+        if not isinstance(payload, dict):
+            return []
+        if isinstance(payload.get("symbol"), str):
+            return [payload]
+        return [row for row in payload.values() if isinstance(row, dict)]
+
+    def _ingest_shared_orderbook_update(
+        self,
+        ex_name: str,
+        payload: Any,
+        *,
+        allowed_symbols: set[str],
+        received_at: float,
+    ) -> None:
+        symbol = payload.get("symbol") if isinstance(payload, dict) else None
+        if isinstance(symbol, str) and symbol in allowed_symbols:
+            self._ingest_orderbook(ex_name, symbol, payload, received_at=received_at)
+
+    def _ingest_shared_trade_update(
+        self,
+        ex_name: str,
+        payload: Any,
+        *,
+        allowed_symbols: set[str],
+        received_at: float,
+    ) -> None:
+        grouped: Dict[str, list[Dict[str, Any]]] = {}
+        rows = payload if isinstance(payload, list) else [payload]
+        for row in rows:
+            symbol = row.get("symbol") if isinstance(row, dict) else None
+            if isinstance(symbol, str) and symbol in allowed_symbols:
+                grouped.setdefault(symbol, []).append(row)
+        for symbol, symbol_rows in grouped.items():
+            self._ingest_trades(ex_name, symbol, symbol_rows, received_at=received_at)
+
+    def _ingest_shared_ticker_update(
+        self,
+        ex_name: str,
+        payload: Any,
+        *,
+        allowed_symbols: set[str],
+        received_at: float,
+    ) -> None:
+        for row in self._shared_payload_rows(payload):
+            symbol = row.get("symbol")
+            if isinstance(symbol, str) and symbol in allowed_symbols:
+                self.live_tickers[f"{ex_name}:{symbol}"] = {
+                    "data": copy.deepcopy(row),
+                    "updated_at": float(received_at),
+                }
+
+    def _ingest_shared_evidence_update(
+        self,
+        ex_name: str,
+        kind: str,
+        payload: Any,
+        *,
+        allowed_symbols: set[str],
+        received_at: float,
+    ) -> None:
+        if not allowed_symbols:
+            return
+        handlers = {
+            "orderbook": self._ingest_shared_orderbook_update,
+            "trades": self._ingest_shared_trade_update,
+            "ticker": self._ingest_shared_ticker_update,
+        }
+        handler = handlers.get(kind)
+        if handler is not None:
+            handler(
+                ex_name,
+                payload,
+                allowed_symbols=allowed_symbols,
+                received_at=received_at,
+            )
+
+    @staticmethod
+    def _shared_evidence_methods(exchange: Any, kind: str) -> tuple[Any, Any]:
+        methods = {
+            "orderbook": (
+                "watch_order_book_for_symbols", "un_watch_order_book_for_symbols"
+            ),
+            "trades": ("watch_trades_for_symbols", "un_watch_trades_for_symbols"),
+            "ticker": ("watch_tickers", "un_watch_tickers"),
+        }
+        watch_name, unwatch_name = methods[kind]
+        return getattr(exchange, watch_name), getattr(exchange, unwatch_name)
+
+    def _shared_evidence_symbols(self, ex_name: str) -> tuple[str, ...]:
+        return tuple(sorted(self.shared_evidence_subscribers.get(ex_name, ())))
+
+    async def _unwatch_shared_evidence_symbols(
+        self,
+        unwatch: Any,
+        symbols: tuple[str, ...],
+        *,
+        ex_name: str,
+        kind: str,
+        final: bool = False,
+    ) -> bool:
+        if not symbols:
+            return True
+        try:
+            await unwatch(list(symbols))
+        except Exception as exc:
+            phase = "final " if final else ""
+            logger.debug(
+                "Shared evidence %sunwatch failed for %s:%s: %s",
+                phase,
+                ex_name,
+                kind,
+                type(exc).__name__,
+            )
+            return False
+        return True
+
+    @staticmethod
+    async def _watch_shared_evidence_payload(
+        watch: Any,
+        *,
+        ex_name: str,
+        kind: str,
+        symbols: tuple[str, ...],
+    ) -> Any:
+        if kind == "orderbook":
+            safe_limit = 50 if ex_name in {"bybit", "kucoin"} else 20
+            return await watch(list(symbols), limit=safe_limit)
+        if kind == "trades":
+            return await watch(list(symbols), limit=500)
+        return await watch(list(symbols))
+
+    async def _shared_evidence_iteration(
+        self,
+        *,
+        ex_name: str,
+        kind: str,
+        task_id: str,
+        watch: Any,
+        unwatch: Any,
+        breaker: CircuitBreaker,
+        active_symbols: tuple[str, ...],
+        delay: float,
+    ) -> tuple[tuple[str, ...], float]:
+        desired = self._shared_evidence_symbols(ex_name)
+        if not desired:
+            await asyncio.sleep(0.25)
+            return active_symbols, delay
+        if desired != active_symbols:
+            retired = await self._unwatch_shared_evidence_symbols(
+                unwatch,
+                active_symbols,
+                ex_name=ex_name,
+                kind=kind,
+            )
+            if not retired:
+                return active_symbols, delay
+            active_symbols = desired
+        if not breaker.can_try():
+            await asyncio.sleep(1.0)
+            return active_symbols, delay
+        try:
+            payload = await self._watch_shared_evidence_payload(
+                watch,
+                ex_name=ex_name,
+                kind=kind,
+                symbols=active_symbols,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            breaker.record_failure()
+            logger.debug(
+                "Shared evidence stream unavailable for %s:%s: %s",
+                ex_name,
+                kind,
+                type(exc).__name__,
+            )
+            await asyncio.sleep(cb_recovery(breaker, delay))
+            return active_symbols, min(delay * 2, 15.0)
+        self._ingest_shared_evidence_update(
+            ex_name,
+            kind,
+            payload,
+            allowed_symbols=set(self.shared_evidence_subscribers.get(ex_name, ())),
+            received_at=time.time(),
+        )
+        self.message_counters[task_id] = self.message_counters.get(task_id, 0) + 1
+        breaker.record_success()
+        return active_symbols, 1.0
+
+    async def _finalize_shared_evidence_task(
+        self,
+        *,
+        ex_name: str,
+        kind: str,
+        task_id: str,
+        exchange: Any | None,
+        active_symbols: tuple[str, ...],
+    ) -> None:
+        if exchange is not None and self._shared_evidence_capable(exchange):
+            _, unwatch = self._shared_evidence_methods(exchange, kind)
+            await self._unwatch_shared_evidence_symbols(
+                unwatch,
+                active_symbols,
+                ex_name=ex_name,
+                kind=kind,
+                final=True,
+            )
+        current_task = asyncio.current_task()
+        if self.active_tasks.get(task_id) is current_task:
+            self.active_tasks.pop(task_id, None)
+
+    async def _watch_shared_evidence_stream(self, ex_name: str, kind: str) -> None:
+        task_id = f"shared-evidence:{ex_name}:{kind}"
+        active_symbols: tuple[str, ...] = ()
+        exchange: Any | None = None
+        try:
+            exchange = await self._get_shared_evidence_exchange(ex_name)
+            if not self._shared_evidence_capable(exchange):
+                self.unsupported_shared_evidence_exchanges.add(ex_name)
+                self.shared_evidence_subscribers.pop(ex_name, None)
+                logger.info("Shared evidence pool unsupported for %s", ex_name)
+                return
+            watch, unwatch = self._shared_evidence_methods(exchange, kind)
+            breaker = self.circuit_breakers.setdefault(task_id, CircuitBreaker())
+            delay = 1.0
+            while task_id in self.active_tasks:
+                active_symbols, delay = await self._shared_evidence_iteration(
+                    ex_name=ex_name,
+                    kind=kind,
+                    task_id=task_id,
+                    watch=watch,
+                    unwatch=unwatch,
+                    breaker=breaker,
+                    active_symbols=active_symbols,
+                    delay=delay,
+                )
+        finally:
+            await self._finalize_shared_evidence_task(
+                ex_name=ex_name,
+                kind=kind,
+                task_id=task_id,
+                exchange=exchange,
+                active_symbols=active_symbols,
+            )
+
+    def subscribe_shared_evidence(self, ex_name: str, symbol: str) -> bool:
+        if ccxt_pro is None or ex_name in self.unsupported_shared_evidence_exchanges:
+            return False
+        subscribers = self.shared_evidence_subscribers.setdefault(ex_name, set())
+        if symbol not in subscribers and len(subscribers) >= self.shared_evidence_symbol_limit:
+            logger.warning(
+                "Shared evidence subscriber limit reached for %s; REST fallback remains active",
+                ex_name,
+            )
+            return False
+        subscribers.add(symbol)
+        for kind in ("orderbook", "trades", "ticker"):
+            task_id = f"shared-evidence:{ex_name}:{kind}"
+            if task_id not in self.active_tasks:
+                self.active_tasks[task_id] = asyncio.create_task(
+                    self._watch_shared_evidence_stream(ex_name, kind)
+                )
+        return True
+
+    def unsubscribe_shared_evidence(self, ex_name: str, symbol: str) -> None:
+        subscribers = self.shared_evidence_subscribers.get(ex_name)
+        if subscribers is None:
+            return
+        subscribers.discard(symbol)
+        if subscribers:
+            return
+        self.shared_evidence_subscribers.pop(ex_name, None)
+        for kind in ("orderbook", "trades", "ticker"):
+            task = self.active_tasks.pop(f"shared-evidence:{ex_name}:{kind}", None)
+            if task is not None:
+                task.cancel()
+
+    def has_direct_evidence_subscription(self, ex_name: str, symbol: str) -> bool:
+        stream_id = f"{ex_name}:{symbol}"
+        return any(
+            task_id == stream_id or task_id in {f"{stream_id}:ticker", f"{stream_id}:trades"}
+            for task_id in self.active_tasks
+        )
+
     def subscribe_liquidations(self, ex_name: str, symbol: str):
         """Start bounded liquidation evidence acquisition for early PRE-TRIGGER state."""
         if ccxt_pro is None:
@@ -650,6 +974,9 @@ class WebSocketManager:
         liquidation_task_ids = tuple(
             task_id for task_id in task_ids if task_id.endswith(":liquidations")
         )
+        shared_evidence_task_ids = tuple(
+            task_id for task_id in task_ids if task_id.startswith("shared-evidence:")
+        )
         return {
             "active_tasks": len(task_ids),
             "liquidation_tasks": len(liquidation_task_ids),
@@ -658,6 +985,10 @@ class WebSocketManager:
             ),
             "shared_liquidation_subscribers": sum(
                 len(symbols) for symbols in self.liquidation_subscribers.values()
+            ),
+            "shared_evidence_tasks": len(shared_evidence_task_ids),
+            "shared_evidence_subscribers": sum(
+                len(symbols) for symbols in self.shared_evidence_subscribers.values()
             ),
         }
 
@@ -731,14 +1062,19 @@ class WebSocketManager:
         )
 
     async def close_all(self):
-        for task in list(self.active_tasks.values()):
+        tasks = list(self.active_tasks.values())
+        for task in tasks:
             task.cancel()
         self.active_tasks.clear()
         self.liquidation_subscribers.clear()
+        self.shared_evidence_subscribers.clear()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
-        for ex in self.exchanges.values():
+        for ex in (*self.exchanges.values(), *self.shared_evidence_exchanges.values()):
             await ex.close()
         self.exchanges.clear()
+        self.shared_evidence_exchanges.clear()
 
 
 def cb_recovery(breaker: CircuitBreaker, current_delay: float) -> float:
