@@ -1236,6 +1236,8 @@ def _decision_outcome_gross_r(
         if classification == "STOP":
             return -1.0
         if classification == "WIN":
+            if status == "TP1_THEN_STOP":
+                return None
             target_key = "take_profit_2" if status.startswith("TP2") else "take_profit_1"
             return (entry - float(plan[target_key])) / risk
         if classification == "TIMEOUT" and candles:
@@ -1324,6 +1326,7 @@ async def _resolve_entry_outcome(capture: dict) -> dict | None:
         and isinstance(capture.get("decision_contract_sha256"), str)
         and len(capture["decision_contract_sha256"]) == 64
         and classification in {"WIN", "STOP", "TIMEOUT"}
+        and gross_r is not None
     )
     return {
         "outcome_status": "OBSERVED",

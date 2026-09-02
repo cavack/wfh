@@ -296,6 +296,7 @@ def test_automatic_capture_binds_exact_parent_packet_and_runtime_provenance(tmp_
     store = EntryDecisionStore(db_path, source_revision=source_revision)
     p = packet("ENTRY_READY", 84.0, 100)
     p["research_provenance"] = {
+        "source_revision": source_revision,
         "decision_contract_sha256": "b" * 64,
         "contract": {
             "exchange": "lbank",
@@ -333,6 +334,26 @@ def test_automatic_capture_binds_exact_parent_packet_and_runtime_provenance(tmp_
     assert capture["contract"]["exchange"] == "lbank"
     assert capture["trade_plan"] is None
     assert set(capture["costs"]) == {"fees", "entry_slippage", "exit_slippage", "funding"}
+
+
+def test_new_transition_uses_current_runtime_revision_not_stale_embedded_provenance(tmp_path):
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path, source_revision="b" * 40)
+    p = packet("EXPIRED", 84.0, 200)
+    p["research_provenance"] = {
+        "source_revision": "a" * 40,
+        "decision_contract_sha256": "c" * 64,
+    }
+
+    event_id = store.append_if_changed_with_capture("SXT/USDT:USDT", p, captured_at=200)
+    assert event_id is not None
+    with sqlite3.connect(db_path) as conn:
+        capture = json.loads(conn.execute(
+            "SELECT capture_json FROM decision_outcome_capture WHERE decision_event_id=?",
+            (event_id,),
+        ).fetchone()[0])
+    assert capture["source_revision"] == "b" * 40
+    assert capture["decision_contract_sha256"] is None
 
 
 def test_tampered_capture_is_rejected_before_resolver(tmp_path, caplog):

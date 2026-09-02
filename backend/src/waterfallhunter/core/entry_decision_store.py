@@ -573,9 +573,17 @@ class EntryDecisionStore:
             if isinstance(capture_packet.get("research_provenance"), dict)
             else {}
         )
-        revision = provenance.get("source_revision") or (
-            self.source_revision if event_id is not None else None
-        )
+        embedded_revision = provenance.get("source_revision")
+        if event_id is not None:
+            revision = self.source_revision
+            decision_contract_sha256 = (
+                provenance.get("decision_contract_sha256")
+                if embedded_revision == self.source_revision
+                else None
+            )
+        else:
+            revision = embedded_revision
+            decision_contract_sha256 = provenance.get("decision_contract_sha256")
         revision = str(revision) if revision is not None else None
         revision_verified = bool(
             revision
@@ -594,7 +602,7 @@ class EntryDecisionStore:
             "source_revision_status": (
                 "VERIFIED_GIT_REVISION" if revision_verified else _OUTCOME_UNAVAILABLE
             ),
-            "decision_contract_sha256": provenance.get("decision_contract_sha256"),
+            "decision_contract_sha256": decision_contract_sha256,
             "contract": provenance.get("contract"),
             "trade_plan": capture_packet.get("trade_plan"),
             "costs": provenance.get("costs"),

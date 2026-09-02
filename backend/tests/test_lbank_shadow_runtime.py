@@ -91,6 +91,22 @@ def test_entry_outcome_resolver_uses_exact_complete_lbank_window(monkeypatch):
     assert result["scientific_tier"] == "UNAVAILABLE"
 
 
+def test_tp1_then_stop_gross_r_is_unavailable_without_exit_allocation_policy():
+    import waterfallhunter.main as main
+
+    assert main._decision_outcome_gross_r(
+        "WIN",
+        "TP1_THEN_STOP",
+        {
+            "entry_price": 100.0,
+            "stop_loss": 105.0,
+            "take_profit_1": 95.0,
+            "take_profit_2": 90.0,
+        },
+        [],
+    ) is None
+
+
 def test_entry_outcome_resolver_retries_incomplete_window(monkeypatch):
     import waterfallhunter.main as main
 
