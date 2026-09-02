@@ -45,17 +45,47 @@ def _confined_path(path: Path, allowed_root: Path, *, label: str, strict: bool =
 
 def export_project_sources() -> Path:
     EXPORT_ROOT.mkdir(parents=True, exist_ok=True)
-    destination = _confined_path(DEFAULT_EXPORT_DIR, EXPORT_ROOT, label="destination")
-    destination.mkdir(parents=True, exist_ok=True)
-    hashes: dict[str, str] = {}
-    source_root = SOURCE_DIR.resolve(strict=True)
-    for name in OVERLAY_FILES:
-        source = _confined_path(source_root / name, source_root, label="source", strict=True)
-        target = _confined_path(destination / name, destination, label="export target")
-        payload = _normalized_bytes(source)
-        target.write_bytes(payload)
-        hashes[name] = hashlib.sha256(payload).hexdigest()
+    _confined_path(DEFAULT_EXPORT_DIR, EXPORT_ROOT, label="destination")
+    DEFAULT_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
+    _confined_path(SOURCE_DIR / "00-WFH-CHATGPT-ROUTER-v2.md", SOURCE_DIR, label="source", strict=True)
+    _confined_path(DEFAULT_EXPORT_DIR / "00-WFH-CHATGPT-ROUTER-v2.md", DEFAULT_EXPORT_DIR, label="export target")
+    router = _normalized_bytes(SOURCE_DIR / "00-WFH-CHATGPT-ROUTER-v2.md")
+    (DEFAULT_EXPORT_DIR / "00-WFH-CHATGPT-ROUTER-v2.md").write_bytes(router)
+
+    _confined_path(SOURCE_DIR / "01-WFH-SKILL-CATALOG-v2.md", SOURCE_DIR, label="source", strict=True)
+    _confined_path(DEFAULT_EXPORT_DIR / "01-WFH-SKILL-CATALOG-v2.md", DEFAULT_EXPORT_DIR, label="export target")
+    catalog = _normalized_bytes(SOURCE_DIR / "01-WFH-SKILL-CATALOG-v2.md")
+    (DEFAULT_EXPORT_DIR / "01-WFH-SKILL-CATALOG-v2.md").write_bytes(catalog)
+
+    _confined_path(SOURCE_DIR / "02-WFH-CAPABILITY-MAP-v2.md", SOURCE_DIR, label="source", strict=True)
+    _confined_path(DEFAULT_EXPORT_DIR / "02-WFH-CAPABILITY-MAP-v2.md", DEFAULT_EXPORT_DIR, label="export target")
+    capabilities = _normalized_bytes(SOURCE_DIR / "02-WFH-CAPABILITY-MAP-v2.md")
+    (DEFAULT_EXPORT_DIR / "02-WFH-CAPABILITY-MAP-v2.md").write_bytes(capabilities)
+
+    _confined_path(SOURCE_DIR / "03-WFH-SKILL-AUDIT-SUMMARY-v2.md", SOURCE_DIR, label="source", strict=True)
+    _confined_path(DEFAULT_EXPORT_DIR / "03-WFH-SKILL-AUDIT-SUMMARY-v2.md", DEFAULT_EXPORT_DIR, label="export target")
+    audit = _normalized_bytes(SOURCE_DIR / "03-WFH-SKILL-AUDIT-SUMMARY-v2.md")
+    (DEFAULT_EXPORT_DIR / "03-WFH-SKILL-AUDIT-SUMMARY-v2.md").write_bytes(audit)
+
+    _confined_path(SOURCE_DIR / "PROJECT-INSTRUCTIONS-v2.txt", SOURCE_DIR, label="source", strict=True)
+    _confined_path(DEFAULT_EXPORT_DIR / "PROJECT-INSTRUCTIONS-v2.txt", DEFAULT_EXPORT_DIR, label="export target")
+    instructions = _normalized_bytes(SOURCE_DIR / "PROJECT-INSTRUCTIONS-v2.txt")
+    (DEFAULT_EXPORT_DIR / "PROJECT-INSTRUCTIONS-v2.txt").write_bytes(instructions)
+
+    _confined_path(SOURCE_DIR / "INSTALL-FA-v2.md", SOURCE_DIR, label="source", strict=True)
+    _confined_path(DEFAULT_EXPORT_DIR / "INSTALL-FA-v2.md", DEFAULT_EXPORT_DIR, label="export target")
+    install = _normalized_bytes(SOURCE_DIR / "INSTALL-FA-v2.md")
+    (DEFAULT_EXPORT_DIR / "INSTALL-FA-v2.md").write_bytes(install)
+
+    hashes = {
+        "00-WFH-CHATGPT-ROUTER-v2.md": hashlib.sha256(router).hexdigest(),
+        "01-WFH-SKILL-CATALOG-v2.md": hashlib.sha256(catalog).hexdigest(),
+        "02-WFH-CAPABILITY-MAP-v2.md": hashlib.sha256(capabilities).hexdigest(),
+        "03-WFH-SKILL-AUDIT-SUMMARY-v2.md": hashlib.sha256(audit).hexdigest(),
+        "PROJECT-INSTRUCTIONS-v2.txt": hashlib.sha256(instructions).hexdigest(),
+        "INSTALL-FA-v2.md": hashlib.sha256(install).hexdigest(),
+    }
     manifest = {
         "contract_version": "wfh_chatgpt_project_sources_v2",
         "canonical_repository": "cavack/wfh",
@@ -66,9 +96,12 @@ def export_project_sources() -> Path:
         "overlay_files": list(OVERLAY_FILES),
         "sha256": hashes,
     }
-    manifest_path = _confined_path(
-        destination / "PROJECT-SOURCE-MANIFEST.json", destination, label="manifest target"
+    _confined_path(
+        DEFAULT_EXPORT_DIR / "PROJECT-SOURCE-MANIFEST.json",
+        DEFAULT_EXPORT_DIR,
+        label="manifest target",
     )
+    manifest_path = DEFAULT_EXPORT_DIR / "PROJECT-SOURCE-MANIFEST.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return manifest_path
 
