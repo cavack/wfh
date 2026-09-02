@@ -79,10 +79,17 @@ def test_trigger_persistence_does_not_wait_for_gemini_advisory(monkeypatch) -> N
         "record",
         lambda *args, **kwargs: True,
     )
+    direct_unsubscribed: list[tuple[str, str]] = []
+    shared_unsubscribed: list[tuple[str, str]] = []
     monkeypatch.setattr(
         main.validator.ws_manager,
         "unsubscribe",
-        lambda *args, **kwargs: None,
+        lambda exchange, mapped: direct_unsubscribed.append((exchange, mapped)),
+    )
+    monkeypatch.setattr(
+        main.validator.ws_manager,
+        "unsubscribe_shared_evidence",
+        lambda exchange, mapped: shared_unsubscribed.append((exchange, mapped)),
     )
     monkeypatch.setattr(
         main.notifier,
@@ -168,3 +175,5 @@ def test_trigger_persistence_does_not_wait_for_gemini_advisory(monkeypatch) -> N
         assert persisted.is_set()
 
     asyncio.run(scenario())
+    assert direct_unsubscribed == [("binance", symbol)]
+    assert shared_unsubscribed == [("binance", symbol)]

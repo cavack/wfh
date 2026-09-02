@@ -597,9 +597,9 @@ class WebSocketManager:
         ex_name: str,
         kind: str,
         final: bool = False,
-    ) -> None:
+    ) -> bool:
         if not symbols:
-            return
+            return True
         try:
             await unwatch(list(symbols))
         except Exception as exc:
@@ -611,6 +611,8 @@ class WebSocketManager:
                 kind,
                 type(exc).__name__,
             )
+            return False
+        return True
 
     @staticmethod
     async def _watch_shared_evidence_payload(
@@ -644,12 +646,14 @@ class WebSocketManager:
             await asyncio.sleep(0.25)
             return active_symbols, delay
         if desired != active_symbols:
-            await self._unwatch_shared_evidence_symbols(
+            retired = await self._unwatch_shared_evidence_symbols(
                 unwatch,
                 active_symbols,
                 ex_name=ex_name,
                 kind=kind,
             )
+            if not retired:
+                return active_symbols, delay
             active_symbols = desired
         if not breaker.can_try():
             await asyncio.sleep(1.0)

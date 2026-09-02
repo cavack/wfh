@@ -205,6 +205,15 @@ class _FakeWebSocketManager:
     def unsubscribe(self, *_: object) -> None:
         return None
 
+    def subscribe_shared_evidence(self, *_: object) -> bool:
+        return True
+
+    def unsubscribe_shared_evidence(self, *_: object) -> None:
+        return None
+
+    def has_direct_evidence_subscription(self, *_: object) -> bool:
+        return False
+
 
 class _ExecutionSuitability:
     def for_symbol(self, _: str) -> dict:

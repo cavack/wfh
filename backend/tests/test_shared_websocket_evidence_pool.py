@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from waterfallhunter.core.ws_streamer import WebSocketManager
+from waterfallhunter.core.ws_streamer import CircuitBreaker, WebSocketManager
 
 
 REQUIRED_HAS = {
@@ -284,3 +284,78 @@ def test_close_all_closes_and_releases_direct_and_shared_exchange_clients() -> N
     assert shared.closed == 1
     assert manager.exchanges == {}
     assert manager.shared_evidence_exchanges == {}
+
+def test_unsupported_shared_evidence_clears_pending_membership(monkeypatch) -> None:
+    manager = WebSocketManager()
+    symbol = "AAA/USDT:USDT"
+    task_id = "shared-evidence:okx:ticker"
+    exchange = _CapabilityExchange(unWatchTradesForSymbols=False)
+
+    async def shared_getter(_name: str):
+        return exchange
+
+    monkeypatch.setattr(manager, "_get_shared_evidence_exchange", shared_getter)
+
+    async def scenario() -> None:
+        manager.shared_evidence_subscribers["okx"] = {symbol}
+        manager.active_tasks[task_id] = asyncio.current_task()
+        await manager._watch_shared_evidence_stream("okx", "ticker")
+
+    asyncio.run(scenario())
+    assert "okx" in manager.unsupported_shared_evidence_exchanges
+    assert "okx" not in manager.shared_evidence_subscribers
+
+
+def test_failed_shared_unwatch_retries_before_advancing_active_membership() -> None:
+    manager = WebSocketManager()
+    old_symbol = "OLD/USDT:USDT"
+    new_symbol = "NEW/USDT:USDT"
+    manager.shared_evidence_subscribers["binance"] = {new_symbol}
+    unwatch_calls: list[tuple[str, ...]] = []
+    watch_calls: list[tuple[str, ...]] = []
+    unwatch_attempt = 0
+
+    async def unwatch(symbols, params=None):
+        nonlocal unwatch_attempt
+        unwatch_attempt += 1
+        unwatch_calls.append(tuple(symbols))
+        if unwatch_attempt == 1:
+            raise RuntimeError("transient unwatch failure")
+        return {}
+
+    async def watch(symbols=None, params=None):
+        watch_calls.append(tuple(symbols or ()))
+        return {new_symbol: {"symbol": new_symbol, "last": 1.0}}
+
+    breaker = CircuitBreaker()
+
+    async def scenario() -> None:
+        active = (old_symbol,)
+        active, delay = await manager._shared_evidence_iteration(
+            ex_name="binance",
+            kind="ticker",
+            task_id="shared-evidence:binance:ticker",
+            watch=watch,
+            unwatch=unwatch,
+            breaker=breaker,
+            active_symbols=active,
+            delay=1.0,
+        )
+        assert active == (old_symbol,)
+        assert watch_calls == []
+
+        active, _ = await manager._shared_evidence_iteration(
+            ex_name="binance",
+            kind="ticker",
+            task_id="shared-evidence:binance:ticker",
+            watch=watch,
+            unwatch=unwatch,
+            breaker=breaker,
+            active_symbols=active,
+            delay=delay,
+        )
+        assert active == (new_symbol,)
+
+    asyncio.run(scenario())
+    assert unwatch_calls == [(old_symbol,), (old_symbol,)]
+    assert watch_calls == [(new_symbol,)]

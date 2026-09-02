@@ -55,10 +55,16 @@ def test_failed_veto_state_persistence_keeps_websocket_subscription(monkeypatch)
         lambda *args, **kwargs: True,
     )
     unsubscribed = []
+    shared_unsubscribed = []
     monkeypatch.setattr(
         main.validator.ws_manager,
         "unsubscribe",
         lambda *args: unsubscribed.append(args),
+    )
+    monkeypatch.setattr(
+        main.validator.ws_manager,
+        "unsubscribe_shared_evidence",
+        lambda *args: shared_unsubscribed.append(args),
     )
 
     asyncio.run(
@@ -69,3 +75,80 @@ def test_failed_veto_state_persistence_keeps_websocket_subscription(monkeypatch)
     )
 
     assert unsubscribed == []
+    assert shared_unsubscribed == []
+
+def test_successful_veto_state_persistence_retires_direct_and_shared_websocket(monkeypatch) -> None:
+    symbol = "VETOCLEAN/USDT:USDT"
+    monkeypatch.setattr(main.scanner, "active_candidates", {symbol: {}})
+    monkeypatch.setattr(
+        main.execution_decision_logger,
+        "observe_evaluation",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        main.scanner,
+        "get_live_reference",
+        lambda requested_symbol: (0.01, int(time.time()) - 1),
+    )
+
+    async def valid_trigger(*args, **kwargs):
+        return {
+            "is_valid": True,
+            "score": 91.0,
+            "suggested_status": "TRIGGERED",
+            "metrics": {
+                "exchange": "binance",
+                "mapped_symbol": symbol,
+                "orderbook": {},
+                "ticker": {},
+                "strategy_profile": STRICT_STRATEGY_PROFILE,
+                "score_version": "score_v2",
+            },
+        }
+
+    monkeypatch.setattr(main.validator, "cross_check_symbol", valid_trigger)
+    monkeypatch.setattr(
+        main.ai_veto,
+        "evaluate_deterministic",
+        lambda *args, **kwargs: (
+            True,
+            {
+                "deterministic_veto": True,
+                "deterministic_reason": "unsafe market data",
+            },
+        ),
+    )
+    monkeypatch.setattr(main.db, "update_candidate_state", lambda *args: True)
+    monkeypatch.setattr(
+        main.production_evidence_recorder,
+        "record",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(main.entry_decision_store, "latest_for_symbol", lambda _symbol: None)
+    monkeypatch.setattr(
+        main.entry_decision_store,
+        "append_if_changed",
+        lambda *_args, **_kwargs: 9001,
+    )
+    direct_unsubscribed: list[tuple[str, str]] = []
+    shared_unsubscribed: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        main.validator.ws_manager,
+        "unsubscribe",
+        lambda *args: direct_unsubscribed.append(args),
+    )
+    monkeypatch.setattr(
+        main.validator.ws_manager,
+        "unsubscribe_shared_evidence",
+        lambda *args: shared_unsubscribed.append(args),
+    )
+
+    asyncio.run(
+        main.evaluate_candidate(
+            symbol,
+            {"status": "ARMED", "lifecycle_id": 1, "scan_eligible": True},
+        )
+    )
+
+    assert direct_unsubscribed == [("binance", symbol)]
+    assert shared_unsubscribed == [("binance", symbol)]
