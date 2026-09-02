@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import copy
 import hashlib
 import json
 import os
 import re
 import tempfile
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -458,3 +460,98 @@ def resume_guard(
     if drift:
         return {"disposition": "DRIFT_DETECTED", "reason": "revision_drift", "drift": drift}
     return loaded
+
+
+CANONICAL_RESUME_INTENT = "ادامه کار گروهی"
+DEFAULT_CONTROL_ROOT = Path("/srv/waterfallhunter/research/mission-control")
+
+
+def normalize_resume_intent(value: str) -> str:
+    return " ".join(unicodedata.normalize("NFC", value).split())
+
+
+def resolve_active_mission(control_root: Path) -> Path:
+    root = Path(control_root).resolve(strict=True)
+    pointer_path = _confined_path(root / "ACTIVE_MISSION.json", root)
+    pointer = _load_json(pointer_path)
+    mission_id = pointer.get("mission_id")
+    mission_path = pointer.get("mission_path") or mission_id
+    if not isinstance(mission_id, str) or not mission_id:
+        raise ValueError("active mission pointer missing mission_id")
+    if not isinstance(mission_path, str) or not mission_path:
+        raise ValueError("active mission pointer missing mission_path")
+    target = _confined_path(root / mission_path, root)
+    if not target.is_dir():
+        raise ValueError("active mission directory is unavailable")
+    return target
+
+
+def _parse_capabilities(values: list[str]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for item in values:
+        if "=" not in item:
+            raise ValueError(f"capability must be NAME=STATE: {item}")
+        name, state = item.split("=", 1)
+        if not name or not state:
+            raise ValueError(f"capability must be NAME=STATE: {item}")
+        result[name] = state
+    return result
+
+
+def _emit_result(result: dict[str, Any], *, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return
+    disposition = result.get("disposition", "RESUME_BLOCKED")
+    reason = result.get("reason")
+    print(f"{disposition}: {reason or 'ready'}")
+
+
+def _resume_exit_code(disposition: str) -> int:
+    return {
+        "RESUME_READY": 0,
+        "MISSION_COMPLETE": 0,
+        "RESUME_BLOCKED": 2,
+        "RECONCILIATION_REQUIRED": 3,
+        "DRIFT_DETECTED": 4,
+    }.get(disposition, 2)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="WaterfallHunter mission continuity controller")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    resume = subparsers.add_parser("resume", help="resume the active TWFH mission")
+    resume.add_argument("--intent", required=True)
+    resume.add_argument("--json", action="store_true")
+    resume.add_argument("--observed-main-sha")
+    resume.add_argument("--observed-production-sha")
+    resume.add_argument("--capability", action="append", default=[])
+    args = parser.parse_args(argv)
+
+    normalized = normalize_resume_intent(args.intent)
+    if normalized != CANONICAL_RESUME_INTENT:
+        result = {"disposition": "RESUME_BLOCKED", "reason": "resume_intent_mismatch"}
+        _emit_result(result, as_json=args.json)
+        return 2
+    control_root = Path(os.environ.get("WFH_MISSION_CONTROL_ROOT", DEFAULT_CONTROL_ROOT))
+    try:
+        mission_dir = resolve_active_mission(control_root)
+        capabilities = _parse_capabilities(args.capability)
+        result = resume_guard(
+            mission_dir,
+            observed_main_sha=args.observed_main_sha,
+            observed_production_sha=args.observed_production_sha,
+            capabilities=capabilities,
+        )
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        result = {
+            "disposition": "RESUME_BLOCKED",
+            "reason": "active_mission_resolution_failed",
+            "error_type": type(exc).__name__,
+        }
+    _emit_result(result, as_json=args.json)
+    return _resume_exit_code(str(result.get("disposition")))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
