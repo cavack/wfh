@@ -509,7 +509,21 @@ def test_council_v2_rejects_declared_tool_without_capability_record() -> None:
     assert any("grafana" in error and "capability" in error.lower() for error in errors)
 
 
-def test_doctor_cli_accepts_explicit_connected_capability_status(capsys) -> None:
+def test_doctor_cli_accepts_explicit_connected_capability_status(monkeypatch, capsys) -> None:
+    def fake_git_output(repo_root: Path, *args: str) -> str:
+        if args == ("rev-parse", "HEAD"):
+            return "abc123"
+        if args == ("branch", "--show-current"):
+            return "test-branch"
+        raise AssertionError(args)
+
+    monkeypatch.setattr(council, "_git_output", fake_git_output)
+    monkeypatch.setattr(
+        council.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}" if name in {"git", "python3"} else None,
+    )
+
     rc = council.main([
         "--repo-root", str(REPO),
         "doctor",

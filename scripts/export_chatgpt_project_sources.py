@@ -31,13 +31,26 @@ def _skills() -> list[str]:
     return sorted(path.parent.name for path in root.glob("*/SKILL.md"))
 
 
-def export_project_sources(destination: Path) -> Path:
-    destination = Path(destination)
+def _confined_path(path: Path, allowed_root: Path, *, label: str, strict: bool = False) -> Path:
+    root = Path(allowed_root).resolve(strict=True)
+    candidate = Path(path).resolve(strict=strict)
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"{label} must stay within allowed root {root}") from exc
+    return candidate
+
+
+def export_project_sources(destination: Path, *, allowed_root: Path) -> Path:
+    destination = _confined_path(destination, allowed_root, label="destination")
     destination.mkdir(parents=True, exist_ok=True)
     hashes: dict[str, str] = {}
+    source_root = SOURCE_DIR.resolve(strict=True)
     for name in OVERLAY_FILES:
-        payload = _normalized_bytes(SOURCE_DIR / name)
-        (destination / name).write_bytes(payload)
+        source = _confined_path(source_root / name, source_root, label="source", strict=True)
+        target = _confined_path(destination / name, destination, label="export target")
+        payload = _normalized_bytes(source)
+        target.write_bytes(payload)
         hashes[name] = hashlib.sha256(payload).hexdigest()
 
     manifest = {
@@ -50,7 +63,9 @@ def export_project_sources(destination: Path) -> Path:
         "overlay_files": list(OVERLAY_FILES),
         "sha256": hashes,
     }
-    manifest_path = destination / "PROJECT-SOURCE-MANIFEST.json"
+    manifest_path = _confined_path(
+        destination / "PROJECT-SOURCE-MANIFEST.json", destination, label="manifest target"
+    )
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return manifest_path
 
@@ -59,7 +74,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("destination", type=Path)
     args = parser.parse_args()
-    export_project_sources(args.destination)
+    export_project_sources(args.destination, allowed_root=REPO_ROOT)
     return 0
 
 

@@ -110,35 +110,50 @@ def _validate_invariants(manifest: dict[str, Any]) -> list[str]:
             errors.append(f"protected invariant {key} must equal {expected!r}")
     return errors
 
+def _declared_tool_ids(manifest: dict[str, Any]) -> list[str]:
+    tools = manifest.get("tools")
+    if not isinstance(tools, dict):
+        return []
+    declared: list[str] = []
+    for key in ("required", "optional"):
+        values = tools.get(key, [])
+        if isinstance(values, list):
+            declared.extend(value for value in values if isinstance(value, str))
+    return declared
+
+
+def _validate_capability_record(capability_id: str, capability: Any) -> list[str]:
+    if not isinstance(capability, dict):
+        return [f"capability {capability_id}: must be an object"]
+    allowed_authority = {
+        "AVAILABLE", "AUTHORIZED_READ", "AUTHORIZED_WRITE", "READ_WRITE_REPO",
+        "UNAVAILABLE", "BLOCKED",
+    }
+    errors: list[str] = []
+    if capability.get("authority") not in allowed_authority:
+        errors.append(f"capability {capability_id}: invalid authority")
+    if type(capability.get("required")) is not bool:
+        errors.append(f"capability {capability_id}: required must be boolean")
+    if capability.get("production_mutation") is not False:
+        errors.append(
+            f"capability {capability_id}: production mutation is forbidden in Council capability declarations"
+        )
+    if not isinstance(capability.get("evidence_role"), str) or not capability.get("evidence_role"):
+        errors.append(f"capability {capability_id}: evidence_role must be a non-empty string")
+    return errors
+
+
 def _validate_capabilities(manifest: dict[str, Any]) -> list[str]:
     capabilities = manifest.get("capabilities")
     if not isinstance(capabilities, dict) or not capabilities:
         return ["manifest capabilities must be a non-empty object"]
-    errors: list[str] = []
-    allowed_authority = {"AVAILABLE", "AUTHORIZED_READ", "AUTHORIZED_WRITE", "READ_WRITE_REPO", "UNAVAILABLE", "BLOCKED"}
-    tools = manifest.get("tools")
-    if isinstance(tools, dict):
-        declared_tools = []
-        for key in ("required", "optional"):
-            values = tools.get(key, [])
-            if isinstance(values, list):
-                declared_tools.extend(value for value in values if isinstance(value, str))
-        for tool_id in declared_tools:
-            if tool_id not in capabilities:
-                errors.append(f"declared tool {tool_id}: missing capability record")
-
+    errors = [
+        f"declared tool {tool_id}: missing capability record"
+        for tool_id in _declared_tool_ids(manifest)
+        if tool_id not in capabilities
+    ]
     for capability_id, capability in capabilities.items():
-        if not isinstance(capability, dict):
-            errors.append(f"capability {capability_id}: must be an object")
-            continue
-        if capability.get("authority") not in allowed_authority:
-            errors.append(f"capability {capability_id}: invalid authority")
-        if type(capability.get("required")) is not bool:
-            errors.append(f"capability {capability_id}: required must be boolean")
-        if capability.get("production_mutation") is not False:
-            errors.append(f"capability {capability_id}: production mutation is forbidden in Council capability declarations")
-        if not isinstance(capability.get("evidence_role"), str) or not capability.get("evidence_role"):
-            errors.append(f"capability {capability_id}: evidence_role must be a non-empty string")
+        errors.extend(_validate_capability_record(capability_id, capability))
     return errors
 
 
@@ -594,56 +609,66 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _load_cli_manifest(repo_root: Path, as_json: bool) -> tuple[dict[str, Any] | None, int]:
+    manifest_path = repo_root / ".agents" / "wfh-council" / "manifest.json"
+    try:
+        return load_manifest(manifest_path), 0
+    except (OSError, ValueError) as exc:
+        _emit({"status": "INVALID", "errors": [str(exc)]}, as_json)
+        return None, 2
+
+
+def _run_validate(repo_root: Path, manifest: dict[str, Any], args: argparse.Namespace) -> int:
+    errors = validate_manifest(repo_root, manifest)
+    _emit({"status": "VALID" if not errors else "INVALID", "errors": errors}, args.json)
+    return 0 if not errors else 2
+
+
+def _run_route(manifest: dict[str, Any], args: argparse.Namespace) -> int:
+    try:
+        route = route_task(manifest, args.task_type)
+    except (KeyError, ValueError) as exc:
+        _emit({"status": "INVALID", "error": str(exc)}, args.json)
+        return 2
+    _emit({"status": "OK", "task_type": args.task_type, "route": route}, args.json)
+    return 0
+
+
+def _run_doctor(repo_root: Path, args: argparse.Namespace) -> int:
+    try:
+        capability_statuses = _parse_capability_statuses(args.capability)
+    except ValueError as exc:
+        _emit({"status": "INVALID", "error": str(exc)}, args.json)
+        return 2
+    result = doctor(repo_root, capability_statuses=capability_statuses)
+    _emit(result, args.json)
+    return 0 if result["status"] == "READY" else 3
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     repo_root = args.repo_root.resolve()
-    manifest_path = repo_root / ".agents" / "wfh-council" / "manifest.json"
-    try:
-        manifest = load_manifest(manifest_path)
-    except (OSError, ValueError) as exc:
-        _emit({"status": "INVALID", "errors": [str(exc)]}, getattr(args, "json", False))
-        return 2
-
+    manifest, error_code = _load_cli_manifest(repo_root, getattr(args, "json", False))
+    if manifest is None:
+        return error_code
     if args.command == "validate":
-        errors = validate_manifest(repo_root, manifest)
-        result = {"status": "VALID" if not errors else "INVALID", "errors": errors}
-        _emit(result, args.json)
-        return 0 if not errors else 2
-
+        return _run_validate(repo_root, manifest, args)
     if args.command == "route":
-        try:
-            route = route_task(manifest, args.task_type)
-        except (KeyError, ValueError) as exc:
-            _emit({"status": "INVALID", "error": str(exc)}, args.json)
-            return 2
-        _emit({"status": "OK", "task_type": args.task_type, "route": route}, args.json)
-        return 0
-
+        return _run_route(manifest, args)
     if args.command == "doctor":
-        try:
-            capability_statuses = _parse_capability_statuses(args.capability)
-        except ValueError as exc:
-            _emit({"status": "INVALID", "error": str(exc)}, args.json)
-            return 2
-        result = doctor(repo_root, capability_statuses=capability_statuses)
-        _emit(result, args.json)
-        return 0 if result["status"] == "READY" else 3
-
+        return _run_doctor(repo_root, args)
     if args.command == "research-snapshot":
-        result = summarize_research_evidence(args.research_dir)
-        _emit(result, args.json)
+        _emit(summarize_research_evidence(args.research_dir), args.json)
         return 0
-
     if args.command == "snapshot":
-        result = build_snapshot(
-            repo_root,
-            manifest,
-            research_dir=args.research_dir,
-            production_revision=args.production_revision,
+        _emit(
+            build_snapshot(
+                repo_root, manifest, research_dir=args.research_dir,
+                production_revision=args.production_revision,
+            ),
+            args.json,
         )
-        _emit(result, args.json)
         return 0
-
     raise AssertionError(f"unhandled command: {args.command}")
 
 
