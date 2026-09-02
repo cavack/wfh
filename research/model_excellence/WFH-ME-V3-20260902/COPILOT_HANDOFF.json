@@ -185,7 +185,7 @@
       "github_advanced_security": "FAILURE",
       "container_validation": "IN_PROGRESS"
     },
-    "reviews": "No unresolved review threads; automated security failure requires investigation before merge",
+    "reviews": "No unresolved review threads; automated security failure requires investigation before merge"
   },
   "reproduced_defects": [],
   "fixed_defects": [
