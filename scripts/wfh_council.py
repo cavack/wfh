@@ -6,6 +6,7 @@ import json
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -338,6 +339,45 @@ def _research_outcome_summary(source: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+
+def build_snapshot(
+    repo_root: Path,
+    manifest: dict[str, Any],
+    *,
+    research_dir: Path | None = None,
+    production_revision: str | None = None,
+) -> dict[str, Any]:
+    repo_root = repo_root.resolve()
+    repo = doctor(repo_root)["repo"]
+    research = (
+        summarize_research_evidence(research_dir)
+        if research_dir is not None
+        else {"promotion_disposition": "UNAVAILABLE", "artifacts": {}}
+    )
+    production_fact = {
+        "classification": "VERIFIED_FACT" if production_revision else "UNAVAILABLE",
+        "value": production_revision,
+    }
+    unknowns: list[str] = []
+    if not production_revision:
+        unknowns.append("production_revision")
+    return {
+        "contract_version": "wfh_council_snapshot_v1",
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "repo": {**repo, "classification": "VERIFIED_FACT"},
+        "runtime": {
+            "production_revision": production_fact,
+            "live_trading_enabled": {"classification": "POLICY_ASSERTION", "value": False},
+        },
+        "research": research,
+        "protected_invariants": manifest["protected_invariants"],
+        "readiness": {
+            "research_promotion_disposition": research.get("promotion_disposition", "UNAVAILABLE"),
+            "repo_matches_production": bool(production_revision and repo.get("git_sha") == production_revision),
+        },
+        "unknowns": unknowns,
+    }
+
 def _emit(value: Any, as_json: bool) -> None:
     if as_json:
         print(json.dumps(value, indent=2, sort_keys=True))
@@ -372,6 +412,11 @@ def build_parser() -> argparse.ArgumentParser:
     research_cmd = sub.add_parser("research-snapshot", help="summarize existing research evidence")
     research_cmd.add_argument("--research-dir", type=Path, required=True)
     research_cmd.add_argument("--json", action="store_true")
+
+    snapshot_cmd = sub.add_parser("snapshot", help="emit a safe repository/runtime/research snapshot")
+    snapshot_cmd.add_argument("--research-dir", type=Path)
+    snapshot_cmd.add_argument("--production-revision")
+    snapshot_cmd.add_argument("--json", action="store_true")
     return parser
 
 
@@ -407,6 +452,16 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "research-snapshot":
         result = summarize_research_evidence(args.research_dir)
+        _emit(result, args.json)
+        return 0
+
+    if args.command == "snapshot":
+        result = build_snapshot(
+            repo_root,
+            manifest,
+            research_dir=args.research_dir,
+            production_revision=args.production_revision,
+        )
         _emit(result, args.json)
         return 0
 

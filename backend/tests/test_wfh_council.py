@@ -211,3 +211,56 @@ def test_research_registry_is_preregisterable_and_falsifiable() -> None:
     assert "order flow" in text.lower()
     assert "basis" in text.lower()
     assert "regime" in text.lower()
+
+
+def test_snapshot_separates_repository_and_production_revision(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / "DATASET_AUDIT.json",
+        {"contract": "DATASET_AUDIT.v1", "span_days": 10.0},
+    )
+    manifest = council.load_manifest(MANIFEST)
+
+    snapshot = council.build_snapshot(
+        REPO,
+        manifest,
+        research_dir=tmp_path,
+        production_revision="production-sha-123",
+    )
+
+    assert snapshot["repo"]["git_sha"] != "production-sha-123"
+    assert snapshot["repo"]["classification"] == "VERIFIED_FACT"
+    assert snapshot["runtime"]["production_revision"] == {
+        "classification": "VERIFIED_FACT",
+        "value": "production-sha-123",
+    }
+    assert snapshot["research"]["promotion_disposition"] == "NO_PROMOTION_EVIDENCE"
+
+
+def test_snapshot_marks_unknown_runtime_and_preserves_policy_assertion() -> None:
+    manifest = council.load_manifest(MANIFEST)
+
+    snapshot = council.build_snapshot(REPO, manifest)
+
+    assert snapshot["runtime"]["production_revision"] == {
+        "classification": "UNAVAILABLE",
+        "value": None,
+    }
+    assert "production_revision" in snapshot["unknowns"]
+    assert snapshot["runtime"]["live_trading_enabled"] == {
+        "classification": "POLICY_ASSERTION",
+        "value": False,
+    }
+    assert snapshot["protected_invariants"]["entry_ready_minimum"] == 78.0
+    assert snapshot["protected_invariants"]["anti_chase_atr"] == 1.2
+
+
+def test_snapshot_cli_emits_stable_json(capsys) -> None:
+    rc = council.main(
+        ["--repo-root", str(REPO), "snapshot", "--production-revision", "prod-456", "--json"]
+    )
+    output = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert output["contract_version"] == "wfh_council_snapshot_v1"
+    assert output["runtime"]["production_revision"]["value"] == "prod-456"
+    assert output["generated_at"].endswith("Z")
