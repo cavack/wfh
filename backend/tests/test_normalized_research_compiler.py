@@ -104,3 +104,22 @@ def test_p0d_reports_matched_transitions_blockers_and_deltas(tmp_path):
     assert crosswalk["readiness_coverage_deltas"]["readiness_minus_coverage"]["mean"] == -10
     assert crosswalk["readiness_coverage_deltas"]["observed_minus_expected_candles"]["mean"] == -2
     assert reuse["families"][0]["rows"] == 1
+
+
+def test_decision_event_is_primary_and_packet_is_canonical(tmp_path):
+    p = db(tmp_path)
+    with sqlite3.connect(p) as c:
+        c.execute(
+            "CREATE TABLE entry_decision_events (id INTEGER PRIMARY KEY, symbol TEXT, event_at INTEGER, decision TEXT, lifecycle_state TEXT, entry_readiness REAL, evidence_coverage_pct REAL, policy_version TEXT, packet_json TEXT, packet_hash TEXT, created_at INTEGER)"
+        )
+        packet = {"decision": "FORMING", "entry_readiness": 12.5, "evidence_coverage_pct": 33.0,
+                  "lifecycle_state": "WATCH", "metrics": {}, "capture_limitations": {}}
+        c.execute("INSERT INTO entry_decision_events VALUES (1,'BTC',100,'READY', 'WATCH',99,99,'v1',?,'hash',100)",
+                  (json.dumps(packet),))
+    compiler.compile_dataset(p, tmp_path / "out")
+    row = json.loads((tmp_path / "out/normalized_research.jsonl").read_text().splitlines()[0])
+    assert row["candidate_evaluation_id"] == 1
+    assert row["decision"] == {"value": "FORMING", "reason": None}
+    assert row["readiness"] == {"value": 12.5, "reason": None}
+    assert row["coverage"] == {"value": 33.0, "reason": None}
+    assert row["acquisition_path"] == {"value": None, "reason": "acquisition_path_unavailable_non_causal"}

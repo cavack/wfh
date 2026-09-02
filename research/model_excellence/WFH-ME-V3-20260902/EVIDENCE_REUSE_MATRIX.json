@@ -1,9 +1,10 @@
 {
   "artifact": "EVIDENCE_REUSE_MATRIX",
   "families": [],
+  "fields": [],
   "input": "normalized_research.jsonl",
   "reason": "no normalized runtime rows with complete outcomes",
-  "row_count": 0,
+  "row_count": 82797,
   "status": "NOT_RUN_INSUFFICIENT_EVIDENCE",
-  "version": "v1"
+  "version": "v2"
 }

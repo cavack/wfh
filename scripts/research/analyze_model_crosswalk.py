@@ -36,7 +36,7 @@ def analyze(rows: list[dict], *, input_name: str = "normalized_research.jsonl") 
                 "observed_minus_expected_candles": {"count": 0, "mean": None, "reason": reason},
             },
         }
-        reuse = {"artifact": "EVIDENCE_REUSE_MATRIX", "version": "v1", "status": NOT_RUN, "reason": reason, "input": input_name, "row_count": len(rows), "families": []}
+        reuse = {"artifact": "EVIDENCE_REUSE_MATRIX", "version": "v2", "status": NOT_RUN, "reason": reason, "input": input_name, "row_count": len(rows), "families": [], "fields": []}
         return base, reuse
     matched = [r for r in rows if r.get("packet_id") is not None]
     availability = collections.Counter()
@@ -45,6 +45,7 @@ def analyze(rows: list[dict], *, input_name: str = "normalized_research.jsonl") 
     joint = collections.Counter()
     readiness_delta, coverage_delta = [], []
     family_use = collections.defaultdict(lambda: {"rows": 0, "available": 0, "unavailable": 0, "reasons": collections.Counter()})
+    field_use = collections.defaultdict(lambda: {"rows": 0, "available": 0, "unavailable": 0, "reasons": collections.Counter()})
     for r in matched:
         avail = "available" if _value(r, "availability") is not None else "unavailable"
         availability[avail] += 1
@@ -61,7 +62,14 @@ def analyze(rows: list[dict], *, input_name: str = "normalized_research.jsonl") 
             if value is None:
                 f["unavailable"] += 1
                 if reason: f["reasons"][reason] += 1
-            else: f["available"] += 1
+            else:
+                f["available"] += 1
+            field_use[family]["rows"] += 1
+            if value is None:
+                field_use[family]["unavailable"] += 1
+                if reason: field_use[family]["reasons"][reason] += 1
+            else:
+                field_use[family]["available"] += 1
         rv, cv = _value(r, "readiness"), _value(r, "coverage")
         if isinstance(rv, (int, float)) and isinstance(cv, (int, float)):
             readiness_delta.append(float(rv) - float(cv))
@@ -87,7 +95,8 @@ def analyze(rows: list[dict], *, input_name: str = "normalized_research.jsonl") 
     for name in sorted(family_use):
         f = family_use[name]
         families.append({"family": name, "rows": f["rows"], "available": f["available"], "unavailable": f["unavailable"], "unavailable_reasons": counts(f["reasons"])})
-    reuse = {"artifact": "EVIDENCE_REUSE_MATRIX", "version": "v1", "status": status, "input": input_name, "row_count": len(rows), "families": families, "reuse_rule": "one immutable normalized packet may contribute to each explicitly available family; unavailable is never imputed"}
+    fields = [{"field": name, "rows": f["rows"], "available": f["available"], "unavailable": f["unavailable"], "unavailable_reasons": counts(f["reasons"])} for name, f in sorted(field_use.items())]
+    reuse = {"artifact": "EVIDENCE_REUSE_MATRIX", "version": "v2", "status": status, "input": input_name, "row_count": len(rows), "families": families, "fields": fields, "reuse_rule": "one immutable normalized packet may contribute to each explicitly available field; unavailable is never imputed"}
     return crosswalk, reuse
 
 def run(input_path: str | Path, output_dir: str | Path) -> tuple[dict, dict]:

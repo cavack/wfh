@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compile immutable runtime evidence into a deterministic research JSONL export."""
 from __future__ import annotations
-import argparse, collections, hashlib, json, math, sqlite3
+import argparse, bisect, collections, hashlib, json, math, sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -47,17 +47,45 @@ def compile_dataset(db_path: str | Path, output_dir: str | Path) -> dict[str, An
     tables = _tables(conn)
     signals = _rows(conn, "lbank_signal_ledger", "ORDER BY id")
     outcomes = _rows(conn, "lbank_signal_outcomes", "ORDER BY id")
-    evidence = _rows(conn, "production_evidence_snapshots", "ORDER BY id")
     decisions = _rows(conn, "entry_decision_events", "ORDER BY id")
+    # Decision-event exports already contain their immutable packet.  Avoid
+    # loading the multi-gigabyte snapshot blob column (and avoid a non-causal
+    # cross-row join) when those primary rows are present.
+    evidence = [] if decisions else _rows(conn, "production_evidence_snapshots", "ORDER BY id")
     replay = _rows(conn, "production_feature_replay_results_v2", "ORDER BY id")
     out_by_signal: dict[Any, list[dict[str, Any]]] = collections.defaultdict(list)
     for r in outcomes: out_by_signal[r.get("signal_id")].append(r)
-    # A signal's nearest evidence packet is selected deterministically, never by mutable state.
+    # Decision events are the primary candidate-evaluation rows.  The ledger is
+    # retained as a compatibility fallback for old databases without events.
+    primary_decisions = decisions if decisions else []
     records = []
-    for s in signals:
-        sid, symbol, triggered = s.get("id"), s.get("symbol"), s.get("triggered_at")
-        candidates = [e for e in evidence if e.get("symbol") == symbol and isinstance(e.get("observed_at"), (int,float)) and isinstance(triggered, (int,float)) and e["observed_at"] >= triggered]
-        ev = min(candidates, key=lambda e: (e["observed_at"], e["id"])) if candidates else None
+    primary_rows = primary_decisions or [{"_ledger": s} for s in signals]
+    signal_index = collections.defaultdict(list)
+    for candidate in signals:
+        signal_index[candidate.get("symbol")].append((candidate.get("triggered_at"), candidate))
+    for values in signal_index.values():
+        values.sort(key=lambda item: (item[0] if isinstance(item[0], (int, float)) else -1))
+    for primary in primary_rows:
+        s = primary.get("_ledger", primary)
+        packet = _loads(primary.get("packet_json")) if primary.get("packet_json") else {}
+        sid, symbol = s.get("id"), s.get("symbol")
+        if primary_decisions:
+            symbol = primary.get("symbol")
+            triggered = primary.get("event_at")
+            indexed = signal_index.get(symbol, [])
+            if indexed and isinstance(triggered, (int, float)):
+                pos = bisect.bisect_left([item[0] for item in indexed], triggered)
+                nearby = indexed[max(0, pos - 1):pos + 1]
+                if nearby:
+                    s = min(nearby, key=lambda item: (abs(item[0] - triggered), item[0]))[1]
+                    sid = s.get("id")
+            # Only use an evidence snapshot causally available to this event.
+            candidates = [e for e in evidence if e.get("symbol") == symbol and isinstance(e.get("observed_at"), (int,float)) and isinstance(triggered, (int,float)) and e["observed_at"] <= triggered]
+            ev = max(candidates, key=lambda e: (e["observed_at"], e["id"])) if candidates else None
+        else:
+            triggered = s.get("triggered_at")
+            candidates = [e for e in evidence if e.get("symbol") == symbol and isinstance(e.get("observed_at"), (int,float)) and isinstance(triggered, (int,float)) and e["observed_at"] >= triggered]
+            ev = min(candidates, key=lambda e: (e["observed_at"], e["id"])) if candidates else None
         linked = out_by_signal.get(sid, [])
         o = linked[0] if len(linked) == 1 else None
         reasons: list[str] = []
@@ -71,7 +99,7 @@ def compile_dataset(db_path: str | Path, output_dir: str | Path) -> dict[str, An
         elif (isinstance(o.get("observation_started_at"), (int,float)) and o.get("observation_started_at") < triggered) or (isinstance(o.get("observation_ended_at"), (int,float)) and o.get("observation_ended_at") < triggered): status, reasons = "INVALID_LEVELS", ["observation_before_signal"]
         elif o.get("observed_candles") != o.get("expected_candles") or (o.get("outcome_status") not in ("COMPLETE", "SCIENTIFICALLY_EVALUABLE")): status, reasons = "INSUFFICIENT_WINDOW", ["incomplete_horizon_or_outcome_status"]
         else: status = "COMPLETE"
-        payload = _evidence_payload(ev) if ev else {}
+        payload = packet if primary_decisions else (_evidence_payload(ev) if ev else {})
         metrics = payload.get("metrics", {}) if isinstance(payload, dict) else {}
         provenance = payload.get("decision_provenance", {}) if isinstance(payload, dict) else {}
         evidence_code = ev.get("code_sha256_v5") if ev else None
@@ -85,15 +113,19 @@ def compile_dataset(db_path: str | Path, output_dir: str | Path) -> dict[str, An
             "funding": costs.get("funding"),
             "net_r": costs.get("net_r", costs.get("net_realized_r")),
         }
-        record = {"record_version":"normalized_research_v1", "signal_id":sid, "packet_id":ev.get("id") if ev else None, "symbol":symbol, "strategy_profile":s.get("state_before"),
+        canonical_decision = packet.get("decision") if primary_decisions else None
+        canonical_readiness = packet.get("entry_readiness") if primary_decisions else (ev or {}).get("suggested_status")
+        record = {"record_version":"normalized_research_v1", "signal_id":sid, "candidate_evaluation_id": primary.get("id") if primary_decisions else None,
+          "packet_id": primary.get("id") if primary_decisions else (ev.get("id") if ev else None), "symbol":symbol, "strategy_profile":(packet.get("lifecycle_state") if primary_decisions else s.get("state_before")),
+          "decision":_field(canonical_decision, "decision_packet_unavailable" if not primary_decisions else ("decision_missing_in_packet" if canonical_decision is None else None)),
           "observed_at":_field(triggered, "missing_signal_timestamp" if triggered is None else None), "decision_at":_field((ev or {}).get("observed_at"), "evidence_packet_unavailable" if not ev else None),
           "evidence_as_of":_field((ev or {}).get("observed_at"), "evidence_packet_unavailable" if not ev else None),
           "code_sha":_field(evidence_code, "provenance_unavailable" if not evidence_code else None), "decision_contract_sha":_field(provenance.get("decision_contract_sha256"), "provenance_unavailable"),
           "lifecycle_v1":_field(s.get("state_before"), "lifecycle_unavailable" if not s.get("state_before") else None), "lifecycle_v2_shadow":_field(None, "no_linked_shadow_event"),
           "score_v2_strict":_field(s.get("score"), "score_unavailable" if s.get("score") is None else None), "score_v2_watch":_field(metrics.get("score"), "score_unavailable" if metrics.get("score") is None else None),
-          "readiness":_field((ev or {}).get("suggested_status"), "evidence_packet_unavailable" if not ev else None), "coverage":_field((ev or {}).get("valid_candle_timeframes"), "evidence_packet_unavailable" if not ev else None),
+          "readiness":_field(canonical_readiness, "evidence_packet_unavailable" if not ev and not primary_decisions else ("readiness_missing_in_packet" if canonical_readiness is None else None)), "coverage":_field(packet.get("evidence_coverage_pct") if primary_decisions else (ev or {}).get("valid_candle_timeframes"), "evidence_packet_unavailable" if not ev and not primary_decisions else None),
           "components":_field(metrics.get("score_components"), "components_unavailable"), "gates":_field(metrics.get("quality_gates"), "gates_unavailable"), "trade_plan":_field(_loads(s.get("position_setup_json")), "trade_plan_unavailable" if not s.get("position_setup_json") else None),
-          "freshness":_field(metrics.get("freshness"), "freshness_unavailable"), "availability":_field(payload.get("capture_limitations"), "availability_unavailable"), "acquisition_path":_field(metrics.get("source_capture"), "acquisition_path_unavailable"),
+          "freshness":_field(metrics.get("freshness"), "freshness_unavailable"), "availability":_field(payload.get("capture_limitations"), "availability_unavailable"), "acquisition_path":_field(metrics.get("source_capture") if not primary_decisions else None, "acquisition_path_unavailable_non_causal"),
           "outcome": {"status":status, "reasons":reasons, "horizon_seconds":_field((o or {}).get("horizon_seconds"), "outcome_unavailable" if not o else None), "observed_candles":_field((o or {}).get("observed_candles"), "outcome_unavailable" if not o else None), "expected_candles":_field((o or {}).get("expected_candles"), "outcome_unavailable" if not o else None), "entry_price":_field(s.get("entry_price"), "entry_price_unavailable"), "exit_price":_field(costs.get("exit_price"), "exit_price_unavailable"), "gross_r":_field(costs.get("gross_r") or (o or {}).get("gross_realized_r"), "gross_r_unavailable"), "costs":{k:_field(v, "cost_not_recorded") for k,v in cost_values.items()}, "source":_field((o or {}).get("price_source"), "outcome_unavailable" if not o else None), "resolved_at":_field((o or {}).get("resolved_at"), "outcome_unavailable" if not o else None)},
           "scientific_eligibility":{"eligible": status == "COMPLETE" and all(v is not None for v in cost_values.values()), "reason": None if status == "COMPLETE" and all(v is not None for v in cost_values.values()) else "incomplete_outcome_or_cost_packet"}}
         records.append(record)

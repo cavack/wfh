@@ -1,0 +1,85 @@
+{
+  "artifact": "COPILOT_HANDOFF",
+  "artifacts": [
+    "RUNTIME_SCHEMA_CROSSWALK.json",
+    "MODEL_LAYER_CROSSWALK.json",
+    "EVIDENCE_REUSE_MATRIX.json",
+    "FP_FN_EXECUTION_RESULT.json",
+    "GATE_ABLATION_EXECUTION_RESULT.json"
+  ],
+  "branch": "feat/model-excellence-v3-phase0-20260902",
+  "counts": {
+    "decision_event_rows": 82797,
+    "normalized_rows": 82797,
+    "outcome_rows": 2573,
+    "schema_tables": 23,
+    "scientifically_eligible": 0
+  },
+  "dataset_manifest": {
+    "crosswalk_sha256": "39c12efae742bd180e26e66d2dc104457618267734d43e3b76ead0b406297728",
+    "database": "production_snapshot.db",
+    "jsonl_bytes": 202825391,
+    "jsonl_sha256": "f1ffe405b112f72914fdd0282f25ecabd04d36c1dc09f3c352a2e3a4838d88e7",
+    "manifest_version": "normalized_research_manifest_v1",
+    "nulls_require_reasons": true,
+    "record_count": 82797,
+    "scientifically_eligible_count": 0,
+    "status_counts": {
+      "COMPLETE": 0,
+      "DUPLICATE_LINK": 0,
+      "INSUFFICIENT_WINDOW": 0,
+      "INVALID_LEVELS": 19132,
+      "MISSING_MARKET_DATA": 63665,
+      "PENDING": 0,
+      "PROVENANCE_MISMATCH": 0
+    },
+    "tables": [
+      "catalog_events",
+      "db_readiness_probe",
+      "domain_outbox_events",
+      "entry_decision_advisories",
+      "entry_decision_events",
+      "entry_notification_outbox",
+      "lbank_catalog",
+      "lbank_execution_decision_log",
+      "lbank_execution_observation_history",
+      "lbank_execution_observations",
+      "lbank_signal_ledger",
+      "lbank_signal_outcomes",
+      "lbank_stage_lifecycle",
+      "lifecycle_v2_shadow_events",
+      "operational_historical_outcome_datasets",
+      "operational_historical_signal_outcomes",
+      "production_evidence_snapshots",
+      "production_feature_replay_results",
+      "production_feature_replay_results_v2",
+      "provider_states",
+      "schema_migrations",
+      "signal_decisions",
+      "signal_metadata",
+      "sqlite_sequence"
+    ]
+  },
+  "head_expected": "8502e06",
+  "origin_main": "d129264",
+  "production_main_drift": "HEAD is 7 commits ahead of origin/main; no PR #115/main changes",
+  "semantic_fixes": [
+    "decision events are primary candidate rows",
+    "decision and entry_readiness read from persisted packet_json",
+    "acquisition_path forced unavailable unless per-row causal capture exists",
+    "strict and watch scores remain separate",
+    "coverage deltas are not imputed"
+  ],
+  "snapshot": {
+    "available": true,
+    "path": "/srv/waterfallhunter/runtime/p0c-20260902/production_snapshot.db",
+    "sha256": "d82adb75836bb091cd0a0007f2838218314c540ef284f948e172540ff38c5195",
+    "size_bytes": 6906265600
+  },
+  "state": "P0-C_COMPLETE_WITH_INSUFFICIENT_EVIDENCE",
+  "tests": [
+    "PYTHONPATH=backend/src backend/.venv/bin/pytest -q backend/tests/test_normalized_research_compiler.py (6 passed)",
+    "PYTHONPATH=backend/src backend/.venv/bin/pytest -q backend/tests/test_normalized_research_compiler.py backend/tests/test_schema_contract.py (48 passed)"
+  ],
+  "version": "v1"
+}

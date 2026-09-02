@@ -1,0 +1,2145 @@
+{
+  "artifact": "RUNTIME_SCHEMA_CROSSWALK",
+  "introspected_at": "2026-09-02T19:45:00Z",
+  "semantic_anchors": {
+    "candidate_evaluation_primary": "entry_decision_events",
+    "canonical_decision": "entry_decision_events.packet_json.decision",
+    "canonical_entry_readiness": "entry_decision_events.packet_json.entry_readiness",
+    "evidence_reuse": "packet_json only; cross-row acquisition is unavailable",
+    "outcome_primary": "lbank_signal_outcomes"
+  },
+  "snapshot": {
+    "path": "/srv/waterfallhunter/runtime/p0c-20260902/production_snapshot.db",
+    "sha256": "d82adb75836bb091cd0a0007f2838218314c540ef284f948e172540ff38c5195",
+    "size_bytes": 6906265600,
+    "transactional_sqlite_backup": true
+  },
+  "status": "SNAPSHOT_AVAILABLE",
+  "tables": [
+    {
+      "columns": [
+        {
+          "name": "id",
+          "not_null": false,
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "name": "symbol",
+          "not_null": false,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "event_type",
+          "not_null": false,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "timestamp",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        }
+      ],
+      "row_count": 3566,
+      "table": "catalog_events"
+    },
+    {
+      "columns": [
+        {
+          "name": "probe_id",
+          "not_null": false,
+          "primary_key": true,
+          "type": "TEXT"
+        },
+        {
+          "name": "touched_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        }
+      ],
+      "row_count": 0,
+      "table": "db_readiness_probe"
+    },
+    {
+      "columns": [
+        {
+          "name": "event_id",
+          "not_null": false,
+          "primary_key": true,
+          "type": "TEXT"
+        },
+        {
+          "name": "signal_id",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "aggregate_type",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "aggregate_id",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "aggregate_version",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "event_sequence",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "event_type",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "event_key",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "payload_contract_version",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "payload_json",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "payload_hash",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "status",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "attempt_count",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "available_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "lease_owner",
+          "not_null": false,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "lease_expires_at",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "last_error_code",
+          "not_null": false,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "updated_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        }
+      ],
+      "row_count": 945,
+      "table": "domain_outbox_events"
+    },
+    {
+      "columns": [
+        {
+          "name": "id",
+          "not_null": false,
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "name": "decision_event_id",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "advisory_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "provider",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "model",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "status",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "advisory_json",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "advisory_hash",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        }
+      ],
+      "row_count": 26,
+      "table": "entry_decision_advisories"
+    },
+    {
+      "columns": [
+        {
+          "name": "id",
+          "not_null": false,
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "name": "symbol",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "event_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "decision",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "lifecycle_state",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "entry_readiness",
+          "not_null": true,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "evidence_coverage_pct",
+          "not_null": true,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "policy_version",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "packet_json",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "packet_hash",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        }
+      ],
+      "row_count": 82797,
+      "table": "entry_decision_events"
+    },
+    {
+      "columns": [
+        {
+          "name": "event_id",
+          "not_null": false,
+          "primary_key": true,
+          "type": "TEXT"
+        },
+        {
+          "name": "decision_event_id",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "event_key",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "event_type",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "payload_contract_version",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "payload_json",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "payload_hash",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "status",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "attempt_count",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "available_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "lease_owner",
+          "not_null": false,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "lease_expires_at",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "last_error_code",
+          "not_null": false,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "updated_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        }
+      ],
+      "row_count": 0,
+      "table": "entry_notification_outbox"
+    },
+    {
+      "columns": [
+        {
+          "name": "symbol",
+          "not_null": false,
+          "primary_key": true,
+          "type": "TEXT"
+        },
+        {
+          "name": "last_price",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "quote_volume",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "is_meme",
+          "not_null": false,
+          "primary_key": false,
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "status",
+          "not_null": false,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "first_seen_at",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "last_added_at",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "removed_at",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "trigger_data",
+          "not_null": false,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "last_seen_at",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "scan_eligible",
+          "not_null": false,
+          "primary_key": false,
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "consecutive_missing_snapshots",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "lifecycle_id",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        }
+      ],
+      "row_count": 820,
+      "table": "lbank_catalog"
+    },
+    {
+      "columns": [
+        {
+          "name": "id",
+          "not_null": false,
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "name": "bucket_started_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "source",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "symbol",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "first_observed_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "last_observed_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "evaluation_count",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "volume_gate_passed",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "suitability_status",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "suitability_would_admit",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "disagreement_kind",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "evidence_status",
+          "not_null": false,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "candidate_state",
+          "not_null": false,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "score",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "scan_eligible",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "quote_volume",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "last_price",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "observational_only",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "trade_eligible",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        }
+      ],
+      "row_count": 467322,
+      "table": "lbank_execution_decision_log"
+    },
+    {
+      "columns": [
+        {
+          "name": "id",
+          "not_null": false,
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "name": "symbol",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "observation_status",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "observed_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "reason",
+          "not_null": false,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "spread_pct",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "cost_25_pct",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "cost_50_pct",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "cost_100_pct",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "depth_10bps_min_usdt",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "depth_25bps_min_usdt",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "depth_50bps_min_usdt",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "depth_100bps_min_usdt",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "payload",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "REAL"
+        }
+      ],
+      "row_count": 226096,
+      "table": "lbank_execution_observation_history"
+    },
+    {
+      "columns": [
+        {
+          "name": "symbol",
+          "not_null": false,
+          "primary_key": true,
+          "type": "TEXT"
+        },
+        {
+          "name": "observation_status",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "observed_at",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "reason",
+          "not_null": false,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "spread_pct",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "cost_25_pct",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "cost_50_pct",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "cost_100_pct",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "depth_10bps_min_usdt",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "depth_25bps_min_usdt",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "depth_50bps_min_usdt",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "depth_100bps_min_usdt",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "failures",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "next_check_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "payload",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "updated_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "REAL"
+        }
+      ],
+      "row_count": 490,
+      "table": "lbank_execution_observations"
+    },
+    {
+      "columns": [
+        {
+          "name": "id",
+          "not_null": false,
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "name": "symbol",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "triggered_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "state_before",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "score",
+          "not_null": true,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "entry_price",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "stop_loss",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "take_profit_1",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "take_profit_2",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "position_setup_json",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "trigger_metrics_json",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "execution_status",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "execution_evidence_status",
+          "not_null": false,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "execution_observed_samples",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "execution_observation_span_hours",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "execution_availability_rate",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "execution_cost_100_p90_pct",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "execution_spread_p90_pct",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "execution_depth_25bps_p50_usdt",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "execution_failed_checks_json",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "execution_suitability_json",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "observational_only",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "trade_eligible",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "quote_volume_at_trigger",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "volume_gate_passed",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "proxy_execution_disagreement",
+          "not_null": false,
+          "primary_key": false,
+          "type": "TEXT"
+        }
+      ],
+      "row_count": 3346,
+      "table": "lbank_signal_ledger"
+    },
+    {
+      "columns": [
+        {
+          "name": "id",
+          "not_null": false,
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "name": "signal_id",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "symbol",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "outcome_status",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "signal_triggered_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "observation_started_at",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "observation_ended_at",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "horizon_seconds",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "price_source",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "source_exchange",
+          "not_null": false,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "source_mapped_symbol",
+          "not_null": false,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "first_tp1_at",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "first_tp2_at",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "first_stop_at",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "min_price",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "max_price",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "mfe_pct",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "mae_pct",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "observed_candles",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "expected_candles",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "details_json",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "observational_only",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "trade_eligible",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "resolved_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        }
+      ],
+      "row_count": 2573,
+      "table": "lbank_signal_outcomes"
+    },
+    {
+      "columns": [
+        {
+          "name": "symbol",
+          "not_null": true,
+          "primary_key": true,
+          "type": "TEXT"
+        },
+        {
+          "name": "lifecycle_id",
+          "not_null": true,
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "name": "hype_seen_at",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "damage_seen_at",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "setup_seen_at",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "setup_type",
+          "not_null": false,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "trigger_seen_at",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "updated_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        }
+      ],
+      "row_count": 816,
+      "table": "lbank_stage_lifecycle"
+    },
+    {
+      "columns": [
+        {
+          "name": "event_id",
+          "not_null": false,
+          "primary_key": true,
+          "type": "TEXT"
+        },
+        {
+          "name": "episode_id",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "symbol",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "v1_state",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "v2_from_state",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "v2_to_state",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "reason_codes_json",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "evidence_refs_json",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "observed_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "policy_version",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "policy_hash",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "feature_registry_hash",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "strategy_profile",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "transition_hash",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "comparison_hash",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "shadow_only",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "promotion_allowed",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        }
+      ],
+      "row_count": 1122,
+      "table": "lifecycle_v2_shadow_events"
+    },
+    {
+      "columns": [
+        {
+          "name": "id",
+          "not_null": false,
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "name": "report_sha256",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "source",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "generated_at",
+          "not_null": false,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "window_start_ms",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "window_end_ms",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "days",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "strategy",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "cost_basis",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "strategy_equivalent",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "source_provenance_json",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "imported_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "observational_only",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "hard_gating_allowed",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        }
+      ],
+      "row_count": 1,
+      "table": "operational_historical_outcome_datasets"
+    },
+    {
+      "columns": [
+        {
+          "name": "id",
+          "not_null": false,
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "name": "dataset_id",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "event_key",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "symbol",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "signal_timestamp_ms",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "exit_timestamp_ms",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "outcome",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "gross_realized_r",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "net_realized_r",
+          "not_null": true,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "exit_reason",
+          "not_null": false,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "cost_basis",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "details_json",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "observational_only",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "trade_eligible",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        }
+      ],
+      "row_count": 122,
+      "table": "operational_historical_signal_outcomes"
+    },
+    {
+      "columns": [
+        {
+          "name": "id",
+          "not_null": false,
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "name": "bucket_started_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "symbol",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "observed_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "candidate_state",
+          "not_null": false,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "reference_source",
+          "not_null": false,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "reference_price",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "result_valid",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "suggested_status",
+          "not_null": false,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "score",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "evidence_sha256",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "evidence_zlib",
+          "not_null": true,
+          "primary_key": false,
+          "type": "BLOB"
+        },
+        {
+          "name": "uncompressed_bytes",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "compressed_bytes",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "has_orderbook",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "orderbook_bid_levels",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "orderbook_ask_levels",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "has_candle_analysis",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "valid_candle_timeframes",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "has_derivatives",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "has_confirmation_source",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "raw_ohlcv_captured",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "raw_trades_captured",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "source_replay_ready",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "decision_packet_complete",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "schema_version",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "capture_mode",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "observational_only",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "hard_gating_allowed",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "trade_eligible",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "source_ohlcv_captured",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "source_trades_captured",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "source_replay_ready_v2",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "feature_replay_ready_v3",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "triggered_path_replay_ready_v4",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "decision_provenance_ready_v5",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "raw_derivatives_captured_v5",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "production_evidence_complete_v5",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "code_sha256_v5",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "confirmation_ohlcv_captured_v5",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        }
+      ],
+      "row_count": 316369,
+      "table": "production_evidence_snapshots"
+    },
+    {
+      "columns": [
+        {
+          "name": "id",
+          "not_null": false,
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "name": "snapshot_id",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "symbol",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "decision_path",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "status",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "strategy_equivalent",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "differences_json",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "replay_version",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "replayed_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "observational_only",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "hard_gating_allowed",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "trade_eligible",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        }
+      ],
+      "row_count": 23,
+      "table": "production_feature_replay_results"
+    },
+    {
+      "columns": [
+        {
+          "name": "id",
+          "not_null": false,
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "name": "snapshot_id",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "symbol",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "decision_path",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "status",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "strategy_equivalent",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "differences_json",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "replay_version",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "replayed_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "observational_only",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "hard_gating_allowed",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "trade_eligible",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        }
+      ],
+      "row_count": 82624,
+      "table": "production_feature_replay_results_v2"
+    },
+    {
+      "columns": [
+        {
+          "name": "provider_id",
+          "not_null": false,
+          "primary_key": true,
+          "type": "TEXT"
+        },
+        {
+          "name": "upstream_identity",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "status",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "failure_class",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "consecutive_failures",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "circuit_open_until",
+          "not_null": true,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "replacement_generation",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "last_success_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "updated_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "REAL"
+        }
+      ],
+      "row_count": 0,
+      "table": "provider_states"
+    },
+    {
+      "columns": [
+        {
+          "name": "version",
+          "not_null": false,
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "name": "name",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "checksum_sha256",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "applied_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "source_revision",
+          "not_null": false,
+          "primary_key": false,
+          "type": "TEXT"
+        }
+      ],
+      "row_count": 7,
+      "table": "schema_migrations"
+    },
+    {
+      "columns": [
+        {
+          "name": "signal_id",
+          "not_null": false,
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "name": "decision_id",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "decision_version",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "decision_status",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "lifecycle_state",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "predictive_evidence_score",
+          "not_null": true,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "calibrated_probability",
+          "not_null": false,
+          "primary_key": false,
+          "type": "REAL"
+        },
+        {
+          "name": "analysis_observed_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "reference_observed_at",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "decision_contract_hash",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "payload_json",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "payload_hash",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        }
+      ],
+      "row_count": 945,
+      "table": "signal_decisions"
+    },
+    {
+      "columns": [
+        {
+          "name": "signal_id",
+          "not_null": false,
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "name": "signal_class",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "strategy_profile",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "score_version",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "model_generation",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "decision_contract_hash",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "analysis_observed_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "reference_observed_at",
+          "not_null": false,
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "name": "metadata_contract_version",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "classification_method",
+          "not_null": true,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "classification_evidence_hash",
+          "not_null": false,
+          "primary_key": false,
+          "type": "TEXT"
+        },
+        {
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": false,
+          "type": "INTEGER"
+        }
+      ],
+      "row_count": 945,
+      "table": "signal_metadata"
+    }
+  ],
+  "version": "v1"
+}

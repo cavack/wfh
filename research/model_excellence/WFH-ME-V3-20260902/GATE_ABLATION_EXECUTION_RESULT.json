@@ -1,0 +1,8 @@
+{
+  "artifact": "GATE_ABLATION_EXECUTION_RESULT",
+  "reason": "NOT_RUN_INSUFFICIENT_EVIDENCE: no scientifically eligible rows; gate ablation would require complete causal packets and outcomes",
+  "scientifically_eligible_count": 0,
+  "snapshot_manifest": "/srv/waterfallhunter/runtime/p0c-20260902/normalized/manifest.json",
+  "status": "NOT_RUN_INSUFFICIENT_EVIDENCE",
+  "version": "v1"
+}
