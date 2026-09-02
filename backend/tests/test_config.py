@@ -26,7 +26,8 @@ def test_settings_exposes_the_signal_only_and_gemini_configuration_fields():
     )
 
 
-def test_lbank_execution_shadow_is_disabled_by_default():
+def test_lbank_execution_shadow_is_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("SOURCE_REVISION", raising=False)
     configured = Settings(
         _env_file=None,
     )
@@ -38,8 +39,9 @@ def test_lbank_execution_shadow_is_disabled_by_default():
     assert configured.source_revision is None
 
 
-def test_exact_build_revision_is_available_to_forward_capture():
-    configured = Settings(_env_file=None, source_revision="a" * 40)
+def test_exact_build_revision_is_available_to_forward_capture(monkeypatch):
+    monkeypatch.setenv("SOURCE_REVISION", "a" * 40)
+    configured = Settings(_env_file=None)
 
     assert configured.source_revision == "a" * 40
 
