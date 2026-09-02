@@ -49,6 +49,10 @@ class WebSocketManager:
     def __init__(self):
         self.exchanges_names = ['binance', 'bybit', 'kucoin', 'okx', 'mexc', 'bingx']
         self.exchanges: Dict[str, Any] = {}
+        # Keep shared FUEL-RICH subscriptions on dedicated CCXT Pro clients so
+        # their dynamic unwatch operations cannot cancel PRE-TRIGGER/ARMED
+        # direct subscriptions that use the same venue/message hashes.
+        self.shared_evidence_exchanges: Dict[str, Any] = {}
 
         # ساختار کش: { 'exchange:symbol': {'data': orderbook, 'updated_at': timestamp} }
         self.live_orderbooks: Dict[str, Dict[str, Any]] = {}
@@ -149,17 +153,29 @@ class WebSocketManager:
         )[-self.trade_history_limit:]
         self.live_trades[stream_id] = {"data": fresh, "updated_at": now}
 
-    async def _get_exchange(self, ex_name: str) -> Any:
+    @staticmethod
+    def _new_exchange(ex_name: str) -> Any:
         if ccxt_pro is None:
             raise RuntimeError("CCXT Pro is not installed; WebSocket streaming is unavailable")
+        ccxt_id = MultiExchangeGateway._ccxt_exchange_id(ex_name)
+        ex_class = getattr(ccxt_pro, ccxt_id)
+        return ex_class({
+            'enableRateLimit': True,
+            'options': {'defaultType': 'swap'}
+        })
+
+    async def _get_exchange(self, ex_name: str) -> Any:
         if ex_name not in self.exchanges:
-            ccxt_id = MultiExchangeGateway._ccxt_exchange_id(ex_name)
-            ex_class = getattr(ccxt_pro, ccxt_id)
-            self.exchanges[ex_name] = ex_class({
-                'enableRateLimit': True,
-                'options': {'defaultType': 'swap'}
-            })
+            self.exchanges[ex_name] = self._new_exchange(ex_name)
         return self.exchanges[ex_name]
+
+    async def _get_shared_evidence_exchange(self, ex_name: str) -> Any:
+        # Three shared task kinds start together. Serialize first construction
+        # so exactly one dedicated exchange client exists per venue.
+        async with self._lock:
+            if ex_name not in self.shared_evidence_exchanges:
+                self.shared_evidence_exchanges[ex_name] = self._new_exchange(ex_name)
+            return self.shared_evidence_exchanges[ex_name]
 
     async def watch_orderbook_stream(self, ex_name: str, symbol: str, limit: int = 20):
         """مصرف‌کننده (Consumer) دائمی با پایداری سطح نهادی (Institutional)"""
@@ -695,9 +711,10 @@ class WebSocketManager:
         active_symbols: tuple[str, ...] = ()
         exchange: Any | None = None
         try:
-            exchange = await self._get_exchange(ex_name)
+            exchange = await self._get_shared_evidence_exchange(ex_name)
             if not self._shared_evidence_capable(exchange):
                 self.unsupported_shared_evidence_exchanges.add(ex_name)
+                self.shared_evidence_subscribers.pop(ex_name, None)
                 logger.info("Shared evidence pool unsupported for %s", ex_name)
                 return
             watch, unwatch = self._shared_evidence_methods(exchange, kind)
@@ -1041,15 +1058,19 @@ class WebSocketManager:
         )
 
     async def close_all(self):
-        for task in list(self.active_tasks.values()):
+        tasks = list(self.active_tasks.values())
+        for task in tasks:
             task.cancel()
         self.active_tasks.clear()
         self.liquidation_subscribers.clear()
         self.shared_evidence_subscribers.clear()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
-        for ex in self.exchanges.values():
+        for ex in (*self.exchanges.values(), *self.shared_evidence_exchanges.values()):
             await ex.close()
         self.exchanges.clear()
+        self.shared_evidence_exchanges.clear()
 
 
 def cb_recovery(breaker: CircuitBreaker, current_delay: float) -> float:

@@ -175,7 +175,7 @@ def test_shared_orderbook_consumer_unwatches_and_ingests_only_current_members(mo
     async def get_exchange(_name: str):
         return exchange
 
-    monkeypatch.setattr(manager, "_get_exchange", get_exchange)
+    monkeypatch.setattr(manager, "_get_shared_evidence_exchange", get_exchange)
 
     async def scenario() -> None:
         manager.shared_evidence_subscribers["binance"] = {symbol}
@@ -214,7 +214,7 @@ def test_shared_orderbook_uses_exchange_safe_depth_limit(monkeypatch) -> None:
     async def get_exchange(_name: str):
         return exchange
 
-    monkeypatch.setattr(manager, "_get_exchange", get_exchange)
+    monkeypatch.setattr(manager, "_get_shared_evidence_exchange", get_exchange)
 
     async def scenario() -> None:
         manager.shared_evidence_subscribers["bybit"] = {symbol}
@@ -223,3 +223,64 @@ def test_shared_orderbook_uses_exchange_safe_depth_limit(monkeypatch) -> None:
 
     asyncio.run(scenario())
     assert observed_limits == [50]
+
+
+def test_shared_evidence_stream_uses_dedicated_exchange_instance(monkeypatch) -> None:
+    manager = WebSocketManager()
+    symbol = "AAA/USDT:USDT"
+    task_id = "shared-evidence:binance:ticker"
+    exchange = _CapabilityExchange()
+
+    async def direct_getter(_name: str):
+        raise AssertionError("shared pool reused the direct-stream exchange instance")
+
+    async def shared_getter(_name: str):
+        return exchange
+
+    async def watch_tickers(symbols=None, params=None):
+        manager.active_tasks.pop(task_id, None)
+        return {symbol: {"symbol": symbol, "last": 1.0}}
+
+    async def unwatch_tickers(symbols=None, params=None):
+        return {}
+
+    exchange.watch_tickers = watch_tickers
+    exchange.un_watch_tickers = unwatch_tickers
+    monkeypatch.setattr(manager, "_get_exchange", direct_getter)
+    monkeypatch.setattr(
+        manager, "_get_shared_evidence_exchange", shared_getter, raising=False
+    )
+
+    async def scenario() -> None:
+        manager.shared_evidence_subscribers["binance"] = {symbol}
+        manager.active_tasks[task_id] = asyncio.current_task()
+        await manager._watch_shared_evidence_stream("binance", "ticker")
+
+    asyncio.run(scenario())
+    assert manager.get_realtime_ticker("binance", symbol) == {
+        "symbol": symbol,
+        "last": 1.0,
+    }
+
+
+def test_close_all_closes_and_releases_direct_and_shared_exchange_clients() -> None:
+    manager = WebSocketManager()
+
+    class _Closable:
+        def __init__(self) -> None:
+            self.closed = 0
+
+        async def close(self) -> None:
+            self.closed += 1
+
+    direct = _Closable()
+    shared = _Closable()
+    manager.exchanges["binance"] = direct
+    manager.shared_evidence_exchanges["binance"] = shared
+
+    asyncio.run(manager.close_all())
+
+    assert direct.closed == 1
+    assert shared.closed == 1
+    assert manager.exchanges == {}
+    assert manager.shared_evidence_exchanges == {}
