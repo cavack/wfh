@@ -251,8 +251,8 @@ def test_pretrigger_observation_starts_websocket_evidence_subscription(monkeypat
         )
     )
 
-    assert full_subscribed == []
-    assert liquidation_only == [("binance", mapped_symbol)]
+    assert full_subscribed == [("binance", mapped_symbol)]
+    assert liquidation_only == []
     assert unsubscribed == []
 
 
@@ -304,8 +304,8 @@ def test_pretrigger_source_failover_retires_previous_websocket_subscription(monk
     )
 
     assert unsubscribed == [("binance", old_symbol)]
-    assert full_subscribed == []
-    assert liquidation_only == [("bybit", new_symbol)]
+    assert full_subscribed == [("bybit", new_symbol)]
+    assert liquidation_only == []
 
 
 def test_pretrigger_downgrade_to_watch_retires_websocket_subscription(monkeypatch) -> None:

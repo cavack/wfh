@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import time
 from typing import Any, Dict, List, Optional
 
@@ -34,7 +35,57 @@ class MicrostructureAnalyzer:
             return None
         return (current - previous) / previous * 100.0
 
-    async def analyze(self, exchange: Any, symbol: str, first: Dict[str, Any], market: Dict[str, Any]) -> Dict[str, Any]:
+    def _preloaded_evidence_is_usable(
+        self,
+        snapshots: Any,
+        trades: Any,
+        *,
+        now: float,
+    ) -> bool:
+        if not isinstance(snapshots, list) or len(snapshots) != 3:
+            return False
+        if not isinstance(trades, list) or len(trades) < 20:
+            return False
+        received = []
+        now_ms = int(now * 1000)
+        for snapshot in snapshots:
+            if not isinstance(snapshot, dict) or not snapshot.get("bids") or not snapshot.get("asks"):
+                return False
+            received_at = snapshot.get("_received_at")
+            if (
+                isinstance(received_at, bool)
+                or not isinstance(received_at, (int, float))
+                or received_at > now
+                or now - float(received_at) > self.snapshot_ttl_seconds
+            ):
+                return False
+            timestamp = snapshot.get("timestamp")
+            if isinstance(timestamp, (int, float)) and not isinstance(timestamp, bool):
+                if timestamp <= 0 or now_ms - int(timestamp) > int(self.snapshot_ttl_seconds * 1000):
+                    return False
+            received.append(float(received_at))
+        if received[-1] - received[0] < 2.0 * self.snapshot_delay_seconds:
+            return False
+        fresh_trades = [
+            trade for trade in trades
+            if isinstance(trade, dict)
+            and isinstance(trade.get("timestamp"), (int, float))
+            and not isinstance(trade.get("timestamp"), bool)
+            and 0 < int(trade["timestamp"]) <= now_ms
+            and now_ms - int(trade["timestamp"]) <= int(self.trade_ttl_seconds * 1000)
+        ]
+        return len(fresh_trades) >= 20
+
+    async def analyze(
+        self,
+        exchange: Any,
+        symbol: str,
+        first: Dict[str, Any],
+        market: Dict[str, Any],
+        *,
+        preloaded_snapshots: list[Dict[str, Any]] | None = None,
+        preloaded_trades: list[Dict[str, Any]] | None = None,
+    ) -> Dict[str, Any]:
         if not first:
             return {"approved": False, "reason": "missing live orderbook"}
         try:
@@ -43,25 +94,34 @@ class MicrostructureAnalyzer:
             return {"approved": False, "reason": "invalid exchange filters: contract size unavailable"}
         if contract_size <= 0:
             return {"approved": False, "reason": "invalid exchange filters: contract size unavailable"}
-        first.setdefault("_received_at", time.time())
-        snapshots = [first]
-        trades_task = asyncio.create_task(exchange.fetch_trades(symbol, limit=100))
-        try:
-            for _ in range(2):
-                await asyncio.sleep(self.snapshot_delay_seconds)
-                snapshot = await exchange.fetch_order_book(symbol, limit=20)
-                snapshot["_received_at"] = time.time()
-                snapshots.append(snapshot)
-            trades = await trades_task
-        except asyncio.CancelledError:
-            trades_task.cancel()
-            await asyncio.gather(trades_task, return_exceptions=True)
-            raise
-        except Exception:
-            if not trades_task.done():
+
+        preload_now = time.time()
+        if self._preloaded_evidence_is_usable(
+            preloaded_snapshots, preloaded_trades, now=preload_now
+        ):
+            snapshots = copy.deepcopy(preloaded_snapshots)
+            trades = copy.deepcopy(preloaded_trades)
+        else:
+            first = copy.deepcopy(first)
+            first.setdefault("_received_at", time.time())
+            snapshots = [first]
+            trades_task = asyncio.create_task(exchange.fetch_trades(symbol, limit=100))
+            try:
+                for _ in range(2):
+                    await asyncio.sleep(self.snapshot_delay_seconds)
+                    snapshot = await exchange.fetch_order_book(symbol, limit=20)
+                    snapshot["_received_at"] = time.time()
+                    snapshots.append(snapshot)
+                trades = await trades_task
+            except asyncio.CancelledError:
                 trades_task.cancel()
-            await asyncio.gather(trades_task, return_exceptions=True)
-            return {"approved": False, "reason": "missing live orderbook snapshots or trades"}
+                await asyncio.gather(trades_task, return_exceptions=True)
+                raise
+            except Exception:
+                if not trades_task.done():
+                    trades_task.cancel()
+                await asyncio.gather(trades_task, return_exceptions=True)
+                return {"approved": False, "reason": "missing live orderbook snapshots or trades"}
         if any(not item.get("bids") or not item.get("asks") for item in snapshots):
             return {"approved": False, "reason": "empty live orderbook"}
         now_ms = int(time.time() * 1000)

@@ -8,7 +8,7 @@ from typing import Any
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
-from prometheus_client import Counter, Gauge, generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import Counter, Gauge, Histogram, generate_latest, CONTENT_TYPE_LATEST
 import os
 from typing import Annotated
 
@@ -117,8 +117,7 @@ from waterfallhunter.core.lbank_execution_outcome_report import (
 )
 from waterfallhunter.core.hunter_schedule import (
     DEFAULT_EVALUATION_CONCURRENCY,
-    ordered_hunter_candidates,
-    remaining_cycle_delay,
+    HunterDeadlineSchedule,
 )
 from waterfallhunter.core.runtime_memory import trim_process_heap
 
@@ -307,6 +306,8 @@ ai_veto = AIVetoEngine()
 _hunter_running = False
 _hunter_last_completed_at: float | None = None
 _hunter_last_progress_at: float | None = None
+_hunter_in_flight_count = 0
+_hunter_due_backlog = 0
 _hunter_task: asyncio.Task | None = None
 _hunter_stop_event = asyncio.Event()
 _HUNTER_STARTUP_DELAY_SECONDS = 5.0
@@ -535,6 +536,52 @@ if "websocket_shared_liquidation_subscribers_metric" not in globals():
         "Symbols routed through exchange-wide liquidation consumers.",
     )
 
+if "hunter_evaluation_duration_metric" not in globals():
+    hunter_evaluation_duration_metric = Histogram(
+        "waterfall_hunter_evaluation_duration_seconds",
+        "Candidate evaluation wall time by bounded lifecycle state.",
+        ("state",),
+    )
+
+if "market_evidence_stage_duration_metric" not in globals():
+    market_evidence_stage_duration_metric = Histogram(
+        "waterfall_market_evidence_stage_duration_seconds",
+        "Bounded live evidence stage duration.",
+        ("stage", "outcome"),
+    )
+
+if "primary_source_attempts_metric" not in globals():
+    primary_source_attempts_metric = Histogram(
+        "waterfall_primary_source_attempts",
+        "Price-compatible primary venues attempted per candidate evaluation.",
+    )
+
+if "hunter_in_flight_metric" not in globals():
+    hunter_in_flight_metric = Gauge(
+        "waterfall_hunter_in_flight_evaluations",
+        "Current bounded candidate evaluations in flight.",
+    )
+
+if "hunter_due_backlog_metric" not in globals():
+    hunter_due_backlog_metric = Gauge(
+        "waterfall_hunter_due_backlog",
+        "Due candidates waiting for an evaluation slot.",
+    )
+
+if "market_evidence_path_metric" not in globals():
+    market_evidence_path_metric = Counter(
+        "waterfall_market_evidence_path_total",
+        "Candidate microstructure evidence acquisition paths.",
+        ("outcome",),
+    )
+
+if "candle_cache_events_metric" not in globals():
+    candle_cache_events_metric = Gauge(
+        "waterfall_candle_cache_events_total",
+        "Process-local causal closed-OHLCV cache events.",
+        ("outcome",),
+    )
+
 _CANDIDATE_METRIC_STATES = (
     "WATCH",
     "FUEL-RICH",
@@ -542,6 +589,77 @@ _CANDIDATE_METRIC_STATES = (
     "ARMED",
     "TRIGGERED",
 )
+
+_HUNTER_METRIC_STATES = (*_CANDIDATE_METRIC_STATES, "OTHER")
+_EVIDENCE_METRIC_STAGES = ("microstructure", "candles", "context", "total")
+_EVIDENCE_METRIC_OUTCOMES = ("complete", "unavailable")
+
+
+def _record_adaptive_pipeline_observation(
+    state: object,
+    evaluation_duration_seconds: float | None,
+    runtime_diagnostics: dict | None,
+) -> None:
+    state_label = str(state or "WATCH").upper()
+    if state_label not in _HUNTER_METRIC_STATES:
+        state_label = "OTHER"
+
+    if (
+        isinstance(evaluation_duration_seconds, (int, float))
+        and not isinstance(evaluation_duration_seconds, bool)
+        and math.isfinite(float(evaluation_duration_seconds))
+        and float(evaluation_duration_seconds) >= 0.0
+    ):
+        hunter_evaluation_duration_metric.labels(state=state_label).observe(
+            float(evaluation_duration_seconds)
+        )
+
+    runtime = runtime_diagnostics if isinstance(runtime_diagnostics, dict) else {}
+    attempts = runtime.get("source_attempts")
+    if isinstance(attempts, (int, float)) and not isinstance(attempts, bool):
+        if math.isfinite(float(attempts)) and float(attempts) >= 0.0:
+            primary_source_attempts_metric.observe(float(attempts))
+
+    outcome = str(runtime.get("outcome") or "unavailable")
+    if outcome not in _EVIDENCE_METRIC_OUTCOMES:
+        outcome = "unavailable"
+    stages = runtime.get("stage_durations_seconds")
+    if isinstance(stages, dict):
+        for stage in _EVIDENCE_METRIC_STAGES:
+            duration = stages.get(stage)
+            if (
+                isinstance(duration, (int, float))
+                and not isinstance(duration, bool)
+                and math.isfinite(float(duration))
+                and float(duration) >= 0.0
+            ):
+                market_evidence_stage_duration_metric.labels(
+                    stage=stage, outcome=outcome
+                ).observe(float(duration))
+
+    for path, field in (
+        ("ws_hit", "ws_evidence_hits"),
+        ("rest_fallback", "rest_evidence_fallbacks"),
+    ):
+        count = runtime.get(field)
+        if isinstance(count, (int, float)) and not isinstance(count, bool):
+            if math.isfinite(float(count)) and float(count) > 0.0:
+                market_evidence_path_metric.labels(outcome=path).inc(float(count))
+
+
+def _update_adaptive_pipeline_metrics() -> None:
+    hunter_in_flight_metric.set(float(_hunter_in_flight_count))
+    hunter_due_backlog_metric.set(float(_hunter_due_backlog))
+    diagnostics_getter = getattr(validator.candle_analyzer, "cache_diagnostics", None)
+    diagnostics = diagnostics_getter() if callable(diagnostics_getter) else {}
+    mapping = {"hit": "hits", "miss": "misses", "eviction": "evictions"}
+    for outcome, field in mapping.items():
+        value = diagnostics.get(field, 0) if isinstance(diagnostics, dict) else 0
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            number = 0.0
+        candle_cache_events_metric.labels(outcome=outcome).set(max(0.0, number))
 
 _PROXY_EXECUTION_METRIC_COMPARISONS = (
     "AGREE_ACCEPT",
@@ -1177,9 +1295,7 @@ def _sync_websocket_evidence_subscription(
         validator.ws_manager.unsubscribe(*previous_source)
     if current_source is None:
         return
-    if state == "PRE-TRIGGER":
-        validator.ws_manager.retain_liquidations_only(*current_source)
-    elif state == "ARMED":
+    if state in {"PRE-TRIGGER", "ARMED"}:
         validator.ws_manager.subscribe(*current_source)
     else:
         validator.ws_manager.unsubscribe(*current_source)
@@ -2225,6 +2341,12 @@ async def evaluate_candidate(
             lifecycle_id=int(data.get("lifecycle_id") or 1),
         )
     )
+    runtime_diagnostics = result.pop("_runtime_diagnostics", {})
+    _record_adaptive_pipeline_observation(
+        current_state,
+        None,
+        runtime_diagnostics,
+    )
     if not _candidate_evaluation_token_is_current(
         symbol,
         evaluation_candidate_token,
@@ -3007,11 +3129,13 @@ async def evaluate_candidate(
 
 
 async def hunter_loop(
-    interval_seconds: int = 60,
+    interval_seconds: float = 60.0,
 ):
     global _hunter_running
     global _hunter_last_completed_at
     global _hunter_last_progress_at
+    global _hunter_in_flight_count
+    global _hunter_due_backlog
 
     _hunter_running = True
 
@@ -3024,164 +3148,229 @@ async def hunter_loop(
         "State Machine running."
     )
 
-    while _hunter_running:
-        cycle_started_at = time.monotonic()
+    loop = asyncio.get_running_loop()
+    maintenance_interval = max(0.01, float(interval_seconds))
+    schedule = HunterDeadlineSchedule()
+    candidates: dict[str, dict] = {}
+    in_flight: dict[str, asyncio.Task] = {}
+    evaluations_since_flush = 0
+    flush_requested = False
+    flush_task: asyncio.Task | None = None
+    next_maintenance_at = 0.0
+    last_heap_trim_at = 0.0
+
+    async def evaluate_scheduled(symbol: str, data: dict) -> None:
+        global _hunter_last_progress_at
+        nonlocal evaluations_since_flush
+        nonlocal flush_requested
+        evaluation_started_at = loop.time()
+
         try:
-            await (
-                scanner
-                .refresh_live_references()
+            if not _hunter_running:
+                return
+            await evaluate_candidate(symbol, data)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Candidate evaluation failed: %s",
+                exc,
+                exc_info=(type(exc), exc, exc.__traceback__),
             )
-
-            expired_count = await asyncio.to_thread(
-                _reconcile_explicit_entry_expirations,
-                evaluated_at=int(time.time()),
+        else:
+            _hunter_last_progress_at = time.time()
+        finally:
+            _record_adaptive_pipeline_observation(
+                data.get("status"),
+                max(0.0, loop.time() - evaluation_started_at),
+                None,
             )
-            if expired_count:
-                logger.info("Reconciled %s explicit canonical entry expirations", expired_count)
-
-            candidates = (
-                db.get_all_active_candidates()
-            )
-
-            inactive_count = await asyncio.to_thread(
-                _reconcile_inactive_actionable_decisions,
-                active_symbols=set(candidates),
-                evaluated_at=int(time.time()),
-            )
-            if inactive_count:
-                logger.info(
-                    "Invalidated %s canonical entries outside the active universe",
-                    inactive_count,
-                )
-
-            if candidates:
-                semaphore = asyncio.Semaphore(
-                    DEFAULT_EVALUATION_CONCURRENCY
-                )
+            evaluations_since_flush += 1
+            if evaluations_since_flush >= 30:
                 evaluations_since_flush = 0
+                flush_requested = True
 
-                bound_semaphore = semaphore  # bind loop variable (B023)
+    try:
+        while _hunter_running:
+            now = loop.time()
+            maintenance_finalize = False
 
-                async def evaluate_bounded(
-                    symbol,
-                    data,
-                    *,
-                    _semaphore=bound_semaphore,
-                ):
-                    global _hunter_last_progress_at
-                    nonlocal evaluations_since_flush
+            if now >= next_maintenance_at:
+                try:
+                    expired_count = await asyncio.to_thread(
+                        _reconcile_explicit_entry_expirations,
+                        evaluated_at=int(time.time()),
+                    )
+                    if expired_count:
+                        logger.info(
+                            "Reconciled %s explicit canonical entry expirations",
+                            expired_count,
+                        )
 
-                    should_flush = False
-                    try:
-                        async with _semaphore:
-                            try:
-                                if _hunter_running:
-                                    await evaluate_candidate(
-                                        symbol,
-                                        data,
-                                    )
-                                    _hunter_last_progress_at = (
-                                        time.time()
-                                    )
-                            finally:
-                                evaluations_since_flush += 1
+                    candidates = db.get_all_active_candidates()
 
+                    inactive_count = await asyncio.to_thread(
+                        _reconcile_inactive_actionable_decisions,
+                        active_symbols=set(candidates),
+                        evaluated_at=int(time.time()),
+                    )
+                    if inactive_count:
+                        logger.info(
+                            "Invalidated %s canonical entries outside the active universe",
+                            inactive_count,
+                        )
 
-                                if evaluations_since_flush >= 30:
-                                    evaluations_since_flush = 0
-                                    should_flush = True
-                    finally:
-                        if should_flush:
-                            await asyncio.to_thread(
-                                execution_decision_logger
-                                .flush_evaluations
-                            )
+                    schedule.sync(candidates, now=loop.time())
+                    maintenance_finalize = True
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.error("⚠️ Hunter maintenance error: %s", exc)
 
-                ordered_candidates = ordered_hunter_candidates(
+                next_maintenance_at = loop.time() + maintenance_interval
+
+            for symbol, task in tuple(in_flight.items()):
+                if not task.done():
+                    continue
+                in_flight.pop(symbol, None)
+                try:
+                    task.result()
+                except asyncio.CancelledError:
+                    pass
+
+            available_slots = max(
+                0,
+                DEFAULT_EVALUATION_CONCURRENCY - len(in_flight),
+            )
+            if available_slots and candidates:
+                schedule.sync(candidates, now=loop.time())
+                due = schedule.due_candidates(
                     candidates,
                     scanner.active_candidates,
+                    now=loop.time(),
+                    in_flight=set(in_flight),
+                    limit=available_slots,
                 )
-                results = await asyncio.gather(
-                    *(
-                        evaluate_bounded(
-                            symbol,
-                            data,
+                for symbol, data in due:
+                    schedule.mark_started(
+                        symbol,
+                        data.get("status"),
+                        now=loop.time(),
+                    )
+                    in_flight[symbol] = asyncio.create_task(
+                        evaluate_scheduled(symbol, data)
+                    )
+
+            _hunter_in_flight_count = len(in_flight)
+            if candidates:
+                remaining_due = schedule.due_candidates(
+                    candidates,
+                    scanner.active_candidates,
+                    now=loop.time(),
+                    in_flight=set(in_flight),
+                    limit=max(1, len(candidates)),
+                )
+                _hunter_due_backlog = len(remaining_due)
+            else:
+                _hunter_due_backlog = 0
+
+            if maintenance_finalize:
+                # Let newly dispatched evaluations enter their await boundary before
+                # maintenance I/O. Maintenance never consumes an evaluation slot.
+                await asyncio.sleep(0)
+                await asyncio.to_thread(
+                    execution_decision_logger.record_universe_snapshot
+                )
+                validator.ws_manager.prune_stale_cache()
+
+                if not candidates and not in_flight:
+                    _hunter_last_progress_at = time.time()
+
+                _hunter_last_completed_at = time.time()
+
+                if loop.time() - last_heap_trim_at >= 300.0:
+                    trim_result = await asyncio.to_thread(trim_process_heap)
+                    last_heap_trim_at = loop.time()
+                    if trim_result.get("malloc_trim_released"):
+                        logger.debug(
+                            "Hunter maintenance heap trim released free pages (gc=%s)",
+                            trim_result.get("gc_collected"),
                         )
-                        for symbol, data in ordered_candidates
-                    ),
-                    return_exceptions=True,
+
+            if flush_requested and (flush_task is None or flush_task.done()):
+                if flush_task is not None:
+                    await asyncio.gather(flush_task, return_exceptions=True)
+                flush_requested = False
+                flush_task = asyncio.create_task(
+                    asyncio.to_thread(execution_decision_logger.flush_evaluations)
                 )
 
-                for result in results:
-                    if isinstance(
-                        result,
-                        Exception,
-                    ):
-                        logger.warning(
-                            "Candidate evaluation failed: %s",
-                            result,
-                            exc_info=(
-                                type(result),
-                                result,
-                                result.__traceback__,
-                            ),
-                        )
+            if not _hunter_running:
+                break
 
-            await asyncio.to_thread(
-                execution_decision_logger
-                .flush_evaluations
-            )
+            # Newly dispatched tasks should run before the scheduler decides how
+            # long it can sleep. This also lets very fast tasks free slots now.
+            await asyncio.sleep(0)
 
-            await asyncio.to_thread(
-                execution_decision_logger
-                .record_universe_snapshot
-            )
-
-            validator.ws_manager.prune_stale_cache()
-
-            if not candidates:
-                _hunter_last_progress_at = (
-                    time.time()
-                )
-
-            _hunter_last_completed_at = (
-                time.time()
-            )
-
-            trim_result = await asyncio.to_thread(trim_process_heap)
-            if trim_result.get("malloc_trim_released"):
-                logger.debug(
-                    "Hunter cycle heap trim released free pages (gc=%s)",
-                    trim_result.get("gc_collected"),
-                )
-
-            if _hunter_running:
-                delay = remaining_cycle_delay(
-                    cycle_started_at,
-                    time.monotonic(),
-                    interval_seconds,
-                )
-                if delay > 0:
+            for symbol, task in tuple(in_flight.items()):
+                if task.done():
+                    in_flight.pop(symbol, None)
                     try:
-                        await asyncio.wait_for(
-                            _hunter_stop_event.wait(),
-                            timeout=delay,
-                        )
-                    except TimeoutError:
+                        task.result()
+                    except asyncio.CancelledError:
                         pass
 
-        except asyncio.CancelledError:
-            break
+            _hunter_in_flight_count = len(in_flight)
+            if candidates:
+                remaining_due = schedule.due_candidates(
+                    candidates,
+                    scanner.active_candidates,
+                    now=loop.time(),
+                    in_flight=set(in_flight),
+                    limit=max(1, len(candidates)),
+                )
+                _hunter_due_backlog = len(remaining_due)
+            else:
+                _hunter_due_backlog = 0
 
-        except Exception as exc:
-            logger.error(
-                "⚠️ Hunter Loop Error: %s",
-                exc,
+            available_slots = max(
+                0, DEFAULT_EVALUATION_CONCURRENCY - len(in_flight)
             )
+            now = loop.time()
+            delays = [max(0.0, next_maintenance_at - now)]
+            if available_slots > 0:
+                due_delay = schedule.seconds_until_next_due(
+                    candidates,
+                    now=now,
+                    in_flight=set(in_flight),
+                )
+                if due_delay is not None:
+                    delays.append(due_delay)
+            wait_timeout = max(0.001, min(delays)) if delays else maintenance_interval
 
-            await asyncio.sleep(
-                15
-            )
+            stop_wait = asyncio.create_task(_hunter_stop_event.wait())
+            wait_set = [stop_wait, *in_flight.values()]
+            try:
+                await asyncio.wait(
+                    wait_set,
+                    timeout=wait_timeout,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                if not stop_wait.done():
+                    stop_wait.cancel()
+                await asyncio.gather(stop_wait, return_exceptions=True)
+
+    except asyncio.CancelledError:
+        raise
+    finally:
+        if in_flight:
+            await asyncio.gather(*in_flight.values(), return_exceptions=True)
+        if flush_task is not None:
+            await asyncio.gather(flush_task, return_exceptions=True)
+        await asyncio.to_thread(execution_decision_logger.flush_evaluations)
+        _hunter_in_flight_count = 0
+        _hunter_due_backlog = 0
 
 
 async def live_reference_loop(
@@ -3604,6 +3793,7 @@ async def metrics():
     )
 
     _update_websocket_metrics()
+    _update_adaptive_pipeline_metrics()
 
     if (
         scanner.last_successful_refresh_at

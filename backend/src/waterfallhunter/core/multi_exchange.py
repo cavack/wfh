@@ -3,7 +3,7 @@ import math
 import asyncio
 import time
 import ccxt.async_support as ccxt
-from typing import AsyncIterator, Dict, Any, Optional
+from typing import AsyncIterator, Callable, Dict, Any, Optional
 
 logger = logging.getLogger("WaterfallHunter.MultiExchange")
 
@@ -263,6 +263,7 @@ class MultiExchangeGateway:
         symbol: str,
         reference_price: float,
         max_deviation_pct: float = 5.0,
+        realtime_ticker_getter: Callable[[str, str], Any] | None = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """Yield only fresh, price-compatible USDT-perpetual venues in priority order."""
         for ex_name in self.priority_chain:
@@ -284,9 +285,24 @@ class MultiExchangeGateway:
                 if not mapped_symbol:
                     continue
 
-                ticker = await exchange.fetch_ticker(
-                    mapped_symbol
-                )
+                ticker = None
+                if realtime_ticker_getter is not None:
+                    try:
+                        cached = realtime_ticker_getter(ex_name, mapped_symbol)
+                    except Exception:
+                        cached = None
+                    if (
+                        isinstance(cached, dict)
+                        and self._price_is_compatible(
+                            cached, reference_price, max_deviation_pct
+                        )
+                    ):
+                        ticker = cached
+
+                if ticker is None:
+                    ticker = await exchange.fetch_ticker(
+                        mapped_symbol
+                    )
 
                 if self._price_is_compatible(
                     ticker,
