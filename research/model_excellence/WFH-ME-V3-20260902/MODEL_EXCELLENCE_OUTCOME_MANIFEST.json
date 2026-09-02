@@ -1,0 +1,59 @@
+{
+  "artifact": "MODEL_EXCELLENCE_OUTCOME_MANIFEST",
+  "version": "v1",
+  "status": "NOT_RUN_INSUFFICIENT_CAUSAL_INPUTS",
+  "candidate_rows": 82797,
+  "rows_with_trade_plan": 68812,
+  "rows_with_future_window": 0,
+  "rows_with_outcome": 0,
+  "rows_with_mae_mfe": 0,
+  "rows_with_gross_r": 0,
+  "fee": {
+    "observed": 0,
+    "modeled": 0,
+    "unavailable": 82797
+  },
+  "slippage": {
+    "observed": 0,
+    "modeled": 0,
+    "unavailable": 82797
+  },
+  "funding": {
+    "observed": 0,
+    "reconstructed": 0,
+    "modeled": 0,
+    "unavailable": 82797
+  },
+  "net_r": {
+    "complete": 0,
+    "incomplete": 82797
+  },
+  "scientifically_evaluable": {
+    "count": 0,
+    "fraction": 0.0
+  },
+  "exclusions": {
+    "CAUSAL_OUTCOME_LINK_UNAVAILABLE": 82797,
+    "COMPLETE_FUTURE_WINDOW_UNAVAILABLE": 82797,
+    "COST_LEDGER_UNAVAILABLE": 82797,
+    "PROVENANCE_INCOMPLETE": 82797
+  },
+  "dataset_sha256": null,
+  "source_snapshot_sha256": "d82adb75836bb091cd0a0007f2838218314c540ef284f948e172540ff38c5195",
+  "outcome_contract_version": "existing_lbank_signal_outcome_semantics_v1_not_executable_for_decision_events",
+  "cost_contract_version": "not_executable_without_observed_or_reconstructable_fee_slippage_funding",
+  "compiler_commit_sha": "8076883795fd4768a14645e14ce0d0adeb679aad",
+  "evidence_boundary": {
+    "classification": "VERIFIED_FACT",
+    "missing_snapshot_capabilities": [
+      "closed OHLCV candle history keyed by canonical instrument and timestamp",
+      "explicit decision_event_id-to-outcome identity",
+      "point-in-time source revision/deployment identity",
+      "fee policy or observed fee cashflows",
+      "entry and exit slippage observations or preregistered modeled contract",
+      "funding observations/cashflows keyed by canonical instrument and timestamp"
+    ],
+    "smallest_forward_data_collection_change": "Persist an immutable decision_outcome_capture row keyed by decision_event_id with causal entry/exit timestamps, the closed-candle window identity/hash, TP/SL result, MAE/MFE, and separately sourced fee, slippage, and funding components; persist source revision and decision contract hash in the same packet."
+  },
+  "disposition": "PARAMETER_SEARCH_NOT_READY"
+}

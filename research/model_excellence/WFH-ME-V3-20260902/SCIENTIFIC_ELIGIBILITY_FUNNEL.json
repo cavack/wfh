@@ -1,0 +1,116 @@
+{
+  "artifact": "SCIENTIFIC_ELIGIBILITY_FUNNEL",
+  "complete_future_window_count": 0,
+  "complete_trade_plan_count": 68812,
+  "decision_counts": {
+    "ACTIVE": 0,
+    "ENTRY_READY": 0,
+    "EXPIRED": 0,
+    "FORMING": 26,
+    "INVALIDATED": 0,
+    "LATE": 77714,
+    "NO_TRADE": 5057,
+    "UNAVAILABLE": 0
+  },
+  "disposition": "PARAMETER_SEARCH_NOT_READY",
+  "disposition_reasons": [
+    "scientifically_evaluable_count=0",
+    "complete_future_window_count=0",
+    "outcome_linkable_count=0",
+    "net_r_complete_count=0"
+  ],
+  "fees_complete_count": 0,
+  "funding_complete_count": 0,
+  "gross_r_computable_count": 0,
+  "intersections": {
+    "all_except_funding": 0,
+    "all_except_outcome_link": 0,
+    "all_except_source_sha": 0,
+    "complete_window_and_costs": 0,
+    "complete_window_and_trade_plan": 0,
+    "outcome_and_costs": 0,
+    "trade_plan_and_provenance": 0
+  },
+  "linkage_assessment": {
+    "classification": "VERIFIED_FACT",
+    "reason": "The normalized export contains signal_id/time proximity but no persisted decision-to-outcome causal identity contract; nearest-by-symbol/time is not used as scientific evidence.",
+    "status": "INVALID_FOR_SCIENCE"
+  },
+  "net_r_complete_count": 0,
+  "outcome_linkable_count": 0,
+  "scientifically_evaluable_count": 0,
+  "slippage_complete_count": 0,
+  "source": "normalized_research.jsonl",
+  "top_actual_blockers": [
+    {
+      "classification": "VERIFIED_FACT",
+      "lost_rows": 82797,
+      "reason": "persisted outcome status/window is not complete",
+      "requirement": "complete_future_window"
+    },
+    {
+      "classification": "VERIFIED_FACT",
+      "lost_rows": 82797,
+      "reason": "fee ledger values and provenance are unavailable",
+      "requirement": "fees_complete"
+    },
+    {
+      "classification": "VERIFIED_FACT",
+      "lost_rows": 82797,
+      "reason": "historical funding cashflows are unavailable; zero is not imputed",
+      "requirement": "funding_complete"
+    },
+    {
+      "classification": "VERIFIED_FACT",
+      "lost_rows": 82797,
+      "reason": "gross R requires an explicitly linked causal outcome",
+      "requirement": "gross_r_computable"
+    },
+    {
+      "classification": "VERIFIED_FACT",
+      "lost_rows": 82797,
+      "reason": "net R requires gross R and all cost components",
+      "requirement": "net_r_complete"
+    },
+    {
+      "classification": "VERIFIED_FACT",
+      "lost_rows": 82797,
+      "reason": "no explicit decision-to-outcome causal identity is persisted",
+      "requirement": "outcome_linkable"
+    },
+    {
+      "classification": "VERIFIED_FACT",
+      "lost_rows": 82797,
+      "reason": "all scientific requirements must be true",
+      "requirement": "scientifically_evaluable"
+    },
+    {
+      "classification": "VERIFIED_FACT",
+      "lost_rows": 82797,
+      "reason": "causal exit/entry slippage values and provenance are unavailable",
+      "requirement": "slippage_complete"
+    },
+    {
+      "classification": "VERIFIED_FACT",
+      "lost_rows": 82797,
+      "reason": "code_sha, decision_contract_sha, decision_at, and evidence_as_of are unavailable in normalized packets",
+      "requirement": "valid_point_in_time_provenance"
+    },
+    {
+      "classification": "VERIFIED_FACT",
+      "lost_rows": 13985,
+      "reason": "candidate packets do not persist a READY trade plan for every row",
+      "requirement": "complete_trade_plan"
+    },
+    {
+      "classification": "VERIFIED_FACT",
+      "lost_rows": 13985,
+      "reason": "geometry is unavailable or not a valid stop/target orientation",
+      "requirement": "valid_entry_geometry"
+    }
+  ],
+  "total_candidate_rows": 82797,
+  "valid_entry_geometry_count": 68812,
+  "valid_point_in_time_provenance_count": 0,
+  "version": "v1"
+}

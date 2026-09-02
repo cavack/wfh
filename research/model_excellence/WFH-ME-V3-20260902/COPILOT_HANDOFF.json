@@ -4,6 +4,8 @@
     "RUNTIME_SCHEMA_CROSSWALK.json",
     "MODEL_LAYER_CROSSWALK.json",
     "EVIDENCE_REUSE_MATRIX.json",
+    "SCIENTIFIC_ELIGIBILITY_FUNNEL.json",
+    "MODEL_EXCELLENCE_OUTCOME_MANIFEST.json",
     "FP_FN_EXECUTION_RESULT.json",
     "GATE_ABLATION_EXECUTION_RESULT.json"
   ],
@@ -103,6 +105,7 @@
   "historical_result_commit": "15bbcd3",
   "latest_verified_head": "bcb84ffe5f55c51fedb371a42db8c9cce0ff1835",
   "latest_verified_head_verified_at": "2026-09-02T19:51:40Z",
+  "origin_main_sha": "d129264b22bacbe4601c2ee8a373a9c1e2cbac30",
   "origin_main": "d129264",
   "production_main_drift": "HEAD is 7 commits ahead of origin/main; no PR #115/main changes",
   "pushed_ref": "origin/feat/model-excellence-v3-phase0-20260902",
@@ -121,9 +124,42 @@
     "size_bytes": 6906265600
   },
   "state": "P0-C_COMPLETE_WITH_INSUFFICIENT_EVIDENCE",
+  "eligibility_funnel": {
+    "path": "SCIENTIFIC_ELIGIBILITY_FUNNEL.json",
+    "total_candidate_rows": 82797,
+    "scientifically_evaluable_count": 0,
+    "top_blockers": [
+      "complete_future_window_count=0",
+      "outcome_linkable_count=0",
+      "net_r_complete_count=0",
+      "valid_point_in_time_provenance_count=0"
+    ]
+  },
+  "outcomes": {
+    "manifest": "MODEL_EXCELLENCE_OUTCOME_MANIFEST.json",
+    "complete": 0,
+    "gross_r": 0,
+    "cost_complete": 0,
+    "net_r_complete": 0,
+    "scientifically_evaluable": 0
+  },
+  "fp_fn_status": "NOT_RUN_INSUFFICIENT_EVIDENCE",
+  "ablation_status": "NOT_RUN_INSUFFICIENT_EVIDENCE",
+  "parameter_search_status": "PARAMETER_SEARCH_NOT_READY",
+  "reproduced_defects": [],
+  "fixed_defects": [
+    "rejected nearest-by-symbol/time outcome linkage as INVALID_FOR_SCIENCE in funnel"
+  ],
+  "open_blockers": [
+    "no closed OHLCV window keyed to decision_event_id",
+    "no explicit decision-to-outcome causal identity",
+    "no fee/slippage/funding ledger with provenance",
+    "source revision is not persisted per decision event"
+  ],
+  "next_exact_action": "Persist immutable decision_outcome_capture keyed by decision_event_id with closed-candle window identity/hash, TP/SL, MAE/MFE, fee/slippage/funding components, source revision, and decision contract hash; then compile a new immutable snapshot.",
   "tests": [
     "PYTHONPATH=backend/src backend/.venv/bin/pytest -q backend/tests/test_normalized_research_compiler.py (6 passed)",
-    "PYTHONPATH=backend/src backend/.venv/bin/pytest -q backend/tests/test_normalized_research_compiler.py backend/tests/test_schema_contract.py (48 passed)"
+    "PYTHONPATH=backend/src:backend/tests python3 -m pytest -q backend/tests/test_scientific_eligibility_funnel.py backend/tests/test_normalized_research_compiler.py backend/tests/test_schema_contract.py (50 passed)"
   ],
   "verified_head": "bcb84ffe5f55c51fedb371a42db8c9cce0ff1835",
   "version": "v1"
