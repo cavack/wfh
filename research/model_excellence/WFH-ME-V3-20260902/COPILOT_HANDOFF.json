@@ -166,9 +166,14 @@
   "ablation_status": "NOT_RUN_INSUFFICIENT_EVIDENCE",
   "parameter_search_status": "PARAMETER_SEARCH_NOT_READY",
   "forward_capture": {
-    "status": "IN_PROGRESS_SEPARATE_CHILD_BRANCH",
+    "status": "CODE_READY_SEPARATE_CHILD_BRANCH",
+    "branch": "feat/model-excellence-forward-capture-20260902",
+    "commit": "2d161a6e0301df68c9314cffa97c214c6e91682c",
+    "worktree": "/srv/wfh-worktrees/model-excellence-forward-capture-20260902",
     "schema_version": "decision_outcome_capture_v1",
-    "deployed": false
+    "tests": "191 focused tests passed",
+    "deployed": false,
+    "pr": "https://github.com/cavack/wfh/pull/new/feat/model-excellence-forward-capture-20260902"
   },
   "reproduced_defects": [],
   "fixed_defects": [
