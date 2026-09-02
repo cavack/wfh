@@ -26,3 +26,10 @@ def test_all_canonical_skills_expose_v2_operating_contract() -> None:
         text = (REPO / "skills/waterfallhunter" / name / "SKILL.md").read_text(encoding="utf-8")
         for heading in headings:
             assert heading in text, f"{name} missing {heading}"
+
+
+def test_static_validator_rejects_oversized_skill_body(tmp_path: Path) -> None:
+    path = tmp_path / "SKILL.md"
+    text = "# Skill\n" + "line\n" * 501
+    errors = validator._validate_body(path, text)
+    assert any("500 lines" in error for error in errors)

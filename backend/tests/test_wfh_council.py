@@ -491,3 +491,34 @@ def test_doctor_reports_external_capability_authorization_without_guessing(monke
     assert result["capabilities"]["remote_desktop_commander_mcp"]["status"] == "AUTHORIZED_WRITE"
     assert result["capabilities"]["web_research"]["status"] == "AUTHORIZED_READ"
     assert result["capabilities"]["coderabbit"]["status"] == "UNAVAILABLE"
+
+
+def test_council_v2_capabilities_cover_declared_tools() -> None:
+    manifest = council.load_manifest(MANIFEST)
+    declared = set(manifest["tools"]["required"]) | set(manifest["tools"]["optional"])
+    assert declared <= set(manifest["capabilities"])
+
+
+def test_council_v2_rejects_declared_tool_without_capability_record() -> None:
+    manifest = council.load_manifest(MANIFEST)
+    broken = copy.deepcopy(manifest)
+    del broken["capabilities"]["grafana"]
+
+    errors = council.validate_manifest(REPO, broken)
+
+    assert any("grafana" in error and "capability" in error.lower() for error in errors)
+
+
+def test_doctor_cli_accepts_explicit_connected_capability_status(capsys) -> None:
+    rc = council.main([
+        "--repo-root", str(REPO),
+        "doctor",
+        "--capability", "github_connector=AUTHORIZED_WRITE",
+        "--capability", "web_research=AUTHORIZED_READ",
+        "--json",
+    ])
+    output = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert output["capabilities"]["github_connector"]["status"] == "AUTHORIZED_WRITE"
+    assert output["capabilities"]["web_research"]["status"] == "AUTHORIZED_READ"

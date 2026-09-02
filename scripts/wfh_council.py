@@ -116,6 +116,17 @@ def _validate_capabilities(manifest: dict[str, Any]) -> list[str]:
         return ["manifest capabilities must be a non-empty object"]
     errors: list[str] = []
     allowed_authority = {"AVAILABLE", "AUTHORIZED_READ", "AUTHORIZED_WRITE", "READ_WRITE_REPO", "UNAVAILABLE", "BLOCKED"}
+    tools = manifest.get("tools")
+    if isinstance(tools, dict):
+        declared_tools = []
+        for key in ("required", "optional"):
+            values = tools.get(key, [])
+            if isinstance(values, list):
+                declared_tools.extend(value for value in values if isinstance(value, str))
+        for tool_id in declared_tools:
+            if tool_id not in capabilities:
+                errors.append(f"declared tool {tool_id}: missing capability record")
+
     for capability_id, capability in capabilities.items():
         if not isinstance(capability, dict):
             errors.append(f"capability {capability_id}: must be an object")
@@ -542,6 +553,20 @@ def _emit(value: Any, as_json: bool) -> None:
 def _default_repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
+
+def _parse_capability_statuses(values: list[str]) -> dict[str, str]:
+    statuses: dict[str, str] = {}
+    for value in values:
+        if "=" not in value:
+            raise ValueError(f"capability status must be NAME=STATUS: {value}")
+        name, status = value.split("=", 1)
+        name = name.strip()
+        status = status.strip()
+        if not name or status not in CAPABILITY_STATUSES:
+            raise ValueError(f"invalid capability status: {value}")
+        statuses[name] = status
+    return statuses
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="WaterfallHunter Senior Agent Council")
     parser.add_argument("--repo-root", type=Path, default=_default_repo_root())
@@ -554,7 +579,8 @@ def build_parser() -> argparse.ArgumentParser:
     route_cmd.add_argument("task_type")
     route_cmd.add_argument("--json", action="store_true")
 
-    doctor_cmd = sub.add_parser("doctor", help="inspect local deterministic capabilities")
+    doctor_cmd = sub.add_parser("doctor", help="inspect local and explicitly supplied connected capabilities")
+    doctor_cmd.add_argument("--capability", action="append", default=[], metavar="NAME=STATUS")
     doctor_cmd.add_argument("--json", action="store_true")
 
     research_cmd = sub.add_parser("research-snapshot", help="summarize existing research evidence")
@@ -594,7 +620,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "doctor":
-        result = doctor(repo_root)
+        try:
+            capability_statuses = _parse_capability_statuses(args.capability)
+        except ValueError as exc:
+            _emit({"status": "INVALID", "error": str(exc)}, args.json)
+            return 2
+        result = doctor(repo_root, capability_statuses=capability_statuses)
         _emit(result, args.json)
         return 0 if result["status"] == "READY" else 3
 

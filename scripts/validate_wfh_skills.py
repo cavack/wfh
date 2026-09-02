@@ -148,6 +148,8 @@ def _validate_description(path: Path, description: str | None) -> list[str]:
 
 def _validate_body(path: Path, text: str) -> list[str]:
     errors: list[str] = []
+    if len(text.splitlines()) > 500:
+        errors.append(f"{path}: skill body exceeds 500 lines")
     if not any(line.startswith("# ") for line in text.splitlines()):
         errors.append(f"{path}: missing top-level '# ' title")
     for heading in sorted(REQUIRED_HEADINGS):

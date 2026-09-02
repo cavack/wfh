@@ -1,0 +1,39 @@
+{
+  "canonical_ref_policy": "resolve current target SHA in GitHub at execution time",
+  "canonical_repository": "cavack/wfh",
+  "canonical_skill_root": "skills/waterfallhunter",
+  "contract_version": "wfh_chatgpt_project_sources_v2",
+  "council_contract": "wfh_agent_council_v2",
+  "overlay_files": [
+    "00-WFH-CHATGPT-ROUTER-v2.md",
+    "01-WFH-SKILL-CATALOG-v2.md",
+    "02-WFH-CAPABILITY-MAP-v2.md",
+    "03-WFH-SKILL-AUDIT-SUMMARY-v2.md",
+    "PROJECT-INSTRUCTIONS-v2.txt",
+    "INSTALL-FA-v2.md"
+  ],
+  "sha256": {
+    "00-WFH-CHATGPT-ROUTER-v2.md": "38f267765939c3e247603aba3b8f269533166d1abb89d5de32c8302e4e38c471",
+    "01-WFH-SKILL-CATALOG-v2.md": "ff0f3a4badba03a11560cdc7cf4239d5e6885f74ef7b775aa7065205f7663ca9",
+    "02-WFH-CAPABILITY-MAP-v2.md": "775fb130f6f6c733cd8879d9ecba497611d7a27abbc63bf2c1312f55be7f3d7d",
+    "03-WFH-SKILL-AUDIT-SUMMARY-v2.md": "71ee77bf6094948bc91ed723712c9029446d70a70ea2511c8c06fb9ce4f51ee4",
+    "INSTALL-FA-v2.md": "4355137bc0ea1e1dc47226e71d4f39894c4a9e36803fadb2806a2ac2187e71ed",
+    "PROJECT-INSTRUCTIONS-v2.txt": "4569c0384ca68f8baa4b1fc49f47dab968757d8d3fb320a8c09eba4945472368"
+  },
+  "skills": [
+    "api-contract-schema-guardian",
+    "backend-data-architecture",
+    "engineering-orchestrator",
+    "frontend-dashboard-ux",
+    "market-data-evidence-quality",
+    "observability-incident-response",
+    "release-production-certification",
+    "repository-architecture-auditor",
+    "runtime-reliability-performance",
+    "scientific-backtest-validation",
+    "security-supply-chain",
+    "skill-system-curator",
+    "strategy-score-lifecycle",
+    "verification-regression"
+  ]
+}
