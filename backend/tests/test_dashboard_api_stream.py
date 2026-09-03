@@ -348,6 +348,39 @@ def test_sse_snapshot_build_failure_is_contained(monkeypatch) -> None:
     ) is None
 
 
+def test_initial_sse_snapshot_failure_waits_for_next_queued_event(monkeypatch) -> None:
+    buffer = DashboardEventBuffer()
+
+    def fail(**_):
+        raise RuntimeError("synthetic initial aggregation failure")
+
+    monkeypatch.setattr(main, "_dashboard_event_buffer", buffer)
+    monkeypatch.setattr(main, "_publish_dashboard_snapshot", fail)
+    monkeypatch.setattr(main, "_sse_clients", set())
+
+    async def first_chunk() -> str:
+        response = await main.stream_candidates(last_event_id="missing")
+        iterator = response.body_iterator
+        pending = asyncio.create_task(anext(iterator))
+        try:
+            await asyncio.sleep(0)
+            assert not pending.done()
+            queue = next(iter(main._sse_clients))
+            event = buffer.publish_snapshot(PAYLOAD, generated_at=20.0, full_snapshot=True)
+            queue.put_nowait(event)
+            return await asyncio.wait_for(pending, timeout=1.0)
+        finally:
+            if not pending.done():
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+            await iterator.aclose()
+
+    chunk = asyncio.run(first_chunk())
+    event = json.loads(chunk.split("data: ", 1)[1])
+    assert event["event_type"] == "snapshot"
+    assert event["payload"]["state"] == "READY"
+
+
 def test_sse_snapshot_rebuild_is_coalesced_to_five_second_budget() -> None:
     assert main._DASHBOARD_SNAPSHOT_BROADCAST_INTERVAL_SECONDS == 5.0
     assert main._dashboard_snapshot_broadcast_due(10.0, 14.999) is False

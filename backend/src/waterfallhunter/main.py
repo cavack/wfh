@@ -4325,10 +4325,11 @@ async def stream_candidates(
         try:
             replay = _dashboard_event_buffer.replay_after(last_event_id)
             if replay is None:
-                full_snapshot = _publish_dashboard_snapshot(full_snapshot=True)
-                if full_snapshot is None:
-                    raise RuntimeError("full dashboard snapshot was not published")
-                replay = [full_snapshot]
+                full_snapshot = _publish_dashboard_snapshot_safely(
+                    full_snapshot=True,
+                    only_if_changed=False,
+                )
+                replay = [] if full_snapshot is None else [full_snapshot]
             for event in replay:
                 delivered_event_id = max(delivered_event_id, int(event.event_id))
                 yield serialize_sse_event(event)
