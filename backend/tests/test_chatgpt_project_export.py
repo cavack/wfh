@@ -306,7 +306,7 @@ def test_exporter_opens_export_directory_with_o_nofollow(monkeypatch, tmp_path: 
     directory_flags: list[int] = []
 
     def tracked_open(path, flags, mode=0o777, *, dir_fd=None):
-        if Path(path) == out and dir_fd is None:
+        if flags & exporter.os.O_DIRECTORY:
             directory_flags.append(flags)
         return original_open(path, flags, mode, dir_fd=dir_fd)
 
@@ -315,3 +315,21 @@ def test_exporter_opens_export_directory_with_o_nofollow(monkeypatch, tmp_path: 
 
     assert directory_flags
     assert all(flags & exporter.os.O_NOFOLLOW for flags in directory_flags)
+
+
+def test_exporter_rejects_symlinked_export_root_component(monkeypatch, tmp_path: Path) -> None:
+    trusted_parent = tmp_path / "repo"
+    trusted_parent.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    export_root = trusted_parent / ".work"
+    export_root.symlink_to(outside, target_is_directory=True)
+    out = export_root / "chatgpt-project-sources-v2"
+    monkeypatch.setattr(exporter, "EXPORT_ROOT", export_root)
+    monkeypatch.setattr(exporter, "DEFAULT_EXPORT_DIR", out)
+    _mock_export_provenance(monkeypatch)
+
+    with pytest.raises((OSError, RuntimeError, ValueError)):
+        exporter.export_project_sources()
+
+    assert not (outside / "chatgpt-project-sources-v2").exists()

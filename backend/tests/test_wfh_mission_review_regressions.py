@@ -483,3 +483,21 @@ def test_checkpoint_rejects_branch_registry_mismatch_with_active_state(tmp_path:
 
     with pytest.raises(ValueError, match="active branch|active worktree|active branch head"):
         mission.create_checkpoint(root)
+
+
+def test_resume_rejects_checkpoint_missing_current_durable_file_digest(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    pointer = mission.create_checkpoint(root, created_at="2026-09-02T18:30:00Z")
+    checkpoint_path = root / pointer["path"]
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint["state_files"].pop(mission.STEP_JOURNAL_FILE)
+    payload = mission._canonical_json_bytes(checkpoint)
+    checkpoint_path.write_bytes(payload)
+    pointer["sha256"] = mission._sha256_bytes(payload)
+    mission.atomic_write_json(root / "LATEST_CHECKPOINT.json", pointer, allowed_root=root)
+
+    result = mission.resume_guard(root, **_observations(), capabilities={})
+
+    assert result["disposition"] == "RESUME_BLOCKED"
+    assert result["reason"] == "checkpoint_state_file_contract_incomplete"
+    assert mission.STEP_JOURNAL_FILE in result["missing_checkpoint_state_files"]

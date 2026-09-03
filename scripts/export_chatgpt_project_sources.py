@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import subprocess
+import stat
 from pathlib import Path
 
 
@@ -88,32 +89,63 @@ def _source_provenance() -> dict[str, object]:
     }
 
 
-def _assert_no_unexpected_export_content() -> None:
-    if not DEFAULT_EXPORT_DIR.exists():
-        return
-    entries = list(DEFAULT_EXPORT_DIR.rglob("*"))
-    symlinks = sorted(
-        str(path.relative_to(DEFAULT_EXPORT_DIR))
-        for path in entries
-        if path.is_symlink()
-    )
-    if symlinks:
-        raise ValueError(f"symlink entries are forbidden in export destination: {symlinks}")
-    unexpected = sorted(
-        str(path.relative_to(DEFAULT_EXPORT_DIR))
-        for path in entries
-        if str(path.relative_to(DEFAULT_EXPORT_DIR)) not in EXPECTED_EXPORT_FILES
-    )
-    if unexpected:
-        raise ValueError(f"unexpected stale export content: {unexpected}")
+def _secure_directory_flags() -> int:
+    try:
+        no_follow = os.O_NOFOLLOW
+        directory = os.O_DIRECTORY
+    except AttributeError as exc:
+        raise RuntimeError("secure export requires O_NOFOLLOW and O_DIRECTORY") from exc
+    return os.O_RDONLY | directory | no_follow
+
+
+def _open_directory_chain(path: Path, *, create: bool) -> int:
+    target = Path(path)
+    if not target.is_absolute():
+        raise ValueError("secure export directory must be absolute")
+    flags = _secure_directory_flags()
+    current_fd = os.open(Path(target.anchor), flags)
+    try:
+        for part in target.parts[1:]:
+            if create:
+                try:
+                    os.mkdir(part, mode=0o700, dir_fd=current_fd)
+                except FileExistsError:
+                    pass
+            next_fd = os.open(part, flags, dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+        return current_fd
+    except BaseException:
+        os.close(current_fd)
+        raise
+
+
+def _open_export_directory() -> int:
+    if DEFAULT_EXPORT_DIR.parent != EXPORT_ROOT:
+        raise ValueError("export destination must stay within allowed root EXPORT_ROOT as a direct child")
+    root_fd = _open_directory_chain(EXPORT_ROOT, create=True)
+    try:
+        try:
+            os.mkdir(DEFAULT_EXPORT_DIR.name, mode=0o700, dir_fd=root_fd)
+        except FileExistsError:
+            pass
+        return os.open(DEFAULT_EXPORT_DIR.name, _secure_directory_flags(), dir_fd=root_fd)
+    finally:
+        os.close(root_fd)
+
+
+def _assert_no_unexpected_export_content(export_dir_fd: int) -> None:
+    for name in os.listdir(export_dir_fd):
+        if name not in EXPECTED_EXPORT_FILES:
+            raise ValueError(f"unexpected stale export content: {name}")
+        metadata = os.stat(name, dir_fd=export_dir_fd, follow_symlinks=False)
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError(f"symlink export entry is forbidden: {name}")
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(f"non-regular export entry is forbidden: {name}")
 
 
 def export_project_sources() -> Path:
-    EXPORT_ROOT.mkdir(parents=True, exist_ok=True)
-    _confined_path(DEFAULT_EXPORT_DIR, EXPORT_ROOT, label="destination")
-    _assert_no_unexpected_export_content()
-    DEFAULT_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-
     router = _normalized_bytes(_confined_path(SOURCE_DIR / ROUTER_FILE, SOURCE_DIR, label=SOURCE_LABEL, strict=True))
     catalog = _normalized_bytes(_confined_path(SOURCE_DIR / CATALOG_FILE, SOURCE_DIR, label=SOURCE_LABEL, strict=True))
     capability = _normalized_bytes(_confined_path(SOURCE_DIR / CAPABILITY_FILE, SOURCE_DIR, label=SOURCE_LABEL, strict=True))
@@ -122,15 +154,13 @@ def export_project_sources() -> Path:
     install = _normalized_bytes(_confined_path(SOURCE_DIR / INSTALL_FILE, SOURCE_DIR, label=SOURCE_LABEL, strict=True))
     resume = _normalized_bytes(_confined_path(SOURCE_DIR / RESUME_FILE, SOURCE_DIR, label=SOURCE_LABEL, strict=True))
 
-    try:
-        no_follow = os.O_NOFOLLOW
-        directory = os.O_DIRECTORY
-    except AttributeError as exc:
-        raise RuntimeError("secure export requires O_NOFOLLOW and O_DIRECTORY") from exc
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
+        raise RuntimeError("secure export requires O_NOFOLLOW and O_DIRECTORY")
     file_flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | no_follow
-    dir_flags = os.O_RDONLY | directory | no_follow
-    export_dir_fd = os.open(DEFAULT_EXPORT_DIR, dir_flags)
+    export_dir_fd = _open_export_directory()
     try:
+        _assert_no_unexpected_export_content(export_dir_fd)
         _write_all(os.open(ROUTER_FILE, file_flags, 0o600, dir_fd=export_dir_fd), router)
         _write_all(os.open(CATALOG_FILE, file_flags, 0o600, dir_fd=export_dir_fd), catalog)
         _write_all(os.open(CAPABILITY_FILE, file_flags, 0o600, dir_fd=export_dir_fd), capability)
@@ -164,8 +194,9 @@ def export_project_sources() -> Path:
         **_source_provenance(),
     }
     manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8")
-    export_dir_fd = os.open(DEFAULT_EXPORT_DIR, dir_flags)
+    export_dir_fd = _open_export_directory()
     try:
+        _assert_no_unexpected_export_content(export_dir_fd)
         _write_all(os.open(MANIFEST_FILE, file_flags, 0o600, dir_fd=export_dir_fd), manifest_bytes)
         os.fsync(export_dir_fd)
     finally:

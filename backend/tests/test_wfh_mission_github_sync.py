@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
 import json
 from pathlib import Path
 
@@ -148,3 +149,60 @@ def test_cli_help_includes_sync_github_command(capsys) -> None:
         assert exc.code == 0
     help_text = capsys.readouterr().out
     assert "sync-github" in help_text
+
+
+def test_sync_github_holds_mission_lock_through_remote_publication(monkeypatch, tmp_path: Path) -> None:
+    root = _mission_dir(tmp_path)
+    held = {"value": False}
+
+    @contextmanager
+    def tracked_lock(_root: Path):
+        assert not held["value"]
+        held["value"] = True
+        try:
+            yield
+        finally:
+            held["value"] = False
+
+    def require_lock(*_args, **_kwargs):
+        assert held["value"], "GitHub publication escaped the mission lock"
+
+    monkeypatch.setattr(mission, "_mission_lock", tracked_lock)
+    monkeypatch.setattr(mission, "_github_token", lambda: "test-token")
+    monkeypatch.setattr(
+        mission,
+        "_github_get_issue",
+        lambda _repo, issue, _token: {
+            "title": (
+                "[MISSION][POINTER] TWFH Active Mission"
+                if issue == 100
+                else "[MISSION] WFH-ME-V3-20260902 — Model Excellence v3"
+            ),
+            "body": (
+                "<!-- wfh-mission-pointer:v1 mission=WFH-ME-V3-20260902 -->"
+                if issue == 100
+                else "<!-- wfh-mission-state:v1 mission=WFH-ME-V3-20260902 -->"
+            ),
+        },
+    )
+
+    def fake_edit(*args, **kwargs):
+        require_lock()
+
+    def fake_list(*args, **kwargs):
+        require_lock()
+        return []
+
+    def fake_comment(*args, **kwargs):
+        require_lock()
+
+    monkeypatch.setattr(mission, "_github_edit_issue", fake_edit)
+    monkeypatch.setattr(mission, "_github_list_issue_comments", fake_list)
+    monkeypatch.setattr(mission, "_github_comment_issue", fake_comment)
+
+    result = mission.sync_github(
+        root, repository="cavack/wfh", pointer_issue=100, mission_issue=101
+    )
+
+    assert result["status"] == "SYNCED"
+    assert held["value"] is False

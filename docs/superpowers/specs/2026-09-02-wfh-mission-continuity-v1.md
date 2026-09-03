@@ -299,6 +299,8 @@ Use two durable issues:
 
 The pointer issue exposes the active mission id, mission issue number and latest checkpoint reference. The mission issue title is derived from validated `mission_name`. The mission issue body contains the current compact state; checkpoint transitions are mirrored as immutable comments where GitHub write authorization exists. Remote synchronization writes mission body and immutable checkpoint evidence first, then publishes the pointer issue last as the commit marker.
 
+Mission Control has one authoritative writable control root on the canonical host. ChatGPT/Codex/other agent surfaces may invoke it concurrently, but they serialize through the same mission-scoped filesystem lock. Independent multi-host GitHub writers are not supported by this contract; adding them requires a separate remote concurrency/lease design rather than pretending the host-local lock is distributed.
+
 GitHub state must not contain secrets or bulky raw evidence.
 
 If GitHub write capability is unavailable, checkpoint remains valid locally and remote sync state becomes `UNAVAILABLE`; it must not be falsely reported as synchronized.

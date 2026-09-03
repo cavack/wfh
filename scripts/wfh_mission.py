@@ -89,6 +89,28 @@ def _secret_key_paths(value: object, *, prefix: str = "mission_state") -> list[s
     return paths
 
 
+def _validate_precondition_item(index: int, item: object) -> list[str]:
+    if not isinstance(item, dict):
+        return [f"mission state precondition {index} must be an object"]
+    errors: list[str] = []
+    kind = item.get("kind")
+    if kind == "state_equals":
+        if not isinstance(item.get("field"), str) or not item.get("field"):
+            errors.append(f"mission state precondition {index} state_equals requires field")
+        if "expected" not in item:
+            errors.append(f"mission state precondition {index} state_equals requires expected")
+    elif kind == "observation_equals":
+        if item.get("scope") not in OBSERVATION_STATE_KEYS:
+            errors.append(f"mission state precondition {index} has unsupported observation scope")
+        if "expected" not in item:
+            errors.append(f"mission state precondition {index} observation_equals requires expected")
+    else:
+        errors.append(f"mission state precondition {index} has unsupported kind: {kind}")
+    if "description" in item and not isinstance(item.get("description"), str):
+        errors.append(f"mission state precondition {index} description must be text")
+    return errors
+
+
 def _validate_preconditions(preconditions: object) -> list[str]:
     if preconditions is None:
         return []
@@ -96,51 +118,49 @@ def _validate_preconditions(preconditions: object) -> list[str]:
         return ["mission state next_action_preconditions must be an array"]
     errors: list[str] = []
     for index, item in enumerate(preconditions):
-        if not isinstance(item, dict):
-            errors.append(f"mission state precondition {index} must be an object")
-            continue
-        kind = item.get("kind")
-        if kind == "state_equals":
-            if not isinstance(item.get("field"), str) or not item.get("field"):
-                errors.append(f"mission state precondition {index} state_equals requires field")
-            if "expected" not in item:
-                errors.append(f"mission state precondition {index} state_equals requires expected")
-        elif kind == "observation_equals":
-            if item.get("scope") not in OBSERVATION_STATE_KEYS:
-                errors.append(f"mission state precondition {index} has unsupported observation scope")
-            if "expected" not in item:
-                errors.append(f"mission state precondition {index} observation_equals requires expected")
-        else:
-            errors.append(f"mission state precondition {index} has unsupported kind: {kind}")
-        if "description" in item and not isinstance(item.get("description"), str):
-            errors.append(f"mission state precondition {index} description must be text")
+        errors.extend(_validate_precondition_item(index, item))
     return errors
 
 
-def validate_mission_state(state: dict[str, Any]) -> list[str]:
-    errors: list[str] = []
-    required_nonempty = (
-        "contract_version",
-        "mission_id",
-        "mission_name",
-        "project",
-        "repository",
-        "baseline_main_sha",
-        "current_main_sha",
-        "production_sha",
-        "current_phase",
-        "current_task",
-        "next_action",
-        "active_branch_head",
-        "active_branch",
-        "active_worktree",
+_MISSION_REQUIRED_NONEMPTY = (
+    "contract_version",
+    "mission_id",
+    "mission_name",
+    "project",
+    "repository",
+    "baseline_main_sha",
+    "current_main_sha",
+    "production_sha",
+    "current_phase",
+    "current_task",
+    "next_action",
+    "active_branch_head",
+    "active_branch",
+    "active_worktree",
+)
+_MISSION_REQUIRED_PRESENT = (
+    "active_worktree_dirty",
+    "required_capabilities",
+    "required_capability_states",
+)
+
+
+def _validate_mission_required_fields(state: dict[str, Any]) -> list[str]:
+    errors = [
+        f"mission state missing required field: {key}"
+        for key in _MISSION_REQUIRED_NONEMPTY
+        if not state.get(key)
+    ]
+    errors.extend(
+        f"mission state missing required field: {key}"
+        for key in _MISSION_REQUIRED_PRESENT
+        if key not in state
     )
-    for key in required_nonempty:
-        if not state.get(key):
-            errors.append(f"mission state missing required field: {key}")
-    for key in ("active_worktree_dirty", "required_capabilities", "required_capability_states"):
-        if key not in state:
-            errors.append(f"mission state missing required field: {key}")
+    return errors
+
+
+def _validate_mission_identity_and_observations(state: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
     if state.get("contract_version") not in {None, MISSION_CONTRACT}:
         errors.append("mission state contract_version is unsupported")
     if state.get("project") not in {None, CANONICAL_PROJECT}:
@@ -152,6 +172,11 @@ def validate_mission_state(state: dict[str, Any]) -> list[str]:
             errors.append(f"mission state {key} must be a 40-character lowercase Git SHA")
     if "active_worktree_dirty" in state and not isinstance(state.get("active_worktree_dirty"), bool):
         errors.append("mission state active_worktree_dirty must be boolean")
+    return errors
+
+
+def _validate_mission_capabilities(state: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
     capabilities = state.get("required_capabilities")
     if not isinstance(capabilities, list) or any(
         not isinstance(item, str) or not item for item in (capabilities or [])
@@ -162,13 +187,19 @@ def validate_mission_state(state: dict[str, Any]) -> list[str]:
         errors.append("mission state required_capabilities must be unique")
     required_states = state.get("required_capability_states")
     if not isinstance(required_states, dict):
-        errors.append("mission state required_capability_states must be an object")
-    else:
-        if set(required_states) != set(capabilities):
-            errors.append("mission state required_capability_states must exactly cover required_capabilities")
-        for name, minimum in required_states.items():
-            if minimum not in MINIMUM_CAPABILITY_STATES:
-                errors.append(f"mission state capability {name} has invalid minimum authorization: {minimum}")
+        return errors + ["mission state required_capability_states must be an object"]
+    if set(required_states) != set(capabilities):
+        errors.append("mission state required_capability_states must exactly cover required_capabilities")
+    for name, minimum in required_states.items():
+        if minimum not in MINIMUM_CAPABILITY_STATES:
+            errors.append(f"mission state capability {name} has invalid minimum authorization: {minimum}")
+    return errors
+
+
+def validate_mission_state(state: dict[str, Any]) -> list[str]:
+    errors = _validate_mission_required_fields(state)
+    errors.extend(_validate_mission_identity_and_observations(state))
+    errors.extend(_validate_mission_capabilities(state))
     errors.extend(_validate_preconditions(state.get("next_action_preconditions", [])))
     secret_paths = _secret_key_paths(state)
     if secret_paths:
@@ -257,6 +288,35 @@ def validate_evidence_ledger(ledger: dict[str, Any]) -> list[str]:
     return errors
 
 
+def _validate_branch_record(index: int, record: object) -> tuple[list[str], dict[str, Any] | None]:
+    if not isinstance(record, dict):
+        return [f"branch registry record {index} must be an object"], None
+    errors: list[str] = []
+    for key in ("task_id", "branch_name", "worktree_path", "state"):
+        if not record.get(key):
+            errors.append(f"branch registry record {index} missing {key}")
+    current_sha = record.get("current_sha")
+    if current_sha is not None and not _is_sha(current_sha):
+        errors.append(f"branch registry record {index} current_sha must be a Git SHA")
+    return errors, record
+
+
+def _validate_active_branch_record(
+    records: list[dict[str, Any]], state: dict[str, Any]
+) -> list[str]:
+    matching = [
+        record
+        for record in records
+        if record.get("branch_name") == state.get("active_branch")
+        and record.get("worktree_path") == state.get("active_worktree")
+    ]
+    if len(matching) != 1:
+        return ["branch registry must contain exactly one active branch/worktree record"]
+    if matching[0].get("current_sha") != state.get("active_branch_head"):
+        return ["branch registry active branch head does not match mission state"]
+    return []
+
+
 def validate_branch_registry(
     registry: dict[str, Any], *, mission_id: str, state: dict[str, Any] | None = None
 ) -> list[str]:
@@ -270,16 +330,11 @@ def validate_branch_registry(
         return errors + ["branch registry records must be an array"]
     seen_worktrees: set[str] = set()
     valid_records: list[dict[str, Any]] = []
-    for index, record in enumerate(records):
-        if not isinstance(record, dict):
-            errors.append(f"branch registry record {index} must be an object")
+    for index, raw_record in enumerate(records):
+        record_errors, record = _validate_branch_record(index, raw_record)
+        errors.extend(record_errors)
+        if record is None:
             continue
-        for key in ("task_id", "branch_name", "worktree_path", "state"):
-            if not record.get(key):
-                errors.append(f"branch registry record {index} missing {key}")
-        current_sha = record.get("current_sha")
-        if current_sha is not None and not _is_sha(current_sha):
-            errors.append(f"branch registry record {index} current_sha must be a Git SHA")
         worktree = record.get("worktree_path")
         if isinstance(worktree, str) and worktree:
             if worktree in seen_worktrees:
@@ -287,19 +342,7 @@ def validate_branch_registry(
             seen_worktrees.add(worktree)
         valid_records.append(record)
     if state is not None:
-        active_branch = state.get("active_branch")
-        active_worktree = state.get("active_worktree")
-        active_head = state.get("active_branch_head")
-        matching = [
-            record
-            for record in valid_records
-            if record.get("branch_name") == active_branch
-            and record.get("worktree_path") == active_worktree
-        ]
-        if len(matching) != 1:
-            errors.append("branch registry must contain exactly one active branch/worktree record")
-        elif matching[0].get("current_sha") != active_head:
-            errors.append("branch registry active branch head does not match mission state")
+        errors.extend(_validate_active_branch_record(valid_records, state))
     return errors
 
 
@@ -820,6 +863,20 @@ def _interrupted_step_gate(root: Path, checkpoint: dict[str, Any]) -> dict[str, 
 
 
 def _state_files_gate(root: Path, checkpoint: dict[str, Any]) -> dict[str, Any] | None:
+    state_files = checkpoint.get("state_files")
+    if not isinstance(state_files, dict):
+        return {
+            "disposition": "RESUME_BLOCKED",
+            "reason": "checkpoint_state_file_contract_incomplete",
+            "missing_checkpoint_state_files": list(DURABLE_STATE_FILES),
+        }
+    missing_contract = sorted(set(DURABLE_STATE_FILES) - set(state_files))
+    if missing_contract:
+        return {
+            "disposition": "RESUME_BLOCKED",
+            "reason": "checkpoint_state_file_contract_incomplete",
+            "missing_checkpoint_state_files": missing_contract,
+        }
     changed, missing = _live_state_file_changes(root, checkpoint)
     if missing:
         return {
@@ -945,6 +1002,40 @@ def _observed_drift(
     ]
 
 
+def _invalid_precondition(index: int) -> dict[str, Any]:
+    return {
+        "disposition": "RESUME_BLOCKED",
+        "reason": "next_action_precondition_invalid",
+        "precondition_index": index,
+    }
+
+
+def _evaluate_precondition(
+    item: object,
+    *,
+    index: int,
+    state: dict[str, Any],
+    observed: dict[str, Any],
+) -> tuple[str | None, dict[str, Any] | None]:
+    if not isinstance(item, dict):
+        return None, _invalid_precondition(index)
+    kind = item.get("kind")
+    description = str(item.get("description") or f"precondition[{index}]")
+    if kind == "state_equals":
+        met = state.get(str(item.get("field"))) == item.get("expected")
+        return (None if met else description), None
+    if kind != "observation_equals":
+        return None, _invalid_precondition(index)
+    scope = item.get("scope")
+    if scope not in OBSERVATION_STATE_KEYS:
+        return None, _invalid_precondition(index)
+    expected = item.get("expected")
+    if expected == "checkpoint":
+        expected = state.get(OBSERVATION_STATE_KEYS[str(scope)])
+    met = observed.get(str(scope)) == expected
+    return (None if met else description), None
+
+
 def _precondition_gate(
     state: dict[str, Any],
     *,
@@ -968,36 +1059,13 @@ def _precondition_gate(
     }
     unmet: list[str] = []
     for index, item in enumerate(preconditions):
-        if not isinstance(item, dict):
-            return {
-                "disposition": "RESUME_BLOCKED",
-                "reason": "next_action_precondition_invalid",
-                "precondition_index": index,
-            }
-        kind = item.get("kind")
-        description = str(item.get("description") or f"precondition[{index}]")
-        if kind == "state_equals":
-            if state.get(str(item.get("field"))) != item.get("expected"):
-                unmet.append(description)
-        elif kind == "observation_equals":
-            scope = item.get("scope")
-            if scope not in OBSERVATION_STATE_KEYS:
-                return {
-                    "disposition": "RESUME_BLOCKED",
-                    "reason": "next_action_precondition_invalid",
-                    "precondition_index": index,
-                }
-            expected = item.get("expected")
-            if expected == "checkpoint":
-                expected = state.get(OBSERVATION_STATE_KEYS[str(scope)])
-            if observed.get(str(scope)) != expected:
-                unmet.append(description)
-        else:
-            return {
-                "disposition": "RESUME_BLOCKED",
-                "reason": "next_action_precondition_invalid",
-                "precondition_index": index,
-            }
+        description, invalid = _evaluate_precondition(
+            item, index=index, state=state, observed=observed
+        )
+        if invalid is not None:
+            return invalid
+        if description is not None:
+            unmet.append(description)
     if not unmet:
         return None
     return {
@@ -1331,18 +1399,15 @@ def _validate_issue_identity(
     raise ValueError("GitHub mission issue identity marker missing")
 
 
-def sync_github(
+def _sync_github_locked(
     mission_dir: Path,
     *,
     repository: str,
     pointer_issue: int,
     mission_issue: int,
-    initialize: bool = False,
+    initialize: bool,
+    token: str,
 ) -> dict[str, Any]:
-    _validate_github_target(repository, pointer_issue, mission_issue)
-    token = _github_token()
-    if token is None:
-        return {"status": "UNAVAILABLE", "reason": "github_auth_unavailable"}
     loaded = load_latest_checkpoint(mission_dir)
     if loaded.get("disposition") != "RESUME_READY":
         return {
@@ -1396,6 +1461,30 @@ def sync_github(
         "checkpoint_id": pointer["checkpoint_id"],
         "checkpoint_comment_created": not already_recorded,
     }
+
+
+def sync_github(
+    mission_dir: Path,
+    *,
+    repository: str,
+    pointer_issue: int,
+    mission_issue: int,
+    initialize: bool = False,
+) -> dict[str, Any]:
+    _validate_github_target(repository, pointer_issue, mission_issue)
+    token = _github_token()
+    if token is None:
+        return {"status": "UNAVAILABLE", "reason": "github_auth_unavailable"}
+    root = Path(mission_dir).resolve(strict=True)
+    with _mission_lock(root):
+        return _sync_github_locked(
+            root,
+            repository=repository,
+            pointer_issue=pointer_issue,
+            mission_issue=mission_issue,
+            initialize=initialize,
+            token=token,
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
