@@ -2385,32 +2385,54 @@ def _dashboard_snapshot_broadcast_due(
 async def sse_broadcaster():
     last_snapshot_at = 0.0
     last_heartbeat_at = 0.0
-    while _hunter_running:
-        if _sse_clients:
+    snapshot_task: asyncio.Task | None = None
+    try:
+        while _hunter_running:
             now_monotonic = time.monotonic()
-            if _dashboard_snapshot_broadcast_due(last_snapshot_at, now_monotonic):
-                event = _publish_dashboard_snapshot_safely(
-                    full_snapshot=False,
-                    only_if_changed=True,
-                )
-                # Budget from completion, not start. A slow aggregation therefore
-                # still gets a full quiet interval before the next rebuild.
+            if snapshot_task is not None and snapshot_task.done():
+                try:
+                    event = snapshot_task.result()
+                except asyncio.CancelledError:
+                    event = None
+                except Exception:
+                    logger.exception("Dashboard snapshot worker failed; SSE loop will continue")
+                    event = None
+                snapshot_task = None
                 last_snapshot_at = time.monotonic()
-                if event is not None:
+                if event is not None and _sse_clients:
                     _broadcast_dashboard_event(event)
 
-            if (
-                last_heartbeat_at <= 0.0
-                or now_monotonic - last_heartbeat_at
-                >= _DASHBOARD_HEARTBEAT_INTERVAL_SECONDS
-            ):
-                heartbeat = _dashboard_event_buffer.publish_heartbeat(
-                    generated_at=time.time(),
-                )
-                _broadcast_dashboard_event(heartbeat)
-                last_heartbeat_at = now_monotonic
+            if _sse_clients:
+                if (
+                    snapshot_task is None
+                    and _dashboard_snapshot_broadcast_due(
+                        last_snapshot_at, now_monotonic
+                    )
+                ):
+                    snapshot_task = asyncio.create_task(
+                        asyncio.to_thread(
+                            _publish_dashboard_snapshot_safely,
+                            full_snapshot=False,
+                            only_if_changed=True,
+                        )
+                    )
 
-        await asyncio.sleep(1.0)
+                if (
+                    last_heartbeat_at <= 0.0
+                    or now_monotonic - last_heartbeat_at
+                    >= _DASHBOARD_HEARTBEAT_INTERVAL_SECONDS
+                ):
+                    heartbeat = _dashboard_event_buffer.publish_heartbeat(
+                        generated_at=time.time(),
+                    )
+                    _broadcast_dashboard_event(heartbeat)
+                    last_heartbeat_at = now_monotonic
+
+            await asyncio.sleep(1.0)
+    finally:
+        if snapshot_task is not None:
+            snapshot_task.cancel()
+            await asyncio.gather(snapshot_task, return_exceptions=True)
 
 
 def _build_runtime_lifecycle_v2_evidence(

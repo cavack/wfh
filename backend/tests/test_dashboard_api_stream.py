@@ -422,3 +422,54 @@ def test_sse_client_queue_is_bounded_and_latest_event_wins(monkeypatch) -> None:
     assert queue.get_nowait() is second
     assert queue.get_nowait() is latest
     assert queue.empty()
+
+
+def test_sse_broadcaster_aggregates_off_event_loop_thread(monkeypatch) -> None:
+    caller_thread = threading.get_ident()
+    worker_threads: list[int] = []
+    queue = asyncio.Queue(maxsize=1)
+
+    def aggregate(**_):
+        worker_threads.append(threading.get_ident())
+        main._hunter_running = False
+        return None
+
+    monkeypatch.setattr(main, "_hunter_running", True)
+    monkeypatch.setattr(main, "_sse_clients", {queue})
+    monkeypatch.setattr(main, "_publish_dashboard_snapshot_safely", aggregate)
+
+    asyncio.run(main.sse_broadcaster())
+
+    assert worker_threads
+    assert worker_threads[0] != caller_thread
+
+
+def test_sse_heartbeat_continues_while_snapshot_aggregation_is_blocked(monkeypatch) -> None:
+    started = threading.Event()
+    release = threading.Event()
+    heartbeats: list[object] = []
+    queue = asyncio.Queue(maxsize=2)
+
+    def aggregate(**_):
+        started.set()
+        release.wait(3.0)
+        return None
+
+    def broadcast(event) -> None:
+        if getattr(event, "event_type", None) == "heartbeat":
+            heartbeats.append(event)
+            if len(heartbeats) >= 2:
+                release.set()
+                main._hunter_running = False
+
+    monkeypatch.setattr(main, "_hunter_running", True)
+    monkeypatch.setattr(main, "_sse_clients", {queue})
+    monkeypatch.setattr(main, "_DASHBOARD_HEARTBEAT_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(main, "_publish_dashboard_snapshot_safely", aggregate)
+    monkeypatch.setattr(main, "_broadcast_dashboard_event", broadcast)
+
+    asyncio.run(main.sse_broadcaster())
+
+    assert started.is_set()
+    assert len(heartbeats) >= 2
+    assert release.is_set()

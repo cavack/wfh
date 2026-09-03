@@ -171,6 +171,10 @@ class MicrostructureAnalyzer:
                 snapshots, now=time.time()
             ):
                 snapshots = await self._fetch_orderbook_snapshot_series(exchange, symbol)
+            if trades_preloaded and not self._preloaded_trades_are_usable(
+                trades, now=time.time()
+            ):
+                trades = await exchange.fetch_trades(symbol, limit=100)
             return snapshots, trades, None
         except asyncio.CancelledError:
             await self._settle_fetch_task(trades_task)

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
-import heapq
 import inspect
+import threading
+from collections import deque
 import logging
 import math
 import sqlite3
@@ -73,6 +74,11 @@ class EntryDecisionStore:
                 self.db_path,
                 required_tables=frozenset({"entry_decision_events"}),
             )
+        self._transition_cache_lock = threading.RLock()
+        self._transition_cache_initialized = False
+        self._transition_cache_max_id = 0
+        self._transition_cache_latest_by_symbol: dict[str, str] = {}
+        self._transition_cache_recent: deque[tuple[int, str]] = deque(maxlen=200)
 
     @staticmethod
     def _validate_packet(packet: dict[str, Any]) -> tuple[str, int, float, float, str]:
@@ -958,30 +964,45 @@ class EntryDecisionStore:
             ).fetchall()
         return [self._row_packet(row) for row in rows]
 
-    @staticmethod
-    def _latest_transition_metadata(
-        conn: sqlite3.Connection,
-        *,
-        limit: int,
-    ) -> dict[int, str]:
-        """Stream lightweight history and retain only the newest transitions."""
-        newer_by_symbol: dict[str, tuple[int, str]] = {}
-        newest: list[tuple[int, str]] = []
-        rows = conn.execute(
-            "SELECT id,symbol,decision FROM entry_decision_events ORDER BY id DESC"
-        )
-        for event_id, symbol, decision in rows:
-            symbol_text = str(symbol)
-            decision_text = str(decision)
-            newer = newer_by_symbol.get(symbol_text)
-            if newer is not None and newer[1] != decision_text:
-                candidate = (int(newer[0]), decision_text)
-                if len(newest) < limit:
-                    heapq.heappush(newest, candidate)
-                elif candidate[0] > newest[0][0]:
-                    heapq.heapreplace(newest, candidate)
-            newer_by_symbol[symbol_text] = (int(event_id), decision_text)
-        return dict(newest)
+    def _reset_transition_cache(self) -> None:
+        self._transition_cache_initialized = False
+        self._transition_cache_max_id = 0
+        self._transition_cache_latest_by_symbol.clear()
+        self._transition_cache_recent.clear()
+
+    def _refresh_transition_cache(self, conn: sqlite3.Connection) -> None:
+        """Incrementally index transitions from the immutable decision ledger."""
+        while True:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(id),0) FROM entry_decision_events"
+            ).fetchone()
+            current_max = int(row[0] or 0) if row is not None else 0
+            if (
+                not self._transition_cache_initialized
+                or current_max < self._transition_cache_max_id
+            ):
+                self._reset_transition_cache()
+
+            start_id = self._transition_cache_max_id
+            if current_max <= start_id:
+                self._transition_cache_initialized = True
+                return
+
+            rows = conn.execute(
+                "SELECT id,symbol,decision FROM entry_decision_events "
+                "WHERE id>? AND id<=? ORDER BY id ASC",
+                (start_id, current_max),
+            )
+            for event_id, symbol, decision in rows:
+                event_id_int = int(event_id)
+                symbol_text = str(symbol)
+                decision_text = str(decision)
+                previous = self._transition_cache_latest_by_symbol.get(symbol_text)
+                if previous is not None and previous != decision_text:
+                    self._transition_cache_recent.append((event_id_int, previous))
+                self._transition_cache_latest_by_symbol[symbol_text] = decision_text
+                self._transition_cache_max_id = event_id_int
+            self._transition_cache_initialized = True
 
     def _transition_packets(
         self,
@@ -1013,11 +1034,13 @@ class EntryDecisionStore:
         return packets
 
     def recent_transitions(self, *, limit: int = 20) -> list[dict[str, Any]]:
-        """Return recent decision transitions without correlated history scans."""
+        """Return recent transitions from a thread-safe incremental ledger index."""
         bounded = max(1, min(int(limit), 200))
-        with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
-            transitions = self._latest_transition_metadata(conn, limit=bounded)
-            return self._transition_packets(conn, transitions, limit=bounded)
+        with self._transition_cache_lock:
+            with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
+                self._refresh_transition_cache(conn)
+                transitions = dict(list(self._transition_cache_recent)[-bounded:])
+                return self._transition_packets(conn, transitions, limit=bounded)
 
 
 class EntryOutcomeResolutionWorker:

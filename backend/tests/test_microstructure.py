@@ -426,7 +426,7 @@ def test_future_dated_preloaded_orderbook_is_rejected_before_reuse() -> None:
 
 def test_preloaded_orderbooks_expiring_during_trade_fetch_are_refreshed() -> None:
     analyzer = MicrostructureAnalyzer(snapshot_delay_seconds=0.0)
-    analyzer.snapshot_ttl_seconds = 0.05
+    analyzer.snapshot_ttl_seconds = 0.20
     now = time.time()
     snapshots = [
         {
@@ -452,7 +452,7 @@ def test_preloaded_orderbooks_expiring_during_trade_fetch_are_refreshed() -> Non
             }
 
         async def fetch_trades(self, symbol, limit):
-            await asyncio.sleep(0.06)
+            await asyncio.sleep(0.25)
             observed = int(time.time() * 1000)
             return [
                 {"timestamp": observed, "side": "sell", "price": 10.0, "amount": 1.0}
@@ -473,3 +473,54 @@ def test_preloaded_orderbooks_expiring_during_trade_fetch_are_refreshed() -> Non
 
     assert exchange.book_calls >= 3
     assert result.get("reason") != "stale orderbook snapshot"
+
+
+def test_preloaded_trades_expiring_during_snapshot_collection_are_refreshed() -> None:
+    analyzer = MicrostructureAnalyzer(snapshot_delay_seconds=0.12)
+    analyzer.trade_ttl_seconds = 0.15
+    now = time.time()
+    trades = [
+        {"timestamp": int(now * 1000), "side": "sell", "price": 10.0, "amount": 1.0}
+        for _ in range(20)
+    ]
+
+    class RefreshTradesExchange:
+        def __init__(self) -> None:
+            self.trade_calls = 0
+
+        async def fetch_order_book(self, symbol, limit):
+            observed = time.time()
+            return {
+                "timestamp": int(observed * 1000),
+                "bids": [[10.0, 100.0]],
+                "asks": [[10.1, 100.0]],
+            }
+
+        async def fetch_trades(self, symbol, limit):
+            self.trade_calls += 1
+            observed = int(time.time() * 1000)
+            return [
+                {"timestamp": observed, "side": "sell", "price": 10.0, "amount": 1.0}
+                for _ in range(20)
+            ]
+
+    exchange = RefreshTradesExchange()
+    first = {
+        "timestamp": int(now * 1000),
+        "_received_at": now,
+        "bids": [[10.0, 100.0]],
+        "asks": [[10.1, 100.0]],
+    }
+    result = asyncio.run(
+        analyzer.analyze(
+            exchange,
+            "TEST/USDT:USDT",
+            first,
+            {"limits": {"amount": {"min": 0.01}, "cost": {"min": 1.0}}, "contractSize": 1.0},
+            preloaded_snapshots=[],
+            preloaded_trades=trades,
+        )
+    )
+
+    assert exchange.trade_calls == 1
+    assert result.get("reason") != "insufficient fresh trades"
