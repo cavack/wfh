@@ -132,6 +132,28 @@ def test_polling_endpoint_returns_a_valid_versioned_no_store_snapshot(monkeypatc
     assert buffer.replay_after("1") is None
 
 
+def test_raw_candidates_endpoint_returns_full_versioned_snapshot(monkeypatch) -> None:
+    buffer = DashboardEventBuffer()
+    raw_payload = {
+        **PAYLOAD,
+        "candidates": {
+            "TEST": {
+                "status": "WATCH",
+                "metrics": {"raw_heavy_field": {"kept": True}},
+            }
+        },
+    }
+    monkeypatch.setattr(main, "_dashboard_event_buffer", buffer)
+    monkeypatch.setattr(main, "get_formatted_candidates", lambda **_: raw_payload)
+    response = Response()
+
+    snapshot = asyncio.run(main.get_raw_candidates(response))
+
+    assert snapshot.contract_version == "dashboard_snapshot_v2"
+    assert snapshot.candidates["TEST"]["metrics"]["raw_heavy_field"] == {"kept": True}
+    assert response.headers["Cache-Control"] == "no-store"
+
+
 def test_stream_replays_after_last_event_id_and_sets_proxy_safe_headers(monkeypatch) -> None:
     buffer = DashboardEventBuffer()
     monkeypatch.setattr(main, "_dashboard_event_buffer", buffer)
@@ -205,7 +227,16 @@ def test_dashboard_snapshot_normalizes_non_finite_numbers_to_unavailable(monkeyp
         "candidates": {
             "TEST": {
                 "status": "WATCH",
-                "metrics": {"spread_pct": float("nan")},
+                "metrics": {
+                    "entry_decision": {
+                        "decision": "NO_TRADE",
+                        "entry_readiness": 0.0,
+                        "evidence_coverage_pct": 0.0,
+                        "evidence_summary": {
+                            "execution": {"spread_pct": float("nan")},
+                        },
+                    },
+                },
             }
         },
         "decision_terminal": DECISION_TERMINAL,
@@ -222,7 +253,11 @@ def test_dashboard_snapshot_normalizes_non_finite_numbers_to_unavailable(monkeyp
 
     assert event is not None
     assert event.payload is not None
-    assert event.payload.candidates["TEST"]["metrics"]["spread_pct"] is None
+    assert (
+        event.payload.candidates["TEST"]["metrics"]["entry_decision"]
+        ["evidence_summary"]["execution"]["spread_pct"]
+        is None
+    )
 
 
 def test_polling_snapshot_normalizes_non_finite_numbers_to_unavailable(monkeypatch) -> None:
@@ -232,7 +267,16 @@ def test_polling_snapshot_normalizes_non_finite_numbers_to_unavailable(monkeypat
         "candidates": {
             "TEST": {
                 "status": "WATCH",
-                "metrics": {"spread_pct": float("inf")},
+                "metrics": {
+                    "entry_decision": {
+                        "decision": "NO_TRADE",
+                        "entry_readiness": 0.0,
+                        "evidence_coverage_pct": 0.0,
+                        "evidence_summary": {
+                            "execution": {"spread_pct": float("inf")},
+                        },
+                    },
+                },
             }
         },
         "decision_terminal": DECISION_TERMINAL,
@@ -245,7 +289,18 @@ def test_polling_snapshot_normalizes_non_finite_numbers_to_unavailable(monkeypat
 
     snapshot = asyncio.run(main.get_candidates(response))
 
-    assert snapshot.candidates["TEST"]["metrics"]["spread_pct"] is None
+    assert (
+        snapshot.candidates["TEST"]["metrics"]["entry_decision"]
+        ["evidence_summary"]["execution"]["spread_pct"]
+        is None
+    )
+
+
+def test_sse_snapshot_rebuild_is_coalesced_to_five_second_budget() -> None:
+    assert main._DASHBOARD_SNAPSHOT_BROADCAST_INTERVAL_SECONDS == 5.0
+    assert main._dashboard_snapshot_broadcast_due(10.0, 14.999) is False
+    assert main._dashboard_snapshot_broadcast_due(10.0, 15.0) is True
+    assert main._dashboard_snapshot_broadcast_due(0.0, 1.0) is True
 
 
 def test_production_dashboard_replay_window_is_memory_bounded() -> None:

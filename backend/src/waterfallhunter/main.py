@@ -47,6 +47,7 @@ from waterfallhunter.core.ai_veto import (
 from waterfallhunter.core.risk_manager import build_signal_leverage_advisory
 from waterfallhunter.core.dashboard import compact_metrics
 from waterfallhunter.core.decision_terminal import build_decision_terminal
+from waterfallhunter.core.dashboard_projection import project_dashboard_payload
 from waterfallhunter.core.dashboard_stream import (
     DashboardEventBuffer,
     DashboardSnapshot,
@@ -329,6 +330,11 @@ _sse_clients = set()
 # freshly generated full snapshot.
 _DASHBOARD_REPLAY_EVENT_LIMIT = 8
 _DASHBOARD_CLIENT_QUEUE_LIMIT = 2
+# Rebuilding the canonical dashboard walks all active candidates and multiple
+# read-only enrichers. Coalesce that CPU/DB work independently from the 15s
+# heartbeat so one connected browser cannot force a full aggregation every second.
+_DASHBOARD_SNAPSHOT_BROADCAST_INTERVAL_SECONDS = 5.0
+_DASHBOARD_HEARTBEAT_INTERVAL_SECONDS = 15.0
 _dashboard_event_buffer = DashboardEventBuffer(
     replay_limit=_DASHBOARD_REPLAY_EVENT_LIMIT
 )
@@ -2282,7 +2288,7 @@ def get_formatted_candidates(*, evaluation_time: float | None = None):  # NOSONA
 
     decision_terminal = build_decision_terminal(
         sorted_candidates,
-        recent_changes=entry_decision_store.recent_changes(limit=10),
+        recent_changes=entry_decision_store.recent_transitions(limit=10),
     )
 
     return {
@@ -2302,13 +2308,20 @@ def get_formatted_candidates(*, evaluation_time: float | None = None):  # NOSONA
     }
 
 
+def _get_live_dashboard_payload(*, evaluation_time: float) -> dict[str, Any]:
+    """Return the bounded public projection of the canonical dashboard state."""
+    return project_dashboard_payload(
+        get_formatted_candidates(evaluation_time=evaluation_time)
+    )
+
+
 def _publish_dashboard_snapshot(
     *,
     full_snapshot: bool,
     only_if_changed: bool = False,
 ) -> DashboardStreamEvent | None:
     generated_at = time.time()
-    payload = get_formatted_candidates(evaluation_time=generated_at)
+    payload = _get_live_dashboard_payload(evaluation_time=generated_at)
     if only_if_changed:
         return _dashboard_event_buffer.publish_snapshot_if_changed(
             payload,
@@ -2341,27 +2354,45 @@ def _broadcast_dashboard_event(event: DashboardStreamEvent) -> None:
                 pass
 
 
+def _dashboard_snapshot_broadcast_due(
+    last_snapshot_at: float,
+    now_monotonic: float,
+) -> bool:
+    """Return whether the expensive dashboard aggregation budget is due."""
+    return (
+        last_snapshot_at <= 0.0
+        or now_monotonic - last_snapshot_at
+        >= _DASHBOARD_SNAPSHOT_BROADCAST_INTERVAL_SECONDS
+    )
+
+
 async def sse_broadcaster():
+    last_snapshot_at = 0.0
     last_heartbeat_at = 0.0
     while _hunter_running:
         if _sse_clients:
-            event = _publish_dashboard_snapshot(
-                full_snapshot=False,
-                only_if_changed=True,
-            )
-            if event is not None:
-                _broadcast_dashboard_event(event)
-            now = time.time()
-            if now - last_heartbeat_at >= 15.0:
+            now_monotonic = time.monotonic()
+            if _dashboard_snapshot_broadcast_due(last_snapshot_at, now_monotonic):
+                event = _publish_dashboard_snapshot(
+                    full_snapshot=False,
+                    only_if_changed=True,
+                )
+                last_snapshot_at = now_monotonic
+                if event is not None:
+                    _broadcast_dashboard_event(event)
+
+            if (
+                last_heartbeat_at <= 0.0
+                or now_monotonic - last_heartbeat_at
+                >= _DASHBOARD_HEARTBEAT_INTERVAL_SECONDS
+            ):
                 heartbeat = _dashboard_event_buffer.publish_heartbeat(
-                    generated_at=now,
+                    generated_at=time.time(),
                 )
                 _broadcast_dashboard_event(heartbeat)
-                last_heartbeat_at = now
+                last_heartbeat_at = now_monotonic
 
-        await asyncio.sleep(
-            1.0
-        )
+        await asyncio.sleep(1.0)
 
 
 def _build_runtime_lifecycle_v2_evidence(
@@ -4295,7 +4326,7 @@ def _get_dashboard_poll_snapshot() -> DashboardSnapshot:
 
     generated_at = time.time()
     snapshot = _dashboard_event_buffer.preview_snapshot(
-        get_formatted_candidates(
+        _get_live_dashboard_payload(
             evaluation_time=generated_at
         ),
         generated_at=generated_at,
@@ -4318,3 +4349,18 @@ def _get_dashboard_poll_snapshot() -> DashboardSnapshot:
 async def get_candidates(response: Response):
     response.headers["Cache-Control"] = "no-store"
     return _get_dashboard_poll_snapshot()
+
+
+@app.get(
+    "/api/candidates/raw",
+    response_model=DashboardSnapshot,
+    response_model_exclude_none=False,
+)
+async def get_raw_candidates(response: Response):
+    """Load full diagnostics on demand; never push them through the live SSE path."""
+    response.headers["Cache-Control"] = "no-store"
+    generated_at = time.time()
+    return _dashboard_event_buffer.preview_snapshot(
+        get_formatted_candidates(evaluation_time=generated_at),
+        generated_at=generated_at,
+    )

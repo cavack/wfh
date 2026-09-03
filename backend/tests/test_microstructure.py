@@ -243,6 +243,113 @@ def test_complete_preloaded_microstructure_evidence_avoids_rest_calls() -> None:
     assert len(result["source_capture"]["orderbook_snapshots"]) == 3
 
 
+def _fresh_preloaded_snapshots(now: float) -> list[dict]:
+    return [
+        {
+            "timestamp": int((now - offset) * 1000),
+            "_received_at": now - offset,
+            "bids": [[10.0, 100.0]],
+            "asks": [[10.1, 100.0]],
+        }
+        for offset in (0.6, 0.3, 0.0)
+    ]
+
+
+def _fresh_preloaded_trades(now: float) -> list[dict]:
+    return [
+        {
+            "id": f"partial-{index}",
+            "timestamp": int(now * 1000),
+            "side": "sell",
+            "price": 10.0,
+            "amount": 1.0,
+        }
+        for index in range(20)
+    ]
+
+
+def test_fresh_preloaded_snapshots_only_skip_rest_orderbooks() -> None:
+    now = time.time()
+    snapshots = _fresh_preloaded_snapshots(now)
+
+    class CountingExchange:
+        def __init__(self) -> None:
+            self.book_calls = 0
+            self.trade_calls = 0
+
+        async def fetch_order_book(self, symbol, limit):
+            self.book_calls += 1
+            raise AssertionError("fresh preloaded snapshots must be reused")
+
+        async def fetch_trades(self, symbol, limit):
+            self.trade_calls += 1
+            observed = int(time.time() * 1000)
+            return [
+                {"timestamp": observed, "side": "sell", "price": 10.0, "amount": 1.0}
+                for _ in range(20)
+            ]
+
+    exchange = CountingExchange()
+    result = asyncio.run(
+        MicrostructureAnalyzer(snapshot_delay_seconds=0.25).analyze(
+            exchange,
+            "TEST/USDT:USDT",
+            snapshots[-1],
+            {"limits": {"amount": {"min": 0.01}, "cost": {"min": 1.0}}, "contractSize": 1.0},
+            preloaded_snapshots=snapshots,
+            preloaded_trades=[],
+        )
+    )
+
+    assert exchange.book_calls == 0
+    assert exchange.trade_calls == 1
+    assert result.get("reason") != "missing live orderbook snapshots or trades"
+
+
+def test_fresh_preloaded_trades_only_skip_rest_trades() -> None:
+    now = time.time()
+    trades = _fresh_preloaded_trades(now)
+
+    class CountingExchange:
+        def __init__(self) -> None:
+            self.book_calls = 0
+            self.trade_calls = 0
+
+        async def fetch_order_book(self, symbol, limit):
+            self.book_calls += 1
+            return {
+                "timestamp": int(time.time() * 1000),
+                "bids": [[10.0, 100.0]],
+                "asks": [[10.1, 100.0]],
+            }
+
+        async def fetch_trades(self, symbol, limit):
+            self.trade_calls += 1
+            raise AssertionError("fresh preloaded trades must be reused")
+
+    exchange = CountingExchange()
+    first = {
+        "timestamp": int(now * 1000),
+        "_received_at": now,
+        "bids": [[10.0, 100.0]],
+        "asks": [[10.1, 100.0]],
+    }
+    result = asyncio.run(
+        MicrostructureAnalyzer(snapshot_delay_seconds=0.0).analyze(
+            exchange,
+            "TEST/USDT:USDT",
+            first,
+            {"limits": {"amount": {"min": 0.01}, "cost": {"min": 1.0}}, "contractSize": 1.0},
+            preloaded_snapshots=[first],
+            preloaded_trades=trades,
+        )
+    )
+
+    assert exchange.book_calls == 2
+    assert exchange.trade_calls == 0
+    assert result.get("reason") != "missing live orderbook snapshots or trades"
+
+
 def test_incomplete_preloaded_microstructure_evidence_uses_existing_rest_path() -> None:
     now = int(time.time() * 1000)
 

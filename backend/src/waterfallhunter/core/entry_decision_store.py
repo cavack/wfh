@@ -948,12 +948,29 @@ class EntryDecisionStore:
         return {str(row[1]): self._row_packet(row) for row in rows}
 
     def recent_changes(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        """Return recent immutable canonical decision events."""
         bounded = max(1, min(int(limit), 200))
         with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
             rows = conn.execute(
                 self._history_select("ORDER BY e.id DESC LIMIT ?"),
                 (bounded,),
             ).fetchall()
+        return [self._row_packet(row) for row in rows]
+
+    def recent_transitions(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        """Return decision-state transitions, excluding material same-state events."""
+        bounded = max(1, min(int(limit), 200))
+        previous_decision = (
+            "(SELECT p.decision FROM entry_decision_events p "
+            " WHERE p.symbol=e.symbol AND p.id<e.id ORDER BY p.id DESC LIMIT 1)"
+        )
+        where = (
+            f"WHERE {previous_decision} IS NOT NULL "
+            f"AND {previous_decision} <> e.decision "
+            "ORDER BY e.id DESC LIMIT ?"
+        )
+        with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
+            rows = conn.execute(self._history_select(where), (bounded,)).fetchall()
         return [self._row_packet(row) for row in rows]
 
 

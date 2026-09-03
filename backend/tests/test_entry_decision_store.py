@@ -57,6 +57,27 @@ def test_entry_ready_history_survives_later_transition(tmp_path) -> None:
     assert [row["decision"] for row in history] == ["INVALIDATED", "ENTRY_READY"]
 
 
+
+
+def test_recent_transitions_excludes_material_same_decision_events(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    first = packet("LATE", 60.0, 100)
+    second = packet("LATE", 61.0, 110)
+    second["block_reasons"] = ["ANTI_CHASE_HARD_BLOCK", "STALE_REFERENCE"]
+    third = packet("NO_TRADE", 20.0, 120)
+
+    assert store.append_if_changed("TEST/USDT:USDT", first) is not None
+    assert store.append_if_changed("TEST/USDT:USDT", second) is not None
+    assert store.append_if_changed("TEST/USDT:USDT", third) is not None
+
+    rows = store.recent_transitions(limit=10)
+
+    assert [(row["previous_decision"], row["decision"]) for row in rows] == [
+        ("LATE", "NO_TRADE"),
+    ]
+
+
 def test_decision_events_are_immutable(tmp_path) -> None:
     db_path = migrate_test_database(tmp_path / "registry.db")
     store = EntryDecisionStore(db_path)

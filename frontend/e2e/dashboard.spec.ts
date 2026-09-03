@@ -32,7 +32,7 @@ function evidence(cascadeStatus: "COMPLETE" | "PARTIAL", antiChase: number) {
       sell_share_pct: 71.5,
     },
     execution: { spread_pct: 0.04, slippage_pct: 0.03 },
-    cascade: { status: cascadeStatus, readiness_points: cascadeStatus === "COMPLETE" ? 9.2 : 7.1 },
+    cascade: { status: cascadeStatus, readiness_points: cascadeStatus === "COMPLETE" ? 9.2 : 7.1, maximum_available: cascadeStatus === "COMPLETE" ? 10 : 8 },
   };
 }
 
@@ -180,6 +180,7 @@ async function fulfillJson(route: Route, body: unknown, status = 200) {
 async function routeDashboard(page: Page, pollSnapshot = snapshot(1)) {
   await page.route(`**${API_PREFIX}**`, async (route) => {
     const pathname = new URL(route.request().url()).pathname;
+    if (pathname.endsWith("/api/candidates/raw")) return fulfillJson(route, pollSnapshot);
     if (pathname.endsWith("/api/candidates")) return fulfillJson(route, pollSnapshot);
     if (pathname.endsWith("/api/stream")) {
       return route.fulfill({ status: 200, contentType: "text/event-stream", body: "retry: 60000\n\n" });
@@ -200,14 +201,14 @@ test("desktop renders canonical decision, plan, tri-state leverage, evidence and
   await expect(entrySection.getByText("$0.1045")).toBeVisible();
   await expect(entrySection.getByText("$0.0965")).toBeVisible();
   await expect(entrySection.getByText("$0.0925")).toBeVisible();
-  await expect(entrySection.getByText("Evidence 100%")).toBeVisible();
+  await expect(entrySection.getByText("Evidence coverage 100%")).toBeVisible();
   await expect(entrySection).toContainText("Cascade");
   await expect(entrySection).toContainText("COMPLETE · 9.2/10");
 
   const formingSection = page.locator("#decision-terminal > section").filter({ has: page.getByRole("heading", { name: /Closest setups/ }) });
   await expect(formingSection.getByText("BETA/USDT:USDT")).toBeVisible();
   await expect(formingSection.getByText("Leverage UNAVAILABLE")).toBeVisible();
-  await expect(formingSection.getByText("Evidence 98%")).toBeVisible();
+  await expect(formingSection.getByText("Evidence coverage 98%")).toBeVisible();
 
   const lateSection = page.locator("#decision-terminal > section").filter({ has: page.getByRole("heading", { name: /Late · do not chase/ }) });
   await expect(lateSection.getByText("GAMMA/USDT:USDT")).toBeVisible();
@@ -216,7 +217,7 @@ test("desktop renders canonical decision, plan, tri-state leverage, evidence and
   await expect(page.getByRole("status", { name: /stale/ })).toBeVisible();
 
   await page.getByText("Research, validation & raw diagnostics").click();
-  await page.getByText("Raw candidate cards").click();
+  await page.getByText("Raw candidate cards · load on demand").click();
   const alphaRaw = page.locator("article.panel").filter({ hasText: "ALPHA/USDT" }).last();
   await expect(alphaRaw.getByText("98/100")).toBeVisible();
   await expect(alphaRaw.getByText("ARMED", { exact: true })).toBeVisible();
