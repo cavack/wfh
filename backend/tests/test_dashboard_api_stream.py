@@ -296,6 +296,17 @@ def test_polling_snapshot_normalizes_non_finite_numbers_to_unavailable(monkeypat
     )
 
 
+def test_sse_snapshot_build_failure_is_contained(monkeypatch) -> None:
+    def fail(**_):
+        raise RuntimeError("synthetic dashboard aggregation failure")
+
+    monkeypatch.setattr(main, "_publish_dashboard_snapshot", fail)
+
+    assert main._publish_dashboard_snapshot_safely(
+        full_snapshot=False, only_if_changed=True
+    ) is None
+
+
 def test_sse_snapshot_rebuild_is_coalesced_to_five_second_budget() -> None:
     assert main._DASHBOARD_SNAPSHOT_BROADCAST_INTERVAL_SECONDS == 5.0
     assert main._dashboard_snapshot_broadcast_due(10.0, 14.999) is False

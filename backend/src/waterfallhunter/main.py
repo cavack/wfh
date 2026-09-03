@@ -2354,6 +2354,22 @@ def _broadcast_dashboard_event(event: DashboardStreamEvent) -> None:
                 pass
 
 
+def _publish_dashboard_snapshot_safely(
+    *,
+    full_snapshot: bool,
+    only_if_changed: bool,
+) -> DashboardStreamEvent | None:
+    """Contain dashboard aggregation faults so one bad snapshot cannot kill SSE."""
+    try:
+        return _publish_dashboard_snapshot(
+            full_snapshot=full_snapshot,
+            only_if_changed=only_if_changed,
+        )
+    except Exception:
+        logger.exception("Dashboard snapshot aggregation failed; SSE loop will continue")
+        return None
+
+
 def _dashboard_snapshot_broadcast_due(
     last_snapshot_at: float,
     now_monotonic: float,
@@ -2373,11 +2389,13 @@ async def sse_broadcaster():
         if _sse_clients:
             now_monotonic = time.monotonic()
             if _dashboard_snapshot_broadcast_due(last_snapshot_at, now_monotonic):
-                event = _publish_dashboard_snapshot(
+                event = _publish_dashboard_snapshot_safely(
                     full_snapshot=False,
                     only_if_changed=True,
                 )
-                last_snapshot_at = now_monotonic
+                # Budget from completion, not start. A slow aggregation therefore
+                # still gets a full quiet interval before the next rebuild.
+                last_snapshot_at = time.monotonic()
                 if event is not None:
                     _broadcast_dashboard_event(event)
 
