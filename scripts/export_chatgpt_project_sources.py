@@ -4,7 +4,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
+import stat
 from pathlib import Path
 
 
@@ -12,15 +14,27 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_DIR = REPO_ROOT / "docs" / "chatgpt-project"
 EXPORT_ROOT = REPO_ROOT / ".work"
 DEFAULT_EXPORT_DIR = EXPORT_ROOT / "chatgpt-project-sources-v2"
+ROUTER_FILE = "00-WFH-CHATGPT-ROUTER-v2.md"
+CATALOG_FILE = "01-WFH-SKILL-CATALOG-v2.md"
+CAPABILITY_FILE = "02-WFH-CAPABILITY-MAP-v2.md"
+AUDIT_FILE = "03-WFH-SKILL-AUDIT-SUMMARY-v2.md"
+INSTRUCTIONS_FILE = "PROJECT-INSTRUCTIONS-v2.txt"
+INSTALL_FILE = "INSTALL-FA-v2.md"
+RESUME_FILE = "TWFH-RESUME.md"
+MANIFEST_FILE = "PROJECT-SOURCE-MANIFEST.json"
+SOURCE_LABEL = "source"
+
 OVERLAY_FILES = (
-    "00-WFH-CHATGPT-ROUTER-v2.md",
-    "01-WFH-SKILL-CATALOG-v2.md",
-    "02-WFH-CAPABILITY-MAP-v2.md",
-    "03-WFH-SKILL-AUDIT-SUMMARY-v2.md",
-    "PROJECT-INSTRUCTIONS-v2.txt",
-    "INSTALL-FA-v2.md",
+    ROUTER_FILE,
+    CATALOG_FILE,
+    CAPABILITY_FILE,
+    AUDIT_FILE,
+    INSTRUCTIONS_FILE,
+    INSTALL_FILE,
+    RESUME_FILE,
 )
-EXPECTED_EXPORT_FILES = {*OVERLAY_FILES, "PROJECT-SOURCE-MANIFEST.json"}
+
+EXPECTED_EXPORT_FILES = {*OVERLAY_FILES, MANIFEST_FILE}
 
 
 def _normalized_bytes(path: Path) -> bytes:
@@ -28,6 +42,19 @@ def _normalized_bytes(path: Path) -> bytes:
     if not text.endswith("\n"):
         text += "\n"
     return text.encode("utf-8")
+
+
+def _write_all(fd: int, payload: bytes) -> None:
+    try:
+        remaining = memoryview(payload)
+        while remaining:
+            written = os.write(fd, remaining)
+            if written <= 0:
+                raise OSError("failed to write export payload")
+            remaining = remaining[written:]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _skills() -> list[str]:
@@ -62,70 +89,99 @@ def _source_provenance() -> dict[str, object]:
     }
 
 
-def _assert_no_unexpected_export_content() -> None:
-    if not DEFAULT_EXPORT_DIR.exists():
-        return
-    entries = list(DEFAULT_EXPORT_DIR.rglob("*"))
-    symlinks = sorted(
-        str(path.relative_to(DEFAULT_EXPORT_DIR))
-        for path in entries
-        if path.is_symlink()
-    )
-    if symlinks:
-        raise ValueError(f"symlink entries are forbidden in export destination: {symlinks}")
-    unexpected = sorted(
-        str(path.relative_to(DEFAULT_EXPORT_DIR))
-        for path in entries
-        if str(path.relative_to(DEFAULT_EXPORT_DIR)) not in EXPECTED_EXPORT_FILES
-    )
-    if unexpected:
-        raise ValueError(f"unexpected stale export content: {unexpected}")
+def _secure_directory_flags() -> int:
+    try:
+        no_follow = os.O_NOFOLLOW
+        directory = os.O_DIRECTORY
+    except AttributeError as exc:
+        raise RuntimeError("secure export requires O_NOFOLLOW and O_DIRECTORY") from exc
+    return os.O_RDONLY | directory | no_follow
+
+
+def _open_directory_chain(path: Path, *, create: bool) -> int:
+    target = Path(path)
+    if not target.is_absolute():
+        raise ValueError("secure export directory must be absolute")
+    flags = _secure_directory_flags()
+    current_fd = os.open(Path(target.anchor), flags)
+    try:
+        for part in target.parts[1:]:
+            if create:
+                try:
+                    os.mkdir(part, mode=0o700, dir_fd=current_fd)
+                except FileExistsError:
+                    pass
+            next_fd = os.open(part, flags, dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+        return current_fd
+    except BaseException:
+        os.close(current_fd)
+        raise
+
+
+def _open_export_directory() -> int:
+    if DEFAULT_EXPORT_DIR.parent != EXPORT_ROOT:
+        raise ValueError("export destination must stay within allowed root EXPORT_ROOT as a direct child")
+    root_fd = _open_directory_chain(EXPORT_ROOT, create=True)
+    try:
+        try:
+            os.mkdir(DEFAULT_EXPORT_DIR.name, mode=0o700, dir_fd=root_fd)
+        except FileExistsError:
+            pass
+        return os.open(DEFAULT_EXPORT_DIR.name, _secure_directory_flags(), dir_fd=root_fd)
+    finally:
+        os.close(root_fd)
+
+
+def _assert_no_unexpected_export_content(export_dir_fd: int) -> None:
+    for name in os.listdir(export_dir_fd):
+        if name not in EXPECTED_EXPORT_FILES:
+            raise ValueError(f"unexpected stale export content: {name}")
+        metadata = os.stat(name, dir_fd=export_dir_fd, follow_symlinks=False)
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError(f"symlink export entry is forbidden: {name}")
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(f"non-regular export entry is forbidden: {name}")
 
 
 def export_project_sources() -> Path:
-    EXPORT_ROOT.mkdir(parents=True, exist_ok=True)
-    _confined_path(DEFAULT_EXPORT_DIR, EXPORT_ROOT, label="destination")
-    _assert_no_unexpected_export_content()
-    DEFAULT_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    router = _normalized_bytes(_confined_path(SOURCE_DIR / ROUTER_FILE, SOURCE_DIR, label=SOURCE_LABEL, strict=True))
+    catalog = _normalized_bytes(_confined_path(SOURCE_DIR / CATALOG_FILE, SOURCE_DIR, label=SOURCE_LABEL, strict=True))
+    capability = _normalized_bytes(_confined_path(SOURCE_DIR / CAPABILITY_FILE, SOURCE_DIR, label=SOURCE_LABEL, strict=True))
+    audit = _normalized_bytes(_confined_path(SOURCE_DIR / AUDIT_FILE, SOURCE_DIR, label=SOURCE_LABEL, strict=True))
+    instructions = _normalized_bytes(_confined_path(SOURCE_DIR / INSTRUCTIONS_FILE, SOURCE_DIR, label=SOURCE_LABEL, strict=True))
+    install = _normalized_bytes(_confined_path(SOURCE_DIR / INSTALL_FILE, SOURCE_DIR, label=SOURCE_LABEL, strict=True))
+    resume = _normalized_bytes(_confined_path(SOURCE_DIR / RESUME_FILE, SOURCE_DIR, label=SOURCE_LABEL, strict=True))
 
-    _confined_path(SOURCE_DIR / "00-WFH-CHATGPT-ROUTER-v2.md", SOURCE_DIR, label="source", strict=True)
-    _confined_path(DEFAULT_EXPORT_DIR / "00-WFH-CHATGPT-ROUTER-v2.md", DEFAULT_EXPORT_DIR, label="export target")
-    router = _normalized_bytes(SOURCE_DIR / "00-WFH-CHATGPT-ROUTER-v2.md")
-    (DEFAULT_EXPORT_DIR / "00-WFH-CHATGPT-ROUTER-v2.md").write_bytes(router)
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
+        raise RuntimeError("secure export requires O_NOFOLLOW and O_DIRECTORY")
+    file_flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | no_follow
+    export_dir_fd = _open_export_directory()
+    try:
+        _assert_no_unexpected_export_content(export_dir_fd)
+        _write_all(os.open(ROUTER_FILE, file_flags, 0o600, dir_fd=export_dir_fd), router)
+        _write_all(os.open(CATALOG_FILE, file_flags, 0o600, dir_fd=export_dir_fd), catalog)
+        _write_all(os.open(CAPABILITY_FILE, file_flags, 0o600, dir_fd=export_dir_fd), capability)
+        _write_all(os.open(AUDIT_FILE, file_flags, 0o600, dir_fd=export_dir_fd), audit)
+        _write_all(os.open(INSTRUCTIONS_FILE, file_flags, 0o600, dir_fd=export_dir_fd), instructions)
+        _write_all(os.open(INSTALL_FILE, file_flags, 0o600, dir_fd=export_dir_fd), install)
+        _write_all(os.open(RESUME_FILE, file_flags, 0o600, dir_fd=export_dir_fd), resume)
+        os.fsync(export_dir_fd)
+    finally:
+        os.close(export_dir_fd)
 
-    _confined_path(SOURCE_DIR / "01-WFH-SKILL-CATALOG-v2.md", SOURCE_DIR, label="source", strict=True)
-    _confined_path(DEFAULT_EXPORT_DIR / "01-WFH-SKILL-CATALOG-v2.md", DEFAULT_EXPORT_DIR, label="export target")
-    catalog = _normalized_bytes(SOURCE_DIR / "01-WFH-SKILL-CATALOG-v2.md")
-    (DEFAULT_EXPORT_DIR / "01-WFH-SKILL-CATALOG-v2.md").write_bytes(catalog)
-
-    _confined_path(SOURCE_DIR / "02-WFH-CAPABILITY-MAP-v2.md", SOURCE_DIR, label="source", strict=True)
-    _confined_path(DEFAULT_EXPORT_DIR / "02-WFH-CAPABILITY-MAP-v2.md", DEFAULT_EXPORT_DIR, label="export target")
-    capabilities = _normalized_bytes(SOURCE_DIR / "02-WFH-CAPABILITY-MAP-v2.md")
-    (DEFAULT_EXPORT_DIR / "02-WFH-CAPABILITY-MAP-v2.md").write_bytes(capabilities)
-
-    _confined_path(SOURCE_DIR / "03-WFH-SKILL-AUDIT-SUMMARY-v2.md", SOURCE_DIR, label="source", strict=True)
-    _confined_path(DEFAULT_EXPORT_DIR / "03-WFH-SKILL-AUDIT-SUMMARY-v2.md", DEFAULT_EXPORT_DIR, label="export target")
-    audit = _normalized_bytes(SOURCE_DIR / "03-WFH-SKILL-AUDIT-SUMMARY-v2.md")
-    (DEFAULT_EXPORT_DIR / "03-WFH-SKILL-AUDIT-SUMMARY-v2.md").write_bytes(audit)
-
-    _confined_path(SOURCE_DIR / "PROJECT-INSTRUCTIONS-v2.txt", SOURCE_DIR, label="source", strict=True)
-    _confined_path(DEFAULT_EXPORT_DIR / "PROJECT-INSTRUCTIONS-v2.txt", DEFAULT_EXPORT_DIR, label="export target")
-    instructions = _normalized_bytes(SOURCE_DIR / "PROJECT-INSTRUCTIONS-v2.txt")
-    (DEFAULT_EXPORT_DIR / "PROJECT-INSTRUCTIONS-v2.txt").write_bytes(instructions)
-
-    _confined_path(SOURCE_DIR / "INSTALL-FA-v2.md", SOURCE_DIR, label="source", strict=True)
-    _confined_path(DEFAULT_EXPORT_DIR / "INSTALL-FA-v2.md", DEFAULT_EXPORT_DIR, label="export target")
-    install = _normalized_bytes(SOURCE_DIR / "INSTALL-FA-v2.md")
-    (DEFAULT_EXPORT_DIR / "INSTALL-FA-v2.md").write_bytes(install)
-
-    hashes = {
-        "00-WFH-CHATGPT-ROUTER-v2.md": hashlib.sha256(router).hexdigest(),
-        "01-WFH-SKILL-CATALOG-v2.md": hashlib.sha256(catalog).hexdigest(),
-        "02-WFH-CAPABILITY-MAP-v2.md": hashlib.sha256(capabilities).hexdigest(),
-        "03-WFH-SKILL-AUDIT-SUMMARY-v2.md": hashlib.sha256(audit).hexdigest(),
-        "PROJECT-INSTRUCTIONS-v2.txt": hashlib.sha256(instructions).hexdigest(),
-        "INSTALL-FA-v2.md": hashlib.sha256(install).hexdigest(),
+    payloads = {
+        ROUTER_FILE: router,
+        CATALOG_FILE: catalog,
+        CAPABILITY_FILE: capability,
+        AUDIT_FILE: audit,
+        INSTRUCTIONS_FILE: instructions,
+        INSTALL_FILE: install,
+        RESUME_FILE: resume,
     }
+    hashes = {name: hashlib.sha256(payload).hexdigest() for name, payload in payloads.items()}
     manifest = {
         "contract_version": "wfh_chatgpt_project_sources_v2",
         "canonical_repository": "cavack/wfh",
@@ -137,14 +193,15 @@ def export_project_sources() -> Path:
         "sha256": hashes,
         **_source_provenance(),
     }
-    _confined_path(
-        DEFAULT_EXPORT_DIR / "PROJECT-SOURCE-MANIFEST.json",
-        DEFAULT_EXPORT_DIR,
-        label="manifest target",
-    )
-    manifest_path = DEFAULT_EXPORT_DIR / "PROJECT-SOURCE-MANIFEST.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return manifest_path
+    manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    export_dir_fd = _open_export_directory()
+    try:
+        _assert_no_unexpected_export_content(export_dir_fd)
+        _write_all(os.open(MANIFEST_FILE, file_flags, 0o600, dir_fd=export_dir_fd), manifest_bytes)
+        os.fsync(export_dir_fd)
+    finally:
+        os.close(export_dir_fd)
+    return DEFAULT_EXPORT_DIR / MANIFEST_FILE
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+
+import pytest
 from pathlib import Path
 
 from scripts import export_chatgpt_project_sources as exporter
@@ -15,6 +17,7 @@ EXPECTED_FILES = {
     "03-WFH-SKILL-AUDIT-SUMMARY-v2.md",
     "PROJECT-INSTRUCTIONS-v2.txt",
     "INSTALL-FA-v2.md",
+    "TWFH-RESUME.md",
     "PROJECT-SOURCE-MANIFEST.json",
 }
 
@@ -195,7 +198,7 @@ def test_v2_spec_names_the_exact_export_artifacts() -> None:
         assert name in spec
 
 
-def test_install_guide_names_all_seven_bundle_files() -> None:
+def test_install_guide_names_all_bundle_files() -> None:
     install = (exporter.SOURCE_DIR / "INSTALL-FA-v2.md").read_text(encoding="utf-8")
     for name in EXPECTED_FILES:
         assert name in install
@@ -217,3 +220,116 @@ def test_export_rejects_in_root_symlink_alias(monkeypatch, tmp_path: Path) -> No
     else:
         raise AssertionError("export must reject existing symlink aliases inside the destination")
     assert catalog.read_text(encoding="utf-8") == "sentinel\n"
+
+
+def test_install_guide_documents_cold_resume_phrase() -> None:
+    install = (exporter.SOURCE_DIR / "INSTALL-FA-v2.md").read_text(encoding="utf-8")
+    assert "ادامه کار گروهی" in install
+    assert "TWFH-RESUME.md" in install
+    assert "RESUME_READY" in install
+    assert "cold" in install.lower() or "چت جدید" in install
+
+
+def test_exporter_uses_exact_static_overlay_allowlist() -> None:
+    assert exporter.OVERLAY_FILES == (
+        exporter.ROUTER_FILE,
+        exporter.CATALOG_FILE,
+        exporter.CAPABILITY_FILE,
+        exporter.AUDIT_FILE,
+        exporter.INSTRUCTIONS_FILE,
+        exporter.INSTALL_FILE,
+        exporter.RESUME_FILE,
+    )
+    assert exporter.RESUME_FILE == "TWFH-RESUME.md"
+
+
+def test_exporter_does_not_route_file_destinations_through_generic_path_helper(
+    monkeypatch, tmp_path: Path
+) -> None:
+    export_root = tmp_path / "exports"
+    out = export_root / "sources"
+    monkeypatch.setattr(exporter, "EXPORT_ROOT", export_root)
+    monkeypatch.setattr(exporter, "DEFAULT_EXPORT_DIR", out)
+    monkeypatch.setattr(
+        exporter,
+        "_source_provenance",
+        lambda: {
+            "source_commit_sha": "b" * 40,
+            "source_ref": "test",
+            "source_worktree_dirty": False,
+        },
+    )
+    original = exporter._confined_path
+
+    def guarded(path: Path, allowed_root: Path, *, label: str, strict: bool = False) -> Path:
+        assert label != "export target"
+        return original(path, allowed_root, label=label, strict=strict)
+
+    monkeypatch.setattr(exporter, "_confined_path", guarded)
+    manifest = exporter.export_project_sources()
+
+    assert manifest == out / "PROJECT-SOURCE-MANIFEST.json"
+    assert {path.name for path in out.iterdir()} == exporter.EXPECTED_EXPORT_FILES
+
+
+def _mock_export_provenance(monkeypatch) -> None:
+    monkeypatch.setattr(
+        exporter,
+        "_source_provenance",
+        lambda: {
+            "source_commit_sha": "b" * 40,
+            "source_ref": "test",
+            "source_worktree_dirty": False,
+        },
+    )
+
+
+def test_exporter_fails_closed_without_o_nofollow(monkeypatch, tmp_path: Path) -> None:
+    export_root = tmp_path / "exports"
+    out = export_root / "sources"
+    monkeypatch.setattr(exporter, "EXPORT_ROOT", export_root)
+    monkeypatch.setattr(exporter, "DEFAULT_EXPORT_DIR", out)
+    _mock_export_provenance(monkeypatch)
+    monkeypatch.delattr(exporter.os, "O_NOFOLLOW", raising=False)
+
+    with pytest.raises(RuntimeError, match="O_NOFOLLOW"):
+        exporter.export_project_sources()
+
+
+def test_exporter_opens_export_directory_with_o_nofollow(monkeypatch, tmp_path: Path) -> None:
+    export_root = tmp_path / "exports"
+    out = export_root / "sources"
+    monkeypatch.setattr(exporter, "EXPORT_ROOT", export_root)
+    monkeypatch.setattr(exporter, "DEFAULT_EXPORT_DIR", out)
+    _mock_export_provenance(monkeypatch)
+    original_open = exporter.os.open
+    directory_flags: list[int] = []
+
+    def tracked_open(path, flags, mode=0o777, *, dir_fd=None):
+        if flags & exporter.os.O_DIRECTORY:
+            directory_flags.append(flags)
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(exporter.os, "open", tracked_open)
+    exporter.export_project_sources()
+
+    assert directory_flags
+    assert all(flags & exporter.os.O_NOFOLLOW for flags in directory_flags)
+
+
+def test_exporter_rejects_symlinked_export_root_component(monkeypatch, tmp_path: Path) -> None:
+    trusted_parent = tmp_path / "repo"
+    trusted_parent.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    export_root = trusted_parent / ".work"
+    export_root.symlink_to(outside, target_is_directory=True)
+    out = export_root / "chatgpt-project-sources-v2"
+    monkeypatch.setattr(exporter, "EXPORT_ROOT", export_root)
+    monkeypatch.setattr(exporter, "DEFAULT_EXPORT_DIR", out)
+    _mock_export_provenance(monkeypatch)
+
+    with pytest.raises((OSError, RuntimeError, ValueError)):
+        exporter.export_project_sources()
+
+    assert not (outside / "chatgpt-project-sources-v2").exists()

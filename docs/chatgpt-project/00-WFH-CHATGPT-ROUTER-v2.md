@@ -2,6 +2,12 @@
 
 GitHub `cavack/wfh` is the canonical source. This Drive/Project Sources bundle is routing and installation metadata only; it intentionally does not duplicate canonical skill bodies.
 
+## Canonical TWFH resume intent
+
+When the user says exactly `ادامه کار گروهی`, resolve the `TWFH` project and repository `cavack/wfh` through continuity protocol `wfh_mission_continuity_v1` and Council route `mission_continuity` **before** ordinary WaterfallHunter task routing. Read `TWFH-RESUME.md`, locate the durable active mission and latest valid checkpoint, reconcile drift/interrupted steps, and continue only from its exact `next_action`. Never restart a broad audit or reconstruct missing state from transcript guesses.
+
+Canonical mapping: `phrase=ادامه کار گروهی | project=TWFH | repository=cavack/wfh | protocol=wfh_mission_continuity_v1 | route=mission_continuity`
+
 ## Mandatory workflow
 
 1. Read `PROJECT-SOURCE-MANIFEST.json`. For a certified bundle require `source_worktree_dirty=false`, freeze `source_commit_sha` as the canonical target for the entire audit, and verify that SHA exists in GitHub. If runtime provenance is absent, resolve one target SHA once and record it before continuing.
@@ -9,7 +15,7 @@ GitHub `cavack/wfh` is the canonical source. This Drive/Project Sources bundle i
 3. Select the smallest relevant Council route and canonical skill set.
 4. Fetch every selected `skills/waterfallhunter/<skill>/SKILL.md` completely from that same frozen `source_commit_sha`; do not re-resolve a moving branch between skill fetches.
 5. Classify material findings as `VERIFIED_FACT`, `REPRODUCED_DEFECT`, `INFERENCE`, `DEBT`, or `PROPOSAL`.
-6. Treat tool/plugin/MCP presence and authorization as separate facts. Missing optional capability is `UNAVAILABLE`, never guessed evidence.
+6. Treat tool/plugin/MCP presence and authorization as separate facts. Missing optional capability is `UNAVAILABLE`, never guessed evidence. Resume observations must meet each checkpointed minimum authorization; capability presence alone is insufficient. Evaluate structured preconditions only from validated state or independently observed evidence; unsupported or unverifiable structured preconditions fail closed as `RESUME_BLOCKED`.
 7. Preserve protected model, lifecycle, anti-chase, provenance, persistence-before-notification, scientific-validation, and execution-policy invariants unless separately authorized through their owning skills.
 8. Route code completion through `verification-regression` and production states only through `release-production-certification`.
 
@@ -49,6 +55,7 @@ GitHub `cavack/wfh` is the canonical source. This Drive/Project Sources bundle i
 - `dependency_upgrade`: `chief_orchestrator → security_lead → regression_lead → release_certifier`
 - `release_recovery`: `chief_orchestrator → incident_telemetry_lead → runtime_lead → regression_lead → release_certifier`
 - `external_research`: `chief_orchestrator → research_librarian → market_evidence_forensics → quant_validation_lead → regression_lead`
+- `mission_continuity`: `chief_orchestrator → capability_scout → skill_system_curator → regression_lead`
 
 ## Safety
 
