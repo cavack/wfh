@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from waterfallhunter.core.ws_streamer import WebSocketManager
 
 
@@ -107,3 +109,230 @@ def test_unsubscribe_removes_hot_evidence_history() -> None:
     ) == []
     assert manager.get_realtime_trades("binance", symbol, now=10.1) == []
     assert f"binance:{symbol}" not in manager.live_orderbook_history
+
+
+class _FakeCcxtClient:
+    def __init__(self, subscriptions: int = 1) -> None:
+        self.subscriptions = {f"sub-{index}": object() for index in range(subscriptions)}
+        self.close_calls = 0
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+class _ClosableExchange:
+    def __init__(self, clients: int = 1, subscriptions_each: int = 1) -> None:
+        self.clients = {
+            f"ws-{index}": _FakeCcxtClient(subscriptions_each)
+            for index in range(clients)
+        }
+        self.close_calls = 0
+        self.unwatch_calls: list[tuple[str, str]] = []
+
+    def _retire_one_subscription(self, method: str, symbol: str) -> None:
+        self.unwatch_calls.append((method, symbol))
+        for client in self.clients.values():
+            if client.subscriptions:
+                client.subscriptions.pop(next(iter(client.subscriptions)))
+                return
+
+    async def un_watch_order_book(self, symbol: str) -> None:
+        self._retire_one_subscription("orderbook", symbol)
+
+    async def un_watch_ticker(self, symbol: str) -> None:
+        self._retire_one_subscription("ticker", symbol)
+
+    async def un_watch_trades(self, symbol: str) -> None:
+        self._retire_one_subscription("trades", symbol)
+
+    async def close(self) -> None:
+        self.close_calls += 1
+        self.clients.clear()
+
+
+def test_direct_exchange_is_shared_per_venue(monkeypatch) -> None:
+    manager = WebSocketManager()
+    created: list[_ClosableExchange] = []
+
+    def new_exchange(_ex_name: str) -> _ClosableExchange:
+        exchange = _ClosableExchange()
+        created.append(exchange)
+        return exchange
+
+    monkeypatch.setattr(manager, "_new_exchange", new_exchange)
+
+    async def scenario():
+        first = await manager._get_exchange("binance")
+        same = await manager._get_exchange("binance")
+        return first, same
+
+    first, same = asyncio.run(scenario())
+
+    assert first is same
+    assert len(created) == 1
+    assert manager.exchanges == {"binance": first}
+
+
+def test_unsubscribe_unwatches_symbol_and_closes_idle_ccxt_clients() -> None:
+    manager = WebSocketManager()
+    symbol = "AAA/USDT:USDT"
+    exchange = _ClosableExchange(clients=3, subscriptions_each=1)
+    clients = list(exchange.clients.values())
+
+    async def scenario() -> None:
+        manager.exchanges["bybit"] = exchange
+        manager.unsubscribe("bybit", symbol)
+        task = manager._direct_symbol_retire_tasks[f"bybit:{symbol}"]
+        await task
+        await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+
+    assert exchange.unwatch_calls == [
+        ("orderbook", symbol),
+        ("ticker", symbol),
+        ("trades", symbol),
+    ]
+    assert exchange.clients == {}
+    assert [client.close_calls for client in clients] == [1, 1, 1]
+    assert exchange.close_calls == 0
+    assert manager._direct_symbol_retire_tasks == {}
+
+
+def test_retain_liquidations_retires_direct_clients_without_restarting_liquidation(monkeypatch) -> None:
+    manager = WebSocketManager()
+    symbol = "AAA/USDT:USDT"
+    stream_id = f"bybit:{symbol}"
+    liquidation_id = f"{stream_id}:liquidations"
+    direct_exchange = _ClosableExchange(clients=3, subscriptions_each=1)
+    liquidation_exchange = _ClosableExchange(clients=1)
+    restarted: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        manager,
+        "subscribe_liquidations",
+        lambda ex_name, mapped_symbol: restarted.append((ex_name, mapped_symbol)),
+    )
+
+    async def idle() -> None:
+        await asyncio.Future()
+
+    async def scenario() -> None:
+        manager.exchanges["bybit"] = direct_exchange
+        manager.liquidation_exchanges[stream_id] = liquidation_exchange
+        liquidation_task = asyncio.create_task(idle())
+        manager.active_tasks[liquidation_id] = liquidation_task
+        manager.retain_liquidations_only("bybit", symbol)
+        await manager._direct_symbol_retire_tasks[stream_id]
+        assert manager.active_tasks[liquidation_id] is liquidation_task
+        liquidation_task.cancel()
+        await asyncio.gather(liquidation_task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+    assert direct_exchange.clients == {}
+    assert direct_exchange.close_calls == 0
+    assert liquidation_exchange.close_calls == 0
+    assert manager.liquidation_exchanges[stream_id] is liquidation_exchange
+    assert restarted == [("bybit", symbol)]
+
+
+def test_unsubscribe_closes_non_binance_liquidation_exchange() -> None:
+    manager = WebSocketManager()
+    symbol = "AAA/USDT:USDT"
+    stream_id = f"bybit:{symbol}"
+    liquidation_exchange = _ClosableExchange(clients=2)
+
+    async def scenario() -> None:
+        manager.liquidation_exchanges[stream_id] = liquidation_exchange
+        manager.unsubscribe("bybit", symbol)
+        tasks = list(manager._liquidation_exchange_retire_tasks.values())
+        if tasks:
+            await asyncio.gather(*tasks)
+        await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+
+    assert liquidation_exchange.close_calls == 1
+    assert stream_id not in manager.liquidation_exchanges
+
+
+def test_last_binance_liquidation_subscriber_closes_shared_exchange() -> None:
+    manager = WebSocketManager()
+    symbol = "AAA/USDT:USDT"
+    exchange = _ClosableExchange(clients=1)
+
+    async def idle() -> None:
+        await asyncio.Future()
+
+    async def scenario() -> None:
+        manager.liquidation_subscribers["binance"] = {symbol}
+        manager.shared_liquidation_exchanges["binance"] = exchange
+        task = asyncio.create_task(idle())
+        manager.active_tasks["binance:liquidations"] = task
+        manager.unsubscribe("binance", symbol)
+        retire = manager._shared_liquidation_retire_tasks["binance"]
+        await retire
+        await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+
+    assert exchange.close_calls == 1
+    assert "binance" not in manager.shared_liquidation_exchanges
+    assert "binance" not in manager.liquidation_subscribers
+
+
+def test_runtime_diagnostics_exposes_ccxt_client_ownership() -> None:
+    manager = WebSocketManager()
+    manager.exchanges["bybit"] = _ClosableExchange(clients=3, subscriptions_each=1)
+    manager.liquidation_exchanges["bybit:AAA/USDT:USDT"] = _ClosableExchange(
+        clients=1, subscriptions_each=1
+    )
+    manager.shared_liquidation_exchanges["binance"] = _ClosableExchange(
+        clients=1, subscriptions_each=1
+    )
+    manager.shared_evidence_exchanges["okx"] = _ClosableExchange(
+        clients=2, subscriptions_each=2
+    )
+
+    snapshot = manager.runtime_diagnostics()
+
+    assert snapshot["direct_exchange_instances"] == 1
+    assert snapshot["liquidation_exchange_instances"] == 2
+    assert snapshot["ccxt_clients"] == 7
+    assert snapshot["ccxt_subscriptions"] == 9
+    assert snapshot["direct_exchange_retire_tasks"] == 0
+    assert snapshot["liquidation_exchange_retire_tasks"] == 0
+
+
+class _SlowUnwatchExchange(_ClosableExchange):
+    def __init__(self) -> None:
+        super().__init__(clients=3, subscriptions_each=1)
+        self.release = asyncio.Event()
+
+    async def un_watch_order_book(self, symbol: str) -> None:
+        await self.release.wait()
+        await super().un_watch_order_book(symbol)
+
+
+def test_resubscribe_waits_for_prior_direct_symbol_retirement() -> None:
+    manager = WebSocketManager()
+    symbol = "CHURN/USDT:USDT"
+    stream_id = f"bybit:{symbol}"
+    exchange = _SlowUnwatchExchange()
+
+    async def scenario() -> None:
+        manager.exchanges["bybit"] = exchange
+        manager._schedule_direct_symbol_retire("bybit", symbol)
+        waiter = asyncio.create_task(
+            manager._await_direct_symbol_retirement("bybit", symbol)
+        )
+        await asyncio.sleep(0)
+        assert waiter.done() is False
+        exchange.release.set()
+        await waiter
+        await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+
+    assert stream_id not in manager._direct_symbol_retire_tasks
+    assert exchange.clients == {}

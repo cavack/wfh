@@ -49,6 +49,15 @@ class WebSocketManager:
     def __init__(self):
         self.exchanges_names = ['binance', 'bybit', 'kucoin', 'okx', 'mexc', 'bingx']
         self.exchanges: Dict[str, Any] = {}
+        # Direct orderbook/ticker/trades share one exchange instance per venue,
+        # but every symbol retirement explicitly unwatches its CCXT subscriptions
+        # and closes zero-subscription WebSocket clients. Liquidation ownership is
+        # isolated because CCXT Pro does not expose matching unwatch methods.
+        self.liquidation_exchanges: Dict[str, Any] = {}
+        self.shared_liquidation_exchanges: Dict[str, Any] = {}
+        self._direct_symbol_retire_tasks: Dict[str, asyncio.Task] = {}
+        self._liquidation_exchange_retire_tasks: Dict[str, asyncio.Task] = {}
+        self._shared_liquidation_retire_tasks: Dict[str, asyncio.Task] = {}
         # Keep shared FUEL-RICH subscriptions on dedicated CCXT Pro clients so
         # their dynamic unwatch operations cannot cancel PRE-TRIGGER/ARMED
         # direct subscriptions that use the same venue/message hashes.
@@ -176,6 +185,19 @@ class WebSocketManager:
             self.exchanges[ex_name] = self._new_exchange(ex_name)
         return self.exchanges[ex_name]
 
+    async def _get_liquidation_exchange(self, ex_name: str, symbol: str) -> Any:
+        stream_id = f"{ex_name}:{symbol}"
+        async with self._lock:
+            if stream_id not in self.liquidation_exchanges:
+                self.liquidation_exchanges[stream_id] = self._new_exchange(ex_name)
+            return self.liquidation_exchanges[stream_id]
+
+    async def _get_shared_liquidation_exchange(self, ex_name: str) -> Any:
+        async with self._lock:
+            if ex_name not in self.shared_liquidation_exchanges:
+                self.shared_liquidation_exchanges[ex_name] = self._new_exchange(ex_name)
+            return self.shared_liquidation_exchanges[ex_name]
+
     async def _get_shared_evidence_exchange(self, ex_name: str) -> Any:
         # Three shared task kinds start together. Serialize first construction
         # so exactly one dedicated exchange client exists per venue.
@@ -194,7 +216,12 @@ class WebSocketManager:
                 self.circuit_breakers[stream_id] = CircuitBreaker()
             self.message_counters[stream_id] = 0
 
+        await self._await_direct_symbol_retirement(ex_name, symbol)
+        if stream_id not in self.active_tasks:
+            return
         exchange = await self._get_exchange(ex_name)
+        if stream_id not in self.active_tasks:
+            return
         cb = self.circuit_breakers[stream_id]
         retry_delay = 1.0
 
@@ -239,7 +266,12 @@ class WebSocketManager:
 
     async def _watch_stream(self, ex_name: str, symbol: str, kind: str):
         stream_id = f"{ex_name}:{symbol}:{kind}"
+        await self._await_direct_symbol_retirement(ex_name, symbol)
+        if stream_id not in self.active_tasks:
+            return
         exchange = await self._get_exchange(ex_name)
+        if stream_id not in self.active_tasks:
+            return
         breaker = self.circuit_breakers.setdefault(stream_id, CircuitBreaker())
         delay = 1.0
         cache = self.live_tickers if kind == "ticker" else self.live_trades
@@ -374,10 +406,12 @@ class WebSocketManager:
         """Consume one exchange-wide liquidation stream and route subscribed symbols."""
         task_id = f"{ex_name}:liquidations"
         try:
-            exchange = await self._get_exchange(ex_name)
+            await self._await_shared_liquidation_retirement(ex_name)
+            exchange = await self._get_shared_liquidation_exchange(ex_name)
             watch = self._shared_liquidation_watcher(exchange)
             if watch is None:
                 self.unsupported_liquidation_exchanges.add(ex_name)
+                self.liquidation_subscribers.pop(ex_name, None)
                 logger.info("Shared liquidation stream unavailable for %s", ex_name)
                 return
             breaker = self.circuit_breakers.setdefault(task_id, CircuitBreaker())
@@ -406,11 +440,13 @@ class WebSocketManager:
             current_task = asyncio.current_task()
             if self.active_tasks.get(task_id) is current_task:
                 self.active_tasks.pop(task_id, None)
+            if task_id not in self.active_tasks:
+                self._schedule_shared_liquidation_retire(ex_name)
 
     async def _watch_liquidations_stream(self, ex_name: str, symbol: str) -> None:
         task_id = f"{ex_name}:{symbol}:liquidations"
         try:
-            exchange = await self._get_exchange(ex_name)
+            exchange = await self._get_liquidation_exchange(ex_name, symbol)
             watch = getattr(exchange, "watch_liquidations", None)
             supports = getattr(exchange, "has", {}).get("watchLiquidations")
             if not callable(watch) or supports not in {True, "emulated"}:
@@ -441,6 +477,8 @@ class WebSocketManager:
             current_task = asyncio.current_task()
             if self.active_tasks.get(task_id) is current_task:
                 self.active_tasks.pop(task_id, None)
+            if task_id not in self.active_tasks:
+                self._schedule_liquidation_exchange_retire(ex_name, symbol)
 
     def get_realtime_liquidation_flow(
         self, ex_name: str, symbol: str, *, now: float | None = None
@@ -908,24 +946,151 @@ class WebSocketManager:
         else:
             self.unsupported_liquidation_exchanges.discard(ex_name)
 
+    @staticmethod
+    async def _close_idle_ccxt_clients(exchange: Any) -> None:
+        clients = getattr(exchange, "clients", None)
+        if not isinstance(clients, dict):
+            return
+        for url, client in list(clients.items()):
+            subscriptions = getattr(client, "subscriptions", None)
+            if not hasattr(subscriptions, "__len__") or len(subscriptions) != 0:
+                continue
+            close = getattr(client, "close", None)
+            try:
+                if callable(close):
+                    result = close()
+                    if asyncio.iscoroutine(result):
+                        await asyncio.wait_for(result, timeout=5.0)
+            except Exception as exc:
+                logger.debug("Idle CCXT client close failed for %s: %s", url, type(exc).__name__)
+                continue
+            if clients.get(url) is client:
+                clients.pop(url, None)
+
+    async def _retire_direct_symbol(
+        self, ex_name: str, symbol: str, cancelled_tasks: tuple[asyncio.Task, ...]
+    ) -> None:
+        if cancelled_tasks:
+            await asyncio.gather(*cancelled_tasks, return_exceptions=True)
+        exchange = self.exchanges.get(ex_name)
+        if exchange is None:
+            return
+        methods = (
+            "un_watch_order_book",
+            "un_watch_ticker",
+            "un_watch_trades",
+        )
+        for method_name in methods:
+            unwatch = getattr(exchange, method_name, None)
+            if not callable(unwatch):
+                continue
+            try:
+                await asyncio.wait_for(unwatch(symbol), timeout=10.0)
+            except Exception as exc:
+                logger.debug(
+                    "Direct WebSocket unwatch failed for %s:%s via %s: %s",
+                    ex_name, symbol, method_name, type(exc).__name__,
+                )
+        self._purge_exchange_symbol_state(exchange, (symbol,))
+        await self._close_idle_ccxt_clients(exchange)
+
+    def _schedule_direct_symbol_retire(
+        self, ex_name: str, symbol: str, cancelled_tasks: tuple[asyncio.Task, ...] = ()
+    ) -> None:
+        if self.exchanges.get(ex_name) is None and not cancelled_tasks:
+            return
+        stream_id = f"{ex_name}:{symbol}"
+        existing = self._direct_symbol_retire_tasks.get(stream_id)
+        if existing is not None and not existing.done():
+            return
+        task = asyncio.create_task(
+            self._retire_direct_symbol(ex_name, symbol, cancelled_tasks)
+        )
+        self._direct_symbol_retire_tasks[stream_id] = task
+
+        def _done(completed: asyncio.Task) -> None:
+            if self._direct_symbol_retire_tasks.get(stream_id) is completed:
+                self._direct_symbol_retire_tasks.pop(stream_id, None)
+
+        task.add_done_callback(_done)
+
+    async def _await_direct_symbol_retirement(self, ex_name: str, symbol: str) -> None:
+        task = self._direct_symbol_retire_tasks.get(f"{ex_name}:{symbol}")
+        if task is not None and not task.done():
+            await asyncio.shield(task)
+
+    async def _close_exchange_instance(
+        self, ex_name: str, stream_id: str, exchange: Any, cancelled_tasks: tuple[asyncio.Task, ...]
+    ) -> None:
+        if cancelled_tasks:
+            await asyncio.gather(*cancelled_tasks, return_exceptions=True)
+        try:
+            await asyncio.wait_for(exchange.close(), timeout=10.0)
+        except Exception as exc:
+            logger.warning(
+                "WebSocket exchange close failed for %s (%s): %s",
+                stream_id, ex_name, type(exc).__name__,
+            )
+
+    def _schedule_liquidation_exchange_retire(
+        self, ex_name: str, symbol: str, cancelled_tasks: tuple[asyncio.Task, ...] = ()
+    ) -> None:
+        stream_id = f"{ex_name}:{symbol}"
+        exchange = self.liquidation_exchanges.pop(stream_id, None)
+        if exchange is None:
+            return
+        task = asyncio.create_task(
+            self._close_exchange_instance(ex_name, stream_id, exchange, cancelled_tasks)
+        )
+        retire_id = f"{stream_id}:{id(exchange)}"
+        self._liquidation_exchange_retire_tasks[retire_id] = task
+
+        def _done(completed: asyncio.Task) -> None:
+            if self._liquidation_exchange_retire_tasks.get(retire_id) is completed:
+                self._liquidation_exchange_retire_tasks.pop(retire_id, None)
+
+        task.add_done_callback(_done)
+
+    def _schedule_shared_liquidation_retire(
+        self, ex_name: str, cancelled_tasks: tuple[asyncio.Task, ...] = ()
+    ) -> None:
+        exchange = self.shared_liquidation_exchanges.pop(ex_name, None)
+        if exchange is None:
+            return
+        existing = self._shared_liquidation_retire_tasks.get(ex_name)
+        if existing is not None and not existing.done():
+            return
+        task = asyncio.create_task(
+            self._close_exchange_instance(ex_name, f"{ex_name}:liquidations", exchange, cancelled_tasks)
+        )
+        self._shared_liquidation_retire_tasks[ex_name] = task
+
+        def _done(completed: asyncio.Task) -> None:
+            if self._shared_liquidation_retire_tasks.get(ex_name) is completed:
+                self._shared_liquidation_retire_tasks.pop(ex_name, None)
+
+        task.add_done_callback(_done)
+
+    async def _await_shared_liquidation_retirement(self, ex_name: str) -> None:
+        task = self._shared_liquidation_retire_tasks.get(ex_name)
+        if task is not None and not task.done():
+            await asyncio.shield(task)
+
     def retain_liquidations_only(self, ex_name: str, symbol: str):
-        """Keep the liquidation consumer while retiring heavier streams."""
+        """Keep liquidation ownership while retiring heavier direct evidence clients."""
         stream_id = f"{ex_name}:{symbol}"
         liquidation_id = f"{stream_id}:liquidations"
-        for task_id in [
-            key
-            for key in list(self.active_tasks)
-            if (key == stream_id or key.startswith(f"{stream_id}:"))
-            and key != liquidation_id
-        ]:
+        cancelled_direct: list[asyncio.Task] = []
+        for task_id in (stream_id, f"{stream_id}:ticker", f"{stream_id}:trades"):
             task = self.active_tasks.pop(task_id, None)
             if task is not None:
                 task.cancel()
+                cancelled_direct.append(task)
         self.live_orderbooks.pop(stream_id, None)
         self.live_orderbook_history.pop(stream_id, None)
         self.live_tickers.pop(stream_id, None)
         self.live_trades.pop(stream_id, None)
-        self._purge_exchange_symbol_state(self.exchanges.get(ex_name), (symbol,))
+        self._schedule_direct_symbol_retire(ex_name, symbol, tuple(cancelled_direct))
         for key in [
             key
             for key in list(self.circuit_breakers)
@@ -972,22 +1137,38 @@ class WebSocketManager:
             return
         self.liquidation_subscribers.pop(ex_name, None)
         shared_task = self.active_tasks.pop(f"{ex_name}:liquidations", None)
+        cancelled: tuple[asyncio.Task, ...] = ()
         if shared_task is not None:
             shared_task.cancel()
+            cancelled = (shared_task,)
+        self._schedule_shared_liquidation_retire(ex_name, cancelled)
 
     def unsubscribe(self, ex_name: str, symbol: str):
         stream_id = f"{ex_name}:{symbol}"
+        liquidation_id = f"{stream_id}:liquidations"
         self._detach_shared_liquidation_subscriber(ex_name, symbol)
-        for task_id in [key for key in self.active_tasks if key == stream_id or key.startswith(f"{stream_id}:")]:
-            self.active_tasks.pop(task_id).cancel()
+        cancelled_direct: list[asyncio.Task] = []
+        for task_id in (stream_id, f"{stream_id}:ticker", f"{stream_id}:trades"):
+            task = self.active_tasks.pop(task_id, None)
+            if task is not None:
+                task.cancel()
+                cancelled_direct.append(task)
+        liquidation_task = None
+        if ex_name != "binance":
+            liquidation_task = self.active_tasks.pop(liquidation_id, None)
+            if liquidation_task is not None:
+                liquidation_task.cancel()
         self.live_orderbooks.pop(stream_id, None)
         self.live_orderbook_history.pop(stream_id, None)
         self.live_tickers.pop(stream_id, None)
         self.live_trades.pop(stream_id, None)
         self.live_liquidations.pop(stream_id, None)
-        self._purge_exchange_symbol_state(self.exchanges.get(ex_name), (symbol,))
-        # Drop per-stream bookkeeping so symbol churn cannot grow these maps
-        # without bound (previously circuit_breakers/message_counters leaked).
+        self._schedule_direct_symbol_retire(ex_name, symbol, tuple(cancelled_direct))
+        if ex_name != "binance":
+            cancelled_liquidation = (liquidation_task,) if liquidation_task is not None else ()
+            self._schedule_liquidation_exchange_retire(
+                ex_name, symbol, cancelled_liquidation
+            )
         for key in [key for key in list(self.circuit_breakers) if key == stream_id or key.startswith(f"{stream_id}:")]:
             self.circuit_breakers.pop(key, None)
         for key in [key for key in list(self.message_counters) if key == stream_id or key.startswith(f"{stream_id}:")]:
@@ -1064,7 +1245,7 @@ class WebSocketManager:
         ][-self.trade_history_limit:]
 
     def runtime_diagnostics(self) -> Dict[str, int]:
-        """Return bounded task/subscriber counts for operational fan-out telemetry."""
+        """Return bounded task/client/subscriber counts for fan-out telemetry."""
         task_ids = tuple(self.active_tasks)
         liquidation_task_ids = tuple(
             task_id for task_id in task_ids if task_id.endswith(":liquidations")
@@ -1072,6 +1253,28 @@ class WebSocketManager:
         shared_evidence_task_ids = tuple(
             task_id for task_id in task_ids if task_id.startswith("shared-evidence:")
         )
+        exchanges = (
+            *self.exchanges.values(),
+            *self.liquidation_exchanges.values(),
+            *self.shared_liquidation_exchanges.values(),
+            *self.shared_evidence_exchanges.values(),
+        )
+        ccxt_clients = 0
+        ccxt_subscriptions = 0
+        seen_exchanges: set[int] = set()
+        for exchange in exchanges:
+            identity = id(exchange)
+            if identity in seen_exchanges:
+                continue
+            seen_exchanges.add(identity)
+            clients = getattr(exchange, "clients", {})
+            if not isinstance(clients, dict):
+                continue
+            ccxt_clients += len(clients)
+            for client in clients.values():
+                subscriptions = getattr(client, "subscriptions", {})
+                if hasattr(subscriptions, "__len__"):
+                    ccxt_subscriptions += len(subscriptions)
         return {
             "active_tasks": len(task_ids),
             "liquidation_tasks": len(liquidation_task_ids),
@@ -1085,6 +1288,20 @@ class WebSocketManager:
             "shared_evidence_subscribers": sum(
                 len(symbols) for symbols in self.shared_evidence_subscribers.values()
             ),
+            "direct_exchange_instances": len(self.exchanges),
+            "liquidation_exchange_instances": (
+                len(self.liquidation_exchanges) + len(self.shared_liquidation_exchanges)
+            ),
+            "direct_exchange_retire_tasks": sum(
+                1 for task in self._direct_symbol_retire_tasks.values() if not task.done()
+            ),
+            "liquidation_exchange_retire_tasks": sum(
+                1 for task in self._liquidation_exchange_retire_tasks.values() if not task.done()
+            ) + sum(
+                1 for task in self._shared_liquidation_retire_tasks.values() if not task.done()
+            ),
+            "ccxt_clients": ccxt_clients,
+            "ccxt_subscriptions": ccxt_subscriptions,
         }
 
     @staticmethod
@@ -1157,6 +1374,16 @@ class WebSocketManager:
         )
 
     async def close_all(self):
+        direct_retire_tasks = [
+            *self._direct_symbol_retire_tasks.values(),
+            *self._liquidation_exchange_retire_tasks.values(),
+            *self._shared_liquidation_retire_tasks.values(),
+        ]
+        if direct_retire_tasks:
+            await asyncio.gather(*direct_retire_tasks, return_exceptions=True)
+        self._direct_symbol_retire_tasks.clear()
+        self._liquidation_exchange_retire_tasks.clear()
+        self._shared_liquidation_retire_tasks.clear()
         recycle_tasks = list(self._shared_evidence_recycle_tasks.values())
         for task in recycle_tasks:
             task.cancel()
@@ -1172,9 +1399,16 @@ class WebSocketManager:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-        for ex in (*self.exchanges.values(), *self.shared_evidence_exchanges.values()):
+        for ex in (
+            *self.exchanges.values(),
+            *self.liquidation_exchanges.values(),
+            *self.shared_liquidation_exchanges.values(),
+            *self.shared_evidence_exchanges.values(),
+        ):
             await ex.close()
         self.exchanges.clear()
+        self.liquidation_exchanges.clear()
+        self.shared_liquidation_exchanges.clear()
         self.shared_evidence_exchanges.clear()
         self.shared_evidence_membership_generation.clear()
         self._shared_evidence_recycle_locks.clear()

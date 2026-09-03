@@ -559,6 +559,42 @@ if "websocket_shared_evidence_subscribers_metric" not in globals():
         "Symbols routed through shared FUEL-RICH market-evidence consumers.",
     )
 
+if "websocket_direct_exchange_instances_metric" not in globals():
+    websocket_direct_exchange_instances_metric = Gauge(
+        "waterfall_websocket_direct_exchange_instances",
+        "Live symbol-owned direct CCXT Pro exchange instances.",
+    )
+
+if "websocket_liquidation_exchange_instances_metric" not in globals():
+    websocket_liquidation_exchange_instances_metric = Gauge(
+        "waterfall_websocket_liquidation_exchange_instances",
+        "Live symbol-owned liquidation CCXT Pro exchange instances.",
+    )
+
+if "websocket_direct_exchange_retire_tasks_metric" not in globals():
+    websocket_direct_exchange_retire_tasks_metric = Gauge(
+        "waterfall_websocket_direct_exchange_retire_tasks",
+        "Direct CCXT Pro exchange instances currently being retired.",
+    )
+
+if "websocket_liquidation_exchange_retire_tasks_metric" not in globals():
+    websocket_liquidation_exchange_retire_tasks_metric = Gauge(
+        "waterfall_websocket_liquidation_exchange_retire_tasks",
+        "Liquidation CCXT Pro exchange instances currently being retired.",
+    )
+
+if "websocket_ccxt_clients_metric" not in globals():
+    websocket_ccxt_clients_metric = Gauge(
+        "waterfall_websocket_ccxt_clients",
+        "CCXT Pro WebSocket client objects owned by current exchange instances.",
+    )
+
+if "websocket_ccxt_subscriptions_metric" not in globals():
+    websocket_ccxt_subscriptions_metric = Gauge(
+        "waterfall_websocket_ccxt_subscriptions",
+        "CCXT Pro WebSocket subscriptions owned by current exchange instances.",
+    )
+
 if "hunter_evaluation_duration_metric" not in globals():
     hunter_evaluation_duration_metric = Histogram(
         "waterfall_hunter_evaluation_duration_seconds",
@@ -1512,6 +1548,20 @@ def _update_websocket_metrics() -> None:
     websocket_shared_evidence_subscribers_metric.set(
         float(snapshot["shared_evidence_subscribers"])
     )
+    websocket_direct_exchange_instances_metric.set(
+        float(snapshot["direct_exchange_instances"])
+    )
+    websocket_liquidation_exchange_instances_metric.set(
+        float(snapshot["liquidation_exchange_instances"])
+    )
+    websocket_direct_exchange_retire_tasks_metric.set(
+        float(snapshot["direct_exchange_retire_tasks"])
+    )
+    websocket_liquidation_exchange_retire_tasks_metric.set(
+        float(snapshot["liquidation_exchange_retire_tasks"])
+    )
+    websocket_ccxt_clients_metric.set(float(snapshot["ccxt_clients"]))
+    websocket_ccxt_subscriptions_metric.set(float(snapshot["ccxt_subscriptions"]))
 
 
 def _update_signal_settlement_worker_metrics() -> None:
