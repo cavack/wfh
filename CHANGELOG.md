@@ -4,6 +4,13 @@ WaterfallHunter uses release-oriented entries. Git history remains the forensic 
 
 ## Unreleased
 
+### Repository and operations
+- Added repository governance, support, conduct, and structured issue-reporting contracts.
+- Documented the separated GitHub Actions → Production SSH trust path and Production → GitHub authenticated HTTPS plus read-only SSH fallback.
+- Clarified that runtime recovery is intentionally layered across a systemd oneshot boot assertion, Docker `restart: unless-stopped`, and the bounded one-minute health-recovery timer.
+- Enabled a real private vulnerability-reporting path to match `SECURITY.md`.
+
+
 ### Added
 - Canonical Decision Terminal with one actionable `ENTRY_READY` state.
 - Cascade Intelligence evidence inside the canonical decision engine.
