@@ -228,6 +228,32 @@ test("desktop renders canonical decision, plan, tri-state leverage, evidence and
   expect(errors).toEqual([]);
 });
 
+
+test("raw diagnostics refetch when reopened", async ({ page }) => {
+  let rawRequests = 0;
+  await page.route(`**${API_PREFIX}**`, async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname.endsWith("/api/candidates/raw")) {
+      rawRequests += 1;
+      return fulfillJson(route, snapshot(100 + rawRequests));
+    }
+    if (pathname.endsWith("/api/candidates")) return fulfillJson(route, snapshot(1));
+    if (pathname.endsWith("/api/stream")) {
+      return route.fulfill({ status: 200, contentType: "text/event-stream", body: "retry: 60000\n\n" });
+    }
+    return fulfillJson(route, { state: "UNAVAILABLE" }, 503);
+  });
+
+  await page.goto("/dashboard");
+  await page.getByText("Research, validation & raw diagnostics").click();
+  const rawSummary = page.getByText("Raw candidate cards · load on demand");
+  await rawSummary.click();
+  await expect.poll(() => rawRequests).toBe(1);
+  await rawSummary.click();
+  await rawSummary.click();
+  await expect.poll(() => rawRequests).toBe(2);
+});
+
 test("SSE reconnect accepts a newer canonical snapshot and reorders the decision surface", async ({ page }) => {
   const errors = errorCollector(page);
   let streamRequests = 0;

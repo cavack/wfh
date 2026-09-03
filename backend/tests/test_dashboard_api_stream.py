@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 
 from fastapi import Response
 
@@ -132,6 +133,27 @@ def test_polling_endpoint_returns_a_valid_versioned_no_store_snapshot(monkeypatc
     assert buffer.replay_after("1") is None
 
 
+
+def test_polling_refreshes_stale_snapshot_even_while_sse_client_is_registered(monkeypatch) -> None:
+    buffer = DashboardEventBuffer()
+    buffer.publish_snapshot(PAYLOAD, generated_at=10.0, full_snapshot=True)
+    builds: list[float] = []
+
+    def fresh_payload(*, evaluation_time: float):
+        builds.append(evaluation_time)
+        return PAYLOAD
+
+    monkeypatch.setattr(main, "_dashboard_event_buffer", buffer)
+    monkeypatch.setattr(main, "_dashboard_preview_cache", None)
+    monkeypatch.setattr(main, "_sse_clients", {object()})
+    monkeypatch.setattr(main, "_get_live_dashboard_payload", fresh_payload)
+    monkeypatch.setattr(main.time, "time", lambda: 100.0)
+
+    snapshot = main._get_dashboard_poll_snapshot()
+
+    assert builds == [100.0]
+    assert snapshot.generated_at == 100.0
+
 def test_raw_candidates_endpoint_returns_full_versioned_snapshot(monkeypatch) -> None:
     buffer = DashboardEventBuffer()
     raw_payload = {
@@ -153,6 +175,24 @@ def test_raw_candidates_endpoint_returns_full_versioned_snapshot(monkeypatch) ->
     assert snapshot.candidates["TEST"]["metrics"]["raw_heavy_field"] == {"kept": True}
     assert response.headers["Cache-Control"] == "no-store"
 
+
+
+def test_raw_candidates_aggregation_runs_off_event_loop_thread(monkeypatch) -> None:
+    buffer = DashboardEventBuffer()
+    caller_thread = threading.get_ident()
+    worker_threads: list[int] = []
+
+    def build_raw_payload(**_):
+        worker_threads.append(threading.get_ident())
+        return PAYLOAD
+
+    monkeypatch.setattr(main, "_dashboard_event_buffer", buffer)
+    monkeypatch.setattr(main, "get_formatted_candidates", build_raw_payload)
+
+    snapshot = asyncio.run(main.get_raw_candidates(Response()))
+
+    assert snapshot.state == "READY"
+    assert worker_threads and worker_threads[0] != caller_thread
 
 def test_stream_replays_after_last_event_id_and_sets_proxy_safe_headers(monkeypatch) -> None:
     buffer = DashboardEventBuffer()

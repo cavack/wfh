@@ -4319,9 +4319,9 @@ def _get_dashboard_poll_snapshot() -> DashboardSnapshot:
     global _dashboard_preview_cache
 
     latest = _dashboard_event_buffer.latest_snapshot()
-    if latest is not None and (
-        _sse_clients
-        or time.time() - latest.generated_at <= _DASHBOARD_PREVIEW_CACHE_SECONDS
+    if (
+        latest is not None
+        and time.time() - latest.generated_at <= _DASHBOARD_PREVIEW_CACHE_SECONDS
     ):
         return latest
 
@@ -4378,7 +4378,10 @@ async def get_raw_candidates(response: Response):
     """Load full diagnostics on demand; never push them through the live SSE path."""
     response.headers["Cache-Control"] = "no-store"
     generated_at = time.time()
+    raw_payload = await asyncio.to_thread(
+        get_formatted_candidates, evaluation_time=generated_at
+    )
     return _dashboard_event_buffer.preview_snapshot(
-        get_formatted_candidates(evaluation_time=generated_at),
+        raw_payload,
         generated_at=generated_at,
     )

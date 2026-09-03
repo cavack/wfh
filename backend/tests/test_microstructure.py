@@ -422,3 +422,54 @@ def test_future_dated_preloaded_orderbook_is_rejected_before_reuse() -> None:
     ]
 
     assert analyzer._preloaded_evidence_is_usable(snapshots, trades, now=now) is False
+
+
+def test_preloaded_orderbooks_expiring_during_trade_fetch_are_refreshed() -> None:
+    analyzer = MicrostructureAnalyzer(snapshot_delay_seconds=0.0)
+    analyzer.snapshot_ttl_seconds = 0.05
+    now = time.time()
+    snapshots = [
+        {
+            "timestamp": int((now - 0.02) * 1000),
+            "_received_at": now - 0.02,
+            "bids": [[10.0, 100.0]],
+            "asks": [[10.1, 100.0]],
+        }
+        for _ in range(3)
+    ]
+
+    class SlowTradesExchange:
+        def __init__(self) -> None:
+            self.book_calls = 0
+
+        async def fetch_order_book(self, symbol, limit):
+            self.book_calls += 1
+            observed = time.time()
+            return {
+                "timestamp": int(observed * 1000),
+                "bids": [[10.0, 100.0]],
+                "asks": [[10.1, 100.0]],
+            }
+
+        async def fetch_trades(self, symbol, limit):
+            await asyncio.sleep(0.06)
+            observed = int(time.time() * 1000)
+            return [
+                {"timestamp": observed, "side": "sell", "price": 10.0, "amount": 1.0}
+                for _ in range(20)
+            ]
+
+    exchange = SlowTradesExchange()
+    result = asyncio.run(
+        analyzer.analyze(
+            exchange,
+            "TEST/USDT:USDT",
+            snapshots[-1],
+            {"limits": {"amount": {"min": 0.01}, "cost": {"min": 1.0}}, "contractSize": 1.0},
+            preloaded_snapshots=snapshots,
+            preloaded_trades=[],
+        )
+    )
+
+    assert exchange.book_calls >= 3
+    assert result.get("reason") != "stale orderbook snapshot"

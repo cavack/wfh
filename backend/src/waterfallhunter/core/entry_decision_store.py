@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import heapq
 import inspect
 import logging
 import math
@@ -957,21 +958,66 @@ class EntryDecisionStore:
             ).fetchall()
         return [self._row_packet(row) for row in rows]
 
+    @staticmethod
+    def _latest_transition_metadata(
+        conn: sqlite3.Connection,
+        *,
+        limit: int,
+    ) -> dict[int, str]:
+        """Stream lightweight history and retain only the newest transitions."""
+        newer_by_symbol: dict[str, tuple[int, str]] = {}
+        newest: list[tuple[int, str]] = []
+        rows = conn.execute(
+            "SELECT id,symbol,decision FROM entry_decision_events ORDER BY id DESC"
+        )
+        for event_id, symbol, decision in rows:
+            symbol_text = str(symbol)
+            decision_text = str(decision)
+            newer = newer_by_symbol.get(symbol_text)
+            if newer is not None and newer[1] != decision_text:
+                candidate = (int(newer[0]), decision_text)
+                if len(newest) < limit:
+                    heapq.heappush(newest, candidate)
+                elif candidate[0] > newest[0][0]:
+                    heapq.heapreplace(newest, candidate)
+            newer_by_symbol[symbol_text] = (int(event_id), decision_text)
+        return {event_id: previous for event_id, previous in newest}
+
+    def _transition_packets(
+        self,
+        conn: sqlite3.Connection,
+        transitions: dict[int, str],
+        *,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        event_ids = sorted(transitions, reverse=True)[:limit]
+        if not event_ids:
+            return []
+        placeholders = ",".join("?" for _ in event_ids)
+        query = f"""
+        SELECT e.id,e.symbol,e.event_at,e.decision,e.entry_readiness,
+               e.evidence_coverage_pct,e.packet_json,e.packet_hash,
+               (SELECT a.advisory_json FROM entry_decision_advisories a
+                WHERE a.decision_event_id=e.id ORDER BY a.id DESC LIMIT 1),
+               (SELECT a.advisory_hash FROM entry_decision_advisories a
+                WHERE a.decision_event_id=e.id ORDER BY a.id DESC LIMIT 1)
+        FROM entry_decision_events e
+        WHERE e.id IN ({placeholders})
+        ORDER BY e.id DESC
+        """
+        packets = []
+        for row in conn.execute(query, event_ids).fetchall():
+            packet = self._row_packet(row)
+            packet["previous_decision"] = transitions[int(row[0])]
+            packets.append(packet)
+        return packets
+
     def recent_transitions(self, *, limit: int = 20) -> list[dict[str, Any]]:
-        """Return decision-state transitions, excluding material same-state events."""
+        """Return recent decision transitions without correlated history scans."""
         bounded = max(1, min(int(limit), 200))
-        previous_decision = (
-            "(SELECT p.decision FROM entry_decision_events p "
-            " WHERE p.symbol=e.symbol AND p.id<e.id ORDER BY p.id DESC LIMIT 1)"
-        )
-        where = (
-            f"WHERE {previous_decision} IS NOT NULL "
-            f"AND {previous_decision} <> e.decision "
-            "ORDER BY e.id DESC LIMIT ?"
-        )
         with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
-            rows = conn.execute(self._history_select(where), (bounded,)).fetchall()
-        return [self._row_packet(row) for row in rows]
+            transitions = self._latest_transition_metadata(conn, limit=bounded)
+            return self._transition_packets(conn, transitions, limit=bounded)
 
 
 class EntryOutcomeResolutionWorker:

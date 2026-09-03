@@ -280,7 +280,7 @@ export default function Dashboard() {
   }, [rawRows]);
 
   const loadRawCandidates = async () => {
-    if (rawCandidates !== null || rawLoading) return;
+    if (rawLoading) return;
     setRawLoading(true);
     setRawError(null);
     try {

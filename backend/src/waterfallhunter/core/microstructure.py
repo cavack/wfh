@@ -147,6 +147,16 @@ class MicrostructureAnalyzer:
                     snapshots.append(snapshot)
             if trades_task is not None:
                 trades = await trades_task
+            if snapshots_preloaded and not self._preloaded_snapshots_are_usable(
+                snapshots, now=time.time()
+            ):
+                snapshots = []
+                for index in range(3):
+                    if index:
+                        await asyncio.sleep(self.snapshot_delay_seconds)
+                    snapshot = await exchange.fetch_order_book(symbol, limit=20)
+                    snapshot["_received_at"] = time.time()
+                    snapshots.append(snapshot)
             return snapshots, trades, None
         except asyncio.CancelledError:
             if trades_task is not None:
