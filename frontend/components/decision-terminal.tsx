@@ -154,6 +154,9 @@ function DecisionCard({ symbol, candidate }: Readonly<{ symbol: string; candidat
   const reasons = Array.isArray(decision.reason_codes)
     ? decision.reason_codes.filter((value): value is string => typeof value === "string").slice(0, 8)
     : [];
+  const readinessText = !evidenceUnavailable && readiness !== undefined
+    ? readiness.toFixed(1)
+    : "—";
   return (
     <article className={`panel overflow-hidden border ${state === "ENTRY_READY" ? "border-emerald-500/35" : "border-slate-800"}`}>
       <div className="p-4 sm:p-5">
@@ -162,7 +165,7 @@ function DecisionCard({ symbol, candidate }: Readonly<{ symbol: string; candidat
           <span className={`status-pill border ${decisionTone(state)}`}>{state.replaceAll("_", " ")}</span>
         </div>
         <div className="mt-4 flex flex-wrap items-end justify-between gap-3">
-          <div><p className="text-xs uppercase tracking-wider text-slate-500">Entry readiness</p><p className="text-4xl font-semibold tabular-nums">{evidenceUnavailable ? "—" : readiness === undefined ? "—" : readiness.toFixed(1)}{evidenceUnavailable ? null : <span className="text-base text-slate-500">/100</span>}</p>{evidenceUnavailable ? <p className="mt-1 text-xs font-medium text-rose-300">Evidence unavailable</p> : null}</div>
+          <div><p className="text-xs uppercase tracking-wider text-slate-500">Entry readiness</p><p className="text-4xl font-semibold tabular-nums">{readinessText}{evidenceUnavailable ? null : <span className="text-base text-slate-500">/100</span>}</p>{evidenceUnavailable ? <p className="mt-1 text-xs font-medium text-rose-300">Evidence unavailable</p> : null}</div>
           <div className="text-right text-xs text-slate-400"><p title="Availability of required evidence, not signal confidence">Evidence coverage {coverage === undefined ? "—" : `${coverage.toFixed(0)}%`}</p><p>Leverage {leverageText}</p></div>
         </div>
         {hasPlan ? (

@@ -2382,6 +2382,52 @@ def _dashboard_snapshot_broadcast_due(
     )
 
 
+def _dashboard_snapshot_task_result(
+    task: asyncio.Task,
+) -> DashboardStreamEvent | None:
+    try:
+        return task.result()
+    except asyncio.CancelledError:
+        return None
+    except Exception:
+        logger.exception("Dashboard snapshot worker failed; SSE loop will continue")
+        return None
+
+
+def _consume_dashboard_snapshot_task(
+    task: asyncio.Task | None,
+) -> tuple[asyncio.Task | None, float | None]:
+    if task is None or not task.done():
+        return task, None
+    event = _dashboard_snapshot_task_result(task)
+    if event is not None and _sse_clients:
+        _broadcast_dashboard_event(event)
+    return None, time.monotonic()
+
+
+def _start_dashboard_snapshot_task() -> asyncio.Task:
+    return asyncio.create_task(
+        asyncio.to_thread(
+            _publish_dashboard_snapshot_safely,
+            full_snapshot=False,
+            only_if_changed=True,
+        )
+    )
+
+
+def _dashboard_heartbeat_due(last_heartbeat_at: float, now_monotonic: float) -> bool:
+    return (
+        last_heartbeat_at <= 0.0
+        or now_monotonic - last_heartbeat_at
+        >= _DASHBOARD_HEARTBEAT_INTERVAL_SECONDS
+    )
+
+
+def _publish_dashboard_heartbeat() -> None:
+    heartbeat = _dashboard_event_buffer.publish_heartbeat(generated_at=time.time())
+    _broadcast_dashboard_event(heartbeat)
+
+
 async def sse_broadcaster():
     last_snapshot_at = 0.0
     last_heartbeat_at = 0.0
@@ -2389,43 +2435,18 @@ async def sse_broadcaster():
     try:
         while _hunter_running:
             now_monotonic = time.monotonic()
-            if snapshot_task is not None and snapshot_task.done():
-                try:
-                    event = snapshot_task.result()
-                except asyncio.CancelledError:
-                    event = None
-                except Exception:
-                    logger.exception("Dashboard snapshot worker failed; SSE loop will continue")
-                    event = None
-                snapshot_task = None
-                last_snapshot_at = time.monotonic()
-                if event is not None and _sse_clients:
-                    _broadcast_dashboard_event(event)
+            snapshot_task, completed_at = _consume_dashboard_snapshot_task(snapshot_task)
+            if completed_at is not None:
+                last_snapshot_at = completed_at
 
             if _sse_clients:
                 if (
                     snapshot_task is None
-                    and _dashboard_snapshot_broadcast_due(
-                        last_snapshot_at, now_monotonic
-                    )
+                    and _dashboard_snapshot_broadcast_due(last_snapshot_at, now_monotonic)
                 ):
-                    snapshot_task = asyncio.create_task(
-                        asyncio.to_thread(
-                            _publish_dashboard_snapshot_safely,
-                            full_snapshot=False,
-                            only_if_changed=True,
-                        )
-                    )
-
-                if (
-                    last_heartbeat_at <= 0.0
-                    or now_monotonic - last_heartbeat_at
-                    >= _DASHBOARD_HEARTBEAT_INTERVAL_SECONDS
-                ):
-                    heartbeat = _dashboard_event_buffer.publish_heartbeat(
-                        generated_at=time.time(),
-                    )
-                    _broadcast_dashboard_event(heartbeat)
+                    snapshot_task = _start_dashboard_snapshot_task()
+                if _dashboard_heartbeat_due(last_heartbeat_at, now_monotonic):
+                    _publish_dashboard_heartbeat()
                     last_heartbeat_at = now_monotonic
 
             await asyncio.sleep(1.0)
@@ -3756,10 +3777,8 @@ async def hunter_loop(
             for symbol, task in tuple(in_flight.items()):
                 if task.done():
                     in_flight.pop(symbol, None)
-                    try:
+                    if not task.cancelled():
                         task.result()
-                    except asyncio.CancelledError:
-                        pass
 
             _hunter_in_flight_count = len(in_flight)
             if candidates:
