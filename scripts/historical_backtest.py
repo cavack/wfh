@@ -281,8 +281,21 @@ def _archive_candles(symbol: str, start_ms: int, end_ms: int):
                 payload = response.read()
         except HTTPError as exc:
             if exc.code == 404:
-                fallback = _rest_candles(symbol, segment_start, segment_end)
+                try:
+                    fallback = _rest_candles(symbol, segment_start, segment_end)
+                except HTTPError as rest_exc:
+                    # A contract that existed earlier in the frozen cohort may
+                    # have been delisted before this later archive segment.
+                    # Binance then rejects the REST symbol with HTTP 400. Keep
+                    # the completed archived lifespan already collected rather
+                    # than crashing the whole research run or silently replacing
+                    # the cohort with today's surviving contracts.
+                    if rest_exc.code == 400 and rows:
+                        break
+                    raise
                 if fallback is None:
+                    if rows:
+                        break
                     return None
                 rows.extend(fallback)
                 continue
@@ -315,7 +328,12 @@ def candles(symbol: str, start_ms: int, end_ms: int, cache_dir: Path | None = No
     except (OSError, URLError, ValueError):
         rows = None
     if rows is None:
-        rows = _rest_candles(symbol, start_ms, end_ms)
+        try:
+            rows = _rest_candles(symbol, start_ms, end_ms)
+        except HTTPError as exc:
+            if exc.code in {400, 404}:
+                return None
+            raise
     if rows is None:
         return None
     if cache_path:

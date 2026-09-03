@@ -1,7 +1,9 @@
 from scripts.historical_backtest import (
     EIGHT_HOURS,
     HistoricalFunding,
+    _archive_candles,
     _valid_candles,
+    candles,
     chronological_splits,
     derivatives_context,
     expectancy_r,
@@ -245,6 +247,66 @@ def test_promotion_rejects_non_equivalent_or_sub_one_r_research():
     )
     assert rejected["eligible"] is False
     assert "cost-adjusted reward is below 1R" in rejected["reasons"]
+
+
+def test_historical_archive_keeps_completed_lifespan_for_delisted_contract(monkeypatch):
+    import io
+    import zipfile
+    from datetime import UTC, datetime
+    from urllib.error import HTTPError
+
+    start_ms = int(datetime(2026, 1, 1, tzinfo=UTC).timestamp() * 1000)
+    end_ms = int(datetime(2026, 3, 1, tzinfo=UTC).timestamp() * 1000)
+    csv_rows = []
+    for index in range(100):
+        timestamp = start_ms + index * 300_000
+        csv_rows.append(
+            f"{timestamp},1.0,1.1,0.9,1.0,10.0,{timestamp + 299999},100.0,0,0,0,0"
+        )
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w") as archive:
+        archive.writestr("DELISTEDUSDT-5m-2026-01.csv", "\n".join(csv_rows))
+    january = payload.getvalue()
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return january
+
+    def fake_urlopen(url, timeout=30):
+        if "2026-01.zip" in url:
+            return Response()
+        raise HTTPError(url, 404, "missing archive", None, None)
+
+    def delisted_rest(*args, **kwargs):
+        raise HTTPError("https://fapi.binance.com/fapi/v1/klines", 400, "invalid symbol", None, None)
+
+    monkeypatch.setattr("scripts.historical_backtest.urlopen", fake_urlopen)
+    monkeypatch.setattr("scripts.historical_backtest._rest_candles", delisted_rest)
+
+    rows = _archive_candles("DELISTEDUSDT", start_ms, end_ms)
+
+    assert rows is not None
+    assert len(rows) == 100
+    assert rows[0][0] == start_ms
+
+
+def test_historical_candles_marks_invalid_rest_symbol_unavailable(monkeypatch, tmp_path):
+    from urllib.error import HTTPError
+
+    monkeypatch.setattr("scripts.historical_backtest._archive_candles", lambda *args, **kwargs: None)
+
+    def invalid_rest(*args, **kwargs):
+        raise HTTPError("https://fapi.binance.com/fapi/v1/klines", 400, "invalid symbol", None, None)
+
+    monkeypatch.setattr("scripts.historical_backtest._rest_candles", invalid_rest)
+
+    assert candles("DELISTEDUSDT", 0, 300_000 * 100, tmp_path) is None
 
 
 def test_historical_candle_validation_rejects_invalid_ohlc():
