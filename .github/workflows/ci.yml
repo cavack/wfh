@@ -166,6 +166,7 @@ jobs:
           test "$(docker image inspect waterfallhunter-waterfall-backend --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$GITHUB_SHA"
           test "$(docker image inspect waterfallhunter-frontend --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$GITHUB_SHA"
           test "$(docker image inspect waterfallhunter-watchdog --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$GITHUB_SHA"
+          test "$(docker run --rm waterfallhunter-waterfall-backend python -c 'from waterfallhunter.config import settings; print(settings.source_revision)')" = "$GITHUB_SHA"
 
   repository-hygiene:
     runs-on: ubuntu-latest

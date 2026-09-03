@@ -52,8 +52,8 @@ def _evidence(**overrides) -> LifecycleV2Evidence:
 
 def test_migration_v5_is_verified_and_shadow_events_are_append_only(tmp_path: Path) -> None:
     db_path = migrate_test_database(tmp_path / "shadow.db")
-    assert CURRENT_RUNTIME_SCHEMA_VERSION == 7
-    assert verify_managed_schema(db_path, check_user_version=7).valid is True
+    assert CURRENT_RUNTIME_SCHEMA_VERSION == 9
+    assert verify_managed_schema(db_path, check_user_version=9).valid is True
     store = LifecycleV2ShadowStore(db_path)
     transition = evaluate_lifecycle_v2_shadow(
         episode_id="episode-1",

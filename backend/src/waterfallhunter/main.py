@@ -31,6 +31,7 @@ from waterfallhunter.core.entry_decision import (
 )
 from waterfallhunter.core.entry_decision_store import (
     EntryDecisionStore,
+    EntryOutcomeResolutionWorker,
     StaleCandidateLifecycleError,
 )
 from waterfallhunter.core.notifier import TelegramNotifier, TelegramSignalTransport
@@ -91,6 +92,7 @@ from waterfallhunter.core.signal_metadata_store import (
     require_signal_metadata_completeness,
 )
 from waterfallhunter.core.lbank_signal_outcome import (
+    LBankSignalOutcomeEvaluator,
     LBankSignalOutcomeStore,
     LBankSignalSettlementWorker,
 )
@@ -165,6 +167,7 @@ stage_lifecycle_store = StageLifecycleStore(
 entry_decision_store = EntryDecisionStore(
     db_path=db.db_path,
     verify_schema=False,
+    source_revision=settings.source_revision,
 )
 
 lifecycle_v2_shadow_store = LifecycleV2ShadowStore(
@@ -315,6 +318,7 @@ _HUNTER_STARTUP_DELAY_SECONDS = 5.0
 _HUNTER_SHUTDOWN_GRACE_SECONDS = 5.0
 _lbank_execution_shadow_worker: LBankExecutionShadowWorker | None = None
 _signal_settlement_worker: LBankSignalSettlementWorker | None = None
+_entry_outcome_resolution_worker: EntryOutcomeResolutionWorker | None = None
 _entry_notification_worker: DurableNotificationWorker | None = None
 _entry_notification_probe: dict | None = None
 _signal_evidence_metrics_last_refresh = 0.0
@@ -1113,6 +1117,299 @@ def _build_signal_settlement_worker(
     )
 
 
+def _cost_component(
+    value: object,
+    *,
+    source: str,
+    observed_at: int,
+    reason: str,
+) -> dict[str, object]:
+    available = bool(
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+        and float(value) >= 0
+    )
+    return {
+        "value": float(value) if available else None,
+        "source": source if available else None,
+        "classification": "MODELED_COST" if available else "UNAVAILABLE",
+        "observed_at": observed_at if available else None,
+        "interval": "decision_time_estimate" if available else None,
+        "available": available,
+        "reason": None if available else reason,
+    }
+
+
+def _entry_outcome_research_provenance(
+    metrics: dict[str, Any],
+    *,
+    decision_contract_hash: str,
+    decision_at: int,
+) -> dict[str, Any]:
+    """Freeze decision-time identity and costs without changing model behavior."""
+    exchange = str(metrics.get("exchange") or "").strip().lower()
+    mapped_symbol = str(metrics.get("mapped_symbol") or "").strip()
+    microstructure = (
+        metrics.get("microstructure")
+        if isinstance(metrics.get("microstructure"), dict)
+        else {}
+    )
+    revision = str(settings.source_revision or "").strip()
+    revision_verified = bool(
+        len(revision) == 40
+        and all(character in "0123456789abcdef" for character in revision)
+    )
+    unavailable_cost = {
+        "value": None,
+        "source": None,
+        "classification": "UNAVAILABLE",
+        "observed_at": None,
+        "interval": None,
+        "available": False,
+    }
+    return {
+        "source_revision": revision if revision_verified else None,
+        "source_revision_status": (
+            "VERIFIED_GIT_REVISION" if revision_verified else "UNAVAILABLE"
+        ),
+        "decision_contract_sha256": decision_contract_hash,
+        "contract": {
+            "available": exchange == "lbank" and bool(mapped_symbol),
+            "exchange": exchange or None,
+            "mapped_symbol": mapped_symbol or None,
+            "market_type": "linear_usdt_perpetual",
+            "settlement_asset": "USDT",
+            "spot_substitution_allowed": False,
+            "cross_venue_substitution_allowed": False,
+        },
+        "outcome_contract": {
+            "version": "lbank_linear_perpetual_outcome_v1",
+            "direction": "SHORT",
+            "horizon_seconds": 86_400,
+            "timeframe": "1m",
+            "closed_candles_only": True,
+            "complete_window_required": True,
+            "price_source": "closed_1m_trade_ohlcv_proxy",
+        },
+        "costs": {
+            "fees": {**unavailable_cost, "reason": "fee ledger not observed at decision time"},
+            "entry_slippage": _cost_component(
+                microstructure.get("entry_slippage_pct"),
+                source="decision_time_microstructure",
+                observed_at=decision_at,
+                reason="entry slippage estimate unavailable",
+            ),
+            "exit_slippage": _cost_component(
+                microstructure.get("exit_slippage_pct"),
+                source="decision_time_microstructure",
+                observed_at=decision_at,
+                reason="exit slippage estimate unavailable",
+            ),
+            "funding": {
+                **unavailable_cost,
+                "reason": "future holding-interval funding not yet observed",
+            },
+        },
+    }
+
+
+def _decision_outcome_classification(status: str) -> str:
+    if status == "STOP_FIRST":
+        return "STOP"
+    if status == "NO_LEVEL_HIT_24H":
+        return "TIMEOUT"
+    if status in {"TP1_ONLY_24H", "TP1_THEN_STOP", "TP2_FIRST", "TP2_AFTER_TP1"}:
+        return "WIN"
+    return "UNAVAILABLE"
+
+
+def _decision_outcome_gross_r(
+    classification: str, status: str, plan: dict[str, Any], candles: list
+) -> float | None:
+    try:
+        entry = float(plan["entry_price"])
+        stop = float(plan["stop_loss"])
+        risk = stop - entry
+        if risk <= 0:
+            return None
+        if classification == "STOP":
+            return -1.0
+        if classification == "WIN":
+            if status == "TP1_THEN_STOP":
+                return None
+            target_key = "take_profit_2" if status.startswith("TP2") else "take_profit_1"
+            return (entry - float(plan[target_key])) / risk
+        if classification == "TIMEOUT" and candles:
+            return (entry - float(candles[-1][4])) / risk
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+    return None
+
+
+def _entry_outcome_capture_parts(
+    capture: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    contract = capture.get("contract") if isinstance(capture.get("contract"), dict) else {}
+    plan = capture.get("trade_plan") if isinstance(capture.get("trade_plan"), dict) else {}
+    outcome_contract = (
+        capture.get("outcome_contract")
+        if isinstance(capture.get("outcome_contract"), dict)
+        else {}
+    )
+    return contract, plan, outcome_contract
+
+
+def _entry_outcome_contract_available(
+    contract: dict[str, Any],
+    plan: dict[str, Any],
+    outcome_contract: dict[str, Any],
+) -> bool:
+    required_levels = ("entry_price", "stop_loss", "take_profit_1", "take_profit_2")
+    return bool(
+        contract.get("available") is True
+        and str(contract.get("exchange") or "").lower() == "lbank"
+        and contract.get("market_type") == "linear_usdt_perpetual"
+        and contract.get("mapped_symbol")
+        and outcome_contract.get("closed_candles_only") is True
+        and outcome_contract.get("complete_window_required") is True
+        and all(plan.get(key) is not None for key in required_levels)
+    )
+
+
+def _entry_outcome_costs_complete(costs: dict[str, Any]) -> bool:
+    required = ("fees", "entry_slippage", "exit_slippage", "funding")
+    return bool(
+        costs
+        and all(
+            isinstance(costs.get(name), dict) and costs[name].get("available") is True
+            for name in required
+        )
+    )
+
+
+_ENTRY_OUTCOME_MAX_CAPTURE_AGE_SECONDS = 72 * 60 * 60
+
+
+def _entry_outcome_no_candles_result(capture: dict[str, Any], contract: dict) -> dict | None:
+    """Keep fresh gaps retryable, but bound exact-window retries by capture age."""
+    captured_at = capture.get("captured_at")
+    if isinstance(captured_at, bool) or not isinstance(captured_at, int):
+        return None
+    if int(time.time()) - captured_at <= _ENTRY_OUTCOME_MAX_CAPTURE_AGE_SECONDS:
+        return None
+    return {
+        "outcome_status": "UNAVAILABLE",
+        "classification": "UNAVAILABLE",
+        "cost": capture.get("costs"),
+        "provenance": {
+            "decision_packet_sha256": capture.get("decision_packet_sha256"),
+            "decision_contract_sha256": capture.get("decision_contract_sha256"),
+            "source_revision": capture.get("source_revision"),
+            "contract": contract or None,
+        },
+        "reason": "exact-contract candle retry window exhausted",
+    }
+
+
+def _entry_outcome_provenance_complete(
+    capture: dict[str, Any], classification: str, gross_r: float | None
+) -> bool:
+    source_revision = capture.get("source_revision")
+    decision_contract_sha256 = capture.get("decision_contract_sha256")
+    return bool(
+        isinstance(source_revision, str)
+        and len(source_revision) == 40
+        and isinstance(decision_contract_sha256, str)
+        and len(decision_contract_sha256) == 64
+        and classification in {"WIN", "STOP", "TIMEOUT"}
+        and gross_r is not None
+    )
+
+
+async def _resolve_entry_outcome(capture: dict) -> dict | None:
+    """Resolve an exact LBank perpetual capture from a complete closed 1m window."""
+    contract, plan, outcome_contract = _entry_outcome_capture_parts(capture)
+    if not _entry_outcome_contract_available(contract, plan, outcome_contract):
+        return {
+            "outcome_status": "UNAVAILABLE",
+            "classification": "UNAVAILABLE",
+            "cost": capture.get("costs"),
+            "provenance": {
+                "decision_packet_sha256": capture.get("decision_packet_sha256"),
+                "source_revision": capture.get("source_revision"),
+                "contract": contract or None,
+            },
+            "reason": "exact LBank linear perpetual capture contract unavailable",
+        }
+    signal = {
+        "id": int(capture["decision_event_id"]),
+        "symbol": str(capture.get("symbol") or ""),
+        "triggered_at": int(capture["decision_event_at"]),
+        "entry_price": plan["entry_price"],
+        "stop_loss": plan["stop_loss"],
+        "take_profit_1": plan["take_profit_1"],
+        "take_profit_2": plan["take_profit_2"],
+        "trigger_metrics_json": json.dumps(
+            {"exchange": "lbank", "mapped_symbol": contract["mapped_symbol"]}
+        ),
+    }
+    trigger_ms = signal["triggered_at"] * 1000
+    fetch_start_ms = (trigger_ms // 60_000) * 60_000
+    observation_start_ms = (
+        trigger_ms if trigger_ms % 60_000 == 0 else fetch_start_ms + 60_000
+    )
+    horizon_seconds = int(outcome_contract.get("horizon_seconds") or 86_400)
+    candles = await _fetch_signal_outcome_candles(
+        signal,
+        fetch_start_ms,
+        observation_start_ms + horizon_seconds * 1000,
+    )
+    if not candles:
+        return _entry_outcome_no_candles_result(capture, contract)
+    outcome = LBankSignalOutcomeEvaluator.evaluate(
+        signal, candles, horizon_seconds=horizon_seconds
+    )
+    status = str(outcome.get("status") or "")
+    if status == "DATA_INCOMPLETE":
+        return None
+    classification = _decision_outcome_classification(status)
+    gross_r = _decision_outcome_gross_r(classification, status, plan, candles)
+    costs = capture.get("costs") if isinstance(capture.get("costs"), dict) else {}
+    cost_complete = _entry_outcome_costs_complete(costs)
+    provenance_complete = _entry_outcome_provenance_complete(
+        capture, classification, gross_r
+    )
+    return {
+        "outcome_status": "OBSERVED",
+        "classification": classification,
+        "raw_outcome_status": status,
+        "outcome": outcome,
+        "gross_r": gross_r,
+        "net_r": None,
+        "cost": {"components": costs, "complete": cost_complete},
+        "provenance": {
+            "decision_packet_sha256": capture.get("decision_packet_sha256"),
+            "decision_contract_sha256": capture.get("decision_contract_sha256"),
+            "source_revision": capture.get("source_revision"),
+            "contract": contract,
+            "outcome_contract": outcome_contract,
+        },
+        "scientific_tier": (
+            "TIER_C" if cost_complete and provenance_complete else "UNAVAILABLE"
+        ),
+    }
+
+
+def _build_entry_outcome_resolution_worker() -> EntryOutcomeResolutionWorker:
+    return EntryOutcomeResolutionWorker(
+        entry_decision_store,
+        _resolve_entry_outcome,
+        batch_size=3,
+        interval_seconds=900.0,
+    )
+
+
 def _update_lbank_shadow_metrics() -> None:
     snapshot = (
         _lbank_shadow_health_snapshot()
@@ -1603,7 +1900,9 @@ def _reconcile_explicit_entry_expirations(*, evaluated_at: int) -> int:
         expired = build_expired_entry_decision(previous, evaluated_at=evaluated_at)
         if expired is None:
             continue
-        event_id = entry_decision_store.append_if_changed(symbol, expired)
+        event_id = entry_decision_store.append_if_changed_with_capture(
+            symbol, expired, captured_at=evaluated_at
+        )
         if event_id is None:
             continue
         expired["event_id"] = event_id
@@ -1634,7 +1933,9 @@ def _reconcile_inactive_actionable_decisions(
         )
         if invalidated is None:
             continue
-        event_id = entry_decision_store.append_if_changed(symbol, invalidated)
+        event_id = entry_decision_store.append_if_changed_with_capture(
+            symbol, invalidated, captured_at=evaluated_at
+        )
         if event_id is None:
             continue
         reconciled += 1
@@ -2254,10 +2555,18 @@ async def evaluate_candidate(
                     lifecycle_id=int(data.get("lifecycle_id") or 1),
                     previous_decision=previous_entry_decision,
                 )
+                invalidated_decision["research_provenance"] = (
+                    _entry_outcome_research_provenance(
+                        reference_failure_metrics,
+                        decision_contract_hash=decision_contract_hash,
+                        decision_at=decision_now,
+                    )
+                )
                 try:
-                    decision_event_id = entry_decision_store.append_if_changed(
+                    decision_event_id = entry_decision_store.append_if_changed_with_capture(
                         symbol,
                         invalidated_decision,
+                        captured_at=decision_now,
                         expected_lifecycle_id=int(data.get("lifecycle_id") or 1),
                     )
                 except StaleCandidateLifecycleError:
@@ -2515,10 +2824,16 @@ async def evaluate_candidate(
         trade_plan = entry_decision.get("trade_plan")
         if isinstance(trade_plan, dict):
             trade_plan["leverage"] = leverage_projection.get("leverage")
+    entry_decision["research_provenance"] = _entry_outcome_research_provenance(
+        result_metrics,
+        decision_contract_hash=decision_contract_hash,
+        decision_at=decision_now,
+    )
     try:
-        event_id = entry_decision_store.append_if_changed(
+        event_id = entry_decision_store.append_if_changed_with_capture(
             symbol,
             entry_decision,
+            captured_at=decision_now,
             expected_lifecycle_id=int(data.get("lifecycle_id") or 1),
         )
     except StaleCandidateLifecycleError:
@@ -3457,6 +3772,7 @@ async def startup_event():
     global _hunter_stop_event
     global _lbank_execution_shadow_worker
     global _signal_settlement_worker
+    global _entry_outcome_resolution_worker
     global _entry_notification_worker
     global _entry_notification_probe
 
@@ -3589,12 +3905,17 @@ async def startup_event():
         "(batch=3 interval=900s)"
     )
 
+    _entry_outcome_resolution_worker = _build_entry_outcome_resolution_worker()
+    _start_background_task(_entry_outcome_resolution_worker.run_forever())
+    logger.info("Entry outcome resolution enabled (batch=3 interval=900s)")
+
 
 async def shutdown_event():
     global _hunter_running
     global _hunter_task
     global _lbank_execution_shadow_worker
     global _signal_settlement_worker
+    global _entry_outcome_resolution_worker
     global _entry_notification_worker
 
     _hunter_running = False
@@ -3612,6 +3933,8 @@ async def shutdown_event():
 
     if _signal_settlement_worker is not None:
         _signal_settlement_worker.stop()
+    if _entry_outcome_resolution_worker is not None:
+        _entry_outcome_resolution_worker.stop()
 
     hunter_task = _hunter_task
     if (
@@ -3654,6 +3977,7 @@ async def shutdown_event():
         _lbank_execution_shadow_worker = None
 
     _signal_settlement_worker = None
+    _entry_outcome_resolution_worker = None
     _hunter_task = None
 
     await scanner.close()
