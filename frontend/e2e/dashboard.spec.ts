@@ -229,6 +229,22 @@ test("desktop renders canonical decision, plan, tri-state leverage, evidence and
 });
 
 
+test("malformed display fields fail closed without object stringification", async ({ page }) => {
+  const malformed = snapshot(1) as any;
+  malformed.candidates["ALPHA/USDT:USDT"].metrics.entry_decision.evidence_summary.cascade.status = { unexpected: true };
+  malformed.decision_terminal.recent_changes = [{
+    event_id: { unexpected: true },
+    symbol: { unexpected: true },
+    event_at: Date.now() / 1000,
+    previous_decision: { unexpected: true },
+    decision: { unexpected: true },
+    transition_reason: { unexpected: true },
+  }];
+  await routeDashboard(page, malformed);
+  await page.goto("/dashboard");
+  await expect(page.locator("body")).not.toContainText("[object Object]");
+});
+
 test("raw diagnostics refetch when reopened", async ({ page }) => {
   let rawRequests = 0;
   await page.route(`**${API_PREFIX}**`, async (route) => {

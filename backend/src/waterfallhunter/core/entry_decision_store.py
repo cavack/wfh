@@ -981,7 +981,7 @@ class EntryDecisionStore:
                 elif candidate[0] > newest[0][0]:
                     heapq.heapreplace(newest, candidate)
             newer_by_symbol[symbol_text] = (int(event_id), decision_text)
-        return {event_id: previous for event_id, previous in newest}
+        return dict(newest)
 
     def _transition_packets(
         self,

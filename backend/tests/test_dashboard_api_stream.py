@@ -192,7 +192,8 @@ def test_raw_candidates_aggregation_runs_off_event_loop_thread(monkeypatch) -> N
     snapshot = asyncio.run(main.get_raw_candidates(Response()))
 
     assert snapshot.state == "READY"
-    assert worker_threads and worker_threads[0] != caller_thread
+    assert worker_threads
+    assert worker_threads[0] != caller_thread
 
 def test_stream_replays_after_last_event_id_and_sets_proxy_safe_headers(monkeypatch) -> None:
     buffer = DashboardEventBuffer()

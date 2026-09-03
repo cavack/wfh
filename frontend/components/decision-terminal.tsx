@@ -37,6 +37,16 @@ function finite(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function text(value: unknown, fallback = "—"): string {
+  return typeof value === "string" ? value : fallback;
+}
+
+function scalarText(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return undefined;
+}
+
 function price(value: unknown): string {
   const number = finite(value);
   if (number === undefined) return "—";
@@ -106,7 +116,7 @@ function EvidenceGrid({ evidence }: Readonly<{ evidence: Rec }>) {
       <div className="metric-card"><dt>Funding</dt><dd>{pct(derivatives.funding_rate_pct, 4)}</dd></div>
       <div className="metric-card"><dt>Taker B/S</dt><dd>{number(flow.taker_buy_sell_ratio, 3)}</dd></div>
       <div className="metric-card"><dt>Sell share</dt><dd>{pct(flow.sell_share_pct, 1)}</dd></div>
-      <div className="metric-card"><dt>Cascade</dt><dd>{String(cascade.status ?? "—")} · {number(cascade.readiness_points, 1)}/{number(cascadeMaximum, 0)}</dd></div>
+      <div className="metric-card"><dt>Cascade</dt><dd>{text(cascade.status)} · {number(cascade.readiness_points, 1)}/{number(cascadeMaximum, 0)}</dd></div>
       <div className="metric-card"><dt>Cross-exchange</dt><dd>{cross === true ? "Confirmed" : cross === false ? "No" : "—"}</dd></div>
       <div className="metric-card"><dt>Spread</dt><dd>{pct(execution.spread_pct, 4)}</dd></div>
       <div className="metric-card"><dt>Anti-chase</dt><dd>{antiChase === undefined ? "—" : `${antiChase.toFixed(2)} ATR`}</dd></div>
@@ -130,11 +140,14 @@ function DecisionCard({ symbol, candidate }: Readonly<{ symbol: string; candidat
   const advisoryView = advisoryPresentation(advisory);
   const leverageStatus = String(leverageAdvisory.status ?? "");
   const leverageValue = finite(leverageAdvisory.leverage ?? plan.leverage);
-  const leverageText = leverageStatus === "AVAILABLE" && leverageValue !== undefined
-    ? `${number(leverageValue, 0)}×`
-    : leverageStatus === "UNAVAILABLE" || leverageStatus === "NOT_RECOMMENDED"
-      ? leverageStatus.replaceAll("_", " ")
-      : leverageValue !== undefined ? `${number(leverageValue, 0)}×` : "UNAVAILABLE";
+  let leverageText = "UNAVAILABLE";
+  if (leverageStatus === "AVAILABLE" && leverageValue !== undefined) {
+    leverageText = `${number(leverageValue, 0)}×`;
+  } else if (leverageStatus === "UNAVAILABLE" || leverageStatus === "NOT_RECOMMENDED") {
+    leverageText = leverageStatus.replaceAll("_", " ");
+  } else if (leverageValue !== undefined) {
+    leverageText = `${number(leverageValue, 0)}×`;
+  }
   const blocks = Array.isArray(decision.block_reasons)
     ? decision.block_reasons.filter((value): value is string => typeof value === "string")
     : [];
@@ -319,7 +332,8 @@ function CandidateTable({ candidates, nowSeconds }: Readonly<{ candidates: Recor
                 ? `${cascadeStatus} · ${cascadePoints.toFixed(1)}/${cascadeMaximum.toFixed(0)}`
                 : cascadeStatus;
               const evidenceUnavailable = candidate.analysis_status === "unavailable" || candidate.data_status === "unavailable";
-              return <tr key={symbol} className="hover:bg-slate-900/60"><td className="px-4 py-3 font-mono text-sky-200">{symbol}</td><td><span className={`status-pill border ${decisionTone(decision)}`}>{decision.replaceAll("_", " ")}</span></td><td className={`font-mono ${evidenceUnavailable ? "text-slate-500" : ""}`} title={evidenceUnavailable ? "Required market evidence unavailable" : undefined}>{evidenceUnavailable ? "—" : readiness < 0 ? "—" : readiness.toFixed(1)}</td><td className="font-mono">${price(candidate.last_price)}</td><td>{pct(derivatives.oi_change_1h_pct, 2)}</td><td>{number(flow.taker_buy_sell_ratio, 3)}</td><td>{cascadeText}</td><td className={freshness.state === "stale" ? "font-medium text-rose-300" : "text-slate-300"} title={freshness.thresholdSeconds === undefined ? undefined : `Policy freshness limit ${number(freshness.thresholdSeconds, 0)}s`}>{freshnessText}</td></tr>;
+              const readinessText = !evidenceUnavailable && readiness >= 0 ? readiness.toFixed(1) : "—";
+              return <tr key={symbol} className="hover:bg-slate-900/60"><td className="px-4 py-3 font-mono text-sky-200">{symbol}</td><td><span className={`status-pill border ${decisionTone(decision)}`}>{decision.replaceAll("_", " ")}</span></td><td className={`font-mono ${evidenceUnavailable ? "text-slate-500" : ""}`} title={evidenceUnavailable ? "Required market evidence unavailable" : undefined}>{readinessText}</td><td className="font-mono">${price(candidate.last_price)}</td><td>{pct(derivatives.oi_change_1h_pct, 2)}</td><td>{number(flow.taker_buy_sell_ratio, 3)}</td><td>{cascadeText}</td><td className={freshness.state === "stale" ? "font-medium text-rose-300" : "text-slate-300"} title={freshness.thresholdSeconds === undefined ? undefined : `Policy freshness limit ${number(freshness.thresholdSeconds, 0)}s`}>{freshnessText}</td></tr>;
             })}
           </tbody>
         </table>
@@ -389,12 +403,17 @@ function RecentDecisionChanges({ value }: Readonly<{ value: unknown }>) {
         {rows.map((row, index) => {
           const blocks = Array.isArray(row.block_reasons) ? row.block_reasons.filter((item) => typeof item === "string") : [];
           const reasons = Array.isArray(row.reason_codes) ? row.reason_codes.filter((item) => typeof item === "string") : [];
-          const reason = String(row.transition_reason ?? blocks[0] ?? reasons[0] ?? "—");
-          const previous = String(row.previous_decision ?? "—").replaceAll("_", " ");
-          const current = String(row.decision ?? "UNAVAILABLE").replaceAll("_", " ");
-          return <div key={String(row.event_id ?? `${row.symbol ?? "unknown"}-${row.event_at ?? index}`)} className="grid gap-1 rounded-lg border border-slate-800 bg-slate-950/35 px-3 py-2.5 sm:grid-cols-[10rem_1fr_auto] sm:items-center sm:gap-3">
+          const reason = typeof row.transition_reason === "string"
+            ? row.transition_reason
+            : blocks[0] ?? reasons[0] ?? "—";
+          const previous = text(row.previous_decision).replaceAll("_", " ");
+          const current = text(row.decision, "UNAVAILABLE").replaceAll("_", " ");
+          const symbol = text(row.symbol);
+          const eventKey = scalarText(row.event_id)
+            ?? `${text(row.symbol, "unknown")}-${scalarText(row.event_at) ?? index}`;
+          return <div key={eventKey} className="grid gap-1 rounded-lg border border-slate-800 bg-slate-950/35 px-3 py-2.5 sm:grid-cols-[10rem_1fr_auto] sm:items-center sm:gap-3">
             <time className="text-[11px] text-slate-500">{timeText(row.event_at ?? row.evaluated_at)}</time>
-            <div className="min-w-0"><p className="font-mono text-sm text-sky-300">{String(row.symbol ?? "—")}</p><p className="mt-0.5 truncate text-xs text-slate-500" title={reason}>{reason.replaceAll("_", " ")}</p></div>
+            <div className="min-w-0"><p className="font-mono text-sm text-sky-300">{symbol}</p><p className="mt-0.5 truncate text-xs text-slate-500" title={reason}>{reason.replaceAll("_", " ")}</p></div>
             <p className="text-xs font-medium text-slate-300"><span className="text-slate-500">{previous}</span> <span aria-hidden="true">→</span> <span className="text-cyan-100">{current}</span></p>
           </div>;
         })}
