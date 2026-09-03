@@ -131,6 +131,52 @@ class MicrostructureAnalyzer:
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
+    async def _refresh_expired_evidence(
+        self,
+        exchange: Any,
+        symbol: str,
+        snapshots: list[Dict[str, Any]],
+        trades: list[Dict[str, Any]],
+        *,
+        allow_snapshot_refresh: bool = True,
+    ) -> tuple[list[Dict[str, Any]], list[Dict[str, Any]]]:
+        # Evidence can age while the other half is being fetched. Revalidate both
+        # sides after collection and refresh only the stale half. Bound the loop
+        # so a slow provider cannot turn freshness repair into an unbounded retry.
+        for _ in range(3):
+            now = time.time()
+            snapshots_fresh = (
+                not allow_snapshot_refresh
+                or self._preloaded_snapshots_are_usable(snapshots, now=now)
+            )
+            trades_fresh = self._preloaded_trades_are_usable(trades, now=now)
+            if snapshots_fresh and trades_fresh:
+                break
+            snapshot_task = (
+                asyncio.create_task(self._fetch_orderbook_snapshot_series(exchange, symbol))
+                if not snapshots_fresh
+                else None
+            )
+            trades_task = (
+                asyncio.create_task(exchange.fetch_trades(symbol, limit=100))
+                if not trades_fresh
+                else None
+            )
+            try:
+                if snapshot_task is not None:
+                    snapshots = await snapshot_task
+                if trades_task is not None:
+                    trades = await trades_task
+            except asyncio.CancelledError:
+                await self._settle_fetch_task(snapshot_task)
+                await self._settle_fetch_task(trades_task)
+                raise
+            except Exception:
+                await self._settle_fetch_task(snapshot_task)
+                await self._settle_fetch_task(trades_task)
+                raise
+        return snapshots, trades
+
     async def _collect_evidence(
         self,
         exchange: Any,
@@ -155,6 +201,14 @@ class MicrostructureAnalyzer:
 
         snapshots = copy.deepcopy(preloaded_snapshots) if snapshots_preloaded else None
         trades = copy.deepcopy(preloaded_trades) if trades_preloaded else None
+        initial_for_validation = copy.deepcopy(first)
+        initial_for_validation.setdefault("_received_at", preload_now)
+        allow_snapshot_refresh = bool(
+            snapshots_preloaded
+            or self._snapshot_validation_reason(
+                [initial_for_validation], now=preload_now
+            ) is None
+        )
         trades_task = (
             None
             if trades_preloaded
@@ -167,14 +221,13 @@ class MicrostructureAnalyzer:
                 )
             if trades_task is not None:
                 trades = await trades_task
-            if snapshots_preloaded and not self._preloaded_snapshots_are_usable(
-                snapshots, now=time.time()
-            ):
-                snapshots = await self._fetch_orderbook_snapshot_series(exchange, symbol)
-            if trades_preloaded and not self._preloaded_trades_are_usable(
-                trades, now=time.time()
-            ):
-                trades = await exchange.fetch_trades(symbol, limit=100)
+            snapshots, trades = await self._refresh_expired_evidence(
+                exchange,
+                symbol,
+                snapshots,
+                trades,
+                allow_snapshot_refresh=allow_snapshot_refresh,
+            )
             return snapshots, trades, None
         except asyncio.CancelledError:
             await self._settle_fetch_task(trades_task)

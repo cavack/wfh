@@ -475,6 +475,95 @@ def test_preloaded_orderbooks_expiring_during_trade_fetch_are_refreshed() -> Non
     assert result.get("reason") != "stale orderbook snapshot"
 
 
+def test_rest_trades_expiring_during_snapshot_collection_are_refreshed() -> None:
+    analyzer = MicrostructureAnalyzer(snapshot_delay_seconds=0.12)
+    analyzer.trade_ttl_seconds = 0.15
+    analyzer.snapshot_ttl_seconds = 1.0
+    now = time.time()
+
+    class Exchange:
+        def __init__(self) -> None:
+            self.trade_calls = 0
+            self.book_calls = 0
+
+        async def fetch_order_book(self, symbol, limit):
+            self.book_calls += 1
+            observed = time.time()
+            return {
+                "timestamp": int(observed * 1000),
+                "bids": [[10.0, 100.0]],
+                "asks": [[10.1, 100.0]],
+            }
+
+        async def fetch_trades(self, symbol, limit):
+            self.trade_calls += 1
+            observed = int(time.time() * 1000)
+            return [
+                {"timestamp": observed, "side": "sell", "price": 10.0, "amount": 1.0}
+                for _ in range(20)
+            ]
+
+    exchange = Exchange()
+    first = {
+        "timestamp": int(now * 1000),
+        "_received_at": now,
+        "bids": [[10.0, 100.0]],
+        "asks": [[10.1, 100.0]],
+    }
+    _, trades, reason = asyncio.run(
+        analyzer._collect_evidence(exchange, "TEST/USDT:USDT", first, [], [])
+    )
+
+    assert reason is None
+    assert exchange.trade_calls == 2
+    assert analyzer._preloaded_trades_are_usable(trades, now=time.time())
+
+
+def test_rest_snapshots_expiring_during_slow_trade_fetch_are_refreshed() -> None:
+    analyzer = MicrostructureAnalyzer(snapshot_delay_seconds=0.0)
+    analyzer.snapshot_ttl_seconds = 0.15
+    analyzer.trade_ttl_seconds = 1.0
+    now = time.time()
+
+    class Exchange:
+        def __init__(self) -> None:
+            self.trade_calls = 0
+            self.book_calls = 0
+
+        async def fetch_order_book(self, symbol, limit):
+            self.book_calls += 1
+            observed = time.time()
+            return {
+                "timestamp": int(observed * 1000),
+                "bids": [[10.0, 100.0]],
+                "asks": [[10.1, 100.0]],
+            }
+
+        async def fetch_trades(self, symbol, limit):
+            self.trade_calls += 1
+            await asyncio.sleep(0.20)
+            observed = int(time.time() * 1000)
+            return [
+                {"timestamp": observed, "side": "sell", "price": 10.0, "amount": 1.0}
+                for _ in range(20)
+            ]
+
+    exchange = Exchange()
+    first = {
+        "timestamp": int(now * 1000),
+        "_received_at": now,
+        "bids": [[10.0, 100.0]],
+        "asks": [[10.1, 100.0]],
+    }
+    snapshots, _, reason = asyncio.run(
+        analyzer._collect_evidence(exchange, "TEST/USDT:USDT", first, [], [])
+    )
+
+    assert reason is None
+    assert exchange.book_calls == 5
+    assert analyzer._preloaded_snapshots_are_usable(snapshots, now=time.time())
+
+
 def test_preloaded_trades_expiring_during_snapshot_collection_are_refreshed() -> None:
     analyzer = MicrostructureAnalyzer(snapshot_delay_seconds=0.12)
     analyzer.trade_ttl_seconds = 0.15

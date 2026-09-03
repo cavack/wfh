@@ -348,6 +348,33 @@ def test_sse_snapshot_build_failure_is_contained(monkeypatch) -> None:
     ) is None
 
 
+def test_initial_sse_snapshot_aggregation_runs_off_event_loop_thread(monkeypatch) -> None:
+    buffer = DashboardEventBuffer()
+    caller_thread = threading.get_ident()
+    worker_threads: list[int] = []
+
+    def aggregate(**_):
+        worker_threads.append(threading.get_ident())
+        return buffer.publish_snapshot(PAYLOAD, generated_at=20.0, full_snapshot=True)
+
+    monkeypatch.setattr(main, "_dashboard_event_buffer", buffer)
+    monkeypatch.setattr(main, "_publish_dashboard_snapshot_safely", aggregate)
+    monkeypatch.setattr(main, "_sse_clients", set())
+
+    async def first_chunk() -> str:
+        response = await main.stream_candidates(last_event_id="missing")
+        iterator = response.body_iterator
+        try:
+            return await asyncio.wait_for(anext(iterator), timeout=1.0)
+        finally:
+            await iterator.aclose()
+
+    chunk = asyncio.run(first_chunk())
+    assert "event: snapshot" in chunk
+    assert worker_threads
+    assert worker_threads[0] != caller_thread
+
+
 def test_initial_sse_snapshot_failure_waits_for_next_queued_event(monkeypatch) -> None:
     buffer = DashboardEventBuffer()
 
@@ -471,7 +498,7 @@ def test_sse_broadcaster_aggregates_off_event_loop_thread(monkeypatch) -> None:
     monkeypatch.setattr(main, "_sse_clients", {queue})
     monkeypatch.setattr(main, "_publish_dashboard_snapshot_safely", aggregate)
 
-    asyncio.run(main.sse_broadcaster())
+    asyncio.run(asyncio.wait_for(main.sse_broadcaster(), timeout=5.0))
 
     assert worker_threads
     assert worker_threads[0] != caller_thread
@@ -501,7 +528,7 @@ def test_sse_heartbeat_continues_while_snapshot_aggregation_is_blocked(monkeypat
     monkeypatch.setattr(main, "_publish_dashboard_snapshot_safely", aggregate)
     monkeypatch.setattr(main, "_broadcast_dashboard_event", broadcast)
 
-    asyncio.run(main.sse_broadcaster())
+    asyncio.run(asyncio.wait_for(main.sse_broadcaster(), timeout=5.0))
 
     assert started.is_set()
     assert len(heartbeats) >= 2

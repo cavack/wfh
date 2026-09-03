@@ -4325,7 +4325,8 @@ async def stream_candidates(
         try:
             replay = _dashboard_event_buffer.replay_after(last_event_id)
             if replay is None:
-                full_snapshot = _publish_dashboard_snapshot_safely(
+                full_snapshot = await asyncio.to_thread(
+                    _publish_dashboard_snapshot_safely,
                     full_snapshot=True,
                     only_if_changed=False,
                 )
