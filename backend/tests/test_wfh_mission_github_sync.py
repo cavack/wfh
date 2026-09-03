@@ -5,6 +5,8 @@ from contextlib import contextmanager
 import json
 from pathlib import Path
 
+import pytest
+
 from scripts import wfh_mission as mission
 from wfh_mission_test_support import valid_state, write_required_bundle
 
@@ -206,3 +208,12 @@ def test_sync_github_holds_mission_lock_through_remote_publication(monkeypatch, 
 
     assert result["status"] == "SYNCED"
     assert held["value"] is False
+
+
+def test_sync_github_rejects_noncanonical_repository(tmp_path: Path) -> None:
+    root = _mission_dir(tmp_path)
+
+    with pytest.raises(ValueError, match="canonical cavack/wfh"):
+        mission.sync_github(
+            root, repository="other/repo", pointer_issue=100, mission_issue=101
+        )

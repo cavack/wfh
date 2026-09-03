@@ -1289,6 +1289,8 @@ def _github_token() -> str | None:
 
 
 def _validate_github_target(repository: str, pointer_issue: int, mission_issue: int) -> None:
+    if repository != CANONICAL_REPOSITORY:
+        raise ValueError(f"repository must be canonical {CANONICAL_REPOSITORY}")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise ValueError("repository must be owner/name")
     if pointer_issue <= 0 or mission_issue <= 0:

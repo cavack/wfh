@@ -121,6 +121,8 @@ Writes to state/pointer/checkpoint files must be atomic.
 - scientific, runtime and release summaries;
 - exact `next_action`, owner and structured preconditions; supported preconditions are validated state equality or independently observed equality, and anything unsupported/unverifiable fails closed;
 - required capabilities plus a per-capability minimum authorization (`AVAILABLE`, `AUTHORIZED_READ`, or `AUTHORIZED_WRITE`);
+
+Authorization strength is ordered `AVAILABLE < AUTHORIZED_READ < AUTHORIZED_WRITE`; an observed state satisfies a requirement only at the same or a stronger level.
 - last checkpoint id/hash/time;
 - updated timestamp.
 

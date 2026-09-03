@@ -140,14 +140,9 @@ def test_checkpoint_hashes_all_durable_control_state_files(tmp_path: Path) -> No
     pointer = mission.create_checkpoint(root, created_at="2026-09-02T15:30:00Z")
     checkpoint = json.loads((root / pointer["path"]).read_text(encoding="utf-8"))
 
-    assert set(checkpoint["state_files"]) >= {
-        "MISSION_STATE.json",
-        "TASK_GRAPH.json",
-        "EVIDENCE_LEDGER.json",
-        "BRANCH_REGISTRY.json",
-        "SCIENTIFIC_STATE.json",
-        "DECISION_LOG.jsonl",
-    }
+    assert set(checkpoint["state_files"]) == set(mission.DURABLE_STATE_FILES)
+    for name in mission.DURABLE_STATE_FILES:
+        assert checkpoint["state_files"][name] == mission._sha256_bytes((root / name).read_bytes())
 
 
 def test_uncheckpointed_task_graph_change_requires_reconciliation(tmp_path: Path) -> None:
