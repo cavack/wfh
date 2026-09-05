@@ -647,25 +647,29 @@ with sqlite3.connect(dst) as check:
 prune_database_backups() {
   local keep="$WFH_DEPLOY_BACKUP_RETENTION_COUNT"
   local certificate="${STATE_DIR}/last-successful-deploy.txt"
-  local certified_backup=""
+  local backup_root certified_backup="" canonical_certified_backup="" canonical_path
   local line path index=0
   [[ "$keep" =~ ^[1-9][0-9]*$ ]] || return 1
   [[ -d "$BACKUP_DIR" ]] || return 0
+  backup_root="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$BACKUP_DIR")" || return 1
+  [[ -n "$backup_root" && "$backup_root" == /* ]] || return 1
   if [[ -f "$certificate" ]]; then
     certified_backup="$(awk -F= '$1 == "backup" {print substr($0, index($0, "=") + 1); exit}' "$certificate")" || return 1
-    if [[ -n "$certified_backup" && "$certified_backup" != "${BACKUP_DIR}/"* ]]; then
-      return 1
+    if [[ -n "$certified_backup" ]]; then
+      canonical_certified_backup="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$certified_backup")" || return 1
+      [[ "$canonical_certified_backup" == "${backup_root}/"* ]] || return 1
     fi
   fi
   while IFS= read -r line; do
     index=$((index + 1))
     (( index > keep )) || continue
     path="${line#* }"
-    [[ "$path" == "${BACKUP_DIR}/"* ]] || continue
-    if [[ -n "$certified_backup" && "$path" == "$certified_backup" ]]; then
+    canonical_path="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$path")" || return 1
+    [[ "$canonical_path" == "${backup_root}/"* ]] || return 1
+    if [[ -n "$canonical_certified_backup" && "$canonical_path" == "$canonical_certified_backup" ]]; then
       continue
     fi
-    rm -f -- "$path" "${path}.sha256"
+    rm -f -- "$canonical_path" "${canonical_path}.sha256"
   done < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'waterfall_registry.*.db' -printf '%T@ %p\n' | sort -nr)
 }
 
