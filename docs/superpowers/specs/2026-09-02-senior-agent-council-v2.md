@@ -336,6 +336,7 @@ The export bundle contains:
 - `03-WFH-SKILL-AUDIT-SUMMARY-v2.md`
 - `PROJECT-INSTRUCTIONS-v2.txt`
 - `INSTALL-FA-v2.md`
+- `TWFH-RESUME.md` — additive Mission Continuity v1 resume contract for cross-context TWFH recovery.
 - `PROJECT-SOURCE-MANIFEST.json`
 
 `PROJECT-SOURCE-MANIFEST.json` records repository, export schema version, canonical root, generated-at timestamp, source commit SHA, expected files, and SHA-256 hashes for the export files.

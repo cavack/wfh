@@ -32,7 +32,7 @@ function evidence(cascadeStatus: "COMPLETE" | "PARTIAL", antiChase: number) {
       sell_share_pct: 71.5,
     },
     execution: { spread_pct: 0.04, slippage_pct: 0.03 },
-    cascade: { status: cascadeStatus, readiness_points: cascadeStatus === "COMPLETE" ? 9.2 : 7.1 },
+    cascade: { status: cascadeStatus, readiness_points: cascadeStatus === "COMPLETE" ? 9.2 : 7.1, maximum_available: cascadeStatus === "COMPLETE" ? 10 : 8 },
   };
 }
 
@@ -180,6 +180,7 @@ async function fulfillJson(route: Route, body: unknown, status = 200) {
 async function routeDashboard(page: Page, pollSnapshot = snapshot(1)) {
   await page.route(`**${API_PREFIX}**`, async (route) => {
     const pathname = new URL(route.request().url()).pathname;
+    if (pathname.endsWith("/api/candidates/raw")) return fulfillJson(route, pollSnapshot);
     if (pathname.endsWith("/api/candidates")) return fulfillJson(route, pollSnapshot);
     if (pathname.endsWith("/api/stream")) {
       return route.fulfill({ status: 200, contentType: "text/event-stream", body: "retry: 60000\n\n" });
@@ -200,14 +201,14 @@ test("desktop renders canonical decision, plan, tri-state leverage, evidence and
   await expect(entrySection.getByText("$0.1045")).toBeVisible();
   await expect(entrySection.getByText("$0.0965")).toBeVisible();
   await expect(entrySection.getByText("$0.0925")).toBeVisible();
-  await expect(entrySection.getByText("Evidence 100%")).toBeVisible();
+  await expect(entrySection.getByText("Evidence coverage 100%")).toBeVisible();
   await expect(entrySection).toContainText("Cascade");
   await expect(entrySection).toContainText("COMPLETE · 9.2/10");
 
   const formingSection = page.locator("#decision-terminal > section").filter({ has: page.getByRole("heading", { name: /Closest setups/ }) });
   await expect(formingSection.getByText("BETA/USDT:USDT")).toBeVisible();
   await expect(formingSection.getByText("Leverage UNAVAILABLE")).toBeVisible();
-  await expect(formingSection.getByText("Evidence 98%")).toBeVisible();
+  await expect(formingSection.getByText("Evidence coverage 98%")).toBeVisible();
 
   const lateSection = page.locator("#decision-terminal > section").filter({ has: page.getByRole("heading", { name: /Late · do not chase/ }) });
   await expect(lateSection.getByText("GAMMA/USDT:USDT")).toBeVisible();
@@ -216,7 +217,7 @@ test("desktop renders canonical decision, plan, tri-state leverage, evidence and
   await expect(page.getByRole("status", { name: /stale/ })).toBeVisible();
 
   await page.getByText("Research, validation & raw diagnostics").click();
-  await page.getByText("Raw candidate cards").click();
+  await page.getByText("Raw candidate cards · load on demand").click();
   const alphaRaw = page.locator("article.panel").filter({ hasText: "ALPHA/USDT" }).last();
   await expect(alphaRaw.getByText("98/100")).toBeVisible();
   await expect(alphaRaw.getByText("ARMED", { exact: true })).toBeVisible();
@@ -225,6 +226,48 @@ test("desktop renders canonical decision, plan, tri-state leverage, evidence and
   const gammaRaw = page.locator("article.panel").filter({ hasText: "GAMMA/USDT" }).last();
   await expect(gammaRaw.getByText("NOT RECOMMENDED", { exact: true })).toBeVisible();
   expect(errors).toEqual([]);
+});
+
+
+test("malformed display fields fail closed without object stringification", async ({ page }) => {
+  const malformed = snapshot(1) as any;
+  malformed.candidates["ALPHA/USDT:USDT"].metrics.entry_decision.evidence_summary.cascade.status = { unexpected: true };
+  malformed.decision_terminal.recent_changes = [{
+    event_id: { unexpected: true },
+    symbol: { unexpected: true },
+    event_at: Date.now() / 1000,
+    previous_decision: { unexpected: true },
+    decision: { unexpected: true },
+    transition_reason: { unexpected: true },
+  }];
+  await routeDashboard(page, malformed);
+  await page.goto("/dashboard");
+  await expect(page.locator("body")).not.toContainText("[object Object]");
+});
+
+test("raw diagnostics refetch when reopened", async ({ page }) => {
+  let rawRequests = 0;
+  await page.route(`**${API_PREFIX}**`, async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname.endsWith("/api/candidates/raw")) {
+      rawRequests += 1;
+      return fulfillJson(route, snapshot(100 + rawRequests));
+    }
+    if (pathname.endsWith("/api/candidates")) return fulfillJson(route, snapshot(1));
+    if (pathname.endsWith("/api/stream")) {
+      return route.fulfill({ status: 200, contentType: "text/event-stream", body: "retry: 60000\n\n" });
+    }
+    return fulfillJson(route, { state: "UNAVAILABLE" }, 503);
+  });
+
+  await page.goto("/dashboard");
+  await page.getByText("Research, validation & raw diagnostics").click();
+  const rawSummary = page.getByText("Raw candidate cards · load on demand");
+  await rawSummary.click();
+  await expect.poll(() => rawRequests).toBe(1);
+  await rawSummary.click();
+  await rawSummary.click();
+  await expect.poll(() => rawRequests).toBe(2);
 });
 
 test("SSE reconnect accepts a newer canonical snapshot and reorders the decision surface", async ({ page }) => {

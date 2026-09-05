@@ -71,6 +71,19 @@ class MicrostructureAnalyzer:
             and now_ms - int(trade["timestamp"]) <= ttl_ms
         ]
 
+    def _preloaded_snapshots_are_usable(
+        self, snapshots: Any, *, now: float
+    ) -> bool:
+        if not isinstance(snapshots, list) or len(snapshots) != 3:
+            return False
+        if not all(self._snapshot_is_usable(snapshot, now=now) for snapshot in snapshots):
+            return False
+        received = [float(snapshot["_received_at"]) for snapshot in snapshots]
+        return received[-1] - received[0] >= 2.0 * self.snapshot_delay_seconds
+
+    def _preloaded_trades_are_usable(self, trades: Any, *, now: float) -> bool:
+        return isinstance(trades, list) and len(self._fresh_trades(trades, now=now)) >= 20
+
     def _preloaded_evidence_is_usable(
         self,
         snapshots: Any,
@@ -78,16 +91,9 @@ class MicrostructureAnalyzer:
         *,
         now: float,
     ) -> bool:
-        if not isinstance(snapshots, list) or len(snapshots) != 3:
-            return False
-        if not isinstance(trades, list) or len(trades) < 20:
-            return False
-        if not all(self._snapshot_is_usable(snapshot, now=now) for snapshot in snapshots):
-            return False
-        received = [float(snapshot["_received_at"]) for snapshot in snapshots]
-        if received[-1] - received[0] < 2.0 * self.snapshot_delay_seconds:
-            return False
-        return len(self._fresh_trades(trades, now=now)) >= 20
+        return self._preloaded_snapshots_are_usable(
+            snapshots, now=now
+        ) and self._preloaded_trades_are_usable(trades, now=now)
 
     @staticmethod
     def _contract_size(market: Dict[str, Any]) -> float | None:
@@ -96,6 +102,80 @@ class MicrostructureAnalyzer:
         except (TypeError, ValueError):
             return None
         return contract_size if contract_size > 0 else None
+
+    async def _fetch_orderbook_snapshot_series(
+        self,
+        exchange: Any,
+        symbol: str,
+        *,
+        initial: Dict[str, Any] | None = None,
+    ) -> list[Dict[str, Any]]:
+        snapshots: list[Dict[str, Any]] = []
+        if initial is not None:
+            first = copy.deepcopy(initial)
+            first.setdefault("_received_at", time.time())
+            snapshots.append(first)
+        while len(snapshots) < 3:
+            if snapshots:
+                await asyncio.sleep(self.snapshot_delay_seconds)
+            snapshot = await exchange.fetch_order_book(symbol, limit=20)
+            snapshot["_received_at"] = time.time()
+            snapshots.append(snapshot)
+        return snapshots
+
+    @staticmethod
+    async def _settle_fetch_task(task: asyncio.Task | None) -> None:
+        if task is None:
+            return
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    async def _refresh_expired_evidence(
+        self,
+        exchange: Any,
+        symbol: str,
+        snapshots: list[Dict[str, Any]],
+        trades: list[Dict[str, Any]],
+        *,
+        allow_snapshot_refresh: bool = True,
+    ) -> tuple[list[Dict[str, Any]], list[Dict[str, Any]]]:
+        # Evidence can age while the other half is being fetched. Revalidate both
+        # sides after collection and refresh only the stale half. Bound the loop
+        # so a slow provider cannot turn freshness repair into an unbounded retry.
+        for _ in range(3):
+            now = time.time()
+            snapshots_fresh = (
+                not allow_snapshot_refresh
+                or self._preloaded_snapshots_are_usable(snapshots, now=now)
+            )
+            trades_fresh = self._preloaded_trades_are_usable(trades, now=now)
+            if snapshots_fresh and trades_fresh:
+                break
+            snapshot_task = (
+                asyncio.create_task(self._fetch_orderbook_snapshot_series(exchange, symbol))
+                if not snapshots_fresh
+                else None
+            )
+            trades_task = (
+                asyncio.create_task(exchange.fetch_trades(symbol, limit=100))
+                if not trades_fresh
+                else None
+            )
+            try:
+                if snapshot_task is not None:
+                    snapshots = await snapshot_task
+                if trades_task is not None:
+                    trades = await trades_task
+            except asyncio.CancelledError:
+                await self._settle_fetch_task(snapshot_task)
+                await self._settle_fetch_task(trades_task)
+                raise
+            except Exception:
+                await self._settle_fetch_task(snapshot_task)
+                await self._settle_fetch_task(trades_task)
+                raise
+        return snapshots, trades
 
     async def _collect_evidence(
         self,
@@ -106,35 +186,54 @@ class MicrostructureAnalyzer:
         preloaded_trades: list[Dict[str, Any]] | None,
     ) -> tuple[list[Dict[str, Any]] | None, list[Dict[str, Any]] | None, str | None]:
         preload_now = time.time()
-        if self._preloaded_evidence_is_usable(
-            preloaded_snapshots, preloaded_trades, now=preload_now
-        ):
+        snapshots_preloaded = self._preloaded_snapshots_are_usable(
+            preloaded_snapshots, now=preload_now
+        )
+        trades_preloaded = self._preloaded_trades_are_usable(
+            preloaded_trades, now=preload_now
+        )
+        if snapshots_preloaded and trades_preloaded:
             return (
                 copy.deepcopy(preloaded_snapshots),
                 copy.deepcopy(preloaded_trades),
                 None,
             )
 
-        initial = copy.deepcopy(first)
-        initial.setdefault("_received_at", time.time())
-        snapshots = [initial]
-        trades_task = asyncio.create_task(exchange.fetch_trades(symbol, limit=100))
+        snapshots = copy.deepcopy(preloaded_snapshots) if snapshots_preloaded else None
+        trades = copy.deepcopy(preloaded_trades) if trades_preloaded else None
+        initial_for_validation = copy.deepcopy(first)
+        initial_for_validation.setdefault("_received_at", preload_now)
+        allow_snapshot_refresh = bool(
+            snapshots_preloaded
+            or self._snapshot_validation_reason(
+                [initial_for_validation], now=preload_now
+            ) is None
+        )
+        trades_task = (
+            None
+            if trades_preloaded
+            else asyncio.create_task(exchange.fetch_trades(symbol, limit=100))
+        )
         try:
-            for _ in range(2):
-                await asyncio.sleep(self.snapshot_delay_seconds)
-                snapshot = await exchange.fetch_order_book(symbol, limit=20)
-                snapshot["_received_at"] = time.time()
-                snapshots.append(snapshot)
-            trades = await trades_task
+            if snapshots is None:
+                snapshots = await self._fetch_orderbook_snapshot_series(
+                    exchange, symbol, initial=first
+                )
+            if trades_task is not None:
+                trades = await trades_task
+            snapshots, trades = await self._refresh_expired_evidence(
+                exchange,
+                symbol,
+                snapshots,
+                trades,
+                allow_snapshot_refresh=allow_snapshot_refresh,
+            )
             return snapshots, trades, None
         except asyncio.CancelledError:
-            trades_task.cancel()
-            await asyncio.gather(trades_task, return_exceptions=True)
+            await self._settle_fetch_task(trades_task)
             raise
         except Exception:
-            if not trades_task.done():
-                trades_task.cancel()
-            await asyncio.gather(trades_task, return_exceptions=True)
+            await self._settle_fetch_task(trades_task)
             return None, None, "missing live orderbook snapshots or trades"
 
     def _snapshot_validation_reason(

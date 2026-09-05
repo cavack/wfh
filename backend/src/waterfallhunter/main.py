@@ -47,6 +47,7 @@ from waterfallhunter.core.ai_veto import (
 from waterfallhunter.core.risk_manager import build_signal_leverage_advisory
 from waterfallhunter.core.dashboard import compact_metrics
 from waterfallhunter.core.decision_terminal import build_decision_terminal
+from waterfallhunter.core.dashboard_projection import project_dashboard_payload
 from waterfallhunter.core.dashboard_stream import (
     DashboardEventBuffer,
     DashboardSnapshot,
@@ -329,6 +330,11 @@ _sse_clients = set()
 # freshly generated full snapshot.
 _DASHBOARD_REPLAY_EVENT_LIMIT = 8
 _DASHBOARD_CLIENT_QUEUE_LIMIT = 2
+# Rebuilding the canonical dashboard walks all active candidates and multiple
+# read-only enrichers. Coalesce that CPU/DB work independently from the 15s
+# heartbeat so one connected browser cannot force a full aggregation every second.
+_DASHBOARD_SNAPSHOT_BROADCAST_INTERVAL_SECONDS = 5.0
+_DASHBOARD_HEARTBEAT_INTERVAL_SECONDS = 15.0
 _dashboard_event_buffer = DashboardEventBuffer(
     replay_limit=_DASHBOARD_REPLAY_EVENT_LIMIT
 )
@@ -337,6 +343,7 @@ _dashboard_preview_cache: tuple[
     DashboardSnapshot,
     float,
 ] | None = None
+_dashboard_poll_build_task: asyncio.Task[tuple[float, dict[str, Any]]] | None = None
 _DASHBOARD_PREVIEW_CACHE_SECONDS = 1.0
 _background_tasks = set()
 
@@ -551,6 +558,42 @@ if "websocket_shared_evidence_subscribers_metric" not in globals():
     websocket_shared_evidence_subscribers_metric = Gauge(
         "waterfall_websocket_shared_evidence_subscribers",
         "Symbols routed through shared FUEL-RICH market-evidence consumers.",
+    )
+
+if "websocket_direct_exchange_instances_metric" not in globals():
+    websocket_direct_exchange_instances_metric = Gauge(
+        "waterfall_websocket_direct_exchange_instances",
+        "Live symbol-owned direct CCXT Pro exchange instances.",
+    )
+
+if "websocket_liquidation_exchange_instances_metric" not in globals():
+    websocket_liquidation_exchange_instances_metric = Gauge(
+        "waterfall_websocket_liquidation_exchange_instances",
+        "Live symbol-owned liquidation CCXT Pro exchange instances.",
+    )
+
+if "websocket_direct_exchange_retire_tasks_metric" not in globals():
+    websocket_direct_exchange_retire_tasks_metric = Gauge(
+        "waterfall_websocket_direct_exchange_retire_tasks",
+        "Direct CCXT Pro exchange instances currently being retired.",
+    )
+
+if "websocket_liquidation_exchange_retire_tasks_metric" not in globals():
+    websocket_liquidation_exchange_retire_tasks_metric = Gauge(
+        "waterfall_websocket_liquidation_exchange_retire_tasks",
+        "Liquidation CCXT Pro exchange instances currently being retired.",
+    )
+
+if "websocket_ccxt_clients_metric" not in globals():
+    websocket_ccxt_clients_metric = Gauge(
+        "waterfall_websocket_ccxt_clients",
+        "CCXT Pro WebSocket client objects owned by current exchange instances.",
+    )
+
+if "websocket_ccxt_subscriptions_metric" not in globals():
+    websocket_ccxt_subscriptions_metric = Gauge(
+        "waterfall_websocket_ccxt_subscriptions",
+        "CCXT Pro WebSocket subscriptions owned by current exchange instances.",
     )
 
 if "hunter_evaluation_duration_metric" not in globals():
@@ -1506,6 +1549,20 @@ def _update_websocket_metrics() -> None:
     websocket_shared_evidence_subscribers_metric.set(
         float(snapshot["shared_evidence_subscribers"])
     )
+    websocket_direct_exchange_instances_metric.set(
+        float(snapshot["direct_exchange_instances"])
+    )
+    websocket_liquidation_exchange_instances_metric.set(
+        float(snapshot["liquidation_exchange_instances"])
+    )
+    websocket_direct_exchange_retire_tasks_metric.set(
+        float(snapshot["direct_exchange_retire_tasks"])
+    )
+    websocket_liquidation_exchange_retire_tasks_metric.set(
+        float(snapshot["liquidation_exchange_retire_tasks"])
+    )
+    websocket_ccxt_clients_metric.set(float(snapshot["ccxt_clients"]))
+    websocket_ccxt_subscriptions_metric.set(float(snapshot["ccxt_subscriptions"]))
 
 
 def _update_signal_settlement_worker_metrics() -> None:
@@ -2282,7 +2339,7 @@ def get_formatted_candidates(*, evaluation_time: float | None = None):  # NOSONA
 
     decision_terminal = build_decision_terminal(
         sorted_candidates,
-        recent_changes=entry_decision_store.recent_changes(limit=10),
+        recent_changes=entry_decision_store.recent_transitions(limit=10),
     )
 
     return {
@@ -2302,13 +2359,20 @@ def get_formatted_candidates(*, evaluation_time: float | None = None):  # NOSONA
     }
 
 
+def _get_live_dashboard_payload(*, evaluation_time: float) -> dict[str, Any]:
+    """Return the bounded public projection of the canonical dashboard state."""
+    return project_dashboard_payload(
+        get_formatted_candidates(evaluation_time=evaluation_time)
+    )
+
+
 def _publish_dashboard_snapshot(
     *,
     full_snapshot: bool,
     only_if_changed: bool = False,
 ) -> DashboardStreamEvent | None:
     generated_at = time.time()
-    payload = get_formatted_candidates(evaluation_time=generated_at)
+    payload = _get_live_dashboard_payload(evaluation_time=generated_at)
     if only_if_changed:
         return _dashboard_event_buffer.publish_snapshot_if_changed(
             payload,
@@ -2341,27 +2405,106 @@ def _broadcast_dashboard_event(event: DashboardStreamEvent) -> None:
                 pass
 
 
-async def sse_broadcaster():
-    last_heartbeat_at = 0.0
-    while _hunter_running:
-        if _sse_clients:
-            event = _publish_dashboard_snapshot(
-                full_snapshot=False,
-                only_if_changed=True,
-            )
-            if event is not None:
-                _broadcast_dashboard_event(event)
-            now = time.time()
-            if now - last_heartbeat_at >= 15.0:
-                heartbeat = _dashboard_event_buffer.publish_heartbeat(
-                    generated_at=now,
-                )
-                _broadcast_dashboard_event(heartbeat)
-                last_heartbeat_at = now
-
-        await asyncio.sleep(
-            1.0
+def _publish_dashboard_snapshot_safely(
+    *,
+    full_snapshot: bool,
+    only_if_changed: bool,
+) -> DashboardStreamEvent | None:
+    """Contain dashboard aggregation faults so one bad snapshot cannot kill SSE."""
+    try:
+        return _publish_dashboard_snapshot(
+            full_snapshot=full_snapshot,
+            only_if_changed=only_if_changed,
         )
+    except Exception:
+        logger.exception("Dashboard snapshot aggregation failed; SSE loop will continue")
+        return None
+
+
+def _dashboard_snapshot_broadcast_due(
+    last_snapshot_at: float,
+    now_monotonic: float,
+) -> bool:
+    """Return whether the expensive dashboard aggregation budget is due."""
+    return (
+        last_snapshot_at <= 0.0
+        or now_monotonic - last_snapshot_at
+        >= _DASHBOARD_SNAPSHOT_BROADCAST_INTERVAL_SECONDS
+    )
+
+
+def _dashboard_snapshot_task_result(
+    task: asyncio.Task,
+) -> DashboardStreamEvent | None:
+    try:
+        return task.result()
+    except asyncio.CancelledError:
+        return None
+    except Exception:
+        logger.exception("Dashboard snapshot worker failed; SSE loop will continue")
+        return None
+
+
+def _consume_dashboard_snapshot_task(
+    task: asyncio.Task | None,
+) -> tuple[asyncio.Task | None, float | None]:
+    if task is None or not task.done():
+        return task, None
+    event = _dashboard_snapshot_task_result(task)
+    if event is not None and _sse_clients:
+        _broadcast_dashboard_event(event)
+    return None, time.monotonic()
+
+
+def _start_dashboard_snapshot_task() -> asyncio.Task:
+    return asyncio.create_task(
+        asyncio.to_thread(
+            _publish_dashboard_snapshot_safely,
+            full_snapshot=False,
+            only_if_changed=True,
+        )
+    )
+
+
+def _dashboard_heartbeat_due(last_heartbeat_at: float, now_monotonic: float) -> bool:
+    return (
+        last_heartbeat_at <= 0.0
+        or now_monotonic - last_heartbeat_at
+        >= _DASHBOARD_HEARTBEAT_INTERVAL_SECONDS
+    )
+
+
+def _publish_dashboard_heartbeat() -> None:
+    heartbeat = _dashboard_event_buffer.publish_heartbeat(generated_at=time.time())
+    _broadcast_dashboard_event(heartbeat)
+
+
+async def sse_broadcaster():
+    last_snapshot_at = 0.0
+    last_heartbeat_at = 0.0
+    snapshot_task: asyncio.Task | None = None
+    try:
+        while _hunter_running:
+            now_monotonic = time.monotonic()
+            snapshot_task, completed_at = _consume_dashboard_snapshot_task(snapshot_task)
+            if completed_at is not None:
+                last_snapshot_at = completed_at
+
+            if _sse_clients:
+                if (
+                    snapshot_task is None
+                    and _dashboard_snapshot_broadcast_due(last_snapshot_at, now_monotonic)
+                ):
+                    snapshot_task = _start_dashboard_snapshot_task()
+                if _dashboard_heartbeat_due(last_heartbeat_at, now_monotonic):
+                    _publish_dashboard_heartbeat()
+                    last_heartbeat_at = now_monotonic
+
+            await asyncio.sleep(1.0)
+    finally:
+        if snapshot_task is not None:
+            snapshot_task.cancel()
+            await asyncio.gather(snapshot_task, return_exceptions=True)
 
 
 def _build_runtime_lifecycle_v2_evidence(
@@ -3685,10 +3828,8 @@ async def hunter_loop(
             for symbol, task in tuple(in_flight.items()):
                 if task.done():
                     in_flight.pop(symbol, None)
-                    try:
+                    if not task.cancelled():
                         task.result()
-                    except asyncio.CancelledError:
-                        pass
 
             _hunter_in_flight_count = len(in_flight)
             if candidates:
@@ -4235,10 +4376,27 @@ async def stream_candidates(
         try:
             replay = _dashboard_event_buffer.replay_after(last_event_id)
             if replay is None:
-                full_snapshot = _publish_dashboard_snapshot(full_snapshot=True)
+                full_snapshot = await asyncio.to_thread(
+                    _publish_dashboard_snapshot_safely,
+                    full_snapshot=True,
+                    only_if_changed=False,
+                )
                 if full_snapshot is None:
-                    raise RuntimeError("full dashboard snapshot was not published")
-                replay = [full_snapshot]
+                    replay = []
+                else:
+                    queued: list[DashboardStreamEvent] = []
+                    while True:
+                        try:
+                            queued.append(q.get_nowait())
+                        except asyncio.QueueEmpty:
+                            break
+                    replay = sorted(
+                        {
+                            int(event.event_id): event
+                            for event in (*queued, full_snapshot)
+                        }.values(),
+                        key=lambda event: int(event.event_id),
+                    )
             for event in replay:
                 delivered_event_id = max(delivered_event_id, int(event.event_id))
                 yield serialize_sse_event(event)
@@ -4266,47 +4424,53 @@ async def stream_candidates(
     )
 
 
-def _get_dashboard_poll_snapshot() -> DashboardSnapshot:
-    global _dashboard_preview_cache
+async def _get_dashboard_poll_snapshot() -> DashboardSnapshot:
+    global _dashboard_preview_cache, _dashboard_poll_build_task
 
     latest = _dashboard_event_buffer.latest_snapshot()
-    if latest is not None and (
-        _sse_clients
-        or time.time() - latest.generated_at <= _DASHBOARD_PREVIEW_CACHE_SECONDS
+    if (
+        latest is not None
+        and time.time() - latest.generated_at <= _DASHBOARD_PREVIEW_CACHE_SECONDS
     ):
         return latest
 
     now_monotonic = time.monotonic()
     cached = _dashboard_preview_cache
-
     if cached is not None:
-        (
-            cached_buffer,
-            cached_snapshot,
-            cached_at,
-        ) = cached
-
+        cached_buffer, cached_snapshot, cached_at = cached
         if (
             cached_buffer is _dashboard_event_buffer
-            and now_monotonic - cached_at
-            <= _DASHBOARD_PREVIEW_CACHE_SECONDS
+            and now_monotonic - cached_at <= _DASHBOARD_PREVIEW_CACHE_SECONDS
         ):
             return cached_snapshot
 
-    generated_at = time.time()
-    snapshot = _dashboard_event_buffer.preview_snapshot(
-        get_formatted_candidates(
-            evaluation_time=generated_at
-        ),
-        generated_at=generated_at,
-    )
+    task = _dashboard_poll_build_task
+    if task is None or task.done():
+        generated_at = time.time()
 
+        async def build() -> tuple[float, dict[str, Any]]:
+            payload = await asyncio.to_thread(
+                _get_live_dashboard_payload, evaluation_time=generated_at
+            )
+            return generated_at, payload
+
+        task = asyncio.create_task(build())
+        _dashboard_poll_build_task = task
+
+    try:
+        generated_at, payload = await asyncio.shield(task)
+    finally:
+        if task.done() and _dashboard_poll_build_task is task:
+            _dashboard_poll_build_task = None
+
+    snapshot = _dashboard_event_buffer.preview_snapshot(
+        payload, generated_at=generated_at
+    )
     _dashboard_preview_cache = (
         _dashboard_event_buffer,
         snapshot,
         time.monotonic(),
     )
-
     return snapshot
 
 
@@ -4317,4 +4481,22 @@ def _get_dashboard_poll_snapshot() -> DashboardSnapshot:
 )
 async def get_candidates(response: Response):
     response.headers["Cache-Control"] = "no-store"
-    return _get_dashboard_poll_snapshot()
+    return await _get_dashboard_poll_snapshot()
+
+
+@app.get(
+    "/api/candidates/raw",
+    response_model=DashboardSnapshot,
+    response_model_exclude_none=False,
+)
+async def get_raw_candidates(response: Response):
+    """Load full diagnostics on demand; never push them through the live SSE path."""
+    response.headers["Cache-Control"] = "no-store"
+    generated_at = time.time()
+    raw_payload = await asyncio.to_thread(
+        get_formatted_candidates, evaluation_time=generated_at
+    )
+    return _dashboard_event_buffer.preview_snapshot(
+        raw_payload,
+        generated_at=generated_at,
+    )

@@ -137,6 +137,46 @@ def compact_metrics(
             if key in microstructure
         }
 
+    technical_plan = metrics.get("technical_trade_plan_shadow")
+    if isinstance(technical_plan, dict):
+        setup = technical_plan.get("setup")
+        reference = technical_plan.get("reference")
+        plan_fields = (
+            "version",
+            "observational_only",
+            "hard_gating_allowed",
+            "available",
+            "feasible",
+            "status",
+        )
+        compact_plan = {
+            key: technical_plan[key]
+            for key in plan_fields
+            if key in technical_plan
+        }
+        if isinstance(setup, dict):
+            setup_fields = (
+                "status",
+                "entry_price",
+                "stop_loss",
+                "take_profit_1",
+                "take_profit_2",
+                "take_profit_3",
+                "reward_to_risk",
+            )
+            compact_plan["setup"] = {
+                key: setup[key]
+                for key in setup_fields
+                if key in setup
+            }
+        if isinstance(reference, dict):
+            compact_plan["reference"] = {
+                key: reference[key]
+                for key in ("price", "source")
+                if key in reference
+            }
+        result["technical_trade_plan_shadow"] = compact_plan
+
     position_setup = metrics.get(
         "position_setup"
     )

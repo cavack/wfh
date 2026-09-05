@@ -51,6 +51,29 @@ export function tradePlanAvailable(value: unknown): boolean {
     .every((key) => finite(plan[key]) !== undefined);
 }
 
+export function decisionPlanPresentation(
+  metricsValue: unknown,
+  decisionValue: unknown,
+): { kind: "canonical" | "reference" | "unavailable"; plan: Rec } {
+  const metrics = record(metricsValue);
+  const decision = record(decisionValue);
+  const canonical = record(decision.trade_plan);
+  if (tradePlanAvailable(canonical)) return { kind: "canonical", plan: canonical };
+
+  const shadow = record(metrics.technical_trade_plan_shadow);
+  const reference = record(shadow.setup);
+  if (
+    shadow.available === true
+    && shadow.feasible === true
+    && shadow.observational_only === true
+    && shadow.hard_gating_allowed === false
+    && tradePlanAvailable(reference)
+  ) {
+    return { kind: "reference", plan: reference };
+  }
+  return { kind: "unavailable", plan: {} };
+}
+
 export function rawLeveragePresentation(metricsValue: unknown): string {
   const metrics = record(metricsValue);
   const leverage = finite(metrics.applied_leverage);
