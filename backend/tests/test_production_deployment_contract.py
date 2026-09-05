@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -247,6 +249,73 @@ def test_successful_deploy_prunes_backups_before_publishing_certificate() -> Non
     prune_index = main_sequence.index("prune_database_backups")
     certificate_index = main_sequence.index('cat > "${STATE_DIR}/last-successful-deploy.txt"')
     assert prune_index < certificate_index
+
+
+def test_failed_deploy_retention_preserves_current_certified_backup(tmp_path: Path) -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    prune_body = text.split("prune_database_backups() {", maxsplit=1)[1].split(
+        "}\n\nassert_telegram_delivery_disabled()", maxsplit=1
+    )[0]
+    backup_dir = tmp_path / "backups"
+    state_dir = tmp_path / "state"
+    backup_dir.mkdir()
+    state_dir.mkdir()
+    backups = [
+        backup_dir / f"waterfall_registry.{index}.db" for index in range(4)
+    ]
+    for index, backup in enumerate(backups):
+        backup.write_bytes(f"backup-{index}".encode())
+        os.utime(backup, (100 + index, 100 + index))
+        backup.with_suffix(backup.suffix + ".sha256").write_text("evidence\n")
+    certified_alias = backup_dir / "." / backups[0].name
+    (state_dir / "last-successful-deploy.txt").write_text(
+        f"revision={'a' * 40}\nbackup={backup_dir}/./{backups[0].name}\n", encoding="utf-8"
+    )
+    assert certified_alias.resolve() == backups[0].resolve()
+    script = f"""set -euo pipefail
+BACKUP_DIR={shlex.quote(str(backup_dir))}
+STATE_DIR={shlex.quote(str(state_dir))}
+WFH_DEPLOY_BACKUP_RETENTION_COUNT=2
+prune_database_backups() {{{prune_body}
+}}
+prune_database_backups
+"""
+    subprocess.run(["bash", "-c", script], check=True)
+    assert backups[0].exists(), "certificate-bound backup must survive failed-deploy pruning"
+    assert backups[0].with_suffix(backups[0].suffix + ".sha256").exists()
+    assert not backups[1].exists()
+    assert not backups[1].with_suffix(backups[1].suffix + ".sha256").exists()
+    assert backups[2].exists()
+    assert backups[3].exists()
+
+
+def test_backup_retention_rejects_certificate_path_traversal(tmp_path: Path) -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    prune_body = text.split("prune_database_backups() {", maxsplit=1)[1].split(
+        "}\n\nassert_telegram_delivery_disabled()", maxsplit=1
+    )[0]
+    backup_dir = tmp_path / "backups"
+    state_dir = tmp_path / "state"
+    backup_dir.mkdir()
+    state_dir.mkdir()
+    backups = [backup_dir / f"waterfall_registry.{index}.db" for index in range(3)]
+    for index, backup in enumerate(backups):
+        backup.write_bytes(f"backup-{index}".encode())
+        os.utime(backup, (100 + index, 100 + index))
+    (state_dir / "last-successful-deploy.txt").write_text(
+        f"revision={'b' * 40}\nbackup={backup_dir}/../escape.db\n", encoding="utf-8"
+    )
+    script = f"""set -euo pipefail
+BACKUP_DIR={shlex.quote(str(backup_dir))}
+STATE_DIR={shlex.quote(str(state_dir))}
+WFH_DEPLOY_BACKUP_RETENTION_COUNT=1
+prune_database_backups() {{{prune_body}
+}}
+prune_database_backups
+"""
+    result = subprocess.run(["bash", "-c", script], check=False)
+    assert result.returncode != 0
+    assert all(backup.exists() for backup in backups)
 
 
 def test_compose_run_commands_cannot_consume_streamed_deploy_script() -> None:
