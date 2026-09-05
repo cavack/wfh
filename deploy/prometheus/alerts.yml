@@ -43,6 +43,13 @@ groups:
           severity: warning
         annotations:
           summary: CCXT WebSocket clients remain without corresponding subscriptions
+      - alert: WaterfallWebSocketDirectIdleClients
+        expr: waterfall_websocket_direct_idle_ccxt_clients > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Direct-evidence CCXT clients remain without subscriptions or pending futures
       - alert: WaterfallWebSocketRetirementBacklog
         expr: waterfall_websocket_direct_exchange_retire_tasks + waterfall_websocket_liquidation_exchange_retire_tasks + waterfall_websocket_shared_evidence_reconcile_tasks > 8
         for: 2m
