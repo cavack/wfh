@@ -910,48 +910,61 @@ class WebSocketManager:
             )
         return True
 
+    def _shared_evidence_generation_state(
+        self, ex_name: str
+    ) -> tuple[tuple[str, ...], tuple[str, ...], Any | None, int]:
+        return (
+            self._shared_evidence_symbols(ex_name),
+            self.shared_evidence_active_symbols.get(ex_name, ()),
+            self.shared_evidence_exchanges.get(ex_name),
+            self._shared_evidence_task_count(ex_name),
+        )
+
+    async def _reconcile_shared_evidence_once(
+        self, ex_name: str, market_source: Any | None
+    ) -> tuple[bool, Any | None]:
+        desired, active, exchange, task_count = self._shared_evidence_generation_state(
+            ex_name
+        )
+        if not desired and exchange is None and task_count == 0:
+            self.shared_evidence_active_symbols.pop(ex_name, None)
+            return False, market_source
+        generation_current = (
+            bool(desired)
+            and exchange is not None
+            and desired == active
+            and task_count == 3
+        )
+        if generation_current:
+            return False, market_source
+
+        generation_exists = exchange is not None or bool(active) or task_count > 0
+        if generation_exists:
+            retired, market_source = await self._retire_shared_evidence_generation(ex_name)
+            if not retired:
+                return False, market_source
+
+        desired = self._shared_evidence_symbols(ex_name)
+        if not desired or ex_name in self.unsupported_shared_evidence_exchanges:
+            return False, market_source
+        started = await self._start_shared_evidence_generation(
+            ex_name, desired, market_source=market_source
+        )
+        if not started:
+            return False, market_source
+        return self._shared_evidence_symbols(ex_name) != desired, market_source
+
     async def _reconcile_shared_evidence_exchange(self, ex_name: str) -> None:
         lock = self._shared_evidence_reconcile_locks.setdefault(
             ex_name, asyncio.Lock()
         )
         async with lock:
             market_source: Any | None = None
-            while True:
-                desired = self._shared_evidence_symbols(ex_name)
-                active = self.shared_evidence_active_symbols.get(ex_name, ())
-                exchange = self.shared_evidence_exchanges.get(ex_name)
-                task_count = self._shared_evidence_task_count(ex_name)
-
-                if not desired and exchange is None and task_count == 0:
-                    self.shared_evidence_active_symbols.pop(ex_name, None)
-                    return
-                if (
-                    desired
-                    and exchange is not None
-                    and desired == active
-                    and task_count == 3
-                ):
-                    return
-
-                if exchange is not None or active or task_count:
-                    retired, market_source = await self._retire_shared_evidence_generation(
-                        ex_name
-                    )
-                    if not retired:
-                        return
-
-                desired = self._shared_evidence_symbols(ex_name)
-                if not desired:
-                    return
-                if ex_name in self.unsupported_shared_evidence_exchanges:
-                    return
-                if not await self._start_shared_evidence_generation(
-                    ex_name, desired, market_source=market_source
-                ):
-                    return
-
-                if self._shared_evidence_symbols(ex_name) == desired:
-                    return
+            repeat = True
+            while repeat:
+                repeat, market_source = await self._reconcile_shared_evidence_once(
+                    ex_name, market_source
+                )
 
     async def _run_shared_evidence_reconciler(self, ex_name: str) -> None:
         while ex_name in self._shared_evidence_reconcile_dirty:

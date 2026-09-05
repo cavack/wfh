@@ -187,6 +187,42 @@ async def _wait_until(predicate, *, timeout: float = 1.0) -> None:
         await asyncio.sleep(0.01)
 
 
+def _install_generation_factory(monkeypatch, manager, builder=None):
+    created: list[_GenerationExchange] = []
+
+    def new_exchange(_name: str):
+        index = len(created)
+        exchange = builder(index) if builder is not None else _GenerationExchange()
+        created.append(exchange)
+        return exchange
+
+    monkeypatch.setattr(manager, "_new_exchange", new_exchange)
+    return created
+
+
+async def _seed_two_symbol_generation(
+    manager: WebSocketManager, created: list[_GenerationExchange]
+) -> None:
+    manager.subscribe_shared_evidence("binance", "A/USDT:USDT")
+    manager.subscribe_shared_evidence("binance", "B/USDT:USDT")
+    await _wait_until(lambda: len(created) == 1 and _client_counts(created) == (3, 6))
+
+
+async def _begin_replacement(
+    manager: WebSocketManager, created: list[_GenerationExchange]
+) -> None:
+    manager.subscribe_shared_evidence("binance", "C/USDT:USDT")
+    manager.unsubscribe_shared_evidence("binance", "A/USDT:USDT")
+    await _wait_until(lambda: created[0].close_started.is_set())
+
+
+async def _complete_replacement(
+    manager: WebSocketManager, created: list[_GenerationExchange]
+) -> None:
+    await _begin_replacement(manager, created)
+    await _wait_until(lambda: len(created) == 2 and _client_counts(created) == (3, 6))
+
+
 def test_shared_evidence_capability_requires_explicit_watch_and_unwatch_support() -> None:
     manager = WebSocketManager()
     assert manager._shared_evidence_capable(_CapabilityExchange()) is True
@@ -239,7 +275,8 @@ def test_shared_evidence_update_reuses_existing_causal_caches(kind: str) -> None
     )
     if kind == "orderbook":
         cached = manager.get_realtime_orderbook("binance", "AAA/USDT:USDT")
-        assert cached is not None and cached["_received_at"] == now
+        assert cached is not None
+        assert cached["_received_at"] == now
     elif kind == "trades":
         assert [
             row["id"]
@@ -343,25 +380,19 @@ def test_shared_membership_churn_keeps_one_transport_generation(monkeypatch) -> 
 
 def test_replacement_is_created_only_after_prior_exchange_closed(monkeypatch) -> None:
     manager = WebSocketManager()
-    created: list[_GenerationExchange] = []
     prior_closed_at_creation: list[bool] = []
+    created: list[_GenerationExchange]
 
-    def new_exchange(_name: str):
+    def builder(_index: int) -> _GenerationExchange:
         if created:
             prior_closed_at_creation.append(created[-1].closed)
-        exchange = _GenerationExchange()
-        created.append(exchange)
-        return exchange
+        return _GenerationExchange()
 
-    monkeypatch.setattr(manager, "_new_exchange", new_exchange)
+    created = _install_generation_factory(monkeypatch, manager, builder)
 
     async def scenario() -> None:
-        manager.subscribe_shared_evidence("binance", "A/USDT:USDT")
-        manager.subscribe_shared_evidence("binance", "B/USDT:USDT")
-        await _wait_until(lambda: len(created) == 1 and _client_counts(created) == (3, 6))
-        manager.subscribe_shared_evidence("binance", "C/USDT:USDT")
-        manager.unsubscribe_shared_evidence("binance", "A/USDT:USDT")
-        await _wait_until(lambda: len(created) == 2 and _client_counts(created) == (3, 6))
+        await _seed_two_symbol_generation(manager, created)
+        await _complete_replacement(manager, created)
         await manager.close_all()
 
     asyncio.run(scenario())
@@ -370,22 +401,11 @@ def test_replacement_is_created_only_after_prior_exchange_closed(monkeypatch) ->
 
 def test_fresh_generation_copies_only_static_market_metadata(monkeypatch) -> None:
     manager = WebSocketManager()
-    created: list[_GenerationExchange] = []
-
-    def new_exchange(_name: str):
-        exchange = _GenerationExchange()
-        created.append(exchange)
-        return exchange
-
-    monkeypatch.setattr(manager, "_new_exchange", new_exchange)
+    created = _install_generation_factory(monkeypatch, manager)
 
     async def scenario() -> None:
-        manager.subscribe_shared_evidence("binance", "A/USDT:USDT")
-        manager.subscribe_shared_evidence("binance", "B/USDT:USDT")
-        await _wait_until(lambda: len(created) == 1 and _client_counts(created) == (3, 6))
-        manager.subscribe_shared_evidence("binance", "C/USDT:USDT")
-        manager.unsubscribe_shared_evidence("binance", "A/USDT:USDT")
-        await _wait_until(lambda: len(created) == 2 and _client_counts(created) == (3, 6))
+        await _seed_two_symbol_generation(manager, created)
+        await _complete_replacement(manager, created)
         await manager.close_all()
 
     asyncio.run(scenario())
@@ -397,24 +417,12 @@ def test_fresh_generation_copies_only_static_market_metadata(monkeypatch) -> Non
 
 def test_membership_changes_during_retirement_are_latest_wins(monkeypatch) -> None:
     manager = WebSocketManager()
-    created: list[_GenerationExchange] = []
-
-    def new_exchange(_name: str):
-        exchange = _GenerationExchange()
-        created.append(exchange)
-        return exchange
-
-    monkeypatch.setattr(manager, "_new_exchange", new_exchange)
+    created = _install_generation_factory(monkeypatch, manager)
 
     async def scenario() -> None:
-        manager.subscribe_shared_evidence("binance", "A/USDT:USDT")
-        manager.subscribe_shared_evidence("binance", "B/USDT:USDT")
-        await _wait_until(lambda: len(created) == 1 and _client_counts(created) == (3, 6))
+        await _seed_two_symbol_generation(manager, created)
         created[0].close_release.clear()
-
-        manager.subscribe_shared_evidence("binance", "C/USDT:USDT")
-        manager.unsubscribe_shared_evidence("binance", "A/USDT:USDT")
-        await _wait_until(lambda: created[0].close_started.is_set())
+        await _begin_replacement(manager, created)
         assert len(created) == 1
 
         manager.subscribe_shared_evidence("binance", "D/USDT:USDT")
@@ -429,27 +437,24 @@ def test_membership_changes_during_retirement_are_latest_wins(monkeypatch) -> No
     asyncio.run(scenario())
 
 
+async def _assert_replacement_is_blocked(
+    manager: WebSocketManager, created: list[_GenerationExchange]
+) -> None:
+    await _seed_two_symbol_generation(manager, created)
+    await _begin_replacement(manager, created)
+    await asyncio.sleep(0.05)
+    assert len(created) == 1
+    assert "binance" in manager.shared_evidence_blocked_exchanges
+
+
 def test_failed_retirement_blocks_replacement(monkeypatch) -> None:
     manager = WebSocketManager()
-    created: list[_GenerationExchange] = []
-
-    def new_exchange(_name: str):
-        exchange = _GenerationExchange(fail_close=(len(created) == 0))
-        created.append(exchange)
-        return exchange
-
-    monkeypatch.setattr(manager, "_new_exchange", new_exchange)
+    created = _install_generation_factory(
+        monkeypatch, manager, lambda index: _GenerationExchange(fail_close=index == 0)
+    )
 
     async def scenario() -> None:
-        manager.subscribe_shared_evidence("binance", "A/USDT:USDT")
-        manager.subscribe_shared_evidence("binance", "B/USDT:USDT")
-        await _wait_until(lambda: len(created) == 1 and _client_counts(created) == (3, 6))
-        manager.subscribe_shared_evidence("binance", "C/USDT:USDT")
-        manager.unsubscribe_shared_evidence("binance", "A/USDT:USDT")
-        await _wait_until(lambda: created[0].close_started.is_set())
-        await asyncio.sleep(0.05)
-        assert len(created) == 1
-        assert "binance" in getattr(manager, "shared_evidence_blocked_exchanges", set())
+        await _assert_replacement_is_blocked(manager, created)
         assert manager.shared_evidence_subscribers["binance"] == {
             "B/USDT:USDT",
             "C/USDT:USDT",
@@ -460,28 +465,16 @@ def test_failed_retirement_blocks_replacement(monkeypatch) -> None:
     asyncio.run(scenario())
 
 
-
 def test_close_that_retains_ccxt_clients_blocks_replacement(monkeypatch) -> None:
     manager = WebSocketManager()
-    created: list[_GenerationExchange] = []
-
-    def new_exchange(_name: str):
-        exchange = _GenerationExchange(retain_clients_on_close=(len(created) == 0))
-        created.append(exchange)
-        return exchange
-
-    monkeypatch.setattr(manager, "_new_exchange", new_exchange)
+    created = _install_generation_factory(
+        monkeypatch,
+        manager,
+        lambda index: _GenerationExchange(retain_clients_on_close=index == 0),
+    )
 
     async def scenario() -> None:
-        manager.subscribe_shared_evidence("binance", "A/USDT:USDT")
-        manager.subscribe_shared_evidence("binance", "B/USDT:USDT")
-        await _wait_until(lambda: len(created) == 1 and _client_counts(created) == (3, 6))
-        manager.subscribe_shared_evidence("binance", "C/USDT:USDT")
-        manager.unsubscribe_shared_evidence("binance", "A/USDT:USDT")
-        await _wait_until(lambda: created[0].close_started.is_set())
-        await asyncio.sleep(0.05)
-        assert len(created) == 1
-        assert "binance" in getattr(manager, "shared_evidence_blocked_exchanges", set())
+        await _assert_replacement_is_blocked(manager, created)
         created[0].retain_clients_on_close = False
         await manager.close_all()
 
@@ -607,24 +600,12 @@ def test_close_all_closes_direct_shared_and_reconcile_resources(monkeypatch) -> 
 
 def test_close_all_drains_reconcile_blocked_in_exchange_close(monkeypatch) -> None:
     manager = WebSocketManager()
-    created: list[_GenerationExchange] = []
-
-    def new_exchange(_name: str):
-        exchange = _GenerationExchange()
-        created.append(exchange)
-        return exchange
-
-    monkeypatch.setattr(manager, "_new_exchange", new_exchange)
+    created = _install_generation_factory(monkeypatch, manager)
 
     async def scenario() -> None:
-        manager.subscribe_shared_evidence("binance", "A/USDT:USDT")
-        manager.subscribe_shared_evidence("binance", "B/USDT:USDT")
-        await _wait_until(lambda: len(created) == 1 and _client_counts(created) == (3, 6))
-
+        await _seed_two_symbol_generation(manager, created)
         created[0].close_release.clear()
-        manager.subscribe_shared_evidence("binance", "C/USDT:USDT")
-        manager.unsubscribe_shared_evidence("binance", "A/USDT:USDT")
-        await _wait_until(lambda: created[0].close_started.is_set())
+        await _begin_replacement(manager, created)
 
         shutdown = asyncio.create_task(manager.close_all())
         await asyncio.sleep(0.02)
