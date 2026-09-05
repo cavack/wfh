@@ -446,3 +446,88 @@ def test_resubscribe_waits_for_prior_direct_symbol_retirement() -> None:
 
     assert stream_id not in manager._direct_symbol_retire_tasks
     assert exchange.clients == {}
+
+
+def test_cross_symbol_direct_start_waits_for_shared_client_retirement() -> None:
+    manager = WebSocketManager()
+    old_symbol = "OLD/USDT:USDT"
+    new_symbol = "NEW/USDT:USDT"
+    new_stream_id = f"bybit:{new_symbol}"
+
+    class RaceClient:
+        def __init__(self, initial_subscription: str | None = None) -> None:
+            self.subscriptions = (
+                {initial_subscription: object()} if initial_subscription else {}
+            )
+            self.close_started = asyncio.Event()
+            self.close_release = asyncio.Event()
+            self.closed = False
+
+        async def close(self) -> None:
+            self.close_started.set()
+            await self.close_release.wait()
+            self.closed = True
+            self.subscriptions.clear()
+
+    class RaceExchange:
+        def __init__(self) -> None:
+            self.initial_client = RaceClient("old-orderbook")
+            self.clients = {"ws": self.initial_client}
+            self.new_subscribed = asyncio.Event()
+            self.new_release = asyncio.Event()
+
+        async def un_watch_order_book(self, _symbol: str) -> None:
+            client = self.clients.get("ws")
+            if client and client.subscriptions:
+                client.subscriptions.pop(next(iter(client.subscriptions)))
+
+        async def un_watch_ticker(self, _symbol: str) -> None:
+            return None
+
+        async def un_watch_trades(self, _symbol: str) -> None:
+            return None
+
+        async def watch_order_book(self, symbol: str, *, limit: int) -> dict:
+            client = self.clients.get("ws")
+            if client is None:
+                client = RaceClient()
+                client.close_release.set()
+                self.clients["ws"] = client
+            client.subscriptions[f"book:{symbol}"] = object()
+            self.new_subscribed.set()
+            await self.new_release.wait()
+            return {"symbol": symbol, "bids": [[1.0, 1.0]], "asks": [[1.1, 1.0]]}
+
+    exchange = RaceExchange()
+
+    async def scenario() -> None:
+        manager.exchanges["bybit"] = exchange
+        retire = asyncio.create_task(
+            manager._retire_direct_symbol("bybit", old_symbol, ())
+        )
+        await asyncio.wait_for(exchange.initial_client.close_started.wait(), timeout=1.0)
+
+        new_task = asyncio.create_task(
+            manager.watch_orderbook_stream("bybit", new_symbol)
+        )
+        manager.active_tasks[new_stream_id] = new_task
+        try:
+            await asyncio.sleep(0.02)
+            assert exchange.new_subscribed.is_set() is False
+
+            exchange.initial_client.close_release.set()
+            await asyncio.wait_for(retire, timeout=1.0)
+            await asyncio.wait_for(exchange.new_subscribed.wait(), timeout=1.0)
+
+            active_client = exchange.clients.get("ws")
+            assert active_client is not None
+            assert active_client.closed is False
+            assert f"book:{new_symbol}" in active_client.subscriptions
+        finally:
+            exchange.initial_client.close_release.set()
+            exchange.new_release.set()
+            manager.active_tasks.pop(new_stream_id, None)
+            new_task.cancel()
+            await asyncio.gather(new_task, retire, return_exceptions=True)
+
+    asyncio.run(scenario())
