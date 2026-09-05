@@ -560,6 +560,42 @@ if "websocket_shared_evidence_subscribers_metric" not in globals():
         "Symbols routed through shared FUEL-RICH market-evidence consumers.",
     )
 
+if "websocket_shared_evidence_active_subscribers_metric" not in globals():
+    websocket_shared_evidence_active_subscribers_metric = Gauge(
+        "waterfall_websocket_shared_evidence_active_subscribers",
+        "Symbols owned by the current immutable shared-evidence transport generations.",
+    )
+
+if "websocket_shared_evidence_exchange_instances_metric" not in globals():
+    websocket_shared_evidence_exchange_instances_metric = Gauge(
+        "waterfall_websocket_shared_evidence_exchange_instances",
+        "Current shared-evidence CCXT Pro exchange generations.",
+    )
+
+if "websocket_shared_evidence_reconcile_tasks_metric" not in globals():
+    websocket_shared_evidence_reconcile_tasks_metric = Gauge(
+        "waterfall_websocket_shared_evidence_reconcile_tasks",
+        "Current single-flight shared-evidence reconciliation tasks.",
+    )
+
+if "websocket_shared_evidence_retirement_failures_metric" not in globals():
+    websocket_shared_evidence_retirement_failures_metric = Gauge(
+        "waterfall_websocket_shared_evidence_retirement_failures",
+        "Cumulative shared-evidence transport retirement failures in this process.",
+    )
+
+if "websocket_shared_evidence_blocked_exchanges_metric" not in globals():
+    websocket_shared_evidence_blocked_exchanges_metric = Gauge(
+        "waterfall_websocket_shared_evidence_blocked_exchanges",
+        "Shared-evidence venues blocked because prior transport retirement is unproven.",
+    )
+
+if "websocket_shared_evidence_generations_metric" not in globals():
+    websocket_shared_evidence_generations_metric = Gauge(
+        "waterfall_websocket_shared_evidence_generations",
+        "Cumulative shared-evidence transport generations started in this process.",
+    )
+
 if "websocket_direct_exchange_instances_metric" not in globals():
     websocket_direct_exchange_instances_metric = Gauge(
         "waterfall_websocket_direct_exchange_instances",
@@ -1548,6 +1584,24 @@ def _update_websocket_metrics() -> None:
     )
     websocket_shared_evidence_subscribers_metric.set(
         float(snapshot["shared_evidence_subscribers"])
+    )
+    websocket_shared_evidence_active_subscribers_metric.set(
+        float(snapshot["shared_evidence_active_subscribers"])
+    )
+    websocket_shared_evidence_exchange_instances_metric.set(
+        float(snapshot["shared_evidence_exchange_instances"])
+    )
+    websocket_shared_evidence_reconcile_tasks_metric.set(
+        float(snapshot["shared_evidence_reconcile_tasks"])
+    )
+    websocket_shared_evidence_retirement_failures_metric.set(
+        float(snapshot["shared_evidence_retirement_failures"])
+    )
+    websocket_shared_evidence_blocked_exchanges_metric.set(
+        float(snapshot["shared_evidence_blocked_exchanges"])
+    )
+    websocket_shared_evidence_generations_metric.set(
+        float(snapshot["shared_evidence_generations"])
     )
     websocket_direct_exchange_instances_metric.set(
         float(snapshot["direct_exchange_instances"])
