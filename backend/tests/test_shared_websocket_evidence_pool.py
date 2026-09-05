@@ -281,13 +281,21 @@ def test_shared_orderbook_uses_exchange_safe_depth_limit() -> None:
     assert observed == [50, 20]
 
 
-def test_shared_subscribers_are_bounded() -> None:
+def test_shared_subscribers_are_bounded(monkeypatch) -> None:
     manager = WebSocketManager()
+    created: list[_GenerationExchange] = []
+
+    def new_exchange(_name: str):
+        exchange = _GenerationExchange()
+        created.append(exchange)
+        return exchange
+
+    monkeypatch.setattr(manager, "_new_exchange", new_exchange)
 
     async def scenario() -> None:
         for index in range(manager.shared_evidence_symbol_limit + 20):
             manager.subscribe_shared_evidence("binance", f"S{index:03d}/USDT:USDT")
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: len(created) == 1)
         assert len(manager.shared_evidence_subscribers["binance"]) == manager.shared_evidence_symbol_limit
         await manager.close_all()
 
