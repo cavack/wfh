@@ -474,6 +474,12 @@ def test_schema_rollback_restore_runs_as_backend_service_owner() -> None:
     assert 'chgrp "$backup_gid" "$DB_BACKUP"' in restore
     assert 'chmod "$backup_mode" "$DB_BACKUP"' in restore
     assert "source.backup(target)" in restore
+    stop_line = "docker compose stop waterfall-backend frontend watchdog"
+    assert stop_line in restore
+    stop_stmt = next(line.strip() for line in restore.splitlines() if stop_line in line)
+    assert "|| true" not in stop_stmt
+    assert "|| exit 1" in stop_stmt
+    assert restore.index(stop_line) < restore.index("source.backup(target)")
     assert "shutil.copyfile" not in restore
     assert ".rollback-" not in restore
 

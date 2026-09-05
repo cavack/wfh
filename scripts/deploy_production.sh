@@ -611,7 +611,7 @@ restore_database_backup() {
     metadata_changed=1
     chmod 0640 "$DB_BACKUP"
 
-    docker compose stop waterfall-backend frontend watchdog >/dev/null 2>&1 || true
+    docker compose stop waterfall-backend frontend watchdog >/dev/null 2>&1 || exit 1
     docker compose run --rm --no-deps --interactive=false -T \
       --user "$backend_uid:$backend_gid" \
       -v "${DB_BACKUP}:/backup/${backup_name}:ro" \
