@@ -229,14 +229,6 @@ class WebSocketManager:
                 self.shared_liquidation_exchanges[ex_name] = self._new_exchange(ex_name)
             return self.shared_liquidation_exchanges[ex_name]
 
-    async def _get_shared_evidence_exchange(self, ex_name: str) -> Any:
-        # Three shared task kinds start together. Serialize first construction
-        # so exactly one dedicated exchange client exists per venue.
-        async with self._lock:
-            if ex_name not in self.shared_evidence_exchanges:
-                self.shared_evidence_exchanges[ex_name] = self._new_exchange(ex_name)
-            return self.shared_evidence_exchanges[ex_name]
-
     async def watch_orderbook_stream(self, ex_name: str, symbol: str, limit: int = 20):
         """مصرف‌کننده (Consumer) دائمی با پایداری سطح نهادی (Institutional)"""
         stream_id = f"{ex_name}:{symbol}"

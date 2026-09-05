@@ -102,3 +102,16 @@ A second real-CCXT review after the initial decision record tested two possible 
 Therefore the earlier chat-level optimization of exact-set unwatch plus same-exchange reuse is **rejected** as a root solution. The canonical decision remains Option C: immutable membership per transport generation, full retirement of the old exchange, and a fresh exchange object before the next generation. The implementation may use CCXT's `set_markets_from_exchange` only as a static-market metadata handoff after retirement; it must never copy or preserve `clients`, subscription maps, stream hashes, stream indices, or other WebSocket routing state.
 
 The correctness fallback remains fail-closed: if consumer settlement or `exchange.close()` cannot be proven, no replacement generation starts. Static market metadata handoff is an optimization, not a prerequisite; if it is unavailable or fails, the fresh generation may perform its ordinary market load rather than weakening transport retirement.
+
+## Implementation verification checkpoint — real CCXT on WFH reconciler
+
+Exact branch checkpoint tested: `4a0820f8bff72ea1bb41512e94791787c8da75ec` plus no runtime source modifications after that checkpoint during the real-provider run. The test mounted the branch backend source into the exact Production-parity image `wfh-release-backend:0594d7b3395fdacaa62d7ec63dbf09dfeedef00b` using CCXT Pro 4.5.74.
+
+Four consecutive 24-symbol shared-evidence generations were exercised through the actual `WebSocketManager.subscribe_shared_evidence()` / `unsubscribe_shared_evidence()` reconciler, requiring a post-generation payload from orderbook, trades, and ticker before each sample.
+
+- `VERIFIED_FACT`: Binance plateaued at 3 clients / 72 subscriptions for all four active generations. Every retired exchange retained 0 clients; the fresh active exchange held exactly 3 current stream-route entries. First-payload readiness was 2.780s, 1.868s, 1.870s, and 2.025s. Final shutdown returned to 0 clients / 0 subscriptions.
+- `VERIFIED_FACT`: Bybit plateaued at 1 client / 72 subscriptions for all four active generations. Every retired exchange retained 0 clients. First-payload readiness was 2.688s, 1.519s, 1.516s, and 1.469s. Final shutdown returned to 0 clients / 0 subscriptions.
+- `VERIFIED_FACT`: no generation entered the blocked-retirement state in either provider run.
+- `VERIFIED_FACT`: process-local RSS stayed near a plateau within each provider run rather than tracking generation count: Binance about 243.4-244.7 MiB, Bybit about 264.9-265.7 MiB over the four samples. This isolated run is supporting evidence only; Production RSS closure still requires the post-deploy soak longer than the original failure window.
+
+This real-provider checkpoint verifies the intended churn-independent transport bound under controlled 24-symbol membership changes. It does not by itself establish `CODE_READY`, merge readiness, or Production verification; broader regression, exact-head CI/review, deployment identity, and Production soak remain mandatory.
