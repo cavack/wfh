@@ -1225,10 +1225,12 @@ def _entry_outcome_research_provenance(
     *,
     decision_contract_hash: str,
     decision_at: int,
+    reference_source: str | None,
+    reference_mapped_symbol: str | None,
 ) -> dict[str, Any]:
     """Freeze decision-time identity and costs without changing model behavior."""
-    exchange = str(metrics.get("exchange") or "").strip().lower()
-    mapped_symbol = str(metrics.get("mapped_symbol") or "").strip()
+    exchange = str(reference_source or "").strip().lower()
+    mapped_symbol = str(reference_mapped_symbol or "").strip()
     microstructure = (
         metrics.get("microstructure")
         if isinstance(metrics.get("microstructure"), dict)
@@ -1484,7 +1486,8 @@ def _build_entry_outcome_resolution_worker() -> EntryOutcomeResolutionWorker:
     return EntryOutcomeResolutionWorker(
         entry_decision_store,
         _resolve_entry_outcome,
-        batch_size=3,
+        batch_size=36,
+        local_batch_size=300,
         interval_seconds=900.0,
     )
 
@@ -2693,6 +2696,7 @@ async def evaluate_candidate(
     )
 
     reference_source = "lbank"
+    reference_mapped_symbol = symbol
 
     decision_contract = build_decision_contract(
         app_version=app.version,
@@ -2757,6 +2761,8 @@ async def evaluate_candidate(
                         reference_failure_metrics,
                         decision_contract_hash=decision_contract_hash,
                         decision_at=decision_now,
+                        reference_source=None,
+                        reference_mapped_symbol=None,
                     )
                 )
                 try:
@@ -2866,6 +2872,12 @@ async def evaluate_candidate(
             fallback_reference[
                 "exchange"
             ]
+        )
+
+        reference_mapped_symbol = (
+            fallback_reference.get(
+                "mapped_symbol"
+            )
         )
 
         live_data = (
@@ -3025,6 +3037,8 @@ async def evaluate_candidate(
         result_metrics,
         decision_contract_hash=decision_contract_hash,
         decision_at=decision_now,
+        reference_source=reference_source,
+        reference_mapped_symbol=reference_mapped_symbol,
     )
     try:
         event_id = entry_decision_store.append_if_changed_with_capture(
@@ -4102,7 +4116,10 @@ async def startup_event():
 
     _entry_outcome_resolution_worker = _build_entry_outcome_resolution_worker()
     _start_background_task(_entry_outcome_resolution_worker.run_forever())
-    logger.info("Entry outcome resolution enabled (batch=3 interval=900s)")
+    logger.info(
+        "Entry outcome resolution enabled "
+        "(provider_batch=36 local_batch=300 interval=900s)"
+    )
 
 
 async def shutdown_event():
