@@ -105,8 +105,44 @@ def test_preflight_accepts_migrated_schema_read_only(tmp_path: Path):
 
     assert result.state is PreflightState.MIGRATED_COMPATIBLE
     assert result.compatible is True
-    assert result.applied_versions == (1, 2)
-    assert result.user_version == 2
+    assert result.applied_versions == (1, 2, 3, 4, 5, 6, 7, 8, 9)
+    assert result.user_version == 9
+    assert _sha256(db_path) == before
+
+
+def test_preflight_accepts_schema_v5_before_entry_decision_migration(tmp_path: Path):
+    db_path = tmp_path / "migrated-v5.db"
+    MigrationRunner(
+        db_path=db_path,
+        migrations=discover_migrations()[:5],
+        source_revision="test-v5",
+    ).apply()
+    before = _sha256(db_path)
+
+    result = classify_database(db_path=db_path)
+
+    assert result.state is PreflightState.MIGRATED_COMPATIBLE
+    assert result.compatible is True
+    assert result.applied_versions == (1, 2, 3, 4, 5)
+    assert result.user_version == 5
+    assert _sha256(db_path) == before
+
+
+def test_preflight_accepts_schema_v3_before_outcome_migrations(tmp_path: Path):
+    db_path = tmp_path / "migrated-v3.db"
+    MigrationRunner(
+        db_path=db_path,
+        migrations=discover_migrations()[:3],
+        source_revision="test-v3",
+    ).apply()
+    before = _sha256(db_path)
+
+    result = classify_database(db_path=db_path)
+
+    assert result.state is PreflightState.MIGRATED_COMPATIBLE
+    assert result.compatible is True
+    assert result.applied_versions == (1, 2, 3)
+    assert result.user_version == 3
     assert _sha256(db_path) == before
 
 
@@ -211,6 +247,26 @@ def test_preflight_accepts_canonical_legacy_schema_with_only_migration_1_applied
     assert result.compatible is True
     assert result.applied_versions == (1,)
     assert result.user_version == 1
+
+
+def test_preflight_validates_schema_with_migrations_1_and_2_applied(
+    tmp_path: Path,
+):
+    db_path = tmp_path / "migrated-v2-drift.db"
+    MigrationRunner(
+        db_path=db_path,
+        migrations=discover_migrations()[:2],
+    ).apply()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TRIGGER lbank_signal_ledger_no_update")
+    before = _sha256(db_path)
+
+    result = classify_database(db_path=db_path)
+
+    assert result.state is PreflightState.PARTIAL_OR_INCOMPATIBLE
+    assert result.compatible is False
+    assert result.reason_codes == ("MIGRATION_SCHEMA_MISMATCH",)
+    assert _sha256(db_path) == before
 
 
 def test_preflight_rejects_partial_managed_schema_before_migration_2(

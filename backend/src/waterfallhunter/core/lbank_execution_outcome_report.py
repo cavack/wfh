@@ -1,6 +1,7 @@
 import sqlite3
 import time
 from collections import Counter
+from enum import Enum
 from typing import Any
 
 
@@ -28,6 +29,12 @@ PROXY_EXECUTION_COMPARISONS = (
 )
 
 
+class ReportCohort(str, Enum):
+    STRICT = "STRICT"
+    EXPERIMENTAL = "EXPERIMENTAL"
+    MIXED_RESEARCH = "MIXED_RESEARCH"
+
+
 class LBankExecutionOutcomeReport:
     """Read-only evidence report linking suitability snapshots to outcomes."""
 
@@ -35,6 +42,7 @@ class LBankExecutionOutcomeReport:
         self,
         db_path: str = "/app/data/waterfall_registry.db",
         *,
+        cohort: ReportCohort = ReportCohort.STRICT,
         minimum_decisive_outcomes: int = 100,
         minimum_outcomes_per_status: int = 30,
         minimum_span_days: float = 14.0,
@@ -42,6 +50,7 @@ class LBankExecutionOutcomeReport:
         close_delay_seconds: int = 180,
     ):
         self.db_path = db_path
+        self.cohort = ReportCohort(cohort)
         self.minimum_decisive_outcomes = max(
             1,
             int(minimum_decisive_outcomes),
@@ -62,6 +71,18 @@ class LBankExecutionOutcomeReport:
             60,
             int(close_delay_seconds),
         )
+
+    @property
+    def signal_class_scope(self) -> list[str]:
+        if self.cohort is ReportCohort.STRICT:
+            return ["STRICT"]
+        if self.cohort is ReportCohort.EXPERIMENTAL:
+            return ["EXPERIMENTAL"]
+        return ["STRICT", "EXPERIMENTAL"]
+
+    @property
+    def research_only(self) -> bool:
+        return self.cohort is not ReportCohort.STRICT
 
     @staticmethod
     def _rate(
@@ -177,46 +198,55 @@ class LBankExecutionOutcomeReport:
                 self.db_path,
                 timeout=10.0,
             ) as conn:
-                tables = {
-                    row[0]
+                objects = {
+                    (row[0], row[1])
                     for row in conn.execute(
                         """
-                        SELECT name
+                        SELECT type, name
                         FROM sqlite_master
-                        WHERE type = 'table'
+                        WHERE name IN ('canonical_signal_view', 'lbank_signal_outcomes')
                         """
                     )
                 }
                 if not {
-                    "lbank_signal_ledger",
-                    "lbank_signal_outcomes",
-                }.issubset(tables):
+                    ("view", "canonical_signal_view"),
+                    ("table", "lbank_signal_outcomes"),
+                }.issubset(objects):
                     return []
                 conn.row_factory = sqlite3.Row
+                scope = self.signal_class_scope
+                if len(scope) == 1:
+                    cohort_clause = "s.signal_class = ?"
+                    cohort_params: tuple[str, ...] = scope
+                else:
+                    cohort_clause = "s.signal_class IN (?, ?)"
+                    cohort_params = scope
+                sql = f"""
+                    SELECT
+                        s.signal_id,
+                        s.symbol,
+                        s.triggered_at,
+                        s.execution_status,
+                        s.volume_gate_passed,
+                        s.proxy_execution_disagreement,
+                        s.signal_class,
+                        s.strategy_profile,
+                        o.outcome_status,
+                        o.first_tp1_at,
+                        o.first_tp2_at,
+                        o.first_stop_at,
+                        o.mfe_pct,
+                        o.mae_pct,
+                        o.resolved_at
+                    FROM canonical_signal_view AS s
+                    LEFT JOIN lbank_signal_outcomes AS o
+                        ON o.signal_id = s.signal_id
+                    WHERE {cohort_clause}
+                    ORDER BY s.triggered_at, s.signal_id
+                """
                 return [
                     dict(row)
-                    for row in conn.execute(
-                        """
-                        SELECT
-                            s.id AS signal_id,
-                            s.symbol,
-                            s.triggered_at,
-                            s.execution_status,
-                            s.volume_gate_passed,
-                            s.proxy_execution_disagreement,
-                            o.outcome_status,
-                            o.first_tp1_at,
-                            o.first_tp2_at,
-                            o.first_stop_at,
-                            o.mfe_pct,
-                            o.mae_pct,
-                            o.resolved_at
-                        FROM lbank_signal_ledger AS s
-                        LEFT JOIN lbank_signal_outcomes AS o
-                            ON o.signal_id = s.id
-                        ORDER BY s.triggered_at, s.id
-                        """
-                    ).fetchall()
+                    for row in conn.execute(sql, cohort_params).fetchall()
                 ]
         except sqlite3.Error:
             return []
@@ -346,6 +376,8 @@ class LBankExecutionOutcomeReport:
             "generated_at": current_time,
             "observational_only": True,
             "trade_eligible": None,
+            "signal_class_scope": self.signal_class_scope,
+            "research_only": self.research_only,
             "threshold_calibration_allowed": False,
             "hard_gating_allowed": False,
             "outcome_price_source": (

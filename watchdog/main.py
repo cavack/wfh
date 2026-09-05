@@ -24,19 +24,21 @@ class AlertState:
         self.lock = threading.Lock()
 
     def transition(self, down: bool, source: str) -> None:
+        # Serialize transitions (including alert delivery) so concurrent
+        # monitor/webhook events cannot interleave DOWN/RECOVERED messages.
         with self.lock:
             if self.backend_down == down:
                 return
             self.backend_down = down
-        state = "DOWN" if down else "RECOVERED"
-        logger.warning("Backend state changed to %s via %s", state, source)
-        send_alert(
-            "🚨 <b>WaterfallHunter backend DOWN</b>\n"
-            f"Source: {source}\nNo live order is placed."
-            if down
-            else "✅ <b>WaterfallHunter backend RECOVERED</b>\n"
-            f"Source: {source}\nHealth endpoint is responding."
-        )
+            state = "DOWN" if down else "RECOVERED"
+            logger.warning("Backend state changed to %s via %s", state, source)
+            send_alert(
+                "🚨 <b>WaterfallHunter backend DOWN</b>\n"
+                f"Source: {source}\nNo live order is placed."
+                if down
+                else "✅ <b>WaterfallHunter backend RECOVERED</b>\n"
+                f"Source: {source}\nHealth endpoint is responding."
+            )
 
 
 state = AlertState()

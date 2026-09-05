@@ -8,9 +8,17 @@ from schema_test_support import (
     business_row_hashes,
     migrate_test_database,
 )
+from waterfallhunter.core.contracts import SignalClass
 from waterfallhunter.core.db import DBAdapter
 from waterfallhunter.core.lbank_signal_ledger import (
     LBankSignalLedger,
+)
+from waterfallhunter.core.signal_metadata import (
+    ClassificationMethod,
+    METADATA_CONTRACT_VERSION,
+    MODEL_GENERATION,
+    STRICT_STRATEGY_PROFILE,
+    SignalMetadataInput,
 )
 
 
@@ -58,6 +66,21 @@ def _execution() -> dict:
     }
 
 
+def _metadata() -> SignalMetadataInput:
+    return SignalMetadataInput(
+        signal_class=SignalClass.STRICT,
+        strategy_profile=STRICT_STRATEGY_PROFILE,
+        score_version="score_v2",
+        model_generation=MODEL_GENERATION,
+        decision_contract_hash="a" * 64,
+        analysis_observed_at=1_700_000_000,
+        reference_observed_at=1_699_999_990,
+        metadata_contract_version=METADATA_CONTRACT_VERSION,
+        classification_method=ClassificationMethod.FUTURE_PIPELINE_EXPLICIT,
+        classification_evidence_hash=None,
+    )
+
+
 def _armed_db(tmp_path):
     db_path = tmp_path / "signal.db"
     migrate_test_database(db_path)
@@ -98,6 +121,7 @@ def test_trigger_transition_and_signal_snapshot_are_atomic(
         score=91.5,
         trigger_metrics=_metrics(),
         execution_suitability=_execution(),
+        metadata=_metadata(),
         quote_volume=3_000_000.0,
         volume_gate_passed=True,
         proxy_execution_disagreement="AGREE_ACCEPT",
@@ -214,6 +238,7 @@ def test_stale_or_ineligible_transition_appends_no_signal(
         score=91.5,
         trigger_metrics=_metrics(),
         execution_suitability=_execution(),
+        metadata=_metadata(),
     ) is None
 
     with sqlite3.connect(db.db_path) as conn:
@@ -248,6 +273,7 @@ def test_ledger_insert_failure_rolls_back_trigger_transition(
         score=91.5,
         trigger_metrics=_metrics(),
         execution_suitability=_execution(),
+        metadata=_metadata(),
     ) is None
 
     assert _catalogue_row(db) == ("ARMED", "{}")
@@ -264,6 +290,7 @@ def test_signal_rows_cannot_be_updated_or_deleted(
         score=91.5,
         trigger_metrics=_metrics(),
         execution_suitability=_execution(),
+        metadata=_metadata(),
     )
 
     with sqlite3.connect(db.db_path) as conn:

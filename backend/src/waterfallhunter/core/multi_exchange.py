@@ -3,7 +3,7 @@ import math
 import asyncio
 import time
 import ccxt.async_support as ccxt
-from typing import AsyncIterator, Dict, Any, Optional
+from typing import AsyncIterator, Callable, Dict, Any, Optional
 
 logger = logging.getLogger("WaterfallHunter.MultiExchange")
 
@@ -258,48 +258,81 @@ class MultiExchangeGateway:
 
         return {}
 
+    def _compatible_cached_ticker(
+        self,
+        getter: Callable[[str, str], Any] | None,
+        ex_name: str,
+        mapped_symbol: str,
+        reference_price: float,
+        max_deviation_pct: float,
+    ) -> Dict[str, Any] | None:
+        if getter is None:
+            return None
+        try:
+            cached = getter(ex_name, mapped_symbol)
+        except Exception:
+            return None
+        if not isinstance(cached, dict):
+            return None
+        return (
+            cached
+            if self._price_is_compatible(
+                cached, reference_price, max_deviation_pct
+            )
+            else None
+        )
+
+    async def _compatible_market_source(
+        self,
+        ex_name: str,
+        symbol: str,
+        reference_price: float,
+        max_deviation_pct: float,
+        realtime_ticker_getter: Callable[[str, str], Any] | None,
+    ) -> Dict[str, Any] | None:
+        exchange = await self._get_exchange(ex_name)
+        if not self._markets_loaded[ex_name]:
+            return None
+        mapped_symbol = self._map_symbol(symbol, exchange.markets)
+        if not mapped_symbol:
+            return None
+        ticker = self._compatible_cached_ticker(
+            realtime_ticker_getter,
+            ex_name,
+            mapped_symbol,
+            reference_price,
+            max_deviation_pct,
+        )
+        if ticker is None:
+            ticker = await exchange.fetch_ticker(mapped_symbol)
+        if not self._price_is_compatible(
+            ticker, reference_price, max_deviation_pct
+        ):
+            return None
+        return {
+            "exchange": ex_name,
+            "mapped_symbol": mapped_symbol,
+            "data": ticker,
+            "exchange_instance": exchange,
+        }
+
     async def compatible_market_sources(
         self,
         symbol: str,
         reference_price: float,
         max_deviation_pct: float = 5.0,
+        realtime_ticker_getter: Callable[[str, str], Any] | None = None,
     ) -> AsyncIterator[Dict[str, Any]]:
-        """Yield only fresh, price-compatible USDT-perpetual venues in priority order."""
+        """Yield fresh, price-compatible USDT perpetual venues in priority order."""
         for ex_name in self.priority_chain:
             try:
-                exchange = await self._get_exchange(
-                    ex_name
-                )
-
-                if not self._markets_loaded[
-                    ex_name
-                ]:
-                    continue
-
-                mapped_symbol = self._map_symbol(
+                source = await self._compatible_market_source(
+                    ex_name,
                     symbol,
-                    exchange.markets,
-                )
-
-                if not mapped_symbol:
-                    continue
-
-                ticker = await exchange.fetch_ticker(
-                    mapped_symbol
-                )
-
-                if self._price_is_compatible(
-                    ticker,
                     reference_price,
                     max_deviation_pct,
-                ):
-                    yield {
-                        "exchange": ex_name,
-                        "mapped_symbol": mapped_symbol,
-                        "data": ticker,
-                        "exchange_instance": exchange,
-                    }
-
+                    realtime_ticker_getter,
+                )
             except Exception as exc:
                 logger.debug(
                     "[WATERFALL SKIP] %s failed for %s ticker: %s",
@@ -307,6 +340,9 @@ class MultiExchangeGateway:
                     symbol,
                     exc,
                 )
+                continue
+            if source is not None:
+                yield source
 
     @staticmethod
     def _price_is_compatible(
@@ -664,6 +700,10 @@ class MultiExchangeGateway:
                 },
             ),
         )
+        # Bind freshness to the completed provider packet, not request start.
+        # This keeps locally received timestamps causal without accepting a
+        # genuinely future-dated exchange observation.
+        retrieved_at = time.time()
 
         result = analyzer.evaluate_binance_rows(
             mapped_symbol=mapped_symbol,

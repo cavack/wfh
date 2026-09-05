@@ -30,6 +30,15 @@ EXPECTED_RUNTIME_TABLES = frozenset(
         "operational_historical_outcome_datasets",
         "operational_historical_signal_outcomes",
         "provider_states",
+        "signal_metadata",
+        "signal_decisions",
+        "domain_outbox_events",
+        "lifecycle_v2_shadow_events",
+        "entry_decision_events",
+        "entry_notification_outbox",
+        "entry_decision_advisories",
+        "decision_outcome_capture",
+        "decision_outcome_resolution",
     }
 )
 
@@ -39,7 +48,7 @@ def _codes(result) -> set[str]:
 
 
 def test_manifest_covers_exact_runtime_tables_and_version():
-    assert CURRENT_RUNTIME_SCHEMA_VERSION == 2
+    assert CURRENT_RUNTIME_SCHEMA_VERSION == 9
     assert managed_runtime_table_names() == EXPECTED_RUNTIME_TABLES
 
 

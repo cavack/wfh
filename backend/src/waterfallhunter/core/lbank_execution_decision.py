@@ -9,6 +9,7 @@ from typing import Any
 from waterfallhunter.core.lbank_execution_candidate import (
     LBankExecutionCandidateEnricher,
 )
+from waterfallhunter.core.managed_sqlite import connect_managed_sqlite
 from waterfallhunter.core.schema_contract import require_managed_schema
 
 
@@ -73,7 +74,7 @@ class LBankExecutionDecisionLogger:
             )
 
     def _connect(self):
-        return sqlite3.connect(self.db_path, timeout=20.0)
+        return connect_managed_sqlite(self.db_path, timeout=20.0)
 
     @staticmethod
     def _finite(value: Any) -> float | None:

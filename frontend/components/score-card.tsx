@@ -1,4 +1,5 @@
-import { CheckCircle2, CircleAlert, Gauge, Sparkles } from "lucide-react";
+import { CheckCircle2, CircleAlert, Gauge, MinusCircle, Sparkles, XCircle } from "lucide-react";
+import { rawLeveragePresentation } from "../lib/decision-terminal-ui";
 
 export type Candidate = Record<string, unknown>;
 type RecordValue = Record<string, unknown>;
@@ -28,6 +29,20 @@ function rawNumberText(value: unknown): string {
 function compactNumberText(value: unknown, digits = 2): string {
   const number = finiteNumber(value);
   return number === undefined ? "—" : number.toLocaleString("en-US", { maximumFractionDigits: digits });
+}
+
+/** Price formatting that adapts magnitude: $0.00000412 vs $41,208.5 */
+function priceText(value: unknown): string {
+  const number = finiteNumber(value);
+  if (number === undefined) return "—";
+  if (number >= 1000) return number.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  if (number >= 1) return number.toLocaleString("en-US", { maximumFractionDigits: 4 });
+  const precisioned = number.toPrecision(4);
+  // A value like 0.99995 rounds up to "1.000" at four significant digits;
+  // keep that magnitude instead of trimming into a wrong one. Zero keeps
+  // its decimal-free form ("0"), never the trimmed artifact "0.".
+  if (Number(precisioned) >= 1 || !precisioned.includes(".")) return precisioned.replace(/\.?0+$/, "");
+  return precisioned.replace(/0+$/, "").replace(/\.$/, "");
 }
 
 function stateClass(state: string): string {
@@ -133,39 +148,44 @@ function CandidateHeader({ symbol, candidate, live, state }: {
   state: string;
 }) {
   return (
-    <div className="flex flex-wrap items-start justify-between gap-4">
-      <div>
-        <p className="font-mono text-lg font-semibold text-sky-300">{symbol}</p>
-        <p className="mt-1 text-2xl font-semibold tabular-nums">${numberText(live ? candidate.last_price : undefined)}</p>
-        <p className="mt-1 text-xs text-slate-500">{live ? `live · ${numberText(candidate.age_seconds, 1)}s ago` : "live reference unavailable"}</p>
+    <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
+      <div className="min-w-0">
+        {/* Break the contract suffix onto its own line on phones so long
+            symbols never overflow the card. */}
+        <p className="break-all font-mono text-base font-semibold text-sky-300 sm:text-lg">
+          {symbol.split(":")[0]}
+          {symbol.includes(":") ? <span className="text-slate-500">:{symbol.split(":").slice(1).join(":")}</span> : null}
+        </p>
+        <p className="mt-1 text-2xl font-semibold tabular-nums sm:text-3xl">${priceText(live ? candidate.last_price : undefined)}</p>
+        <p className="mt-1 text-xs text-slate-500">{live ? `ref ${numberText(candidate.reference_age_seconds, 1)}s · analysis ${numberText(candidate.analysis_age_seconds, 1)}s` : "live reference unavailable"}</p>
       </div>
       <span className={`status-pill ${stateClass(state)}`}>{state}</span>
     </div>
   );
 }
 
-function ScoreSummary({ ready, watchScore, coverage, derivativePressure, takerRatio, score, leverage }: {
+function ScoreSummary({ ready, watchScore, coverage, derivativePressure, takerRatio, score, leverageText }: {
   ready: boolean;
   watchScore: number | undefined;
   coverage: number | undefined;
   derivativePressure: number | undefined;
   takerRatio: number | undefined;
   score: number | undefined;
-  leverage: number | undefined;
+  leverageText: string;
 }) {
   const partial = !ready && watchScore !== undefined;
   const displayedScore = ready ? score : watchScore;
   return (
     <section className="score-summary mt-5">
-      <div>
+      <div className="min-w-0">
         <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">{ready ? "Score V2" : partial ? "Watch score · partial" : "Score V2"}</p>
         <p className="mt-1 text-4xl font-semibold tabular-nums text-slate-50">{displayedScore === undefined ? "—" : rawNumberText(displayedScore)}<span className="ml-1 text-base font-medium text-slate-500">/100</span></p>
         <p className="mt-1 text-xs text-slate-400">{ready ? "Complete live evidence" : partial ? `${coverage === undefined ? "Partial" : `${rawNumberText(coverage)}%`} evidence coverage · not trade eligible` : "Awaiting complete live evidence"}</p>
         {partial && derivativePressure !== undefined ? <p className="mt-2 text-xs text-slate-300">Derivative short pressure <span className="font-mono">{rawNumberText(derivativePressure)}/15</span>{takerRatio === undefined ? "" : takerRatio < 1 ? " · sell dominance confirmed" : " · buyers still active"}</p> : null}
       </div>
-      <div className="text-right">
+      <div className="shrink-0 text-right">
         <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Leverage</p>
-        <p className="mt-1 font-mono text-lg font-medium text-slate-100">{ready && leverage !== undefined ? `${rawNumberText(leverage)}×` : "—"}</p>
+        <p className="mt-1 font-mono text-lg font-medium text-slate-100">{leverageText}</p>
       </div>
     </section>
   );
@@ -199,15 +219,15 @@ function ScoreEvidence({ metrics, strict }: { metrics: RecordValue; strict: bool
   const gates = asRecord(metrics.quality_gates);
   const breakdown = asRecord(metrics.breakdown_confirmation);
   const componentRows = Object.entries(components ?? {}).filter(([, value]) => finiteNumber(value) !== undefined);
+  const evidenceState = (value: unknown): "PASS" | "FAIL" | "UNAVAILABLE" =>
+    value === true ? "PASS" : value === false ? "FAIL" : "UNAVAILABLE";
   const gateRows = Object.entries(gates ?? {})
-    .filter(([name, value]) => name !== "cross_exchange_confirmed" && typeof value === "boolean")
-    .map(([name, value]) => [name, value as boolean] as const);
-  const confirmation = breakdown?.confirmation_exchange_15m;
-  const composite = breakdown?.composite_breakdown_confirmed;
+    .filter(([name]) => name !== "cross_exchange_confirmed")
+    .map(([name, value]) => [name, evidenceState(value)] as const);
   const breakdownRows = [
-    ["confirmation_exchange_15m", confirmation],
-    ["composite_breakdown_confirmed", composite],
-  ].filter((row): row is [string, boolean] => typeof row[1] === "boolean");
+    ["confirmation_exchange_15m", evidenceState(breakdown?.confirmation_exchange_15m)],
+    ["composite_breakdown_confirmed", evidenceState(breakdown?.composite_breakdown_confirmed)],
+  ] as const;
   const unavailable = !strict && Array.isArray(watchScore?.unavailable_components)
     ? watchScore.unavailable_components.filter((value): value is string => typeof value === "string")
     : [];
@@ -224,7 +244,17 @@ function ScoreEvidence({ metrics, strict }: { metrics: RecordValue; strict: bool
       <div>
         <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-400">Quality evidence</p>
         <div className="flex flex-wrap gap-2">
-          {[...breakdownRows, ...gateRows].map(([name, passed]) => <span key={name} className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs ${passed ? "border-emerald-400/25 bg-emerald-500/10 text-emerald-200" : "border-rose-400/25 bg-rose-500/10 text-rose-200"}`}><CheckCircle2 size={12} />{gateLabel(name)}</span>)}
+          {[...breakdownRows, ...gateRows].map(([name, state]) => {
+            const tone = state === "PASS"
+              ? "border-emerald-400/25 bg-emerald-500/10 text-emerald-200"
+              : state === "FAIL"
+                ? "border-rose-400/25 bg-rose-500/10 text-rose-200"
+                : "border-slate-600/40 bg-slate-800/50 text-slate-400";
+            let Icon = MinusCircle;
+            if (state === "PASS") Icon = CheckCircle2;
+            else if (state === "FAIL") Icon = XCircle;
+            return <span key={name} className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs ${tone}`}><Icon size={12} />{state} · {gateLabel(name)}</span>;
+          })}
         </div>
       </div>
     </div>
@@ -244,18 +274,18 @@ export function ScoreCard({ symbol, candidate, hasFreshSnapshot }: { symbol: str
   const state = candidateState(candidate, live);
   const unavailableReason = analysisReason(metrics);
   const confidence = finiteNumber(advisory?.ai_confidence);
-  const leverage = finiteNumber(metrics?.applied_leverage);
+  const leverageText = rawLeveragePresentation(metrics);
   const executionSuitability = asRecord(candidate.execution_suitability);
   const ready = hasStrictScoreEvidence(live, metrics);
   const hasWatchEvidence = partialWatchScore !== undefined && asRecord(watchScore?.components) !== undefined;
 
-  return <div className="p-5 sm:p-6">
+  return <article className="p-4 sm:p-6">
     <CandidateHeader symbol={symbol} candidate={candidate} live={live} state={state} />
-    <ScoreSummary ready={ready} watchScore={partialWatchScore} coverage={coverage} derivativePressure={derivativePressure} takerRatio={takerRatio} score={strictScore} leverage={leverage} />
+    <ScoreSummary ready={ready} watchScore={partialWatchScore} coverage={coverage} derivativePressure={derivativePressure} takerRatio={takerRatio} score={strictScore} leverageText={leverageText} />
     <ExecutionSuitability packet={executionSuitability} />
     {ready && metrics ? <ScoreEvidence metrics={metrics} strict /> : null}
     {!ready && hasWatchEvidence && metrics ? <ScoreEvidence metrics={metrics} strict={false} /> : null}
     {!ready ? <StrictScoreUnavailable reason={unavailableReason} /> : null}
     <Advisory advisory={advisory} confidence={confidence} />
-  </div>;
+  </article>;
 }

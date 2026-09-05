@@ -15,6 +15,16 @@ CANONICAL_UNIQUE_KEYS: dict[str, frozenset[tuple[str, ...]]] = {
     ),
     "operational_historical_outcome_datasets": frozenset({("report_sha256",)}),
     "operational_historical_signal_outcomes": frozenset({("event_key",)}),
+    "signal_decisions": frozenset({("decision_id",)}),
+    "domain_outbox_events": frozenset(
+        {
+            ("event_key",),
+            ("aggregate_type", "aggregate_id", "aggregate_version", "event_sequence"),
+        }
+    ),
+    "lifecycle_v2_shadow_events": frozenset({("transition_hash",)}),
+    "decision_outcome_capture": frozenset({("decision_event_id",)}),
+    "decision_outcome_resolution": frozenset({("decision_event_id",)}),
 }
 
 

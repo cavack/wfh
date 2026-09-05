@@ -7,8 +7,12 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     environment: str = "production"
     registry_db_path: str = "/app/data/waterfall_registry.db"
+    # Exact OCI build revision injected by the release build. A missing or
+    # malformed value remains unavailable scientific provenance.
+    source_revision: str | None = None
+    backtest_artifact_hmac_key: str | None = None
 
-    # Safety boundary: WaterfallHunter remains signal/paper-only.
+    # Safety boundary: WaterfallHunter remains SIGNAL_ONLY and never places orders.
     live_trading_enabled: bool = False
 
     # Temporary, explicitly versioned signal-discovery profile. It never
@@ -26,9 +30,13 @@ class Settings(BaseSettings):
     lbank_execution_shadow_success_recheck_seconds: float = 1800.0
     lbank_execution_shadow_failure_recheck_seconds: float = 600.0
 
-    # Optional Telegram notifications.
+    # Optional Telegram command bot. Credentials alone never authorize
+    # durable STRICT signal delivery. Signal delivery requires both the
+    # explicit delivery gate and a positive release cutover timestamp.
     telegram_token: str | None = None
     telegram_chat_id: str | None = None
+    telegram_signal_delivery_enabled: bool = False
+    telegram_signal_delivery_cutover_at: int | None = None
 
     # Optional Gemini advisory. Model availability is tied to the configured
     # Google AI project and may change independently of this application.

@@ -54,6 +54,15 @@ _LEGACY_OPTIONAL_TABLES = frozenset(
         "lbank_execution_observations",
         "lbank_execution_observation_history",
         "provider_states",
+        "signal_metadata",
+        "signal_decisions",
+        "domain_outbox_events",
+        "lifecycle_v2_shadow_events",
+        "entry_decision_events",
+        "entry_notification_outbox",
+        "entry_decision_advisories",
+        "decision_outcome_capture",
+        "decision_outcome_resolution",
     }
 )
 
@@ -192,6 +201,110 @@ def _pending_runtime_schema_valid(conn: sqlite3.Connection) -> tuple[bool, tuple
     return valid, schema.unknown_user_objects
 
 
+def _verified_schema_result(
+    conn: sqlite3.Connection,
+    *,
+    required_tables: frozenset[str] | None = None,
+    allow_missing_tables: frozenset[str] = frozenset(),
+    check_user_version: int,
+) -> tuple[bool, tuple[str, ...]]:
+    schema = verify_managed_schema_connection(
+        conn,
+        required_tables=required_tables,
+        allow_missing_tables=allow_missing_tables,
+        check_user_version=check_user_version,
+    )
+    valid = (
+        schema.valid
+        and _managed_constraints_valid(conn)
+        and _managed_global_names_valid(conn)
+        and _managed_table_names_valid(conn)
+    )
+    return valid, schema.unknown_user_objects
+
+
+def _applied_runtime_schema_valid(
+    conn: sqlite3.Connection,
+    applied: tuple[int, ...],
+) -> tuple[bool, tuple[str, ...]]:
+    if CURRENT_RUNTIME_SCHEMA_VERSION in applied:
+        return _verified_schema_result(
+            conn,
+            check_user_version=CURRENT_RUNTIME_SCHEMA_VERSION,
+        )
+    if applied == (1, 2, 3, 4, 5, 6, 7):
+        return _verified_schema_result(
+            conn,
+            allow_missing_tables=frozenset({"decision_outcome_capture", "decision_outcome_resolution"}),
+            check_user_version=7,
+        )
+    if applied == (1, 2, 3, 4, 5, 6, 7, 8):
+        return _verified_schema_result(
+            conn,
+            allow_missing_tables=frozenset({"decision_outcome_resolution"}),
+            check_user_version=8,
+        )
+    if applied == (1, 2, 3, 4, 5, 6):
+        return _verified_schema_result(
+            conn,
+            allow_missing_tables=frozenset({"entry_decision_advisories", "decision_outcome_capture", "decision_outcome_resolution"}),
+            check_user_version=6,
+        )
+    if applied == (1, 2, 3, 4, 5):
+        return _verified_schema_result(
+            conn,
+            allow_missing_tables=frozenset(
+                {"entry_decision_events", "entry_notification_outbox", "entry_decision_advisories", "decision_outcome_capture", "decision_outcome_resolution"}
+            ),
+            check_user_version=5,
+        )
+    if applied == (1, 2, 3):
+        return _verified_schema_result(
+            conn,
+            allow_missing_tables=frozenset(
+                {
+                    "signal_decisions",
+                    "domain_outbox_events",
+                    "lifecycle_v2_shadow_events",
+                    "entry_decision_events",
+                    "entry_notification_outbox",
+                    "entry_decision_advisories",
+                    "decision_outcome_capture",
+                    "decision_outcome_resolution",
+                }
+            ),
+            check_user_version=3,
+        )
+    if applied == (1, 2, 3, 4):
+        return _verified_schema_result(
+            conn,
+            allow_missing_tables=frozenset({"lifecycle_v2_shadow_events", "entry_decision_events", "entry_notification_outbox", "entry_decision_advisories", "decision_outcome_capture", "decision_outcome_resolution"}),
+            check_user_version=4,
+        )
+    if applied == (1, 2):
+        return _verified_schema_result(
+            conn,
+            required_tables=(
+                managed_runtime_table_names()
+                - {
+                    "signal_metadata",
+                    "signal_decisions",
+                    "domain_outbox_events",
+                    "lifecycle_v2_shadow_events",
+                    "entry_decision_events",
+                    "entry_notification_outbox",
+                    "entry_decision_advisories",
+                    "decision_outcome_capture",
+                    "decision_outcome_resolution",
+                }
+            ),
+            check_user_version=2,
+        )
+    if applied == (1,):
+        return _pending_runtime_schema_valid(conn)
+    return False, ()
+
+
 def _classify_migrated(path: Path, user_version: int) -> PreflightResult:
     try:
         applied = MigrationRunner(db_path=path).verify()
@@ -207,50 +320,35 @@ def _classify_migrated(path: Path, user_version: int) -> PreflightResult:
             user_version=user_version,
         )
 
+    conn: sqlite3.Connection | None = None
     try:
-        with _open_read_only(path) as conn:
-            if 1 in applied:
-                probe = conn.execute(
-                    "SELECT 1 FROM sqlite_master "
-                    "WHERE type='table' AND name='db_readiness_probe'"
-                ).fetchone()
-                if probe is None:
-                    return _incompatible(
-                        "MIGRATION_SCHEMA_MISMATCH",
-                        user_version=user_version,
-                    )
-
-            unknown: tuple[str, ...] = ()
-            if CURRENT_RUNTIME_SCHEMA_VERSION in applied:
-                schema = verify_managed_schema_connection(
-                    conn,
-                    check_user_version=CURRENT_RUNTIME_SCHEMA_VERSION,
+        conn = _open_read_only(path)
+        if 1 in applied:
+            probe = conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='table' AND name='db_readiness_probe'"
+            ).fetchone()
+            if probe is None:
+                return _incompatible(
+                    "MIGRATION_SCHEMA_MISMATCH",
+                    user_version=user_version,
                 )
-                if (
-                    not schema.valid
-                    or not _managed_constraints_valid(conn)
-                    or not _managed_global_names_valid(conn)
-                    or not _managed_table_names_valid(conn)
-                ):
-                    return _incompatible(
-                        "MIGRATION_SCHEMA_MISMATCH",
-                        user_version=user_version,
-                        unknown_user_objects=schema.unknown_user_objects,
-                    )
-                unknown = schema.unknown_user_objects
-            elif applied == (1,):
-                pending_valid, unknown = _pending_runtime_schema_valid(conn)
-                if not pending_valid:
-                    return _incompatible(
-                        "MIGRATION_SCHEMA_MISMATCH",
-                        user_version=user_version,
-                        unknown_user_objects=unknown,
-                    )
+
+        schema_valid, unknown = _applied_runtime_schema_valid(conn, applied)
+        if not schema_valid:
+            return _incompatible(
+                "MIGRATION_SCHEMA_MISMATCH",
+                user_version=user_version,
+                unknown_user_objects=unknown,
+            )
     except (sqlite3.Error, SchemaContractError):
         return _incompatible(
             "MIGRATION_SCHEMA_MISMATCH",
             user_version=user_version,
         )
+    finally:
+        if conn is not None:
+            conn.close()
 
     return _result(
         PreflightState.MIGRATED_COMPATIBLE,

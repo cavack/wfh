@@ -166,7 +166,7 @@ class DecisionQualifier(str, Enum):
 
 
 class ExecutionMode(str, Enum):
-    PAPER_ONLY = "PAPER_ONLY"
+    SIGNAL_ONLY = "SIGNAL_ONLY"
 
 
 class MarginMode(str, Enum):
@@ -208,7 +208,11 @@ class DecisionStatus(BaseModel):
 
 
 class CommonContractEnvelope(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        protected_namespaces=(),
+    )
 
     contract_type: NonEmptyStr
     contract_version: NonEmptyStr
@@ -263,7 +267,7 @@ class SignalDecisionPacket(CommonContractEnvelope):
     execution_risk: NonEmptyStr
     execution_plan_id: NonEmptyStr
     reason_codes: tuple[str, ...]
-    execution_mode: ExecutionMode = ExecutionMode.PAPER_ONLY
+    execution_mode: ExecutionMode = ExecutionMode.SIGNAL_ONLY
 
     @field_validator("eligibility_gates", mode="after")
     @classmethod

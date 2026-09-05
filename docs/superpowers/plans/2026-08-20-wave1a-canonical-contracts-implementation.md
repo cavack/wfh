@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - `LIVE_TRADING_ENABLED=false` remains invariant.
-- `execution_mode=PAPER_ONLY` only.
+- `execution_mode=SIGNAL_ONLY` only.
 - `margin_mode=ISOLATED` only; cross margin and auto-add remain false.
 - No active consumer cutover in Wave 1A.
 - No ScoreV2/lifecycle/trigger/ranking/execution-level semantic change.
@@ -153,7 +153,7 @@ def test_signal_decision_packet_keeps_probability_unavailable_explicit():
         reason_codes=["STRICT_GATES_PASS"],
     )
     assert packet.calibrated_probability is None
-    assert packet.execution_mode.value == "PAPER_ONLY"
+    assert packet.execution_mode.value == "SIGNAL_ONLY"
 
 
 def test_signal_decision_packet_rejects_fake_probability():
@@ -202,7 +202,7 @@ Sha256Hex = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
 `CommonContractEnvelope.observational_only` is `Literal[True] = True`.
 
-`SignalDecisionPacket.execution_mode` is `Literal[ExecutionMode.PAPER_ONLY]`/equivalent fail-closed field with default `PAPER_ONLY`.
+`SignalDecisionPacket.execution_mode` is `Literal[ExecutionMode.SIGNAL_ONLY]`/equivalent fail-closed field with default `SIGNAL_ONLY`.
 
 `ExecutionPlan.venue` is fixed to `LBANK`; `margin_mode` fixed to `ISOLATED`; `cross_margin_allowed` and `auto_add_margin` are literal false. `system_leverage` is `[3,20]`; `raw_safe_leverage` remains a separate positive finite value and may be below 3.
 

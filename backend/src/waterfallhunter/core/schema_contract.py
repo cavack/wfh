@@ -14,7 +14,10 @@ from waterfallhunter.core.schema_unique_constraints import (
 )
 
 
-CURRENT_RUNTIME_SCHEMA_VERSION = 2
+CURRENT_RUNTIME_SCHEMA_VERSION = 9
+NON_NEGATIVE_INTEGER_CREATED_AT_CHECK = (
+    "check(typeof(created_at) = 'integer' and created_at >= 0)"
+)
 
 
 class SchemaContractError(RuntimeError):
@@ -68,6 +71,7 @@ class TriggerSpec:
     name: str
     event: str
     abort_message: str
+    protected_columns: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +82,12 @@ class ManagedTableSpec:
     foreign_keys: tuple[ForeignKeySpec, ...] = ()
     check_fragments: tuple[str, ...] = ()
     triggers: tuple[TriggerSpec, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedViewSpec:
+    name: str
+    canonical_sql: str
 
 
 def _c(
@@ -543,6 +553,481 @@ _RUNTIME_SCHEMA: dict[str, ManagedTableSpec] = {
             _c("updated_at", "REAL", not_null=True),
         ),
     ),
+    "signal_metadata": ManagedTableSpec(
+        name="signal_metadata",
+        columns=(
+            _c("signal_id", "INTEGER", pk=1),
+            _c("signal_class", "TEXT", not_null=True),
+            _c("strategy_profile", "TEXT", not_null=True),
+            _c("score_version", "TEXT", not_null=True),
+            _c("model_generation", "TEXT", not_null=True),
+            _c("decision_contract_hash", "TEXT", not_null=True),
+            _c("analysis_observed_at", "INTEGER", not_null=True),
+            _c("reference_observed_at", "INTEGER"),
+            _c("metadata_contract_version", "TEXT", not_null=True),
+            _c("classification_method", "TEXT", not_null=True),
+            _c("classification_evidence_hash", "TEXT"),
+            _c("created_at", "INTEGER", not_null=True),
+        ),
+        foreign_keys=(
+            ForeignKeySpec("signal_id", "lbank_signal_ledger", "id"),
+        ),
+        check_fragments=(
+            "check(signal_class in ('STRICT', 'EXPERIMENTAL'))",
+            "check(length(strategy_profile) > 0)",
+            "check(length(score_version) > 0)",
+            "check(typeof(model_generation) = 'text' and length(model_generation) > 0)",
+            (
+                "check(typeof(decision_contract_hash) = 'text' "
+                "and length(decision_contract_hash) = 64)"
+            ),
+            "check(decision_contract_hash not glob '*[^0-9a-f]*')",
+            "check(typeof(analysis_observed_at) = 'integer' and analysis_observed_at >= 0)",
+            (
+                "check(reference_observed_at is null or "
+                "(typeof(reference_observed_at) = 'integer' "
+                "and reference_observed_at >= 0))"
+            ),
+            "check(metadata_contract_version = 'signal_metadata_v1')",
+            (
+                "check(classification_method in "
+                "('FUTURE_PIPELINE_EXPLICIT', 'LEGACY_PROFILE_EXACT_MATCH'))"
+            ),
+            (
+                "check((classification_method = 'FUTURE_PIPELINE_EXPLICIT' "
+                "and classification_evidence_hash is null) or "
+                "(classification_method = 'LEGACY_PROFILE_EXACT_MATCH' "
+                "and typeof(classification_evidence_hash) = 'text' "
+                "and length(classification_evidence_hash) = 64 "
+                "and classification_evidence_hash not glob '*[^0-9a-f]*'))"
+            ),
+            (
+                "check((signal_class = 'STRICT' "
+                "and strategy_profile = 'strict_score_v2' "
+                "and score_version = 'score_v2') or "
+                "(signal_class = 'EXPERIMENTAL' "
+                "and strategy_profile = 'experimental_pretrigger_v1' "
+                "and score_version = 'score_v2_watch_v1'))"
+            ),
+            NON_NEGATIVE_INTEGER_CREATED_AT_CHECK,
+        ),
+        triggers=_immutable(
+            "signal_metadata",
+            message="signal_metadata is immutable",
+        ),
+    ),
+    "signal_decisions": ManagedTableSpec(
+        name="signal_decisions",
+        columns=(
+            _c("signal_id", "INTEGER", pk=1),
+            _c("decision_id", "TEXT", not_null=True),
+            _c("decision_version", "INTEGER", not_null=True),
+            _c("decision_status", "TEXT", not_null=True),
+            _c("lifecycle_state", "TEXT", not_null=True),
+            _c("predictive_evidence_score", "REAL", not_null=True),
+            _c("calibrated_probability", "REAL"),
+            _c("analysis_observed_at", "INTEGER", not_null=True),
+            _c("reference_observed_at", "INTEGER"),
+            _c("decision_contract_hash", "TEXT", not_null=True),
+            _c("payload_json", "TEXT", not_null=True),
+            _c("payload_hash", "TEXT", not_null=True),
+            _c("created_at", "INTEGER", not_null=True),
+        ),
+        indexes=(
+            IndexSpec(
+                "idx_signal_decisions_status_created",
+                ("decision_status", "created_at"),
+            ),
+        ),
+        foreign_keys=(ForeignKeySpec("signal_id", "lbank_signal_ledger", "id"),),
+        check_fragments=(
+            "check(typeof(decision_id) = 'text' and length(decision_id) > 0)",
+            "check(typeof(decision_version) = 'integer' and decision_version = 1)",
+            "check(decision_status = 'CONFIRMED')",
+            "check(lifecycle_state = 'TRIGGERED')",
+            (
+                "check(typeof(predictive_evidence_score) in ('integer', 'real') "
+                "and predictive_evidence_score >= 0 "
+                "and predictive_evidence_score <= 100)"
+            ),
+            "check(calibrated_probability is null)",
+            "check(typeof(analysis_observed_at) = 'integer' and analysis_observed_at >= 0)",
+            (
+                "check(reference_observed_at is null or "
+                "(typeof(reference_observed_at) = 'integer' "
+                "and reference_observed_at >= 0))"
+            ),
+            (
+                "check(typeof(decision_contract_hash) = 'text' "
+                "and length(decision_contract_hash) = 64 "
+                "and decision_contract_hash not glob '*[^0-9a-f]*')"
+            ),
+            "check(typeof(payload_json) = 'text' and json_valid(payload_json))",
+            (
+                "check(typeof(payload_hash) = 'text' and length(payload_hash) = 64 "
+                "and payload_hash not glob '*[^0-9a-f]*')"
+            ),
+            NON_NEGATIVE_INTEGER_CREATED_AT_CHECK,
+        ),
+        triggers=_immutable(
+            "signal_decisions",
+            message="signal_decisions are immutable",
+        ),
+    ),
+    "domain_outbox_events": ManagedTableSpec(
+        name="domain_outbox_events",
+        columns=(
+            _c("event_id", "TEXT", pk=1),
+            _c("signal_id", "INTEGER", not_null=True),
+            _c("aggregate_type", "TEXT", not_null=True),
+            _c("aggregate_id", "TEXT", not_null=True),
+            _c("aggregate_version", "INTEGER", not_null=True),
+            _c("event_sequence", "INTEGER", not_null=True),
+            _c("event_type", "TEXT", not_null=True),
+            _c("event_key", "TEXT", not_null=True),
+            _c("payload_contract_version", "TEXT", not_null=True),
+            _c("payload_json", "TEXT", not_null=True),
+            _c("payload_hash", "TEXT", not_null=True),
+            _c("status", "TEXT", not_null=True),
+            _c("attempt_count", "INTEGER", not_null=True, default="0"),
+            _c("available_at", "INTEGER", not_null=True),
+            _c("lease_owner", "TEXT"),
+            _c("lease_expires_at", "INTEGER"),
+            _c("last_error_code", "TEXT"),
+            _c("created_at", "INTEGER", not_null=True),
+            _c("updated_at", "INTEGER", not_null=True),
+        ),
+        indexes=(
+            IndexSpec(
+                "idx_domain_outbox_delivery_queue",
+                ("status", "available_at", "created_at"),
+            ),
+        ),
+        foreign_keys=(ForeignKeySpec("signal_id", "lbank_signal_ledger", "id"),),
+        check_fragments=(
+            "check(typeof(event_id) = 'text' and length(event_id) > 0)",
+            "check(aggregate_type = 'signal')",
+            "check(typeof(aggregate_id) = 'text' and length(aggregate_id) > 0)",
+            "check(typeof(aggregate_version) = 'integer' and aggregate_version >= 1)",
+            "check(typeof(event_sequence) = 'integer' and event_sequence >= 1)",
+            "check(event_type = 'SIGNAL_CONFIRMED')",
+            "check(typeof(event_key) = 'text' and length(event_key) > 0)",
+            "check(payload_contract_version = 'signal_confirmed_event_v1')",
+            "check(typeof(payload_json) = 'text' and json_valid(payload_json))",
+            (
+                "check(typeof(payload_hash) = 'text' and length(payload_hash) = 64 "
+                "and payload_hash not glob '*[^0-9a-f]*')"
+            ),
+            (
+                "check(status in ('PENDING', 'SENDING', 'DELIVERED', "
+                "'RETRY_WAIT', 'DEAD_LETTER', 'DELIVERY_UNCERTAIN'))"
+            ),
+            "check(typeof(attempt_count) = 'integer' and attempt_count >= 0)",
+            "check(typeof(available_at) = 'integer' and available_at >= 0)",
+            (
+                "check(lease_expires_at is null or "
+                "(typeof(lease_expires_at) = 'integer' and lease_expires_at >= 0))"
+            ),
+            NON_NEGATIVE_INTEGER_CREATED_AT_CHECK,
+            "check(typeof(updated_at) = 'integer' and updated_at >= created_at)",
+        ),
+        triggers=(
+            TriggerSpec(
+                "domain_outbox_events_material_immutable",
+                "UPDATE",
+                "domain outbox event material is immutable",
+                (
+                    "event_id",
+                    "signal_id",
+                    "aggregate_type",
+                    "aggregate_id",
+                    "aggregate_version",
+                    "event_sequence",
+                    "event_type",
+                    "event_key",
+                    "payload_contract_version",
+                    "payload_json",
+                    "payload_hash",
+                    "created_at",
+                ),
+            ),
+            TriggerSpec(
+                "domain_outbox_events_no_delete",
+                "DELETE",
+                "domain outbox events cannot be deleted",
+            ),
+        ),
+    ),
+    "entry_decision_events": ManagedTableSpec(
+        name="entry_decision_events",
+        columns=(
+            _c("id", "INTEGER", pk=1, autoincrement=True),
+            _c("symbol", "TEXT", not_null=True),
+            _c("event_at", "INTEGER", not_null=True),
+            _c("decision", "TEXT", not_null=True),
+            _c("lifecycle_state", "TEXT", not_null=True),
+            _c("entry_readiness", "REAL", not_null=True),
+            _c("evidence_coverage_pct", "REAL", not_null=True),
+            _c("policy_version", "TEXT", not_null=True),
+            _c("packet_json", "TEXT", not_null=True),
+            _c("packet_hash", "TEXT", not_null=True),
+            _c("created_at", "INTEGER", not_null=True),
+        ),
+        indexes=(
+            IndexSpec("idx_entry_decision_symbol_event", ("symbol", "event_at", "id")),
+            IndexSpec("idx_entry_decision_decision_event", ("decision", "event_at")),
+        ),
+        check_fragments=(
+            "check(typeof(symbol) = 'text' and length(symbol) > 0)",
+            "check(typeof(event_at) = 'integer' and event_at >= 0)",
+            "check(decision in ('NO_TRADE','FORMING','ENTRY_READY','ACTIVE','LATE','INVALIDATED','EXPIRED'))",
+            "check(typeof(entry_readiness) in ('integer','real') and entry_readiness >= 0 and entry_readiness <= 100)",
+            "check(typeof(evidence_coverage_pct) in ('integer','real') and evidence_coverage_pct >= 0 and evidence_coverage_pct <= 100)",
+            "check(json_valid(packet_json))",
+            "check(length(packet_hash) = 64 and packet_hash not glob '*[^0-9a-f]*')",
+            NON_NEGATIVE_INTEGER_CREATED_AT_CHECK,
+        ),
+        triggers=_immutable(
+            "entry_decision_events",
+            message="entry decision events are immutable",
+        ),
+    ),
+    "entry_decision_advisories": ManagedTableSpec(
+        name="entry_decision_advisories",
+        columns=(
+            _c("id", "INTEGER", pk=1, autoincrement=True),
+            _c("decision_event_id", "INTEGER", not_null=True),
+            _c("advisory_at", "INTEGER", not_null=True),
+            _c("provider", "TEXT", not_null=True),
+            _c("model", "TEXT", not_null=True),
+            _c("status", "TEXT", not_null=True),
+            _c("advisory_json", "TEXT", not_null=True),
+            _c("advisory_hash", "TEXT", not_null=True),
+            _c("created_at", "INTEGER", not_null=True),
+        ),
+        indexes=(IndexSpec("idx_entry_decision_advisory_event", ("decision_event_id", "id")),),
+        foreign_keys=(ForeignKeySpec("decision_event_id", "entry_decision_events", "id"),),
+        check_fragments=(
+            "check(typeof(advisory_at) = 'integer' and advisory_at >= 0)",
+            "check(typeof(provider) = 'text' and length(provider) > 0)",
+            "check(typeof(model) = 'text' and length(model) > 0)",
+            "check(status in ('AVAILABLE','UNAVAILABLE'))",
+            "check(json_valid(advisory_json))",
+            "check(length(advisory_hash) = 64 and advisory_hash not glob '*[^0-9a-f]*')",
+            NON_NEGATIVE_INTEGER_CREATED_AT_CHECK,
+        ),
+        triggers=_immutable(
+            "entry_decision_advisories",
+            message="entry decision advisories are immutable",
+        ),
+    ),
+    "decision_outcome_capture": ManagedTableSpec(
+        name="decision_outcome_capture",
+        columns=(
+            _c("id", "INTEGER", pk=1, autoincrement=True),
+            _c("decision_event_id", "INTEGER", not_null=True),
+            _c("capture_version", "TEXT", not_null=True),
+            _c("captured_at", "INTEGER", not_null=True),
+            _c("outcome_status", "TEXT", not_null=True),
+            _c("capture_json", "TEXT", not_null=True),
+            _c("capture_hash", "TEXT", not_null=True),
+            _c("created_at", "INTEGER", not_null=True),
+        ),
+        indexes=(
+            IndexSpec("idx_decision_outcome_capture_status_at", ("outcome_status", "captured_at")),
+        ),
+        foreign_keys=(ForeignKeySpec("decision_event_id", "entry_decision_events", "id"),),
+        check_fragments=(
+            "check(capture_version = 'decision_outcome_capture_v1')",
+            "check(typeof(captured_at) = 'integer' and captured_at >= 0)",
+            "check(outcome_status in ('UNOBSERVED','OBSERVED'))",
+            "check(json_valid(capture_json))",
+            "check(length(capture_hash) = 64 and capture_hash not glob '*[^0-9a-f]*')",
+            NON_NEGATIVE_INTEGER_CREATED_AT_CHECK,
+        ),
+        triggers=_immutable(
+            "decision_outcome_capture",
+            message="decision outcome captures are immutable",
+        ),
+    ),
+    "decision_outcome_resolution": ManagedTableSpec(
+        name="decision_outcome_resolution",
+        columns=(
+            _c("id", "INTEGER", pk=1, autoincrement=True),
+            _c("decision_event_id", "INTEGER", not_null=True),
+            _c("resolution_version", "TEXT", not_null=True),
+            _c("resolved_at", "INTEGER", not_null=True),
+            _c("outcome_status", "TEXT", not_null=True),
+            _c("resolution_json", "TEXT", not_null=True),
+            _c("resolution_hash", "TEXT", not_null=True),
+            _c("created_at", "INTEGER", not_null=True),
+        ),
+        indexes=(
+            IndexSpec("idx_decision_outcome_resolution_status_at", ("outcome_status", "resolved_at")),
+        ),
+        foreign_keys=(ForeignKeySpec("decision_event_id", "entry_decision_events", "id"),),
+        check_fragments=(
+            "check(resolution_version = 'decision_outcome_resolution_v1')",
+            "check(typeof(resolved_at) = 'integer' and resolved_at >= 0)",
+            "check(outcome_status in ('OBSERVED','UNOBSERVABLE','UNAVAILABLE'))",
+            "check(json_valid(resolution_json))",
+            "check(length(resolution_hash) = 64 and resolution_hash not glob '*[^0-9a-f]*')",
+            NON_NEGATIVE_INTEGER_CREATED_AT_CHECK,
+        ),
+        triggers=_immutable(
+            "decision_outcome_resolution",
+            message="decision outcome resolutions are immutable",
+        ),
+    ),
+    "entry_notification_outbox": ManagedTableSpec(
+        name="entry_notification_outbox",
+        columns=(
+            _c("event_id", "TEXT", pk=1),
+            _c("decision_event_id", "INTEGER", not_null=True),
+            _c("event_key", "TEXT", not_null=True),
+            _c("event_type", "TEXT", not_null=True),
+            _c("payload_contract_version", "TEXT", not_null=True),
+            _c("payload_json", "TEXT", not_null=True),
+            _c("payload_hash", "TEXT", not_null=True),
+            _c("status", "TEXT", not_null=True),
+            _c("attempt_count", "INTEGER", not_null=True, default="0"),
+            _c("available_at", "INTEGER", not_null=True),
+            _c("lease_owner", "TEXT"),
+            _c("lease_expires_at", "INTEGER"),
+            _c("last_error_code", "TEXT"),
+            _c("created_at", "INTEGER", not_null=True),
+            _c("updated_at", "INTEGER", not_null=True),
+        ),
+        indexes=(IndexSpec("idx_entry_notification_delivery_queue", ("status", "available_at", "created_at")),),
+        foreign_keys=(ForeignKeySpec("decision_event_id", "entry_decision_events", "id"),),
+        check_fragments=(
+            "check(event_type = 'ENTRY_READY')",
+            "check(payload_contract_version = 'entry_ready_notification_v1')",
+            "check(json_valid(payload_json))",
+            "check(length(payload_hash) = 64 and payload_hash not glob '*[^0-9a-f]*')",
+            "check(status in ('PENDING','SENDING','DELIVERED','RETRY_WAIT','DEAD_LETTER','DELIVERY_UNCERTAIN'))",
+            "check(typeof(attempt_count) = 'integer' and attempt_count >= 0)",
+            "check(typeof(available_at) = 'integer' and available_at >= 0)",
+            "check(lease_expires_at is null or (typeof(lease_expires_at) = 'integer' and lease_expires_at >= 0))",
+            NON_NEGATIVE_INTEGER_CREATED_AT_CHECK,
+            "check(typeof(updated_at) = 'integer' and updated_at >= created_at)",
+        ),
+        triggers=(
+            TriggerSpec(
+                "entry_notification_outbox_material_immutable",
+                "UPDATE",
+                "entry notification material is immutable",
+                ("event_id","decision_event_id","event_key","event_type","payload_contract_version","payload_json","payload_hash","created_at"),
+            ),
+            TriggerSpec(
+                "entry_notification_outbox_no_delete",
+                "DELETE",
+                "entry notification events cannot be deleted",
+            ),
+        ),
+    ),
+    "lifecycle_v2_shadow_events": ManagedTableSpec(
+        name="lifecycle_v2_shadow_events",
+        columns=(
+            _c("event_id", "TEXT", pk=1),
+            _c("episode_id", "TEXT", not_null=True),
+            _c("symbol", "TEXT", not_null=True),
+            _c("v1_state", "TEXT", not_null=True),
+            _c("v2_from_state", "TEXT", not_null=True),
+            _c("v2_to_state", "TEXT", not_null=True),
+            _c("reason_codes_json", "TEXT", not_null=True),
+            _c("evidence_refs_json", "TEXT", not_null=True),
+            _c("observed_at", "INTEGER", not_null=True),
+            _c("policy_version", "TEXT", not_null=True),
+            _c("policy_hash", "TEXT", not_null=True),
+            _c("feature_registry_hash", "TEXT", not_null=True),
+            _c("strategy_profile", "TEXT", not_null=True),
+            _c("transition_hash", "TEXT", not_null=True),
+            _c("comparison_hash", "TEXT", not_null=True),
+            _c("shadow_only", "INTEGER", not_null=True),
+            _c("promotion_allowed", "INTEGER", not_null=True),
+            _c("created_at", "INTEGER", not_null=True),
+        ),
+        indexes=(
+            IndexSpec(
+                "idx_lifecycle_v2_shadow_symbol_observed",
+                ("symbol", "observed_at"),
+            ),
+        ),
+        check_fragments=(
+            "check(typeof(event_id) = 'text' and length(event_id) > 0)",
+            "check(typeof(episode_id) = 'text' and length(episode_id) > 0)",
+            "check(typeof(symbol) = 'text' and length(symbol) > 0)",
+            "check(json_valid(reason_codes_json))",
+            "check(json_valid(evidence_refs_json))",
+            "check(typeof(observed_at) = 'integer' and observed_at >= 0)",
+            "check(length(transition_hash) = 64 and transition_hash not glob '*[^0-9a-f]*')",
+            "check(length(comparison_hash) = 64 and comparison_hash not glob '*[^0-9a-f]*')",
+            "check(length(policy_hash) = 64 and policy_hash not glob '*[^0-9a-f]*')",
+            "check(length(feature_registry_hash) = 64 and feature_registry_hash not glob '*[^0-9a-f]*')",
+            "check(shadow_only = 1)",
+            "check(promotion_allowed = 0)",
+            NON_NEGATIVE_INTEGER_CREATED_AT_CHECK,
+        ),
+        triggers=_immutable(
+            "lifecycle_v2_shadow_events",
+            message="lifecycle v2 shadow events are immutable",
+        ),
+    ),
+}
+
+
+_CANONICAL_SIGNAL_VIEW_SQL = """
+CREATE VIEW canonical_signal_view AS
+SELECT
+    s.id AS signal_id,
+    s.symbol,
+    s.triggered_at,
+    s.state_before,
+    s.score,
+    s.entry_price,
+    s.stop_loss,
+    s.take_profit_1,
+    s.take_profit_2,
+    s.position_setup_json,
+    s.trigger_metrics_json,
+    s.execution_status,
+    s.execution_evidence_status,
+    s.execution_observed_samples,
+    s.execution_observation_span_hours,
+    s.execution_availability_rate,
+    s.execution_cost_100_p90_pct,
+    s.execution_spread_p90_pct,
+    s.execution_depth_25bps_p50_usdt,
+    s.execution_failed_checks_json,
+    s.execution_suitability_json,
+    s.quote_volume_at_trigger,
+    s.volume_gate_passed,
+    s.proxy_execution_disagreement,
+    s.observational_only,
+    s.trade_eligible,
+    s.created_at,
+    m.signal_class,
+    m.strategy_profile,
+    m.score_version,
+    m.model_generation,
+    m.decision_contract_hash,
+    m.analysis_observed_at,
+    m.reference_observed_at,
+    m.metadata_contract_version,
+    m.classification_method,
+    m.classification_evidence_hash
+FROM lbank_signal_ledger AS s
+INNER JOIN signal_metadata AS m
+    ON m.signal_id = s.id
+"""
+
+
+_RUNTIME_VIEWS: dict[str, ManagedViewSpec] = {
+    "canonical_signal_view": ManagedViewSpec(
+        name="canonical_signal_view",
+        canonical_sql=_CANONICAL_SIGNAL_VIEW_SQL,
+    ),
 }
 
 
@@ -558,6 +1043,11 @@ def _sql_literal_marker(value: str) -> str:
 def managed_runtime_table_names() -> frozenset[str]:
     """Return the complete first-party runtime table ownership set."""
     return frozenset(_RUNTIME_SCHEMA)
+
+
+def managed_runtime_view_names() -> frozenset[str]:
+    """Return the complete first-party managed view ownership set."""
+    return frozenset(_RUNTIME_VIEWS)
 
 
 def _sql_compact(value: str | None) -> str:
@@ -1011,11 +1501,17 @@ def _trigger_is_canonical(
     table_identifier = (
         "(?:" + re.escape(table_name.casefold()) + "|" + quoted_identifier + ")"
     )
+    protected_columns = ""
+    if trigger.protected_columns:
+        protected_columns = "of" + ",".join(
+            re.escape(column.casefold()) for column in trigger.protected_columns
+        )
     canonical = (
         r"createtrigger(?:ifnotexists)?"
         + trigger_identifier
         + "before"
         + re.escape(trigger.event.casefold())
+        + protected_columns
         + "on"
         + table_identifier
         + r"beginselectraise\(abort,"
@@ -1063,6 +1559,36 @@ def _trigger_issues(
     return issues
 
 
+def _view_issues(
+    conn: sqlite3.Connection,
+    spec: ManagedViewSpec,
+) -> list[SchemaIssue]:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='view' AND name=?",
+        (spec.name,),
+    ).fetchone()
+    if row is None or not isinstance(row[0], str):
+        return [
+            SchemaIssue(
+                "VIEW_MISMATCH",
+                spec.name,
+                "managed view is absent or has no SQL definition",
+            )
+        ]
+
+    actual = _sql_compact(row[0])
+    expected = _sql_compact(spec.canonical_sql)
+    if actual and actual == expected:
+        return []
+    return [
+        SchemaIssue(
+            "VIEW_MISMATCH",
+            spec.name,
+            "managed view executable definition differs from canonical contract",
+        )
+    ]
+
+
 def _unknown_user_tables(conn: sqlite3.Connection) -> tuple[str, ...]:
     rows = conn.execute(
         "SELECT name FROM sqlite_master "
@@ -1083,6 +1609,36 @@ def managed_runtime_global_object_owners() -> dict[str, tuple[str, str]]:
     return owners
 
 
+def _validate_managed_table_selection(
+    selected: frozenset[str],
+    allow_missing_tables: frozenset[str],
+) -> None:
+    managed_tables = managed_runtime_table_names()
+    unknown_requested = set(selected) - managed_tables
+    if unknown_requested:
+        raise ValueError(f"unknown managed table names: {sorted(unknown_requested)!r}")
+    unknown_allowed = set(allow_missing_tables) - managed_tables
+    if unknown_allowed:
+        raise ValueError(f"unknown optional table names: {sorted(unknown_allowed)!r}")
+
+
+def _user_version_issues(
+    conn: sqlite3.Connection,
+    check_user_version: int | None,
+) -> tuple[int | None, list[SchemaIssue]]:
+    user_version_row = conn.execute("PRAGMA user_version").fetchone()
+    user_version = int(user_version_row[0]) if user_version_row else None
+    if check_user_version is None or user_version == int(check_user_version):
+        return user_version, []
+    return user_version, [
+        SchemaIssue(
+            "USER_VERSION_MISMATCH",
+            "PRAGMA user_version",
+            f"expected {int(check_user_version)}; found {user_version}",
+        )
+    ]
+
+
 def verify_managed_schema_connection(
     conn: sqlite3.Connection,
     *,
@@ -1092,24 +1648,9 @@ def verify_managed_schema_connection(
 ) -> SchemaVerificationResult:
     """Inspect managed schema metadata without mutating the SQLite connection."""
     selected = managed_runtime_table_names() if required_tables is None else required_tables
-    unknown_requested = set(selected) - managed_runtime_table_names()
-    if unknown_requested:
-        raise ValueError(f"unknown managed table names: {sorted(unknown_requested)!r}")
-    unknown_allowed = set(allow_missing_tables) - managed_runtime_table_names()
-    if unknown_allowed:
-        raise ValueError(f"unknown optional table names: {sorted(unknown_allowed)!r}")
+    _validate_managed_table_selection(selected, allow_missing_tables)
 
-    issues: list[SchemaIssue] = []
-    user_version_row = conn.execute("PRAGMA user_version").fetchone()
-    user_version = int(user_version_row[0]) if user_version_row else None
-    if check_user_version is not None and user_version != int(check_user_version):
-        issues.append(
-            SchemaIssue(
-                "USER_VERSION_MISMATCH",
-                "PRAGMA user_version",
-                f"expected {int(check_user_version)}; found {user_version}",
-            )
-        )
+    user_version, issues = _user_version_issues(conn, check_user_version)
 
     existing = {
         str(row[0])
@@ -1135,6 +1676,10 @@ def verify_managed_schema_connection(
         issues.extend(_foreign_key_issues(conn, spec))
         issues.extend(_check_issues(conn, spec))
         issues.extend(_trigger_issues(conn, spec))
+
+    if required_tables is None:
+        for view_name in sorted(managed_runtime_view_names()):
+            issues.extend(_view_issues(conn, _RUNTIME_VIEWS[view_name]))
 
     unique_result = verify_unique_constraints_connection(
         conn,

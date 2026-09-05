@@ -42,7 +42,7 @@ The current repository is organized approximately as follows:
 - `docker-compose.yml`
   - Primary runtime composition.
 - `docker-compose.shadow.yml`
-  - Shadow/paper validation runtime overrides.
+  - Shadow/simulated validation runtime overrides.
 
 This structure may evolve as development continues. Before any audit or implementation change, inspect the current `main` branch rather than relying on this document alone.
 

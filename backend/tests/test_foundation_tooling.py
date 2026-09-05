@@ -128,6 +128,7 @@ def test_deployment_provenance_requires_the_tested_and_running_artifact_to_match
         "tested_image_digest": digest,
         "deployment_manifest_sha256": "e" * 64,
         "running_image_digest": digest,
+        "runtime_fingerprint_sha256": "f" * 64,
     }
     assert evaluate_deployment_provenance(complete)["status"] == DEPLOYMENT_PROVENANCE_VERIFIED
     complete["running_image_digest"] = "sha256:" + "f" * 64

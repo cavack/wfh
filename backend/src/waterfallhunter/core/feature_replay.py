@@ -11,6 +11,7 @@ from waterfallhunter.core.candle_analyzer import MultiTimeframeAnalyzer
 from waterfallhunter.core.coinglass import CoinGlassDerivativesClient
 from waterfallhunter.core.decision_provenance import source_tree_sha256
 from waterfallhunter.core.derivatives import DerivativesAnalyzer
+from waterfallhunter.core.managed_sqlite import connect_managed_sqlite
 from waterfallhunter.core.microstructure import MicrostructureAnalyzer
 from waterfallhunter.core.multi_exchange_validator import MultiExchangeValidator
 from waterfallhunter.core.position_calculator import PositionCalculator
@@ -43,7 +44,7 @@ class _CapturedExchange:
 
 
 class FeatureReplayEngine:
-    VERSION = "feature_equivalent_replay_v10"
+    VERSION = "feature_equivalent_replay_v11"
 
     def __init__(self, *, audited_compatible_code_hashes: set[str] | None = None):
         self.audited_compatible_code_hashes = frozenset(
@@ -172,6 +173,22 @@ class FeatureReplayEngine:
                 else str((payload.get("result") or {}).get("suggested_status") or "UNKNOWN")
             )
         )
+        if (
+            payload.get("schema_version") == "production_decision_evidence_v9"
+            and payload.get("replay_complete") is not True
+        ):
+            unavailable_reason = payload.get("replay_unavailable_reason")
+            if not isinstance(unavailable_reason, str) or not unavailable_reason:
+                unavailable_reason = (
+                    "REPLAY_CONTEXT_ABSENT"
+                    if not payload.get("replay_context")
+                    else "REPLAY_COMPLETENESS_UNDECLARED"
+                )
+            return self._packet(
+                NOT_REPLAYABLE,
+                {"replay_context": unavailable_reason},
+                decision_path,
+            )
         limitations = payload.get("capture_limitations") or {}
         evidence_code = str(
             (payload.get("decision_contract") or {})
@@ -373,11 +390,9 @@ class FeatureReplayEngine:
                 replayed_micro.get("best_bid"),
                 recent_high=recent_high,
                 market_info=market,
-                historical_candles=history,
                 mark_price=mark_price,
                 entry_slippage_pct=replayed_micro.get("entry_slippage_pct"),
                 exit_slippage_pct=replayed_micro.get("exit_slippage_pct"),
-                evaluation_time_ms=evaluated_at_ms,
             )
             replayed_core["position_setup"] = position_setup
             if str(position_setup.get("status", "")).startswith("REJECTED"):
@@ -436,7 +451,7 @@ class FeatureReplayStore:
             )
 
     def _connect(self):
-        return sqlite3.connect(self.db_path, timeout=20.0)
+        return connect_managed_sqlite(self.db_path, timeout=20.0)
 
     def pending(self, limit: int = 3) -> list[dict]:
         with self._connect() as conn:
@@ -448,10 +463,15 @@ class FeatureReplayStore:
                 LEFT JOIN production_feature_replay_results_v2 r
                   ON r.snapshot_id = s.id AND r.replay_version = ?
                 WHERE r.snapshot_id IS NULL
-                  AND s.schema_version = 'production_decision_evidence_v8'
-                  AND s.production_evidence_complete_v5 = 1
-                  AND s.code_sha256_v5 = ?
-                  AND s.decision_packet_complete = 1
+                  AND (
+                    s.schema_version = 'production_decision_evidence_v9'
+                    OR (
+                      s.schema_version = 'production_decision_evidence_v8'
+                      AND s.production_evidence_complete_v5 = 1
+                      AND s.code_sha256_v5 = ?
+                      AND s.decision_packet_complete = 1
+                    )
+                  )
                 ORDER BY s.id LIMIT ?
                 """,
                 (
