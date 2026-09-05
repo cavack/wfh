@@ -22,6 +22,7 @@ import {
   canonicalLeverageAdvisory,
   pipelineHealthDegraded,
   tradePlanAvailable,
+  decisionPlanPresentation,
 } from "@/lib/decision-terminal-ui";
 
 type Rec = Record<string, unknown>;
@@ -34,6 +35,16 @@ function record(value: unknown): Rec {
 
 function finite(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function text(value: unknown, fallback = "—"): string {
+  return typeof value === "string" ? value : fallback;
+}
+
+function scalarText(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return undefined;
 }
 
 function price(value: unknown): string {
@@ -66,10 +77,12 @@ function decisionTone(decision: string): string {
 function evidencePacket(candidate: Candidate) {
   const metrics = record(candidate.metrics);
   const decision = record(metrics.entry_decision);
+  const planPresentation = decisionPlanPresentation(metrics, decision);
   return {
     metrics,
     decision,
-    plan: record(decision.trade_plan),
+    plan: planPresentation.plan,
+    planKind: planPresentation.kind,
     evidence: record(decision.evidence_summary),
     advisory: record(metrics.ai_advisory),
     leverageAdvisory: canonicalLeverageAdvisory(metrics, decision),
@@ -96,13 +109,14 @@ function EvidenceGrid({ evidence }: Readonly<{ evidence: Rec }>) {
   const cascade = record(evidence.cascade);
   const cross = evidence.cross_exchange_confirmed;
   const antiChase = finite(evidence.anti_chase_extension_atr);
+  const cascadeMaximum = finite(cascade.maximum_available) ?? 10;
   return (
     <dl className="mt-4 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4 lg:grid-cols-8">
       <div className="metric-card"><dt>OI 1h</dt><dd>{pct(derivatives.oi_change_1h_pct, 3)}</dd></div>
       <div className="metric-card"><dt>Funding</dt><dd>{pct(derivatives.funding_rate_pct, 4)}</dd></div>
       <div className="metric-card"><dt>Taker B/S</dt><dd>{number(flow.taker_buy_sell_ratio, 3)}</dd></div>
       <div className="metric-card"><dt>Sell share</dt><dd>{pct(flow.sell_share_pct, 1)}</dd></div>
-      <div className="metric-card"><dt>Cascade</dt><dd>{String(cascade.status ?? "—")} · {number(cascade.readiness_points, 1)}/10</dd></div>
+      <div className="metric-card"><dt>Cascade</dt><dd>{text(cascade.status)} · {number(cascade.readiness_points, 1)}/{number(cascadeMaximum, 0)}</dd></div>
       <div className="metric-card"><dt>Cross-exchange</dt><dd>{cross === true ? "Confirmed" : cross === false ? "No" : "—"}</dd></div>
       <div className="metric-card"><dt>Spread</dt><dd>{pct(execution.spread_pct, 4)}</dd></div>
       <div className="metric-card"><dt>Anti-chase</dt><dd>{antiChase === undefined ? "—" : `${antiChase.toFixed(2)} ATR`}</dd></div>
@@ -111,25 +125,38 @@ function EvidenceGrid({ evidence }: Readonly<{ evidence: Rec }>) {
 }
 
 function DecisionCard({ symbol, candidate }: Readonly<{ symbol: string; candidate: Candidate }>) {
-  const { decision, plan, evidence, advisory, leverageAdvisory } = evidencePacket(candidate);
+  const { decision, plan, planKind, evidence, advisory, leverageAdvisory } = evidencePacket(candidate);
   const state = String(decision.decision ?? "UNAVAILABLE");
   const readiness = finite(decision.entry_readiness);
   const coverage = finite(decision.evidence_coverage_pct);
+  const evidenceUnavailable = candidate.analysis_status === "unavailable" || candidate.data_status === "unavailable";
   const hasPlan = tradePlanAvailable(plan);
+  let planNotice: string | null = null;
+  if (planKind === "reference") {
+    planNotice = "Reference plan · technical shadow · not an entry command";
+  } else if (state !== "ENTRY_READY" && hasPlan) {
+    planNotice = "Reference plan · not an entry command";
+  }
   const advisoryView = advisoryPresentation(advisory);
   const leverageStatus = String(leverageAdvisory.status ?? "");
   const leverageValue = finite(leverageAdvisory.leverage ?? plan.leverage);
-  const leverageText = leverageStatus === "AVAILABLE" && leverageValue !== undefined
-    ? `${number(leverageValue, 0)}×`
-    : leverageStatus === "UNAVAILABLE" || leverageStatus === "NOT_RECOMMENDED"
-      ? leverageStatus.replaceAll("_", " ")
-      : leverageValue !== undefined ? `${number(leverageValue, 0)}×` : "UNAVAILABLE";
+  let leverageText = "UNAVAILABLE";
+  if (leverageStatus === "AVAILABLE" && leverageValue !== undefined) {
+    leverageText = `${number(leverageValue, 0)}×`;
+  } else if (leverageStatus === "UNAVAILABLE" || leverageStatus === "NOT_RECOMMENDED") {
+    leverageText = leverageStatus.replaceAll("_", " ");
+  } else if (leverageValue !== undefined) {
+    leverageText = `${number(leverageValue, 0)}×`;
+  }
   const blocks = Array.isArray(decision.block_reasons)
     ? decision.block_reasons.filter((value): value is string => typeof value === "string")
     : [];
   const reasons = Array.isArray(decision.reason_codes)
     ? decision.reason_codes.filter((value): value is string => typeof value === "string").slice(0, 8)
     : [];
+  const readinessText = !evidenceUnavailable && readiness !== undefined
+    ? readiness.toFixed(1)
+    : "—";
   return (
     <article className={`panel overflow-hidden border ${state === "ENTRY_READY" ? "border-emerald-500/35" : "border-slate-800"}`}>
       <div className="p-4 sm:p-5">
@@ -138,13 +165,13 @@ function DecisionCard({ symbol, candidate }: Readonly<{ symbol: string; candidat
           <span className={`status-pill border ${decisionTone(state)}`}>{state.replaceAll("_", " ")}</span>
         </div>
         <div className="mt-4 flex flex-wrap items-end justify-between gap-3">
-          <div><p className="text-xs uppercase tracking-wider text-slate-500">Entry readiness</p><p className="text-4xl font-semibold tabular-nums">{readiness === undefined ? "—" : readiness.toFixed(1)}<span className="text-base text-slate-500">/100</span></p></div>
-          <div className="text-right text-xs text-slate-400"><p>Evidence {coverage === undefined ? "—" : `${coverage.toFixed(0)}%`}</p><p>Leverage {leverageText}</p></div>
+          <div><p className="text-xs uppercase tracking-wider text-slate-500">Entry readiness</p><p className="text-4xl font-semibold tabular-nums">{readinessText}{evidenceUnavailable ? null : <span className="text-base text-slate-500">/100</span>}</p>{evidenceUnavailable ? <p className="mt-1 text-xs font-medium text-rose-300">Evidence unavailable</p> : null}</div>
+          <div className="text-right text-xs text-slate-400"><p title="Availability of required evidence, not signal confidence">Evidence coverage {coverage === undefined ? "—" : `${coverage.toFixed(0)}%`}</p><p>Leverage {leverageText}</p></div>
         </div>
         {hasPlan ? (
           <>
-            {state !== "ENTRY_READY" ? (
-              <p className="mt-4 text-xs font-medium text-amber-200/90">Reference plan · not an entry command</p>
+            {planNotice ? (
+              <p className="mt-4 text-xs font-medium text-amber-200/90">{planNotice}</p>
             ) : null}
             <SignalLevels plan={plan} />
           </>
@@ -302,7 +329,14 @@ function CandidateTable({ candidates, nowSeconds }: Readonly<{ candidates: Recor
                 if (freshness.state === "stale") freshnessText += " · stale";
               }
               const cascadeStatus = typeof cascade.status === "string" ? cascade.status : "—";
-              return <tr key={symbol} className="hover:bg-slate-900/60"><td className="px-4 py-3 font-mono text-sky-200">{symbol}</td><td><span className={`status-pill border ${decisionTone(decision)}`}>{decision.replaceAll("_", " ")}</span></td><td className="font-mono">{readiness < 0 ? "—" : readiness.toFixed(1)}</td><td className="font-mono">${price(candidate.last_price)}</td><td>{pct(derivatives.oi_change_1h_pct, 2)}</td><td>{number(flow.taker_buy_sell_ratio, 3)}</td><td>{cascadeStatus}</td><td className={freshness.state === "stale" ? "font-medium text-rose-300" : "text-slate-300"} title={freshness.thresholdSeconds === undefined ? undefined : `Policy freshness limit ${number(freshness.thresholdSeconds, 0)}s`}>{freshnessText}</td></tr>;
+              const cascadePoints = finite(cascade.readiness_points);
+              const cascadeMaximum = finite(cascade.maximum_available);
+              const cascadeText = cascadePoints !== undefined && cascadeMaximum !== undefined
+                ? `${cascadeStatus} · ${cascadePoints.toFixed(1)}/${cascadeMaximum.toFixed(0)}`
+                : cascadeStatus;
+              const evidenceUnavailable = candidate.analysis_status === "unavailable" || candidate.data_status === "unavailable";
+              const readinessText = !evidenceUnavailable && readiness >= 0 ? readiness.toFixed(1) : "—";
+              return <tr key={symbol} className="hover:bg-slate-900/60"><td className="px-4 py-3 font-mono text-sky-200">{symbol}</td><td><span className={`status-pill border ${decisionTone(decision)}`}>{decision.replaceAll("_", " ")}</span></td><td className={`font-mono ${evidenceUnavailable ? "text-slate-500" : ""}`} title={evidenceUnavailable ? "Required market evidence unavailable" : undefined}>{readinessText}</td><td className="font-mono">${price(candidate.last_price)}</td><td>{pct(derivatives.oi_change_1h_pct, 2)}</td><td>{number(flow.taker_buy_sell_ratio, 3)}</td><td>{cascadeText}</td><td className={freshness.state === "stale" ? "font-medium text-rose-300" : "text-slate-300"} title={freshness.thresholdSeconds === undefined ? undefined : `Policy freshness limit ${number(freshness.thresholdSeconds, 0)}s`}>{freshnessText}</td></tr>;
             })}
           </tbody>
         </table>
@@ -368,22 +402,24 @@ function RecentDecisionChanges({ value }: Readonly<{ value: unknown }>) {
       <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-slate-300">
         <Activity size={16} className="text-cyan-300" />Recent decision changes
       </h2>
-      <div className="table-scroll mt-3">
-        <table className="data-table min-w-[760px]">
-          <thead><tr><th>Changed</th><th>Symbol</th><th>Previous</th><th>Decision</th><th>Reason</th></tr></thead>
-          <tbody>{rows.map((row, index) => {
-            const blocks = Array.isArray(row.block_reasons) ? row.block_reasons.filter((item) => typeof item === "string") : [];
-            const reasons = Array.isArray(row.reason_codes) ? row.reason_codes.filter((item) => typeof item === "string") : [];
-            const reason = String(row.transition_reason ?? blocks[0] ?? reasons[0] ?? "—");
-            return <tr key={String(row.event_id ?? `${row.symbol ?? "unknown"}-${row.event_at ?? index}`)}>
-              <td className="whitespace-nowrap text-slate-400">{timeText(row.event_at ?? row.evaluated_at)}</td>
-              <td className="font-mono text-sky-300">{String(row.symbol ?? "—")}</td>
-              <td>{String(row.previous_decision ?? "—")}</td>
-              <td className="font-medium text-cyan-100">{String(row.decision ?? "UNAVAILABLE")}</td>
-              <td className="max-w-[340px] truncate" title={reason}>{reason}</td>
-            </tr>;
-          })}</tbody>
-        </table>
+      <div className="mt-3 space-y-2">
+        {rows.map((row, index) => {
+          const blocks = Array.isArray(row.block_reasons) ? row.block_reasons.filter((item) => typeof item === "string") : [];
+          const reasons = Array.isArray(row.reason_codes) ? row.reason_codes.filter((item) => typeof item === "string") : [];
+          const reason = typeof row.transition_reason === "string"
+            ? row.transition_reason
+            : blocks[0] ?? reasons[0] ?? "—";
+          const previous = text(row.previous_decision).replaceAll("_", " ");
+          const current = text(row.decision, "UNAVAILABLE").replaceAll("_", " ");
+          const symbol = text(row.symbol);
+          const eventKey = scalarText(row.event_id)
+            ?? `${text(row.symbol, "unknown")}-${scalarText(row.event_at) ?? index}`;
+          return <div key={eventKey} className="grid gap-1 rounded-lg border border-slate-800 bg-slate-950/35 px-3 py-2.5 sm:grid-cols-[10rem_1fr_auto] sm:items-center sm:gap-3">
+            <time className="text-[11px] text-slate-500">{timeText(row.event_at ?? row.evaluated_at)}</time>
+            <div className="min-w-0"><p className="font-mono text-sm text-sky-300">{symbol}</p><p className="mt-0.5 truncate text-xs text-slate-500" title={reason}>{reason.replaceAll("_", " ")}</p></div>
+            <p className="text-xs font-medium text-slate-300"><span className="text-slate-500">{previous}</span> <span aria-hidden="true">→</span> <span className="text-cyan-100">{current}</span></p>
+          </div>;
+        })}
       </div>
     </section>
   );

@@ -7,6 +7,9 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     environment: str = "production"
     registry_db_path: str = "/app/data/waterfall_registry.db"
+    # Exact OCI build revision injected by the release build. A missing or
+    # malformed value remains unavailable scientific provenance.
+    source_revision: str | None = None
     backtest_artifact_hmac_key: str | None = None
 
     # Safety boundary: WaterfallHunter remains SIGNAL_ONLY and never places orders.

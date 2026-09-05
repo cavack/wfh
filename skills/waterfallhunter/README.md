@@ -1,6 +1,6 @@
 # WaterfallHunter Engineering Skill System
 
-Repository-local engineering skills for `cavack/wfh`. The system has one orchestrator and twelve specialists. It is designed to keep repository evidence fresh, separate model/scientific/release concerns, and prevent incidental changes to WaterfallHunter decision semantics.
+Repository-local engineering skills for `cavack/wfh`. The system has one orchestrator, twelve domain specialists, and one skill-system curator (fourteen canonical skills total). It is designed to keep repository evidence fresh, separate model/scientific/release concerns, and prevent incidental changes to WaterfallHunter decision semantics.
 
 ## Skill index
 
@@ -19,6 +19,7 @@ Repository-local engineering skills for `cavack/wfh`. The system has one orchest
 | `security-supply-chain` | "Review vulnerabilities, dependencies, secrets, containers, SBOM, GitHub security, or abuse surfaces." |
 | `observability-incident-response` | "Investigate an incident or improve metrics, alerts, tracing, logging, or SLOs." |
 | `release-production-certification` | "Prepare or certify merge, migration, deployment, rollback, or production verification." |
+| `skill-system-curator` | "Audit or evolve the skill system, Council routes, adapters, tool assumptions, and behavioral tests." |
 
 ## Discovery adapters
 

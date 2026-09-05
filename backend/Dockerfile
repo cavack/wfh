@@ -27,6 +27,7 @@ WORKDIR /app
 COPY --from=builder --chown=waterfall:waterfall /opt/venv /opt/venv
 
 ENV PATH="/opt/venv/bin:$PATH" \
+    SOURCE_REVISION="${VCS_REF}" \
     HOME="/tmp" \
     TMPDIR="/tmp" \
     PYTHONDONTWRITEBYTECODE=1 \

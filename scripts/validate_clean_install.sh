@@ -44,8 +44,9 @@ docker build "${common_args[@]}" -t "$FRONTEND_IMAGE" "$TMP/frontend"
 docker build "${common_args[@]}" -t "$WATCHDOG_IMAGE" "$TMP/watchdog"
 
 for image in "$BACKEND_IMAGE" "$FRONTEND_IMAGE" "$WATCHDOG_IMAGE"; do
-  test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$SHA"
+  [[ "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" == "$SHA" ]]
 done
+[[ "$(docker run --rm "$BACKEND_IMAGE" python -c 'from waterfallhunter.config import settings; print(settings.source_revision)')" == "$SHA" ]]
 
 docker run --rm --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev,size=512m \
   -e LIVE_TRADING_ENABLED=false -e REGISTRY_DB_PATH=/tmp/test-registry.db \

@@ -293,3 +293,44 @@ def test_unexpected_stats_failure_returns_safe_unknown():
         ]
         is None
     )
+
+class BulkFakeStats(FakeStats):
+    def __init__(self, summary):
+        super().__init__(summary)
+        self.bulk_calls = 0
+
+    def summarize_symbols(self, symbols, *, per_symbol_limit=10_000):
+        self.bulk_calls += 1
+        assert per_symbol_limit == 10_000
+        return [
+            {**self.summary, "symbol": symbol}
+            for symbol in symbols
+        ]
+
+
+def test_candidate_enricher_bulk_path_uses_one_stats_snapshot_and_returns_copies():
+    stats = BulkFakeStats(suitable_summary())
+    enricher = LBankExecutionCandidateEnricher(
+        stats=stats,
+        cache_ttl_seconds=60.0,
+    )
+
+    first = enricher.for_symbols([
+        "A/USDT:USDT",
+        "B/USDT:USDT",
+    ])
+
+    assert stats.bulk_calls == 1
+    assert stats.calls == 0
+    assert list(first) == ["A/USDT:USDT", "B/USDT:USDT"]
+    assert first["A/USDT:USDT"]["status"] == "SUITABLE"
+    assert first["B/USDT:USDT"]["status"] == "SUITABLE"
+
+    first["A/USDT:USDT"]["status"] = "CORRUPTED"
+    second = enricher.for_symbols([
+        "A/USDT:USDT",
+        "B/USDT:USDT",
+    ])
+
+    assert stats.bulk_calls == 1
+    assert second["A/USDT:USDT"]["status"] == "SUITABLE"

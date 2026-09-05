@@ -740,3 +740,34 @@ def test_dashboard_preserves_canonical_invalidation_when_reference_is_unavailabl
     assert candidate["metrics"]["entry_decision"]["decision"] == "INVALIDATED"
     assert candidate["metrics"]["entry_decision"]["event_id"] == 777
     assert "derivatives" not in candidate["metrics"]
+
+
+def test_compact_metrics_keeps_bounded_observational_reference_trade_plan():
+    compacted = compact_metrics({
+        "technical_trade_plan_shadow": {
+            "version": "technical_trade_plan_shadow_v1",
+            "observational_only": True,
+            "hard_gating_allowed": False,
+            "available": True,
+            "feasible": True,
+            "status": "FEASIBLE",
+            "setup": {
+                "status": "READY", "entry_price": 1.0, "stop_loss": 1.1,
+                "take_profit_1": 0.9, "take_profit_2": 0.8,
+                "take_profit_3": 0.7, "reward_to_risk": 2.0,
+                "raw_heavy_field": [1, 2, 3],
+            },
+            "reference": {"price": 1.01, "source": "mark"},
+        }
+    })
+    assert compacted["technical_trade_plan_shadow"] == {
+        "version": "technical_trade_plan_shadow_v1",
+        "observational_only": True, "hard_gating_allowed": False,
+        "available": True, "feasible": True, "status": "FEASIBLE",
+        "setup": {
+            "status": "READY", "entry_price": 1.0, "stop_loss": 1.1,
+            "take_profit_1": 0.9, "take_profit_2": 0.8,
+            "take_profit_3": 0.7, "reward_to_risk": 2.0,
+        },
+        "reference": {"price": 1.01, "source": "mark"},
+    }

@@ -23,6 +23,26 @@ Unless a separately authorized and validated strategy or policy change explicitl
 
 Current repository policy is observational and does not place orders. Live order placement is outside this skill system: this skill must not authorize, design, implement, or enable live order placement. Any future execution capability requires a separately reviewed safety design and repository-policy change before ordinary release gates apply.
 
+## Input Contract
+
+Receive the concrete task, current repository SHA/branch, affected semantic boundary, relevant source-of-truth paths, and known runtime or external-evidence context for this domain.
+
+## Required Evidence
+
+Read the current canonical implementation/contracts/tests for this domain plus relevant current PR/issue/runtime evidence. Historical reports remain context until revalidated.
+
+## Tool Preference
+
+Use the smallest authorized capability set that establishes the needed facts. Prefer repository/runtime evidence over secondary summaries; record unavailable optional tools instead of guessing.
+
+## Output Contract
+
+Report material findings using the shared evidence taxonomy, identify the owning file/semantic boundary, state blast radius and remaining unknowns, and give a precise verification or handoff requirement.
+
+## Stop and Escalation Conditions
+
+Stop rather than guess when a required source of truth, artifact identity, or safety-critical prerequisite cannot be established. Escalate protected-invariant changes to their owning strategy/scientific skills and production-readiness authority to `release-production-certification`.
+
 ## Workflow
 
 1. Preserve timestamps, release SHA, logs, metrics, restart/container events, and relevant request/provider context.

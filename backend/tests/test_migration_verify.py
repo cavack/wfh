@@ -15,10 +15,10 @@ def test_verify_reads_valid_history_without_mutation(tmp_path: Path):
     db_path = tmp_path / "registry.db"
     runner = MigrationRunner(db_path=db_path, source_revision="test")
 
-    assert runner.apply() == (1, 2, 3, 4, 5, 6, 7)
+    assert runner.apply() == (1, 2, 3, 4, 5, 6, 7, 8, 9)
     before = db_path.read_bytes()
 
-    assert runner.verify() == (1, 2, 3, 4, 5, 6, 7)
+    assert runner.verify() == (1, 2, 3, 4, 5, 6, 7, 8, 9)
     assert db_path.read_bytes() == before
 
 

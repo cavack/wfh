@@ -16,6 +16,15 @@ WFH_TESTED_BACKEND_IMAGE_DIGEST="${WFH_TESTED_BACKEND_IMAGE_DIGEST:-}"
 WFH_TESTED_FRONTEND_IMAGE_DIGEST="${WFH_TESTED_FRONTEND_IMAGE_DIGEST:-}"
 WFH_TESTED_WATCHDOG_IMAGE_DIGEST="${WFH_TESTED_WATCHDOG_IMAGE_DIGEST:-}"
 PRODUCTION_COMPOSE_OVERRIDE="${STATE_DIR}/production-volumes.override.yml"
+PRODUCTION_IMAGE_OVERRIDE="${STATE_DIR}/production-images.override.yml"
+TARGET_IMAGE_OVERRIDE="${STATE_DIR}/target-images.${WFH_DEPLOY_SHA}.override.yml"
+ROLLBACK_IMAGE_OVERRIDE="${STATE_DIR}/rollback-images.${WFH_DEPLOY_SHA}.override.yml"
+RELEASE_BACKEND_IMAGE="wfh-release-backend:${WFH_DEPLOY_SHA}"
+RELEASE_FRONTEND_IMAGE="wfh-release-frontend:${WFH_DEPLOY_SHA}"
+RELEASE_WATCHDOG_IMAGE="wfh-release-watchdog:${WFH_DEPLOY_SHA}"
+ROLLBACK_BACKEND_IMAGE=""
+ROLLBACK_FRONTEND_IMAGE=""
+ROLLBACK_WATCHDOG_IMAGE=""
 DB_PATH="/app/data/waterfall_registry.db"
 DEPLOY_EPOCH="$(date -u +%s)"
 BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -56,19 +65,125 @@ assert_clean_deploy_worktree() {
   [[ -z "$dirty" ]]
 }
 
-configure_production_compose_topology() {
-  [[ -f "$PRODUCTION_COMPOSE_OVERRIDE" ]] || return 0
+assert_monitoring_bind_files_readable() {
+  docker compose run --rm --no-deps --interactive=false -T \
+    --entrypoint /bin/promtool prometheus \
+    check config /etc/prometheus/prometheus.yml >/dev/null
+}
 
-  export COMPOSE_FILE="${WFH_DEPLOY_ROOT}/docker-compose.yml:${PRODUCTION_COMPOSE_OVERRIDE}"
+configure_production_compose_topology() {
+  if [[ -f "$PRODUCTION_COMPOSE_OVERRIDE" ]]; then
+    export COMPOSE_FILE="${WFH_DEPLOY_ROOT}/docker-compose.yml:${PRODUCTION_COMPOSE_OVERRIDE}"
+    log "using host-owned Production Compose topology override: ${PRODUCTION_COMPOSE_OVERRIDE}"
+  else
+    export COMPOSE_FILE="${WFH_DEPLOY_ROOT}/docker-compose.yml"
+  fi
+  if [[ -f "$PRODUCTION_IMAGE_OVERRIDE" ]]; then
+    export COMPOSE_FILE="${COMPOSE_FILE}:${PRODUCTION_IMAGE_OVERRIDE}"
+    log "using pinned Production image override: ${PRODUCTION_IMAGE_OVERRIDE}"
+  fi
   export COMPOSE_PROJECT_NAME="waterfallhunter"
-  log "using host-owned Production Compose topology override: ${PRODUCTION_COMPOSE_OVERRIDE}"
+}
+
+activate_image_override() {
+  local override="$1"
+  [[ -f "$override" && ! -L "$override" ]] || fail "release image override missing or symlinked: $override"
+  configure_production_compose_topology
+  export COMPOSE_FILE="${COMPOSE_FILE}:${override}"
+}
+
+activate_target_image_override() {
+  activate_image_override "$TARGET_IMAGE_OVERRIDE"
+}
+
+activate_rollback_image_override() {
+  activate_image_override "$ROLLBACK_IMAGE_OVERRIDE"
+}
+
+write_release_image_override() {
+  local path="$1" backend_image="$2" frontend_image="$3" watchdog_image="$4" tmp
+  tmp="${path}.tmp.$$"
+  (
+    umask 027
+    cat > "$tmp" <<EOF
+services:
+  waterfall-backend:
+    image: ${backend_image}
+  frontend:
+    image: ${frontend_image}
+  watchdog:
+    image: ${watchdog_image}
+EOF
+    chmod 0640 "$tmp"
+    mv -- "$tmp" "$path"
+  )
+}
+
+verify_image_revision() {
+  local image_name="$1" expected_revision="$2" actual_revision
+  actual_revision="$(docker image inspect "$image_name" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' 2>/dev/null || true)"
+  [[ "$actual_revision" == "$expected_revision" ]]
 }
 
 # Verify the loaded tag carries the exact release revision.
 verify_loaded_image_revision() {
-  local image_name="$1" actual_revision
-  actual_revision="$(docker image inspect "$image_name" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' 2>/dev/null || true)"
-  [[ "$actual_revision" == "$WFH_DEPLOY_SHA" ]]
+  verify_image_revision "$1" "$WFH_DEPLOY_SHA"
+}
+
+pin_target_release_images() {
+  docker tag waterfallhunter-waterfall-backend "$RELEASE_BACKEND_IMAGE"
+  docker tag waterfallhunter-frontend "$RELEASE_FRONTEND_IMAGE"
+  docker tag waterfallhunter-watchdog "$RELEASE_WATCHDOG_IMAGE"
+  verify_image_revision "$RELEASE_BACKEND_IMAGE" "$WFH_DEPLOY_SHA" \
+    || fail "pinned backend image revision does not match target SHA"
+  verify_image_revision "$RELEASE_FRONTEND_IMAGE" "$WFH_DEPLOY_SHA" \
+    || fail "pinned frontend image revision does not match target SHA"
+  verify_image_revision "$RELEASE_WATCHDOG_IMAGE" "$WFH_DEPLOY_SHA" \
+    || fail "pinned watchdog image revision does not match target SHA"
+  write_release_image_override \
+    "$TARGET_IMAGE_OVERRIDE" \
+    "$RELEASE_BACKEND_IMAGE" "$RELEASE_FRONTEND_IMAGE" "$RELEASE_WATCHDOG_IMAGE"
+}
+
+pin_previous_running_images() {
+  local container image_id actual_revision
+  [[ -n "$PREVIOUS_SHA" ]] || fail "previous release revision unavailable for rollback pinning"
+  ROLLBACK_BACKEND_IMAGE="wfh-release-backend:${PREVIOUS_SHA}"
+  ROLLBACK_FRONTEND_IMAGE="wfh-release-frontend:${PREVIOUS_SHA}"
+  ROLLBACK_WATCHDOG_IMAGE="wfh-release-watchdog:${PREVIOUS_SHA}"
+  while IFS='|' read -r container release_image; do
+    actual_revision="$(docker inspect "$container" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' 2>/dev/null || true)"
+    [[ "$actual_revision" == "$PREVIOUS_SHA" ]] \
+      || fail "running ${container} revision does not match certified previous SHA"
+    image_id="$(docker inspect "$container" --format '{{.Image}}' 2>/dev/null || true)"
+    [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] \
+      || fail "running ${container} immutable image identity unavailable"
+    docker image inspect "$image_id" >/dev/null 2>&1 \
+      || fail "running ${container} image is unavailable for rollback pinning"
+    docker tag "$image_id" "$release_image"
+    verify_image_revision "$release_image" "$PREVIOUS_SHA" \
+      || fail "rollback image revision mismatch for ${container}"
+  done <<EOF
+waterfall-backend|${ROLLBACK_BACKEND_IMAGE}
+waterfall-frontend|${ROLLBACK_FRONTEND_IMAGE}
+waterfall-watchdog|${ROLLBACK_WATCHDOG_IMAGE}
+EOF
+  write_release_image_override \
+    "$ROLLBACK_IMAGE_OVERRIDE" \
+    "$ROLLBACK_BACKEND_IMAGE" "$ROLLBACK_FRONTEND_IMAGE" "$ROLLBACK_WATCHDOG_IMAGE"
+}
+
+promote_target_image_override() {
+  local tmp="${PRODUCTION_IMAGE_OVERRIDE}.tmp.$$"
+  [[ "$HOST_INTEGRATION_SNAPSHOTTED" -eq 1 ]] \
+    || fail "host integration snapshot missing before image override promotion"
+  [[ -f "$TARGET_IMAGE_OVERRIDE" && ! -L "$TARGET_IMAGE_OVERRIDE" ]] \
+    || fail "target image override unavailable for promotion"
+  cp -- "$TARGET_IMAGE_OVERRIDE" "$tmp"
+  chmod 0640 "$tmp"
+  HOST_INTEGRATION_MUTATED=1
+  mv -- "$tmp" "$PRODUCTION_IMAGE_OVERRIDE"
+  configure_production_compose_topology
 }
 
 cleanup_incoming_artifacts() {
@@ -121,11 +236,18 @@ snapshot_host_integration_state() {
   HOST_INTEGRATION_BACKUP_DIR="${STATE_DIR}/host-integration.${PREVIOUS_SHA:-unknown}.${DEPLOY_EPOCH}"
   install -d -m 0700 \
     "$HOST_INTEGRATION_BACKUP_DIR/systemd" \
-    "$HOST_INTEGRATION_BACKUP_DIR/nginx"
+    "$HOST_INTEGRATION_BACKUP_DIR/nginx" \
+    "$HOST_INTEGRATION_BACKUP_DIR/runtime"
   manifest="$HOST_INTEGRATION_BACKUP_DIR/manifest"
   : > "$manifest"
   : > "$HOST_INTEGRATION_BACKUP_DIR/systemd-enabled"
   : > "$HOST_INTEGRATION_BACKUP_DIR/systemd-active"
+  if [[ -e "$PRODUCTION_IMAGE_OVERRIDE" || -L "$PRODUCTION_IMAGE_OVERRIDE" ]]; then
+    cp -a -- "$PRODUCTION_IMAGE_OVERRIDE" "$HOST_INTEGRATION_BACKUP_DIR/runtime/production-images.override.yml"
+    printf 'runtime:%s=present\n' "$PRODUCTION_IMAGE_OVERRIDE" >> "$manifest"
+  else
+    printf 'runtime:%s=absent\n' "$PRODUCTION_IMAGE_OVERRIDE" >> "$manifest"
+  fi
 
   for unit in \
     waterfallhunter.service \
@@ -177,6 +299,11 @@ restore_host_integration_state() {
     fi
   done
   systemctl daemon-reload || status=1
+  presence="$(awk -F= -v key="runtime:${PRODUCTION_IMAGE_OVERRIDE}" '$1 == key { print $2 }' "$manifest")"
+  rm -f -- "$PRODUCTION_IMAGE_OVERRIDE" || status=1
+  if [[ "$presence" == "present" ]]; then
+    cp -a -- "$HOST_INTEGRATION_BACKUP_DIR/runtime/production-images.override.yml" "$PRODUCTION_IMAGE_OVERRIDE" || status=1
+  fi
   for unit in waterfallhunter.service waterfallhunter-healthcheck.timer; do
     state="$(awk -F= -v key="$unit" '$1 == key { print $2 }' "$HOST_INTEGRATION_BACKUP_DIR/systemd-enabled")"
     case "$state" in
@@ -449,20 +576,48 @@ print(h.hexdigest())' \
 }
 
 restore_database_backup() {
-  local backup_name actual_sha
+  local actual_sha backend_gid backend_identity backend_uid backup_gid backup_mode backup_name
   [[ -n "$DB_BACKUP" && -f "$DB_BACKUP" ]] || return 1
   [[ "$DB_BACKUP" == "${BACKUP_DIR}/"* ]] || return 1
   [[ "$DB_BACKUP_SHA256" =~ ^[0-9a-f]{64}$ ]] || return 1
   actual_sha="$(sha256sum "$DB_BACKUP" | awk '{print $1}')" || return 1
   [[ "$actual_sha" == "$DB_BACKUP_SHA256" ]] || return 1
 
-  docker compose stop waterfall-backend frontend watchdog >/dev/null 2>&1 || true
-  backup_name="$(basename "$DB_BACKUP")"
-  docker compose run --rm --no-deps --interactive=false -T --user 0:0 \
-    -v "${BACKUP_DIR}:/backup:ro" \
+  backend_identity="$(docker compose run --rm --no-deps --interactive=false -T \
     waterfall-backend \
-    /opt/venv/bin/python -c \
-    'import hashlib, os, pathlib, shutil, sqlite3, sys
+    /opt/venv/bin/python -c 'import os; print(os.getuid(), os.getgid())')" \
+    || return 1
+  read -r backend_uid backend_gid <<< "$backend_identity"
+  [[ "$backend_uid" =~ ^[0-9]+$ && "$backend_gid" =~ ^[0-9]+$ ]] || return 1
+
+  backup_gid="$(stat -c '%g' "$DB_BACKUP")" || return 1
+  backup_mode="$(stat -c '%a' "$DB_BACKUP")" || return 1
+  [[ "$backup_gid" =~ ^[0-9]+$ && "$backup_mode" =~ ^[0-7]{3,4}$ ]] || return 1
+  backup_name="$(basename "$DB_BACKUP")"
+
+  (
+    metadata_changed=0
+    restore_backup_metadata() {
+      if [[ "$metadata_changed" -eq 1 ]]; then
+        chgrp "$backup_gid" "$DB_BACKUP" >/dev/null 2>&1 || true
+        chmod "$backup_mode" "$DB_BACKUP" >/dev/null 2>&1 || true
+      fi
+    }
+    trap restore_backup_metadata EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    chgrp "$backend_gid" "$DB_BACKUP"
+    metadata_changed=1
+    chmod 0640 "$DB_BACKUP"
+
+    docker compose stop waterfall-backend frontend watchdog >/dev/null 2>&1 || exit 1
+    docker compose run --rm --no-deps --interactive=false -T \
+      --user "$backend_uid:$backend_gid" \
+      -v "${DB_BACKUP}:/backup/${backup_name}:ro" \
+      waterfall-backend \
+      /opt/venv/bin/python -c \
+      'import hashlib, pathlib, sqlite3, sys
 src = pathlib.Path("/backup") / sys.argv[1]
 expected = sys.argv[2]
 dst = pathlib.Path("/app/data/waterfall_registry.db")
@@ -471,39 +626,50 @@ h = hashlib.sha256()
 with src.open("rb") as fh:
     for chunk in iter(lambda: fh.read(1024 * 1024), b""): h.update(chunk)
 if h.hexdigest() != expected: raise SystemExit("rollback backup checksum mismatch")
-with sqlite3.connect(f"file:{src}?mode=ro&immutable=1", uri=True) as check:
-    row = check.execute("PRAGMA integrity_check").fetchone()
+with sqlite3.connect(f"file:{src}?mode=ro&immutable=1", uri=True) as source:
+    row = source.execute("PRAGMA integrity_check").fetchone()
     if not row or str(row[0]).lower() != "ok": raise SystemExit("rollback backup integrity failure")
-owner = dst.stat() if dst.exists() else dst.parent.stat()
-tmp = dst.with_name(f".{dst.name}.rollback-{os.getpid()}")
-try:
-    tmp.unlink(missing_ok=True)
-    shutil.copyfile(src, tmp)
-    os.chown(tmp, owner.st_uid, owner.st_gid)
-    os.chmod(tmp, (owner.st_mode & 0o777) if dst.exists() else 0o600)
     pathlib.Path(str(dst) + "-wal").unlink(missing_ok=True)
     pathlib.Path(str(dst) + "-shm").unlink(missing_ok=True)
-    os.replace(tmp, dst)
-finally:
-    tmp.unlink(missing_ok=True)
+    with sqlite3.connect(dst) as target:
+        source.backup(target)
 with sqlite3.connect(dst) as check:
     row = check.execute("PRAGMA integrity_check").fetchone()
     if not row or str(row[0]).lower() != "ok": raise SystemExit("restored database integrity failure")' \
-    "$backup_name" "$DB_BACKUP_SHA256" || return 1
+      "$backup_name" "$DB_BACKUP_SHA256"
+  ) || return 1
+
+  [[ "$(stat -c '%g' "$DB_BACKUP")" == "$backup_gid" ]] || return 1
+  [[ "$(stat -c '%a' "$DB_BACKUP")" == "$backup_mode" ]] || return 1
   log "database restored from certified pre-migration backup: ${DB_BACKUP}"
 }
 
 prune_database_backups() {
   local keep="$WFH_DEPLOY_BACKUP_RETENTION_COUNT"
+  local certificate="${STATE_DIR}/last-successful-deploy.txt"
+  local backup_root certified_backup="" canonical_certified_backup="" canonical_path
   local line path index=0
   [[ "$keep" =~ ^[1-9][0-9]*$ ]] || return 1
   [[ -d "$BACKUP_DIR" ]] || return 0
+  backup_root="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$BACKUP_DIR")" || return 1
+  [[ -n "$backup_root" && "$backup_root" == /* ]] || return 1
+  if [[ -f "$certificate" ]]; then
+    certified_backup="$(awk -F= '$1 == "backup" {print substr($0, index($0, "=") + 1); exit}' "$certificate")" || return 1
+    if [[ -n "$certified_backup" ]]; then
+      canonical_certified_backup="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$certified_backup")" || return 1
+      [[ "$canonical_certified_backup" == "${backup_root}/"* ]] || return 1
+    fi
+  fi
   while IFS= read -r line; do
     index=$((index + 1))
     (( index > keep )) || continue
     path="${line#* }"
-    [[ "$path" == "${BACKUP_DIR}/"* ]] || continue
-    rm -f -- "$path" "${path}.sha256"
+    canonical_path="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$path")" || return 1
+    [[ "$canonical_path" == "${backup_root}/"* ]] || return 1
+    if [[ -n "$canonical_certified_backup" && "$canonical_path" == "$canonical_certified_backup" ]]; then
+      continue
+    fi
+    rm -f -- "$canonical_path" "${canonical_path}.sha256"
   done < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'waterfall_registry.*.db' -printf '%T@ %p\n' | sort -nr)
 }
 
@@ -518,13 +684,13 @@ assert_telegram_delivery_disabled() {
 restore_previous_workspace() {
   [[ -n "$PREVIOUS_SHA" ]] || return 0
   git checkout --detach "$PREVIOUS_SHA" >/dev/null 2>&1 || return 1
-  build_revision "$PREVIOUS_SHA" >/dev/null 2>&1 || return 1
+  activate_rollback_image_override || return 1
 }
 
 previous_revision_accepts_current_schema() {
   [[ -n "$PREVIOUS_SHA" ]] || return 1
   git checkout --detach "$PREVIOUS_SHA" >/dev/null 2>&1 || return 1
-  build_revision "$PREVIOUS_SHA" >/dev/null 2>&1 || return 1
+  activate_rollback_image_override || return 1
   docker compose run --rm --no-deps --interactive=false -T waterfall-backend \
     /opt/venv/bin/python -m waterfallhunter.migrate_database \
     --db-path "$DB_PATH" --preflight >/dev/null 2>&1
@@ -534,6 +700,7 @@ rollback_previous_revision() {
   [[ "$ROLLBACK_ACTIVE" -eq 0 ]] || return 1
   ROLLBACK_ACTIVE=1
   [[ -n "$PREVIOUS_SHA" ]] || return 1
+  activate_rollback_image_override || return 1
 
   if [[ "$MIGRATION_MAY_HAVE_MUTATED" -eq 1 ]]; then
     if ! restore_database_backup; then
@@ -655,13 +822,18 @@ if ! assert_clean_deploy_worktree; then
 fi
 
 PREVIOUS_SHA="$(resolve_previous_revision)" || fail "unable to resolve the certified previous Production revision"
+pin_previous_running_images
 assert_signal_only_runtime_boundary
 
 git checkout --detach "$WFH_DEPLOY_SHA"
 docker compose config --quiet
 assert_signal_only_runtime_boundary
+assert_monitoring_bind_files_readable \
+  || fail "Prometheus bind-mounted configuration is not readable by the non-root service"
 
 load_tested_release_artifacts
+pin_target_release_images
+activate_target_image_override
 assert_telegram_delivery_disabled
 
 backup_database
@@ -691,6 +863,7 @@ verify_running_revision "$WFH_DEPLOY_SHA" || fail "running OCI org.opencontainer
 verify_running_signal_only || fail "running backend violated the SIGNAL_ONLY live-trading boundary"
 
 snapshot_host_integration_state
+promote_target_image_override
 install_systemd_units
 install_nginx_site
 verify_public_edge || fail "public WaterfallHunter edge did not become reachable"

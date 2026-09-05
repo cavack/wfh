@@ -118,7 +118,12 @@ export default function Dashboard() {
   const [generatedAt, setGeneratedAt] = useState<number | null>(null);
   const [freshnessNow, setFreshnessNow] = useState<number | undefined>(undefined);
   const [researchOpen, setResearchOpen] = useState(false);
+  const [rawCandidates, setRawCandidates] = useState<Record<string, Candidate> | null>(null);
+  const [rawLoading, setRawLoading] = useState(false);
+  const [rawError, setRawError] = useState<string | null>(null);
   const latestVersion = useRef(0);
+  const researchRef = useRef<HTMLDetailsElement | null>(null);
+  const lastStreamEventAt = useRef(0);
 
   useEffect(() => {
     const refreshClock = () => setFreshnessNow(Date.now() / 1000);
@@ -133,6 +138,7 @@ export default function Dashboard() {
     let pollAttempt = 0;
     let streaming = false;
     let hasSnapshot = false;
+    let streamWatchdog: ReturnType<typeof setInterval> | undefined;
     const stream = new EventSource("/dashboard/api/stream");
 
     const acceptSnapshot = (snapshot: DashboardSnapshot) => {
@@ -182,6 +188,7 @@ export default function Dashboard() {
             pollTimer = undefined;
           }
         }
+        lastStreamEventAt.current = Date.now();
         streaming = true;
         setMode("stream");
       } catch {
@@ -198,13 +205,10 @@ export default function Dashboard() {
     };
 
     stream.onopen = () => {
-      streaming = true;
-      if (hasSnapshot && pollTimer !== undefined) {
-        clearTimeout(pollTimer);
-        pollTimer = undefined;
-      }
+      // A TCP-open EventSource is not proof that a valid application event is flowing.
+      // Stay on bootstrap/polling semantics until a schema-valid snapshot or heartbeat arrives.
       pollAttempt = 0;
-      setMode("stream");
+      if (!hasSnapshot) setMode("reconnecting");
     };
     stream.onerror = () => {
       streaming = false;
@@ -219,6 +223,14 @@ export default function Dashboard() {
     // socket opens first. This prevents an open heartbeat-only stream from
     // suppressing the initial READY snapshot forever.
     schedulePoll(0);
+    streamWatchdog = setInterval(() => {
+      if (!active || !streaming || lastStreamEventAt.current <= 0) return;
+      if (Date.now() - lastStreamEventAt.current > 45_000) {
+        streaming = false;
+        setMode("reconnecting");
+        schedulePoll(0);
+      }
+    }, 5_000);
 
     return () => {
       active = false;
@@ -226,6 +238,7 @@ export default function Dashboard() {
       stream.removeEventListener("heartbeat", handleNamedStreamEvent);
       stream.close();
       if (pollTimer !== undefined) clearTimeout(pollTimer);
+      if (streamWatchdog !== undefined) clearInterval(streamWatchdog);
     };
   }, []);
 
@@ -246,13 +259,41 @@ export default function Dashboard() {
     [data, freshnessNow],
   );
 
-  const groups = useMemo(() => {
-    const strictConfirmed = rows.filter(([, candidate]) => candidate.signal_class === "STRICT" && candidate.status === "TRIGGERED");
-    const experimental = rows.filter(([, candidate]) => candidate.signal_class === "EXPERIMENTAL");
-    const setupPipeline = rows.filter(([, candidate]) => candidate.signal_class !== "EXPERIMENTAL" && ["FUEL-RICH", "PRE-TRIGGER", "ARMED"].includes(String(candidate.status)));
-    const discovery = rows.filter(([, candidate]) => candidate.signal_class !== "EXPERIMENTAL" && candidate.status !== "TRIGGERED" && !["FUEL-RICH", "PRE-TRIGGER", "ARMED"].includes(String(candidate.status)));
+  const rawRows = useMemo(
+    () => Object.entries(rawCandidates ?? {}).sort(([leftSymbol, left], [rightSymbol, right]) => {
+      const leftRank = candidateRank(left);
+      const rightRank = candidateRank(right);
+      if (leftRank !== undefined && rightRank !== undefined && leftRank !== rightRank) return rightRank - leftRank;
+      if (leftRank !== undefined) return -1;
+      if (rightRank !== undefined) return 1;
+      return leftSymbol.localeCompare(rightSymbol);
+    }),
+    [rawCandidates],
+  );
+
+  const rawGroups = useMemo(() => {
+    const strictConfirmed = rawRows.filter(([, candidate]) => candidate.signal_class === "STRICT" && candidate.status === "TRIGGERED");
+    const experimental = rawRows.filter(([, candidate]) => candidate.signal_class === "EXPERIMENTAL");
+    const setupPipeline = rawRows.filter(([, candidate]) => candidate.signal_class !== "EXPERIMENTAL" && ["FUEL-RICH", "PRE-TRIGGER", "ARMED"].includes(String(candidate.status)));
+    const discovery = rawRows.filter(([, candidate]) => candidate.signal_class !== "EXPERIMENTAL" && candidate.status !== "TRIGGERED" && !["FUEL-RICH", "PRE-TRIGGER", "ARMED"].includes(String(candidate.status)));
     return { strictConfirmed, experimental, setupPipeline, discovery };
-  }, [rows]);
+  }, [rawRows]);
+
+  const loadRawCandidates = async () => {
+    if (rawLoading) return;
+    setRawLoading(true);
+    setRawError(null);
+    try {
+      const response = await fetch("/dashboard/api/candidates/raw", { cache: "no-store" });
+      const snapshot = response.ok ? dashboardSnapshot(await response.json()) : undefined;
+      if (!snapshot) throw new Error("raw diagnostics unavailable");
+      setRawCandidates(snapshot.candidates as Record<string, Candidate>);
+    } catch {
+      setRawError("Raw candidate diagnostics could not be loaded.");
+    } finally {
+      setRawLoading(false);
+    }
+  };
 
   const renderGroup = (title: string, items: [string, Candidate][], tone: "slate" | "experimental" = "slate") => items.length > 0 && (
     <section className="mb-6">
@@ -309,7 +350,10 @@ export default function Dashboard() {
 
             <a href="#decision-terminal" className="section-nav-link"><LayoutDashboard size={14} />Decision terminal</a>
             <a href="#all-candidates" className="section-nav-link"><Radio size={14} />All candidates</a>
-            <a href="#research" className="section-nav-link"><FlaskConical size={14} />Research</a>
+            <button type="button" className="section-nav-link" onClick={() => {
+              setResearchOpen(true);
+              requestAnimationFrame(() => researchRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+            }}><FlaskConical size={14} />Research</button>
             <span className="ml-auto hidden shrink-0 self-center pr-1 font-mono text-[11px] font-semibold tracking-wider text-emerald-300/90 md:inline">SIGNAL_ONLY · LIVE TRADING OFF · NO ORDER EXECUTION</span>
 
           </div>
@@ -322,7 +366,7 @@ export default function Dashboard() {
           <DecisionTerminal terminal={data.decision_terminal} candidates={data.candidates as Record<string, Candidate>} nowSeconds={freshnessNow} />
         ) : null}
 
-        <details id="research" onToggle={(event) => setResearchOpen(event.currentTarget.open)} className="panel mx-auto mt-8 max-w-7xl scroll-mt-32 overflow-hidden">
+        <details id="research" ref={researchRef} open={researchOpen} onToggle={(event) => setResearchOpen(event.currentTarget.open)} className="panel mx-auto mt-8 max-w-7xl scroll-mt-32 overflow-hidden">
           <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-4 text-sm font-semibold text-slate-200">
             <span className="flex items-center gap-2"><ShieldCheck size={16} className="text-slate-400" />Research, validation & raw diagnostics</span>
             <span className="text-xs font-normal text-slate-500">Secondary · never an entry command</span>
@@ -338,13 +382,21 @@ export default function Dashboard() {
               <BacktestLab />
               <SignalFunnel funnel={data?.signal_funnel as SignalFunnelData | undefined} />
               <FinalRanking ranking={data?.final_ranking} />
-              <details className="mt-6 rounded-xl border border-slate-800 bg-slate-950/30 p-4">
-                <summary className="cursor-pointer text-sm font-semibold text-slate-300">Raw candidate cards</summary>
+              <details className="mt-6 rounded-xl border border-slate-800 bg-slate-950/30 p-4" onToggle={(event) => {
+                if (event.currentTarget.open) void loadRawCandidates();
+              }}>
+                <summary className="cursor-pointer text-sm font-semibold text-slate-300">Raw candidate cards · load on demand</summary>
                 <div className="mt-5">
-                  {renderGroup("Confirmed STRICT diagnostics", groups.strictConfirmed)}
-                  {renderGroup("STRICT setup diagnostics", groups.setupPipeline)}
-                  {renderGroup("Experimental research", groups.experimental, "experimental")}
-                  {renderGroup("Watch and discovery", groups.discovery)}
+                  {rawLoading ? <p className="text-sm text-slate-400">Loading full diagnostics…</p> : null}
+                  {rawError ? <p className="text-sm text-rose-300">{rawError}</p> : null}
+                  {rawCandidates !== null ? (
+                    <>
+                      {renderGroup("Confirmed STRICT diagnostics", rawGroups.strictConfirmed)}
+                      {renderGroup("STRICT setup diagnostics", rawGroups.setupPipeline)}
+                      {renderGroup("Experimental research", rawGroups.experimental, "experimental")}
+                      {renderGroup("Watch and discovery", rawGroups.discovery)}
+                    </>
+                  ) : null}
                 </div>
               </details>
             </div>

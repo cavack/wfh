@@ -8,7 +8,7 @@ from typing import Any
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
-from prometheus_client import Counter, Gauge, generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import Counter, Gauge, Histogram, generate_latest, CONTENT_TYPE_LATEST
 import os
 from typing import Annotated
 
@@ -27,9 +27,11 @@ from waterfallhunter.core.entry_decision import (
     build_entry_decision,
     build_expired_entry_decision,
     build_invalidated_entry_decision,
+    project_leverage_advisory,
 )
 from waterfallhunter.core.entry_decision_store import (
     EntryDecisionStore,
+    EntryOutcomeResolutionWorker,
     StaleCandidateLifecycleError,
 )
 from waterfallhunter.core.notifier import TelegramNotifier, TelegramSignalTransport
@@ -45,6 +47,7 @@ from waterfallhunter.core.ai_veto import (
 from waterfallhunter.core.risk_manager import build_signal_leverage_advisory
 from waterfallhunter.core.dashboard import compact_metrics
 from waterfallhunter.core.decision_terminal import build_decision_terminal
+from waterfallhunter.core.dashboard_projection import project_dashboard_payload
 from waterfallhunter.core.dashboard_stream import (
     DashboardEventBuffer,
     DashboardSnapshot,
@@ -90,6 +93,7 @@ from waterfallhunter.core.signal_metadata_store import (
     require_signal_metadata_completeness,
 )
 from waterfallhunter.core.lbank_signal_outcome import (
+    LBankSignalOutcomeEvaluator,
     LBankSignalOutcomeStore,
     LBankSignalSettlementWorker,
 )
@@ -115,6 +119,11 @@ from waterfallhunter.core.request_body_limit import RequestBodyLimitMiddleware
 from waterfallhunter.core.lbank_execution_outcome_report import (
     LBankExecutionOutcomeReport,
 )
+from waterfallhunter.core.hunter_schedule import (
+    DEFAULT_EVALUATION_CONCURRENCY,
+    HunterDeadlineSchedule,
+)
+from waterfallhunter.core.runtime_memory import trim_process_heap
 
 logging.basicConfig(level=settings.log_level)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -159,6 +168,7 @@ stage_lifecycle_store = StageLifecycleStore(
 entry_decision_store = EntryDecisionStore(
     db_path=db.db_path,
     verify_schema=False,
+    source_revision=settings.source_revision,
 )
 
 lifecycle_v2_shadow_store = LifecycleV2ShadowStore(
@@ -301,12 +311,15 @@ ai_veto = AIVetoEngine()
 _hunter_running = False
 _hunter_last_completed_at: float | None = None
 _hunter_last_progress_at: float | None = None
+_hunter_in_flight_count = 0
+_hunter_due_backlog = 0
 _hunter_task: asyncio.Task | None = None
 _hunter_stop_event = asyncio.Event()
 _HUNTER_STARTUP_DELAY_SECONDS = 5.0
 _HUNTER_SHUTDOWN_GRACE_SECONDS = 5.0
 _lbank_execution_shadow_worker: LBankExecutionShadowWorker | None = None
 _signal_settlement_worker: LBankSignalSettlementWorker | None = None
+_entry_outcome_resolution_worker: EntryOutcomeResolutionWorker | None = None
 _entry_notification_worker: DurableNotificationWorker | None = None
 _entry_notification_probe: dict | None = None
 _signal_evidence_metrics_last_refresh = 0.0
@@ -317,6 +330,11 @@ _sse_clients = set()
 # freshly generated full snapshot.
 _DASHBOARD_REPLAY_EVENT_LIMIT = 8
 _DASHBOARD_CLIENT_QUEUE_LIMIT = 2
+# Rebuilding the canonical dashboard walks all active candidates and multiple
+# read-only enrichers. Coalesce that CPU/DB work independently from the 15s
+# heartbeat so one connected browser cannot force a full aggregation every second.
+_DASHBOARD_SNAPSHOT_BROADCAST_INTERVAL_SECONDS = 5.0
+_DASHBOARD_HEARTBEAT_INTERVAL_SECONDS = 15.0
 _dashboard_event_buffer = DashboardEventBuffer(
     replay_limit=_DASHBOARD_REPLAY_EVENT_LIMIT
 )
@@ -325,6 +343,7 @@ _dashboard_preview_cache: tuple[
     DashboardSnapshot,
     float,
 ] | None = None
+_dashboard_poll_build_task: asyncio.Task[tuple[float, dict[str, Any]]] | None = None
 _DASHBOARD_PREVIEW_CACHE_SECONDS = 1.0
 _background_tasks = set()
 
@@ -505,6 +524,124 @@ if "candidate_state_metric" not in globals():
         ("state",),
     )
 
+if "websocket_active_tasks_metric" not in globals():
+    websocket_active_tasks_metric = Gauge(
+        "waterfall_websocket_active_tasks",
+        "Process-local active WebSocket consumer tasks.",
+    )
+
+if "websocket_liquidation_tasks_metric" not in globals():
+    websocket_liquidation_tasks_metric = Gauge(
+        "waterfall_websocket_liquidation_tasks",
+        "Process-local liquidation WebSocket consumer tasks.",
+    )
+
+if "websocket_shared_liquidation_tasks_metric" not in globals():
+    websocket_shared_liquidation_tasks_metric = Gauge(
+        "waterfall_websocket_shared_liquidation_tasks",
+        "Exchange-wide shared liquidation WebSocket consumers.",
+    )
+
+if "websocket_shared_liquidation_subscribers_metric" not in globals():
+    websocket_shared_liquidation_subscribers_metric = Gauge(
+        "waterfall_websocket_shared_liquidation_subscribers",
+        "Symbols routed through exchange-wide liquidation consumers.",
+    )
+
+if "websocket_shared_evidence_tasks_metric" not in globals():
+    websocket_shared_evidence_tasks_metric = Gauge(
+        "waterfall_websocket_shared_evidence_tasks",
+        "Exchange-scoped shared FUEL-RICH market-evidence WebSocket consumers.",
+    )
+
+if "websocket_shared_evidence_subscribers_metric" not in globals():
+    websocket_shared_evidence_subscribers_metric = Gauge(
+        "waterfall_websocket_shared_evidence_subscribers",
+        "Symbols routed through shared FUEL-RICH market-evidence consumers.",
+    )
+
+if "websocket_direct_exchange_instances_metric" not in globals():
+    websocket_direct_exchange_instances_metric = Gauge(
+        "waterfall_websocket_direct_exchange_instances",
+        "Live symbol-owned direct CCXT Pro exchange instances.",
+    )
+
+if "websocket_liquidation_exchange_instances_metric" not in globals():
+    websocket_liquidation_exchange_instances_metric = Gauge(
+        "waterfall_websocket_liquidation_exchange_instances",
+        "Live symbol-owned liquidation CCXT Pro exchange instances.",
+    )
+
+if "websocket_direct_exchange_retire_tasks_metric" not in globals():
+    websocket_direct_exchange_retire_tasks_metric = Gauge(
+        "waterfall_websocket_direct_exchange_retire_tasks",
+        "Direct CCXT Pro exchange instances currently being retired.",
+    )
+
+if "websocket_liquidation_exchange_retire_tasks_metric" not in globals():
+    websocket_liquidation_exchange_retire_tasks_metric = Gauge(
+        "waterfall_websocket_liquidation_exchange_retire_tasks",
+        "Liquidation CCXT Pro exchange instances currently being retired.",
+    )
+
+if "websocket_ccxt_clients_metric" not in globals():
+    websocket_ccxt_clients_metric = Gauge(
+        "waterfall_websocket_ccxt_clients",
+        "CCXT Pro WebSocket client objects owned by current exchange instances.",
+    )
+
+if "websocket_ccxt_subscriptions_metric" not in globals():
+    websocket_ccxt_subscriptions_metric = Gauge(
+        "waterfall_websocket_ccxt_subscriptions",
+        "CCXT Pro WebSocket subscriptions owned by current exchange instances.",
+    )
+
+if "hunter_evaluation_duration_metric" not in globals():
+    hunter_evaluation_duration_metric = Histogram(
+        "waterfall_hunter_evaluation_duration_seconds",
+        "Candidate evaluation wall time by bounded lifecycle state.",
+        ("state",),
+    )
+
+if "market_evidence_stage_duration_metric" not in globals():
+    market_evidence_stage_duration_metric = Histogram(
+        "waterfall_market_evidence_stage_duration_seconds",
+        "Bounded live evidence stage duration.",
+        ("stage", "outcome"),
+    )
+
+if "primary_source_attempts_metric" not in globals():
+    primary_source_attempts_metric = Histogram(
+        "waterfall_primary_source_attempts",
+        "Price-compatible primary venues attempted per candidate evaluation.",
+    )
+
+if "hunter_in_flight_metric" not in globals():
+    hunter_in_flight_metric = Gauge(
+        "waterfall_hunter_in_flight_evaluations",
+        "Current bounded candidate evaluations in flight.",
+    )
+
+if "hunter_due_backlog_metric" not in globals():
+    hunter_due_backlog_metric = Gauge(
+        "waterfall_hunter_due_backlog",
+        "Due candidates waiting for an evaluation slot.",
+    )
+
+if "market_evidence_path_metric" not in globals():
+    market_evidence_path_metric = Counter(
+        "waterfall_market_evidence_path_total",
+        "Candidate microstructure evidence acquisition paths.",
+        ("outcome",),
+    )
+
+if "candle_cache_events_metric" not in globals():
+    candle_cache_events_metric = Gauge(
+        "waterfall_candle_cache_events",
+        "Process-local causal closed-OHLCV cache events.",
+        ("outcome",),
+    )
+
 _CANDIDATE_METRIC_STATES = (
     "WATCH",
     "FUEL-RICH",
@@ -512,6 +649,84 @@ _CANDIDATE_METRIC_STATES = (
     "ARMED",
     "TRIGGERED",
 )
+
+_HUNTER_METRIC_STATES = (*_CANDIDATE_METRIC_STATES, "OTHER")
+_EVIDENCE_METRIC_STAGES = ("microstructure", "candles", "context", "total")
+_EVIDENCE_METRIC_OUTCOMES = ("complete", "unavailable")
+
+
+def _nonnegative_finite(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) and number >= 0.0 else None
+
+
+def _record_market_evidence_stage_durations(
+    runtime: dict[str, Any],
+    *,
+    outcome: str,
+) -> None:
+    stages = runtime.get("stage_durations_seconds")
+    if not isinstance(stages, dict):
+        return
+    for stage in _EVIDENCE_METRIC_STAGES:
+        duration = _nonnegative_finite(stages.get(stage))
+        if duration is not None:
+            market_evidence_stage_duration_metric.labels(
+                stage=stage, outcome=outcome
+            ).observe(duration)
+
+
+def _record_market_evidence_paths(runtime: dict[str, Any]) -> None:
+    for path, field in (
+        ("ws_hit", "ws_evidence_hits"),
+        ("rest_fallback", "rest_evidence_fallbacks"),
+    ):
+        count = _nonnegative_finite(runtime.get(field))
+        if count is not None and count > 0.0:
+            market_evidence_path_metric.labels(outcome=path).inc(count)
+
+
+def _record_adaptive_pipeline_observation(
+    state: object,
+    evaluation_duration_seconds: float | None,
+    runtime_diagnostics: dict | None,
+) -> None:
+    state_label = str(state or "WATCH").upper()
+    if state_label not in _HUNTER_METRIC_STATES:
+        state_label = "OTHER"
+
+    evaluation_duration = _nonnegative_finite(evaluation_duration_seconds)
+    if evaluation_duration is not None:
+        hunter_evaluation_duration_metric.labels(state=state_label).observe(
+            evaluation_duration
+        )
+
+    runtime = runtime_diagnostics if isinstance(runtime_diagnostics, dict) else {}
+    attempts = _nonnegative_finite(runtime.get("source_attempts"))
+    if attempts is not None:
+        primary_source_attempts_metric.observe(attempts)
+
+    outcome = str(runtime.get("outcome") or "unavailable")
+    if outcome not in _EVIDENCE_METRIC_OUTCOMES:
+        outcome = "unavailable"
+    _record_market_evidence_stage_durations(runtime, outcome=outcome)
+    _record_market_evidence_paths(runtime)
+
+def _update_adaptive_pipeline_metrics() -> None:
+    hunter_in_flight_metric.set(float(_hunter_in_flight_count))
+    hunter_due_backlog_metric.set(float(_hunter_due_backlog))
+    diagnostics_getter = getattr(validator.candle_analyzer, "cache_diagnostics", None)
+    diagnostics = diagnostics_getter() if callable(diagnostics_getter) else {}
+    mapping = {"hit": "hits", "miss": "misses", "eviction": "evictions"}
+    for outcome, field in mapping.items():
+        value = diagnostics.get(field, 0) if isinstance(diagnostics, dict) else 0
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            number = 0.0
+        candle_cache_events_metric.labels(outcome=outcome).set(max(0.0, number))
 
 _PROXY_EXECUTION_METRIC_COMPARISONS = (
     "AGREE_ACCEPT",
@@ -633,6 +848,35 @@ def derivative_packet_metric_labels(
         "outcome": "incomplete",
         "reason": reason_code,
     }
+
+
+def _apply_signal_leverage_advisory(
+    metrics: dict[str, Any],
+    execution_suitability: dict[str, Any] | None,
+    *,
+    decision_status: str,
+) -> dict[str, Any]:
+    """Attach a decision-aware, signal-only leverage advisory to live metrics."""
+    advisory = build_signal_leverage_advisory(
+        metrics,
+        execution_suitability,
+        decision_status=decision_status,
+    )
+    metrics["leverage_advisory"] = advisory
+    metrics["leverage_policy"] = {
+        "version": advisory["policy_version"],
+        "minimum": advisory["minimum"],
+        "maximum": advisory["maximum"],
+        "symbol_agnostic": advisory["symbol_agnostic"],
+        "paper_only": True,
+        "advisory_only": True,
+    }
+    metrics["applied_leverage"] = (
+        advisory.get("leverage")
+        if advisory.get("status") == "AVAILABLE"
+        else None
+    )
+    return advisory
 
 
 def _record_derivative_packet_outcome(
@@ -916,6 +1160,299 @@ def _build_signal_settlement_worker(
     )
 
 
+def _cost_component(
+    value: object,
+    *,
+    source: str,
+    observed_at: int,
+    reason: str,
+) -> dict[str, object]:
+    available = bool(
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+        and float(value) >= 0
+    )
+    return {
+        "value": float(value) if available else None,
+        "source": source if available else None,
+        "classification": "MODELED_COST" if available else "UNAVAILABLE",
+        "observed_at": observed_at if available else None,
+        "interval": "decision_time_estimate" if available else None,
+        "available": available,
+        "reason": None if available else reason,
+    }
+
+
+def _entry_outcome_research_provenance(
+    metrics: dict[str, Any],
+    *,
+    decision_contract_hash: str,
+    decision_at: int,
+) -> dict[str, Any]:
+    """Freeze decision-time identity and costs without changing model behavior."""
+    exchange = str(metrics.get("exchange") or "").strip().lower()
+    mapped_symbol = str(metrics.get("mapped_symbol") or "").strip()
+    microstructure = (
+        metrics.get("microstructure")
+        if isinstance(metrics.get("microstructure"), dict)
+        else {}
+    )
+    revision = str(settings.source_revision or "").strip()
+    revision_verified = bool(
+        len(revision) == 40
+        and all(character in "0123456789abcdef" for character in revision)
+    )
+    unavailable_cost = {
+        "value": None,
+        "source": None,
+        "classification": "UNAVAILABLE",
+        "observed_at": None,
+        "interval": None,
+        "available": False,
+    }
+    return {
+        "source_revision": revision if revision_verified else None,
+        "source_revision_status": (
+            "VERIFIED_GIT_REVISION" if revision_verified else "UNAVAILABLE"
+        ),
+        "decision_contract_sha256": decision_contract_hash,
+        "contract": {
+            "available": exchange == "lbank" and bool(mapped_symbol),
+            "exchange": exchange or None,
+            "mapped_symbol": mapped_symbol or None,
+            "market_type": "linear_usdt_perpetual",
+            "settlement_asset": "USDT",
+            "spot_substitution_allowed": False,
+            "cross_venue_substitution_allowed": False,
+        },
+        "outcome_contract": {
+            "version": "lbank_linear_perpetual_outcome_v1",
+            "direction": "SHORT",
+            "horizon_seconds": 86_400,
+            "timeframe": "1m",
+            "closed_candles_only": True,
+            "complete_window_required": True,
+            "price_source": "closed_1m_trade_ohlcv_proxy",
+        },
+        "costs": {
+            "fees": {**unavailable_cost, "reason": "fee ledger not observed at decision time"},
+            "entry_slippage": _cost_component(
+                microstructure.get("entry_slippage_pct"),
+                source="decision_time_microstructure",
+                observed_at=decision_at,
+                reason="entry slippage estimate unavailable",
+            ),
+            "exit_slippage": _cost_component(
+                microstructure.get("exit_slippage_pct"),
+                source="decision_time_microstructure",
+                observed_at=decision_at,
+                reason="exit slippage estimate unavailable",
+            ),
+            "funding": {
+                **unavailable_cost,
+                "reason": "future holding-interval funding not yet observed",
+            },
+        },
+    }
+
+
+def _decision_outcome_classification(status: str) -> str:
+    if status == "STOP_FIRST":
+        return "STOP"
+    if status == "NO_LEVEL_HIT_24H":
+        return "TIMEOUT"
+    if status in {"TP1_ONLY_24H", "TP1_THEN_STOP", "TP2_FIRST", "TP2_AFTER_TP1"}:
+        return "WIN"
+    return "UNAVAILABLE"
+
+
+def _decision_outcome_gross_r(
+    classification: str, status: str, plan: dict[str, Any], candles: list
+) -> float | None:
+    try:
+        entry = float(plan["entry_price"])
+        stop = float(plan["stop_loss"])
+        risk = stop - entry
+        if risk <= 0:
+            return None
+        if classification == "STOP":
+            return -1.0
+        if classification == "WIN":
+            if status == "TP1_THEN_STOP":
+                return None
+            target_key = "take_profit_2" if status.startswith("TP2") else "take_profit_1"
+            return (entry - float(plan[target_key])) / risk
+        if classification == "TIMEOUT" and candles:
+            return (entry - float(candles[-1][4])) / risk
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+    return None
+
+
+def _entry_outcome_capture_parts(
+    capture: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    contract = capture.get("contract") if isinstance(capture.get("contract"), dict) else {}
+    plan = capture.get("trade_plan") if isinstance(capture.get("trade_plan"), dict) else {}
+    outcome_contract = (
+        capture.get("outcome_contract")
+        if isinstance(capture.get("outcome_contract"), dict)
+        else {}
+    )
+    return contract, plan, outcome_contract
+
+
+def _entry_outcome_contract_available(
+    contract: dict[str, Any],
+    plan: dict[str, Any],
+    outcome_contract: dict[str, Any],
+) -> bool:
+    required_levels = ("entry_price", "stop_loss", "take_profit_1", "take_profit_2")
+    return bool(
+        contract.get("available") is True
+        and str(contract.get("exchange") or "").lower() == "lbank"
+        and contract.get("market_type") == "linear_usdt_perpetual"
+        and contract.get("mapped_symbol")
+        and outcome_contract.get("closed_candles_only") is True
+        and outcome_contract.get("complete_window_required") is True
+        and all(plan.get(key) is not None for key in required_levels)
+    )
+
+
+def _entry_outcome_costs_complete(costs: dict[str, Any]) -> bool:
+    required = ("fees", "entry_slippage", "exit_slippage", "funding")
+    return bool(
+        costs
+        and all(
+            isinstance(costs.get(name), dict) and costs[name].get("available") is True
+            for name in required
+        )
+    )
+
+
+_ENTRY_OUTCOME_MAX_CAPTURE_AGE_SECONDS = 72 * 60 * 60
+
+
+def _entry_outcome_no_candles_result(capture: dict[str, Any], contract: dict) -> dict | None:
+    """Keep fresh gaps retryable, but bound exact-window retries by capture age."""
+    captured_at = capture.get("captured_at")
+    if isinstance(captured_at, bool) or not isinstance(captured_at, int):
+        return None
+    if int(time.time()) - captured_at <= _ENTRY_OUTCOME_MAX_CAPTURE_AGE_SECONDS:
+        return None
+    return {
+        "outcome_status": "UNAVAILABLE",
+        "classification": "UNAVAILABLE",
+        "cost": capture.get("costs"),
+        "provenance": {
+            "decision_packet_sha256": capture.get("decision_packet_sha256"),
+            "decision_contract_sha256": capture.get("decision_contract_sha256"),
+            "source_revision": capture.get("source_revision"),
+            "contract": contract or None,
+        },
+        "reason": "exact-contract candle retry window exhausted",
+    }
+
+
+def _entry_outcome_provenance_complete(
+    capture: dict[str, Any], classification: str, gross_r: float | None
+) -> bool:
+    source_revision = capture.get("source_revision")
+    decision_contract_sha256 = capture.get("decision_contract_sha256")
+    return bool(
+        isinstance(source_revision, str)
+        and len(source_revision) == 40
+        and isinstance(decision_contract_sha256, str)
+        and len(decision_contract_sha256) == 64
+        and classification in {"WIN", "STOP", "TIMEOUT"}
+        and gross_r is not None
+    )
+
+
+async def _resolve_entry_outcome(capture: dict) -> dict | None:
+    """Resolve an exact LBank perpetual capture from a complete closed 1m window."""
+    contract, plan, outcome_contract = _entry_outcome_capture_parts(capture)
+    if not _entry_outcome_contract_available(contract, plan, outcome_contract):
+        return {
+            "outcome_status": "UNAVAILABLE",
+            "classification": "UNAVAILABLE",
+            "cost": capture.get("costs"),
+            "provenance": {
+                "decision_packet_sha256": capture.get("decision_packet_sha256"),
+                "source_revision": capture.get("source_revision"),
+                "contract": contract or None,
+            },
+            "reason": "exact LBank linear perpetual capture contract unavailable",
+        }
+    signal = {
+        "id": int(capture["decision_event_id"]),
+        "symbol": str(capture.get("symbol") or ""),
+        "triggered_at": int(capture["decision_event_at"]),
+        "entry_price": plan["entry_price"],
+        "stop_loss": plan["stop_loss"],
+        "take_profit_1": plan["take_profit_1"],
+        "take_profit_2": plan["take_profit_2"],
+        "trigger_metrics_json": json.dumps(
+            {"exchange": "lbank", "mapped_symbol": contract["mapped_symbol"]}
+        ),
+    }
+    trigger_ms = signal["triggered_at"] * 1000
+    fetch_start_ms = (trigger_ms // 60_000) * 60_000
+    observation_start_ms = (
+        trigger_ms if trigger_ms % 60_000 == 0 else fetch_start_ms + 60_000
+    )
+    horizon_seconds = int(outcome_contract.get("horizon_seconds") or 86_400)
+    candles = await _fetch_signal_outcome_candles(
+        signal,
+        fetch_start_ms,
+        observation_start_ms + horizon_seconds * 1000,
+    )
+    if not candles:
+        return _entry_outcome_no_candles_result(capture, contract)
+    outcome = LBankSignalOutcomeEvaluator.evaluate(
+        signal, candles, horizon_seconds=horizon_seconds
+    )
+    status = str(outcome.get("status") or "")
+    if status == "DATA_INCOMPLETE":
+        return None
+    classification = _decision_outcome_classification(status)
+    gross_r = _decision_outcome_gross_r(classification, status, plan, candles)
+    costs = capture.get("costs") if isinstance(capture.get("costs"), dict) else {}
+    cost_complete = _entry_outcome_costs_complete(costs)
+    provenance_complete = _entry_outcome_provenance_complete(
+        capture, classification, gross_r
+    )
+    return {
+        "outcome_status": "OBSERVED",
+        "classification": classification,
+        "raw_outcome_status": status,
+        "outcome": outcome,
+        "gross_r": gross_r,
+        "net_r": None,
+        "cost": {"components": costs, "complete": cost_complete},
+        "provenance": {
+            "decision_packet_sha256": capture.get("decision_packet_sha256"),
+            "decision_contract_sha256": capture.get("decision_contract_sha256"),
+            "source_revision": capture.get("source_revision"),
+            "contract": contract,
+            "outcome_contract": outcome_contract,
+        },
+        "scientific_tier": (
+            "TIER_C" if cost_complete and provenance_complete else "UNAVAILABLE"
+        ),
+    }
+
+
+def _build_entry_outcome_resolution_worker() -> EntryOutcomeResolutionWorker:
+    return EntryOutcomeResolutionWorker(
+        entry_decision_store,
+        _resolve_entry_outcome,
+        batch_size=3,
+        interval_seconds=900.0,
+    )
+
+
 def _update_lbank_shadow_metrics() -> None:
     snapshot = (
         _lbank_shadow_health_snapshot()
@@ -994,6 +1531,38 @@ def _update_candidate_state_metrics(
         candidate_state_metric.labels(
             state=state
         ).set(value)
+
+
+def _update_websocket_metrics() -> None:
+    snapshot = validator.ws_manager.runtime_diagnostics()
+    websocket_active_tasks_metric.set(float(snapshot["active_tasks"]))
+    websocket_liquidation_tasks_metric.set(float(snapshot["liquidation_tasks"]))
+    websocket_shared_liquidation_tasks_metric.set(
+        float(snapshot["shared_liquidation_tasks"])
+    )
+    websocket_shared_liquidation_subscribers_metric.set(
+        float(snapshot["shared_liquidation_subscribers"])
+    )
+    websocket_shared_evidence_tasks_metric.set(
+        float(snapshot["shared_evidence_tasks"])
+    )
+    websocket_shared_evidence_subscribers_metric.set(
+        float(snapshot["shared_evidence_subscribers"])
+    )
+    websocket_direct_exchange_instances_metric.set(
+        float(snapshot["direct_exchange_instances"])
+    )
+    websocket_liquidation_exchange_instances_metric.set(
+        float(snapshot["liquidation_exchange_instances"])
+    )
+    websocket_direct_exchange_retire_tasks_metric.set(
+        float(snapshot["direct_exchange_retire_tasks"])
+    )
+    websocket_liquidation_exchange_retire_tasks_metric.set(
+        float(snapshot["liquidation_exchange_retire_tasks"])
+    )
+    websocket_ccxt_clients_metric.set(float(snapshot["ccxt_clients"]))
+    websocket_ccxt_subscriptions_metric.set(float(snapshot["ccxt_subscriptions"]))
 
 
 def _update_signal_settlement_worker_metrics() -> None:
@@ -1123,6 +1692,57 @@ def _websocket_source(metrics: object) -> tuple[str, str] | None:
     if not isinstance(mapped_symbol, str) or not mapped_symbol.strip():
         return None
     return exchange, mapped_symbol
+
+
+def _retire_websocket_evidence_source(source: tuple[str, str] | None) -> None:
+    if source is None:
+        return
+    manager = validator.ws_manager
+    manager.unsubscribe_shared_evidence(*source)
+    manager.unsubscribe(*source)
+
+
+def _sync_websocket_evidence_subscription(
+    previous_source: tuple[str, str] | None,
+    current_source: tuple[str, str] | None,
+    *,
+    state: str,
+) -> None:
+    manager = validator.ws_manager
+    if previous_source is not None and previous_source != current_source:
+        _retire_websocket_evidence_source(previous_source)
+    if current_source is None:
+        return
+    normalized_state = str(state or "WATCH").upper()
+    if normalized_state in {"PRE-TRIGGER", "ARMED"}:
+        manager.unsubscribe_shared_evidence(*current_source)
+        manager.subscribe(*current_source)
+        return
+    if normalized_state == "FUEL-RICH":
+        if manager.has_direct_evidence_subscription(*current_source):
+            manager.unsubscribe(*current_source)
+        manager.subscribe_shared_evidence(*current_source)
+        return
+    _retire_websocket_evidence_source(current_source)
+
+
+def _retire_removed_candidate_websocket_sources(
+    removed_candidates: dict[str, dict],
+) -> None:
+    for candidate in removed_candidates.values():
+        source = _websocket_source(candidate.get("metrics"))
+        _retire_websocket_evidence_source(source)
+
+
+scanner.on_candidates_removed = _retire_removed_candidate_websocket_sources
+
+
+def _candidate_evaluation_token_is_current(
+    symbol: str,
+    token: dict,
+) -> bool:
+    """Fence an in-flight evaluation against a catalogue active-universe swap."""
+    return scanner.active_candidates.get(symbol) is token
 
 
 def _store_live_metrics(
@@ -1337,7 +1957,9 @@ def _reconcile_explicit_entry_expirations(*, evaluated_at: int) -> int:
         expired = build_expired_entry_decision(previous, evaluated_at=evaluated_at)
         if expired is None:
             continue
-        event_id = entry_decision_store.append_if_changed(symbol, expired)
+        event_id = entry_decision_store.append_if_changed_with_capture(
+            symbol, expired, captured_at=evaluated_at
+        )
         if event_id is None:
             continue
         expired["event_id"] = event_id
@@ -1368,7 +1990,9 @@ def _reconcile_inactive_actionable_decisions(
         )
         if invalidated is None:
             continue
-        event_id = entry_decision_store.append_if_changed(symbol, invalidated)
+        event_id = entry_decision_store.append_if_changed_with_capture(
+            symbol, invalidated, captured_at=evaluated_at
+        )
         if event_id is None:
             continue
         reconciled += 1
@@ -1440,6 +2064,9 @@ def get_formatted_candidates(*, evaluation_time: float | None = None):  # NOSONA
 
     historical_by_symbol = (
         historical_outcome_store.symbol_summaries()
+    )
+    execution_suitability_by_symbol = (
+        execution_suitability_enricher.for_symbols(active_from_db.keys())
     )
 
     for (
@@ -1656,12 +2283,7 @@ def get_formatted_candidates(*, evaluation_time: float | None = None):  # NOSONA
 
         data[
             "execution_suitability"
-        ] = (
-            execution_suitability_enricher
-            .for_symbol(
-                symbol
-            )
-        )
+        ] = execution_suitability_by_symbol[symbol]
 
         data["historical_outcome"] = (
             historical_by_symbol.get(symbol)
@@ -1717,7 +2339,7 @@ def get_formatted_candidates(*, evaluation_time: float | None = None):  # NOSONA
 
     decision_terminal = build_decision_terminal(
         sorted_candidates,
-        recent_changes=entry_decision_store.recent_changes(limit=10),
+        recent_changes=entry_decision_store.recent_transitions(limit=10),
     )
 
     return {
@@ -1737,13 +2359,20 @@ def get_formatted_candidates(*, evaluation_time: float | None = None):  # NOSONA
     }
 
 
+def _get_live_dashboard_payload(*, evaluation_time: float) -> dict[str, Any]:
+    """Return the bounded public projection of the canonical dashboard state."""
+    return project_dashboard_payload(
+        get_formatted_candidates(evaluation_time=evaluation_time)
+    )
+
+
 def _publish_dashboard_snapshot(
     *,
     full_snapshot: bool,
     only_if_changed: bool = False,
 ) -> DashboardStreamEvent | None:
     generated_at = time.time()
-    payload = get_formatted_candidates(evaluation_time=generated_at)
+    payload = _get_live_dashboard_payload(evaluation_time=generated_at)
     if only_if_changed:
         return _dashboard_event_buffer.publish_snapshot_if_changed(
             payload,
@@ -1776,27 +2405,106 @@ def _broadcast_dashboard_event(event: DashboardStreamEvent) -> None:
                 pass
 
 
-async def sse_broadcaster():
-    last_heartbeat_at = 0.0
-    while _hunter_running:
-        if _sse_clients:
-            event = _publish_dashboard_snapshot(
-                full_snapshot=False,
-                only_if_changed=True,
-            )
-            if event is not None:
-                _broadcast_dashboard_event(event)
-            now = time.time()
-            if now - last_heartbeat_at >= 15.0:
-                heartbeat = _dashboard_event_buffer.publish_heartbeat(
-                    generated_at=now,
-                )
-                _broadcast_dashboard_event(heartbeat)
-                last_heartbeat_at = now
-
-        await asyncio.sleep(
-            1.0
+def _publish_dashboard_snapshot_safely(
+    *,
+    full_snapshot: bool,
+    only_if_changed: bool,
+) -> DashboardStreamEvent | None:
+    """Contain dashboard aggregation faults so one bad snapshot cannot kill SSE."""
+    try:
+        return _publish_dashboard_snapshot(
+            full_snapshot=full_snapshot,
+            only_if_changed=only_if_changed,
         )
+    except Exception:
+        logger.exception("Dashboard snapshot aggregation failed; SSE loop will continue")
+        return None
+
+
+def _dashboard_snapshot_broadcast_due(
+    last_snapshot_at: float,
+    now_monotonic: float,
+) -> bool:
+    """Return whether the expensive dashboard aggregation budget is due."""
+    return (
+        last_snapshot_at <= 0.0
+        or now_monotonic - last_snapshot_at
+        >= _DASHBOARD_SNAPSHOT_BROADCAST_INTERVAL_SECONDS
+    )
+
+
+def _dashboard_snapshot_task_result(
+    task: asyncio.Task,
+) -> DashboardStreamEvent | None:
+    try:
+        return task.result()
+    except asyncio.CancelledError:
+        return None
+    except Exception:
+        logger.exception("Dashboard snapshot worker failed; SSE loop will continue")
+        return None
+
+
+def _consume_dashboard_snapshot_task(
+    task: asyncio.Task | None,
+) -> tuple[asyncio.Task | None, float | None]:
+    if task is None or not task.done():
+        return task, None
+    event = _dashboard_snapshot_task_result(task)
+    if event is not None and _sse_clients:
+        _broadcast_dashboard_event(event)
+    return None, time.monotonic()
+
+
+def _start_dashboard_snapshot_task() -> asyncio.Task:
+    return asyncio.create_task(
+        asyncio.to_thread(
+            _publish_dashboard_snapshot_safely,
+            full_snapshot=False,
+            only_if_changed=True,
+        )
+    )
+
+
+def _dashboard_heartbeat_due(last_heartbeat_at: float, now_monotonic: float) -> bool:
+    return (
+        last_heartbeat_at <= 0.0
+        or now_monotonic - last_heartbeat_at
+        >= _DASHBOARD_HEARTBEAT_INTERVAL_SECONDS
+    )
+
+
+def _publish_dashboard_heartbeat() -> None:
+    heartbeat = _dashboard_event_buffer.publish_heartbeat(generated_at=time.time())
+    _broadcast_dashboard_event(heartbeat)
+
+
+async def sse_broadcaster():
+    last_snapshot_at = 0.0
+    last_heartbeat_at = 0.0
+    snapshot_task: asyncio.Task | None = None
+    try:
+        while _hunter_running:
+            now_monotonic = time.monotonic()
+            snapshot_task, completed_at = _consume_dashboard_snapshot_task(snapshot_task)
+            if completed_at is not None:
+                last_snapshot_at = completed_at
+
+            if _sse_clients:
+                if (
+                    snapshot_task is None
+                    and _dashboard_snapshot_broadcast_due(last_snapshot_at, now_monotonic)
+                ):
+                    snapshot_task = _start_dashboard_snapshot_task()
+                if _dashboard_heartbeat_due(last_heartbeat_at, now_monotonic):
+                    _publish_dashboard_heartbeat()
+                    last_heartbeat_at = now_monotonic
+
+            await asyncio.sleep(1.0)
+    finally:
+        if snapshot_task is not None:
+            snapshot_task.cancel()
+            await asyncio.gather(snapshot_task, return_exceptions=True)
 
 
 def _build_runtime_lifecycle_v2_evidence(
@@ -1843,10 +2551,48 @@ async def evaluate_candidate(
 ):
     analysis_observed_at = int(time.time())
 
-    active_candidate = scanner.active_candidates.setdefault(
-        symbol,
-        {},
-    )
+    active_candidate = scanner.active_candidates.get(symbol)
+    if not isinstance(active_candidate, dict):
+        logger.info(
+            "Discarding queued evaluation outside active universe for %s",
+            symbol,
+        )
+        return
+
+    expected_lifecycle_id = data.get("lifecycle_id")
+    active_lifecycle_id = active_candidate.get("lifecycle_id")
+    if scanner.last_successful_refresh_at is not None:
+        if (
+            isinstance(expected_lifecycle_id, bool)
+            or not isinstance(expected_lifecycle_id, int)
+            or expected_lifecycle_id < 1
+            or isinstance(active_lifecycle_id, bool)
+            or not isinstance(active_lifecycle_id, int)
+            or active_lifecycle_id != expected_lifecycle_id
+        ):
+            logger.info(
+                "Discarding queued evaluation after lifecycle change for %s: expected=%s active=%s",
+                symbol,
+                expected_lifecycle_id,
+                active_lifecycle_id,
+            )
+            return
+    elif (
+        isinstance(active_lifecycle_id, int)
+        and not isinstance(active_lifecycle_id, bool)
+        and isinstance(expected_lifecycle_id, int)
+        and not isinstance(expected_lifecycle_id, bool)
+        and active_lifecycle_id != expected_lifecycle_id
+    ):
+        logger.info(
+            "Discarding queued evaluation after lifecycle change for %s: expected=%s active=%s",
+            symbol,
+            expected_lifecycle_id,
+            active_lifecycle_id,
+        )
+        return
+
+    evaluation_candidate_token = active_candidate
     previous_ws_source = _websocket_source(active_candidate.get("metrics"))
     active_candidate["analysis_status"] = "pending"
     active_candidate["analysis_observed_at"] = analysis_observed_at
@@ -1912,6 +2658,16 @@ async def evaluate_candidate(
             )
         )
 
+        if not _candidate_evaluation_token_is_current(
+            symbol,
+            evaluation_candidate_token,
+        ):
+            logger.info(
+                "Discarding in-flight evaluation after active-universe swap for %s",
+                symbol,
+            )
+            return
+
         if not fallback_reference:
             replay_policy = EntryDecisionPolicy()
             reference_failure_metrics = {
@@ -1942,10 +2698,18 @@ async def evaluate_candidate(
                     lifecycle_id=int(data.get("lifecycle_id") or 1),
                     previous_decision=previous_entry_decision,
                 )
+                invalidated_decision["research_provenance"] = (
+                    _entry_outcome_research_provenance(
+                        reference_failure_metrics,
+                        decision_contract_hash=decision_contract_hash,
+                        decision_at=decision_now,
+                    )
+                )
                 try:
-                    decision_event_id = entry_decision_store.append_if_changed(
+                    decision_event_id = entry_decision_store.append_if_changed_with_capture(
                         symbol,
                         invalidated_decision,
+                        captured_at=decision_now,
                         expected_lifecycle_id=int(data.get("lifecycle_id") or 1),
                     )
                 except StaleCandidateLifecycleError:
@@ -2013,6 +2777,12 @@ async def evaluate_candidate(
             ][
                 "analysis_status"
             ] = "unavailable"
+
+            _sync_websocket_evidence_subscription(
+                previous_ws_source,
+                None,
+                state="WATCH",
+            )
 
             _store_live_metrics(
                 symbol,
@@ -2093,6 +2863,21 @@ async def evaluate_candidate(
             lifecycle_id=int(data.get("lifecycle_id") or 1),
         )
     )
+    runtime_diagnostics = result.pop("_runtime_diagnostics", {})
+    _record_adaptive_pipeline_observation(
+        current_state,
+        None,
+        runtime_diagnostics,
+    )
+    if not _candidate_evaluation_token_is_current(
+        symbol,
+        evaluation_candidate_token,
+    ):
+        logger.info(
+            "Discarding in-flight evaluation after active-universe swap for %s",
+            symbol,
+        )
+        return
     lifecycle_v2_decision_clock_at = time.time()
 
     result_metrics = result.setdefault(
@@ -2150,24 +2935,15 @@ async def evaluate_candidate(
             "reason": "execution suitability unavailable",
         }
 
-    leverage_advisory = build_signal_leverage_advisory(
-        result_metrics,
-        execution_suitability,
-    )
-    result_metrics["leverage_advisory"] = leverage_advisory
-    result_metrics["leverage_policy"] = {
-        "version": leverage_advisory["policy_version"],
-        "minimum": leverage_advisory["minimum"],
-        "maximum": leverage_advisory["maximum"],
-        "symbol_agnostic": leverage_advisory["symbol_agnostic"],
-        "paper_only": True,
-        "advisory_only": True,
-    }
-    result_metrics["applied_leverage"] = (
-        leverage_advisory.get("leverage")
-        if leverage_advisory.get("status") == "AVAILABLE"
-        else None
-    )
+    if not _candidate_evaluation_token_is_current(
+        symbol,
+        evaluation_candidate_token,
+    ):
+        logger.info(
+            "Discarding in-flight evaluation after active-universe swap for %s",
+            symbol,
+        )
+        return
 
     reference_age = causal_age_seconds(decision_now_precise, reference_observed_at)
     previous_entry_decision = entry_decision_store.latest_for_symbol(symbol)
@@ -2180,10 +2956,27 @@ async def evaluate_candidate(
         lifecycle_id=int(data.get("lifecycle_id") or 1),
         previous_decision=previous_entry_decision,
     )
+    leverage_advisory = _apply_signal_leverage_advisory(
+        result_metrics,
+        execution_suitability,
+        decision_status=str(entry_decision.get("decision") or "UNAVAILABLE"),
+    )
+    leverage_projection = project_leverage_advisory(result_metrics)
+    if leverage_projection is not None:
+        entry_decision["leverage_advisory"] = leverage_projection
+        trade_plan = entry_decision.get("trade_plan")
+        if isinstance(trade_plan, dict):
+            trade_plan["leverage"] = leverage_projection.get("leverage")
+    entry_decision["research_provenance"] = _entry_outcome_research_provenance(
+        result_metrics,
+        decision_contract_hash=decision_contract_hash,
+        decision_at=decision_now,
+    )
     try:
-        event_id = entry_decision_store.append_if_changed(
+        event_id = entry_decision_store.append_if_changed_with_capture(
             symbol,
             entry_decision,
+            captured_at=decision_now,
             expected_lifecycle_id=int(data.get("lifecycle_id") or 1),
         )
     except StaleCandidateLifecycleError:
@@ -2461,14 +3254,16 @@ async def evaluate_candidate(
                 )
             )
 
-            if (
-                observation_state_aligned
-                and observation_exchange
-                and observation_symbol
-            ):
-                validator.ws_manager.unsubscribe(
-                    observation_exchange,
-                    observation_symbol,
+            if observation_state_aligned:
+                observation_ws_source = (
+                    (observation_exchange, observation_symbol)
+                    if observation_exchange and observation_symbol
+                    else None
+                )
+                _sync_websocket_evidence_subscription(
+                    previous_ws_source,
+                    observation_ws_source,
+                    state=str(observation_status),
                 )
 
         else:
@@ -2501,21 +3296,11 @@ async def evaluate_candidate(
                     final_v1_shadow_state = "WATCH"
 
             if watch_state_persisted:
-                unavailable_exchange = stored_metrics.get(
-                    "exchange"
+                _sync_websocket_evidence_subscription(
+                    previous_ws_source,
+                    _websocket_source(stored_metrics),
+                    state="WATCH",
                 )
-                unavailable_symbol = stored_metrics.get(
-                    "mapped_symbol"
-                )
-
-                if (
-                    unavailable_exchange
-                    and unavailable_symbol
-                ):
-                    validator.ws_manager.unsubscribe(
-                        unavailable_exchange,
-                        unavailable_symbol,
-                    )
 
         if data.get(
             "dex_context"
@@ -2636,17 +3421,11 @@ async def evaluate_candidate(
                 return
 
         current_ws_source = _websocket_source(metrics)
-        if (
-            previous_ws_source is not None
-            and previous_ws_source != current_ws_source
-        ):
-            validator.ws_manager.unsubscribe(*previous_ws_source)
-
-        if new_state == "ARMED":
-            if current_ws_source is not None:
-                validator.ws_manager.subscribe(*current_ws_source)
-        elif current_ws_source is not None:
-            validator.ws_manager.unsubscribe(*current_ws_source)
+        _sync_websocket_evidence_subscription(
+            previous_ws_source,
+            current_ws_source,
+            state=str(new_state),
+        )
 
         persist_lifecycle_v2_shadow(str(new_state))
 
@@ -2667,10 +3446,7 @@ async def evaluate_candidate(
             metrics,
         )
 
-        validator.ws_manager.unsubscribe(
-            ex_name,
-            mapped_sym,
-        )
+        _retire_websocket_evidence_source((ex_name, mapped_sym))
 
         return
 
@@ -2699,10 +3475,7 @@ async def evaluate_candidate(
             )
 
             if state_persisted:
-                validator.ws_manager.unsubscribe(
-                    ex_name,
-                    mapped_sym,
-                )
+                _retire_websocket_evidence_source((ex_name, mapped_sym))
 
             _store_live_metrics(
                 symbol,
@@ -2843,10 +3616,7 @@ async def evaluate_candidate(
                 signal_id,
             )
 
-        validator.ws_manager.unsubscribe(
-            ex_name,
-            mapped_sym,
-        )
+        _retire_websocket_evidence_source((ex_name, mapped_sym))
 
         _store_live_metrics(
             symbol,
@@ -2870,11 +3640,13 @@ async def evaluate_candidate(
 
 
 async def hunter_loop(
-    interval_seconds: int = 60,
+    interval_seconds: float = 60.0,
 ):
     global _hunter_running
     global _hunter_last_completed_at
     global _hunter_last_progress_at
+    global _hunter_in_flight_count
+    global _hunter_due_backlog
 
     _hunter_running = True
 
@@ -2887,149 +3659,229 @@ async def hunter_loop(
         "State Machine running."
     )
 
-    while _hunter_running:
+    loop = asyncio.get_running_loop()
+    maintenance_interval = max(0.01, float(interval_seconds))
+    schedule = HunterDeadlineSchedule()
+    candidates: dict[str, dict] = {}
+    in_flight: dict[str, asyncio.Task] = {}
+    evaluations_since_flush = 0
+    flush_requested = False
+    flush_task: asyncio.Task | None = None
+    next_maintenance_at = 0.0
+    last_heap_trim_at = 0.0
+
+    async def evaluate_scheduled(symbol: str, data: dict) -> None:
+        global _hunter_last_progress_at
+        nonlocal evaluations_since_flush
+        nonlocal flush_requested
+        evaluation_started_at = loop.time()
+
         try:
-            await (
-                scanner
-                .refresh_live_references()
+            if not _hunter_running:
+                return
+            await evaluate_candidate(symbol, data)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Candidate evaluation failed: %s",
+                exc,
+                exc_info=(type(exc), exc, exc.__traceback__),
             )
-
-            expired_count = await asyncio.to_thread(
-                _reconcile_explicit_entry_expirations,
-                evaluated_at=int(time.time()),
+        else:
+            _hunter_last_progress_at = time.time()
+        finally:
+            _record_adaptive_pipeline_observation(
+                data.get("status"),
+                max(0.0, loop.time() - evaluation_started_at),
+                None,
             )
-            if expired_count:
-                logger.info("Reconciled %s explicit canonical entry expirations", expired_count)
-
-            candidates = (
-                db.get_all_active_candidates()
-            )
-
-            inactive_count = await asyncio.to_thread(
-                _reconcile_inactive_actionable_decisions,
-                active_symbols=set(candidates),
-                evaluated_at=int(time.time()),
-            )
-            if inactive_count:
-                logger.info(
-                    "Invalidated %s canonical entries outside the active universe",
-                    inactive_count,
-                )
-
-            if candidates:
-                semaphore = (
-                    asyncio.Semaphore(
-                        6
-                    )
-                )
+            evaluations_since_flush += 1
+            if evaluations_since_flush >= 30:
                 evaluations_since_flush = 0
+                flush_requested = True
 
-                bound_semaphore = semaphore  # bind loop variable (B023)
+    try:
+        while _hunter_running:
+            now = loop.time()
+            maintenance_finalize = False
 
-                async def evaluate_bounded(
-                    symbol,
-                    data,
-                    *,
-                    _semaphore=bound_semaphore,
-                ):
-                    global _hunter_last_progress_at
-                    nonlocal evaluations_since_flush
-
-                    should_flush = False
-                    try:
-                        async with _semaphore:
-                            try:
-                                if _hunter_running:
-                                    await evaluate_candidate(
-                                        symbol,
-                                        data,
-                                    )
-                                    _hunter_last_progress_at = (
-                                        time.time()
-                                    )
-                            finally:
-                                evaluations_since_flush += 1
-
-
-                                if evaluations_since_flush >= 30:
-                                    evaluations_since_flush = 0
-                                    should_flush = True
-                    finally:
-                        if should_flush:
-                            await asyncio.to_thread(
-                                execution_decision_logger
-                                .flush_evaluations
-                            )
-
-                results = await asyncio.gather(
-                    *(
-                        evaluate_bounded(
-                            symbol,
-                            data,
-                        )
-                        for symbol, data
-                        in candidates.items()
-                    ),
-                    return_exceptions=True,
-                )
-
-                for result in results:
-                    if isinstance(
-                        result,
-                        Exception,
-                    ):
-                        logger.warning(
-                            "Candidate evaluation failed: %s",
-                            result,
-                            exc_info=(
-                                type(result),
-                                result,
-                                result.__traceback__,
-                            ),
-                        )
-
-            await asyncio.to_thread(
-                execution_decision_logger
-                .flush_evaluations
-            )
-
-            await asyncio.to_thread(
-                execution_decision_logger
-                .record_universe_snapshot
-            )
-
-            validator.ws_manager.prune_stale_cache()
-
-            if not candidates:
-                _hunter_last_progress_at = (
-                    time.time()
-                )
-
-            _hunter_last_completed_at = (
-                time.time()
-            )
-
-            if _hunter_running:
+            if now >= next_maintenance_at:
                 try:
-                    await asyncio.wait_for(
-                        _hunter_stop_event.wait(),
-                        timeout=interval_seconds,
+                    expired_count = await asyncio.to_thread(
+                        _reconcile_explicit_entry_expirations,
+                        evaluated_at=int(time.time()),
                     )
-                except TimeoutError:
+                    if expired_count:
+                        logger.info(
+                            "Reconciled %s explicit canonical entry expirations",
+                            expired_count,
+                        )
+
+                    candidates = await asyncio.to_thread(
+                        db.get_all_active_candidates
+                    )
+
+                    inactive_count = await asyncio.to_thread(
+                        _reconcile_inactive_actionable_decisions,
+                        active_symbols=set(candidates),
+                        evaluated_at=int(time.time()),
+                    )
+                    if inactive_count:
+                        logger.info(
+                            "Invalidated %s canonical entries outside the active universe",
+                            inactive_count,
+                        )
+
+                    schedule.sync(candidates, now=loop.time())
+                    maintenance_finalize = True
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.exception("⚠️ Hunter maintenance error: %s", exc)
+
+                next_maintenance_at = loop.time() + maintenance_interval
+
+            for symbol, task in tuple(in_flight.items()):
+                if not task.done():
+                    continue
+                in_flight.pop(symbol, None)
+                try:
+                    task.result()
+                except asyncio.CancelledError:
                     pass
 
-        except asyncio.CancelledError:
-            break
-
-        except Exception as exc:
-            logger.error(
-                "⚠️ Hunter Loop Error: %s",
-                exc,
+            available_slots = max(
+                0,
+                DEFAULT_EVALUATION_CONCURRENCY - len(in_flight),
             )
+            if available_slots and candidates:
+                schedule.sync(candidates, now=loop.time())
+                due = schedule.due_candidates(
+                    candidates,
+                    scanner.active_candidates,
+                    now=loop.time(),
+                    in_flight=set(in_flight),
+                    limit=available_slots,
+                )
+                for symbol, data in due:
+                    schedule.mark_started(
+                        symbol,
+                        data.get("status"),
+                        now=loop.time(),
+                    )
+                    in_flight[symbol] = asyncio.create_task(
+                        evaluate_scheduled(symbol, data)
+                    )
 
-            await asyncio.sleep(
-                15
+            _hunter_in_flight_count = len(in_flight)
+            if candidates:
+                remaining_due = schedule.due_candidates(
+                    candidates,
+                    scanner.active_candidates,
+                    now=loop.time(),
+                    in_flight=set(in_flight),
+                    limit=max(1, len(candidates)),
+                )
+                _hunter_due_backlog = len(remaining_due)
+            else:
+                _hunter_due_backlog = 0
+
+            if maintenance_finalize:
+                # Let newly dispatched evaluations enter their await boundary before
+                # maintenance I/O. Maintenance never consumes an evaluation slot.
+                await asyncio.sleep(0)
+                await asyncio.to_thread(
+                    execution_decision_logger.record_universe_snapshot
+                )
+                validator.ws_manager.prune_stale_cache()
+
+                if not candidates and not in_flight:
+                    _hunter_last_progress_at = time.time()
+
+                _hunter_last_completed_at = time.time()
+
+                if loop.time() - last_heap_trim_at >= 300.0:
+                    trim_result = await asyncio.to_thread(trim_process_heap)
+                    last_heap_trim_at = loop.time()
+                    if trim_result.get("malloc_trim_released"):
+                        logger.debug(
+                            "Hunter maintenance heap trim released free pages (gc=%s)",
+                            trim_result.get("gc_collected"),
+                        )
+
+            if flush_requested and (flush_task is None or flush_task.done()):
+                if flush_task is not None:
+                    await asyncio.gather(flush_task, return_exceptions=True)
+                flush_requested = False
+                flush_task = asyncio.create_task(
+                    asyncio.to_thread(execution_decision_logger.flush_evaluations)
+                )
+
+            if not _hunter_running:
+                break
+
+            # Newly dispatched tasks should run before the scheduler decides how
+            # long it can sleep. This also lets very fast tasks free slots now.
+            await asyncio.sleep(0)
+
+            for symbol, task in tuple(in_flight.items()):
+                if task.done():
+                    in_flight.pop(symbol, None)
+                    if not task.cancelled():
+                        task.result()
+
+            _hunter_in_flight_count = len(in_flight)
+            if candidates:
+                remaining_due = schedule.due_candidates(
+                    candidates,
+                    scanner.active_candidates,
+                    now=loop.time(),
+                    in_flight=set(in_flight),
+                    limit=max(1, len(candidates)),
+                )
+                _hunter_due_backlog = len(remaining_due)
+            else:
+                _hunter_due_backlog = 0
+
+            available_slots = max(
+                0, DEFAULT_EVALUATION_CONCURRENCY - len(in_flight)
             )
+            now = loop.time()
+            delays = [max(0.0, next_maintenance_at - now)]
+            if available_slots > 0:
+                due_delay = schedule.seconds_until_next_due(
+                    candidates,
+                    now=now,
+                    in_flight=set(in_flight),
+                )
+                if due_delay is not None:
+                    delays.append(due_delay)
+            wait_timeout = max(0.001, min(delays)) if delays else maintenance_interval
+
+            stop_wait = asyncio.create_task(_hunter_stop_event.wait())
+            wait_set = [stop_wait, *in_flight.values()]
+            try:
+                await asyncio.wait(
+                    wait_set,
+                    timeout=wait_timeout,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                if not stop_wait.done():
+                    stop_wait.cancel()
+                await asyncio.gather(stop_wait, return_exceptions=True)
+
+    except asyncio.CancelledError:
+        raise
+    finally:
+        if in_flight:
+            await asyncio.gather(*in_flight.values(), return_exceptions=True)
+        if flush_task is not None:
+            await asyncio.gather(flush_task, return_exceptions=True)
+        await asyncio.to_thread(execution_decision_logger.flush_evaluations)
+        _hunter_in_flight_count = 0
+        _hunter_due_backlog = 0
 
 
 async def live_reference_loop(
@@ -3043,7 +3895,7 @@ async def live_reference_loop(
             )
 
         except asyncio.CancelledError:
-            break
+            raise
 
         except Exception as exc:
             logger.warning(
@@ -3061,6 +3913,7 @@ async def startup_event():
     global _hunter_stop_event
     global _lbank_execution_shadow_worker
     global _signal_settlement_worker
+    global _entry_outcome_resolution_worker
     global _entry_notification_worker
     global _entry_notification_probe
 
@@ -3193,12 +4046,17 @@ async def startup_event():
         "(batch=3 interval=900s)"
     )
 
+    _entry_outcome_resolution_worker = _build_entry_outcome_resolution_worker()
+    _start_background_task(_entry_outcome_resolution_worker.run_forever())
+    logger.info("Entry outcome resolution enabled (batch=3 interval=900s)")
+
 
 async def shutdown_event():
     global _hunter_running
     global _hunter_task
     global _lbank_execution_shadow_worker
     global _signal_settlement_worker
+    global _entry_outcome_resolution_worker
     global _entry_notification_worker
 
     _hunter_running = False
@@ -3216,6 +4074,8 @@ async def shutdown_event():
 
     if _signal_settlement_worker is not None:
         _signal_settlement_worker.stop()
+    if _entry_outcome_resolution_worker is not None:
+        _entry_outcome_resolution_worker.stop()
 
     hunter_task = _hunter_task
     if (
@@ -3258,6 +4118,7 @@ async def shutdown_event():
         _lbank_execution_shadow_worker = None
 
     _signal_settlement_worker = None
+    _entry_outcome_resolution_worker = None
     _hunter_task = None
 
     await scanner.close()
@@ -3451,6 +4312,9 @@ async def metrics():
         active_candidates
     )
 
+    _update_websocket_metrics()
+    _update_adaptive_pipeline_metrics()
+
     if (
         scanner.last_successful_refresh_at
         is not None
@@ -3512,10 +4376,27 @@ async def stream_candidates(
         try:
             replay = _dashboard_event_buffer.replay_after(last_event_id)
             if replay is None:
-                full_snapshot = _publish_dashboard_snapshot(full_snapshot=True)
+                full_snapshot = await asyncio.to_thread(
+                    _publish_dashboard_snapshot_safely,
+                    full_snapshot=True,
+                    only_if_changed=False,
+                )
                 if full_snapshot is None:
-                    raise RuntimeError("full dashboard snapshot was not published")
-                replay = [full_snapshot]
+                    replay = []
+                else:
+                    queued: list[DashboardStreamEvent] = []
+                    while True:
+                        try:
+                            queued.append(q.get_nowait())
+                        except asyncio.QueueEmpty:
+                            break
+                    replay = sorted(
+                        {
+                            int(event.event_id): event
+                            for event in (*queued, full_snapshot)
+                        }.values(),
+                        key=lambda event: int(event.event_id),
+                    )
             for event in replay:
                 delivered_event_id = max(delivered_event_id, int(event.event_id))
                 yield serialize_sse_event(event)
@@ -3543,47 +4424,53 @@ async def stream_candidates(
     )
 
 
-def _get_dashboard_poll_snapshot() -> DashboardSnapshot:
-    global _dashboard_preview_cache
+async def _get_dashboard_poll_snapshot() -> DashboardSnapshot:
+    global _dashboard_preview_cache, _dashboard_poll_build_task
 
     latest = _dashboard_event_buffer.latest_snapshot()
-    if latest is not None and (
-        _sse_clients
-        or time.time() - latest.generated_at <= _DASHBOARD_PREVIEW_CACHE_SECONDS
+    if (
+        latest is not None
+        and time.time() - latest.generated_at <= _DASHBOARD_PREVIEW_CACHE_SECONDS
     ):
         return latest
 
     now_monotonic = time.monotonic()
     cached = _dashboard_preview_cache
-
     if cached is not None:
-        (
-            cached_buffer,
-            cached_snapshot,
-            cached_at,
-        ) = cached
-
+        cached_buffer, cached_snapshot, cached_at = cached
         if (
             cached_buffer is _dashboard_event_buffer
-            and now_monotonic - cached_at
-            <= _DASHBOARD_PREVIEW_CACHE_SECONDS
+            and now_monotonic - cached_at <= _DASHBOARD_PREVIEW_CACHE_SECONDS
         ):
             return cached_snapshot
 
-    generated_at = time.time()
-    snapshot = _dashboard_event_buffer.preview_snapshot(
-        get_formatted_candidates(
-            evaluation_time=generated_at
-        ),
-        generated_at=generated_at,
-    )
+    task = _dashboard_poll_build_task
+    if task is None or task.done():
+        generated_at = time.time()
 
+        async def build() -> tuple[float, dict[str, Any]]:
+            payload = await asyncio.to_thread(
+                _get_live_dashboard_payload, evaluation_time=generated_at
+            )
+            return generated_at, payload
+
+        task = asyncio.create_task(build())
+        _dashboard_poll_build_task = task
+
+    try:
+        generated_at, payload = await asyncio.shield(task)
+    finally:
+        if task.done() and _dashboard_poll_build_task is task:
+            _dashboard_poll_build_task = None
+
+    snapshot = _dashboard_event_buffer.preview_snapshot(
+        payload, generated_at=generated_at
+    )
     _dashboard_preview_cache = (
         _dashboard_event_buffer,
         snapshot,
         time.monotonic(),
     )
-
     return snapshot
 
 
@@ -3594,4 +4481,22 @@ def _get_dashboard_poll_snapshot() -> DashboardSnapshot:
 )
 async def get_candidates(response: Response):
     response.headers["Cache-Control"] = "no-store"
-    return _get_dashboard_poll_snapshot()
+    return await _get_dashboard_poll_snapshot()
+
+
+@app.get(
+    "/api/candidates/raw",
+    response_model=DashboardSnapshot,
+    response_model_exclude_none=False,
+)
+async def get_raw_candidates(response: Response):
+    """Load full diagnostics on demand; never push them through the live SSE path."""
+    response.headers["Cache-Control"] = "no-store"
+    generated_at = time.time()
+    raw_payload = await asyncio.to_thread(
+        get_formatted_candidates, evaluation_time=generated_at
+    )
+    return _dashboard_event_buffer.preview_snapshot(
+        raw_payload,
+        generated_at=generated_at,
+    )

@@ -128,6 +128,7 @@ class LBankCatalogScanner:
         self.db = db_adapter
         self.dex_client = dex_client
         self.onchain_client = onchain_client
+        self.on_candidates_removed = None
 
         self._is_running = False
 
@@ -495,6 +496,8 @@ class LBankCatalogScanner:
             - fetched_symbols
         )
 
+        canonical_active: Dict[str, Any] | None = None
+
         if self.db:
             self.db.update_candidates(
                 new_symbols_map
@@ -506,6 +509,10 @@ class LBankCatalogScanner:
                     missing_symbols,
                     removal_after=2,
                 )
+            )
+            canonical_active = (
+                self.db
+                .get_all_active_candidates()
             )
         else:
             removed_now = (
@@ -541,6 +548,26 @@ class LBankCatalogScanner:
                 catalog_data
             )
 
+            if canonical_active is not None:
+                canonical_data = canonical_active.get(symbol)
+                if canonical_data is None:
+                    logger.warning(
+                        "Skipping %s because canonical active lifecycle is unavailable",
+                        symbol,
+                    )
+                    continue
+                current_data["lifecycle_id"] = int(
+                    canonical_data.get("lifecycle_id")
+                    or 1
+                )
+                current_data["status"] = str(
+                    canonical_data.get("status")
+                    or "WATCH"
+                )
+                current_data["scan_eligible"] = bool(
+                    canonical_data.get("scan_eligible")
+                )
+
             next_active[
                 symbol
             ] = current_data
@@ -551,6 +578,14 @@ class LBankCatalogScanner:
                 None,
             )
 
+        removed_from_active = {
+            symbol: {
+                **dict(previous_active[symbol]),
+                "metrics": dict(previous_active[symbol].get("metrics") or {}),
+            }
+            for symbol in set(previous_active) - set(next_active)
+        }
+
         # Swap atomically under the candidates lock so in-flight evaluations
         # either finish against the old dict (their writes are copied into
         # next_active via the per-symbol merge above) or start on the new one.
@@ -558,6 +593,12 @@ class LBankCatalogScanner:
             self.active_candidates = (
                 next_active
             )
+
+        if removed_from_active and callable(self.on_candidates_removed):
+            try:
+                self.on_candidates_removed(removed_from_active)
+            except Exception as exc:
+                logger.warning("Active-candidate removal callback failed: %s", exc)
 
         await self._enrich_dex_context(
             set(
