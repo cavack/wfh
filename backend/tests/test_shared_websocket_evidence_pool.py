@@ -53,7 +53,13 @@ class _ModeledClient:
 class _GenerationExchange(_CapabilityExchange):
     """Model the real CCXT membership-hash fan-out and generation lifecycle."""
 
-    def __init__(self, *, fail_close: bool = False, suppress_cancel: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail_close: bool = False,
+        suppress_cancel: bool = False,
+        retain_clients_on_close: bool = False,
+    ) -> None:
         super().__init__()
         self.clients: dict[str, _ModeledClient] = {}
         self.stream_routes: dict[tuple[str, tuple[str, ...]], int] = {}
@@ -67,6 +73,7 @@ class _GenerationExchange(_CapabilityExchange):
         self.close_release.set()
         self.fail_close = fail_close
         self.suppress_cancel = suppress_cancel
+        self.retain_clients_on_close = retain_clients_on_close
         self.cancel_release = asyncio.Event()
         self._watch_keys: set[tuple[str, tuple[str, ...]]] = set()
         self._unwatch_keys: set[tuple[str, tuple[str, ...]]] = set()
@@ -161,9 +168,10 @@ class _GenerationExchange(_CapabilityExchange):
         if self.fail_close:
             raise RuntimeError("close failed")
         self.closed = True
-        for client in tuple(self.clients.values()):
-            await client.close()
-        self.clients.clear()
+        if not self.retain_clients_on_close:
+            for client in tuple(self.clients.values()):
+                await client.close()
+            self.clients.clear()
 
 
 def _client_counts(exchanges: list[_GenerationExchange]) -> tuple[int, int]:
@@ -443,6 +451,57 @@ def test_failed_retirement_blocks_replacement(monkeypatch) -> None:
 
     asyncio.run(scenario())
 
+
+
+def test_close_that_retains_ccxt_clients_blocks_replacement(monkeypatch) -> None:
+    manager = WebSocketManager()
+    created: list[_GenerationExchange] = []
+
+    def new_exchange(_name: str):
+        exchange = _GenerationExchange(retain_clients_on_close=(len(created) == 0))
+        created.append(exchange)
+        return exchange
+
+    monkeypatch.setattr(manager, "_new_exchange", new_exchange)
+
+    async def scenario() -> None:
+        manager.subscribe_shared_evidence("binance", "A/USDT:USDT")
+        manager.subscribe_shared_evidence("binance", "B/USDT:USDT")
+        await _wait_until(lambda: len(created) == 1 and _client_counts(created) == (3, 6))
+        manager.subscribe_shared_evidence("binance", "C/USDT:USDT")
+        manager.unsubscribe_shared_evidence("binance", "A/USDT:USDT")
+        await _wait_until(lambda: created[0].close_started.is_set())
+        await asyncio.sleep(0.05)
+        assert len(created) == 1
+        assert "binance" in getattr(manager, "shared_evidence_blocked_exchanges", set())
+        created[0].retain_clients_on_close = False
+        await manager.close_all()
+
+    asyncio.run(scenario())
+
+
+def test_reconcile_request_is_not_lost_while_singleflight_task_is_finishing(monkeypatch) -> None:
+    manager = WebSocketManager()
+    calls: list[int] = []
+    first_release = asyncio.Event()
+
+    async def fake_reconcile(_ex_name: str) -> None:
+        calls.append(len(calls) + 1)
+        if len(calls) == 1:
+            await first_release.wait()
+
+    monkeypatch.setattr(manager, "_reconcile_shared_evidence_exchange", fake_reconcile)
+
+    async def scenario() -> None:
+        manager._schedule_shared_evidence_reconcile("binance")
+        await _wait_until(lambda: calls == [1])
+        manager._schedule_shared_evidence_reconcile("binance")
+        first_release.set()
+        await _wait_until(lambda: len(calls) >= 2, timeout=0.5)
+        await manager.close_all()
+
+    asyncio.run(scenario())
+    assert calls == [1, 2]
 
 def test_pending_consumer_retirement_suppresses_replacement(monkeypatch) -> None:
     manager = WebSocketManager()
