@@ -2,7 +2,7 @@
 
 ## Objective
 
-Replace the current mixed live score with a versioned, deterministic 0–100 short-setup score. The score must use only fresh, source-attributed USDT-settled perpetual data. It must not use inter-exchange price differences as directional alpha, fabricate a missing value, or change the paper-only trading lock.
+Replace the current mixed live score with a versioned, deterministic 0–100 short-setup score. The score must use only fresh, source-attributed USDT-settled perpetual data. It must not use inter-exchange price differences as directional alpha, fabricate a missing value, or change the signal-only trading lock.
 
 ## Non-Negotiable Constraints
 

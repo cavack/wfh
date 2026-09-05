@@ -2,7 +2,7 @@
 
 ## Objective
 
-Increase valid paper-alert coverage without relaxing execution quality. The system must not manufacture data, execute live orders, or promote a parameter set solely because of a small-sample win rate.
+Increase valid simulated-alert coverage without relaxing execution quality. The system must not manufacture data, execute live orders, or promote a parameter set solely because of a small-sample win rate.
 
 ## Architecture
 
@@ -22,7 +22,7 @@ The strategy is split into three deterministic stages:
 
 ## Risk and Outcome Definition
 
-- Keep paper-only operation and `LIVE_TRADING_ENABLED=false`.
+- Keep signal-only operation and `LIVE_TRADING_ENABLED=false`.
 - Use the structural stop, constrained by a minimum and maximum percent distance. The backtest must use the next candle open, conservative two-sided fee/slippage, and stop-first resolution for intrabar ambiguity.
 - A target must be at least 1R net of cost. Win-rate optimization by shrinking TP below 1R is rejected.
 - A timeout at 24 hours is reported separately and not counted as a win.
@@ -37,7 +37,7 @@ The strategy is split into three deterministic stages:
 
 ## Acceptance Criteria
 
-A configuration may be proposed for paper deployment only when all conditions hold:
+A configuration may be proposed for simulated deployment only when all conditions hold:
 
 - At least 50 settled validation trades.
 - Positive net expectancy after configured costs.

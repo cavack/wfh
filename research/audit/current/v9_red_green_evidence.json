@@ -1,0 +1,47 @@
+{
+  "schema_version": "wfh_v9_red_green_evidence_v2",
+  "recorded_at": "2026-08-30T16:46:39Z",
+  "tested_commit": "7b84660781a869cb595ae6984be0b79b4cdfc317",
+  "tested_commit_tree": "CLEAN_EXACT_COMMITTED_TREE",
+  "code_and_test_diff_sha256": null,
+  "provenance_note": "All results below were produced on the exact committed, clean tree of 7b84660781a869cb595ae6984be0b79b4cdfc317 with no uncommitted diff. This artifact itself is a documentation-only addition on top of that code commit.",
+  "red": [
+    {
+      "scope": "v9 replay hash integrity (review threads PRRT_kwDOTy3zAc6diNCA, PRRT_kwDOTy3zAc6dht7A-family)",
+      "result": "1 failed, 43 passed (focused, pre-fix)",
+      "failure": "fixture with fabricated 64-char hashes that do not hash the embedded canonical decision or the stored contract was classified replay_complete=true"
+    },
+    {
+      "scope": "nested replay context validation (review thread PRRT_kwDOTy3zAc6diJ3t)",
+      "result": "new invariant tests failed against pre-fix validator",
+      "failure": "empty freshness / empty trade_plan_feasibility_shadow dictionaries passed the completeness check"
+    },
+    {
+      "scope": "negative causal timestamps (review thread PRRT_kwDOTy3zAc6diJ3s)",
+      "result": "new invariant tests failed against pre-fix helper",
+      "failure": "causal_age_seconds(-1, -2) returned 1 and made impossible timestamps pass freshness"
+    },
+    {
+      "scope": "decision clock precision (review thread PRRT_kwDOTy3zAc6diNB6, P1)",
+      "result": "new invariant tests failed against pre-fix builder",
+      "failure": "fractional reference_observed_at inside the same wall-clock second as the int-truncated decision clock returned None age and would hard-block with STALE_REFERENCE"
+    },
+    {
+      "scope": "derivatives per-domain future timestamps (review thread PRRT_kwDOTy3zAc6diJ3v)",
+      "result": "parameterized test failed for taker domain against the old single-funding-row test",
+      "failure": "future-timestamp rejection was not independently proven per domain on a valid baseline"
+    }
+  ],
+  "green": [
+    {"scope": "focused review-thread regressions (evidence v9, derivatives, validator, feature replay)", "result": "62 passed"},
+    {"scope": "full backend on exact clean commit 7b84660781a869cb595ae6984be0b79b4cdfc317", "result": "1161 passed, 1 deprecation warning"},
+    {"scope": "git diff --check at exact commit", "result": "PASS"},
+    {"scope": "repository hygiene", "result": "PASS, 446 tracked files"},
+    {"scope": "WFH skill validation", "result": "PASS, exit 0"},
+    {"scope": "runtime declaration parity", "result": "PASS, runtime declarations are aligned"},
+    {"scope": "frontend contract impact", "result": "NOT_AFFECTED: no frontend source references replay_complete/replay_unavailable_reason; payload field shapes unchanged"},
+    {"scope": "review threads resolved by this commit", "result": "PRRT_kwDOTy3zAc6diNCA hash verification; PRRT_kwDOTy3zAc6diJ3t nested context; PRRT_kwDOTy3zAc6diJ3s negative timestamps; PRRT_kwDOTy3zAc6diNB6 full-precision clock; PRRT_kwDOTy3zAc6dht6- reference-failure replay context built before recording; PRRT_kwDOTy3zAc6diMlE partial candle windows; PRRT_kwDOTy3zAc6diJ3v per-domain derivatives; PRRT_kwDOTy3zAc6dht7D verified STALE (causal prevalidation already present); PRRT_kwDOTy3zAc6diJ3y + PRRT_kwDOTy3zAc6diMlH provenance bound to 7b84660781a869cb595ae6984be0b79b4cdfc317"}
+  ],
+  "production_mutation": false,
+  "live_trading_enabled": false
+}

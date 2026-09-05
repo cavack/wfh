@@ -1,6 +1,20 @@
 from waterfallhunter.core.dashboard import compact_metrics
 
 
+def test_compact_metrics_preserves_explicit_strategy_profile_for_ui_separation():
+    compacted = compact_metrics(
+        {
+            "strategy_profile": "experimental_pretrigger_v1",
+            "score_version": "score_v2_watch_v1",
+        }
+    )
+
+    assert compacted == {
+        "strategy_profile": "experimental_pretrigger_v1",
+        "score_version": "score_v2_watch_v1",
+    }
+
+
 def test_compact_metrics_keeps_both_stage_chain_views():
     lifecycle = {
         "version": "stage_lifecycle_v1",
@@ -23,7 +37,6 @@ def test_compact_metrics_keeps_both_stage_chain_views():
 def test_live_candidate_without_completed_analysis_has_an_explicit_pending_reason(
     monkeypatch,
 ):
-    import time
     import waterfallhunter.main as main
 
     symbol = "TEST/USDT:USDT"
@@ -46,6 +59,7 @@ def test_live_candidate_without_completed_analysis_has_an_explicit_pending_reaso
             symbol: {
                 "score": None,
                 "quote_volume": 1_000_000,
+                "analysis_observed_at": 1_700_000_010,
             },
         },
     )
@@ -55,18 +69,22 @@ def test_live_candidate_without_completed_analysis_has_an_explicit_pending_reaso
         "get_live_reference",
         lambda _: (
             0.5,
-            time.time(),
+            1_700_000_015,
         ),
     )
 
     candidate = (
-        main.get_formatted_candidates()
+        main.get_formatted_candidates(evaluation_time=1_700_000_020)
         ["candidates"][symbol]
     )
 
     assert candidate["data_status"] == "live"
     assert candidate["analysis_status"] == "pending"
     assert candidate["score"] is None
+    assert candidate["analysis_observed_at"] == 1_700_000_010
+    assert candidate["analysis_age_seconds"] == 10.0
+    assert candidate["reference_observed_at"] == 1_700_000_015
+    assert candidate["reference_age_seconds"] == 5.0
 
     assert candidate["metrics"] == {
         "analysis_reason": "live analysis pending"
@@ -150,7 +168,6 @@ def test_compact_metrics_excludes_heavy_market_payloads():
             },
             "position_setup": {
                 "entry_price": 1.0,
-                "tp_24h_probability": 0.75,
             },
         }
     )
@@ -163,7 +180,6 @@ def test_compact_metrics_excludes_heavy_market_payloads():
         },
         "position_setup": {
             "entry_price": 1.0,
-            "tp_24h_probability": 0.75,
         },
     }
 
@@ -544,3 +560,214 @@ def test_compact_metrics_preserves_candle_geometry_features():
         ["trigger_ready"]
         is True
     )
+
+
+def test_dashboard_projects_stale_entry_ready_to_invalidated(monkeypatch):
+    import waterfallhunter.main as main
+
+    symbol = "STALEUI/USDT:USDT"
+    stored_decision = {
+        "contract_version": "entry_decision_v1",
+        "policy_version": "entry_policy_v1",
+        "evaluated_at": 1_700_000_000,
+        "decision": "ENTRY_READY",
+        "lifecycle_state": "PRE-TRIGGER",
+        "entry_readiness": 85.0,
+        "evidence_coverage_pct": 90.0,
+        "hard_blocked": False,
+        "block_reasons": [],
+        "reason_codes": ["ENTRY_GATES_PASS"],
+        "components": {},
+        "evidence_summary": {},
+        "trade_plan": {
+            "entry_price": 1.0,
+            "stop_loss": 1.1,
+            "take_profit_1": 0.9,
+            "take_profit_2": 0.8,
+        },
+        "policy": {},
+        "event_id": 123,
+    }
+    monkeypatch.setattr(
+        main.db,
+        "get_all_active_candidates",
+        lambda: {symbol: {"symbol": symbol, "status": "PRE-TRIGGER"}},
+    )
+    monkeypatch.setattr(
+        main.scanner,
+        "active_candidates",
+        {
+            symbol: {
+                "score": 80.0,
+                "quote_volume": 2_000_000.0,
+                "analysis_observed_at": 1_700_000_000,
+                "metrics": {"entry_decision": stored_decision},
+            }
+        },
+    )
+    monkeypatch.setattr(
+        main.scanner,
+        "get_live_reference",
+        lambda _symbol: (1.0, 1_700_000_195),
+    )
+    monkeypatch.setattr(main.historical_outcome_store, "symbol_summaries", lambda: {})
+    monkeypatch.setattr(
+        main.execution_suitability_enricher,
+        "for_symbol",
+        lambda _symbol: {"status": "UNKNOWN", "observational_only": True},
+    )
+    monkeypatch.setattr(main.entry_decision_store, "recent_changes", lambda limit=10: [])
+
+    payload = main.get_formatted_candidates(evaluation_time=1_700_000_200)
+    projected = payload["candidates"][symbol]["metrics"]["entry_decision"]
+    assert payload["candidates"][symbol]["analysis_age_seconds"] == 200.0
+    assert projected["decision"] == "INVALIDATED"
+    assert "STALE_ANALYSIS" in projected["block_reasons"]
+    assert projected["event_id"] == 123
+
+
+def test_dashboard_drops_stale_forming_from_closest_setups(monkeypatch):
+    import waterfallhunter.main as main
+
+    symbol = "STALEFORM/USDT:USDT"
+    stored_decision = {
+        "contract_version": "entry_decision_v1",
+        "policy_version": "entry_policy_v1",
+        "evaluated_at": 1_700_000_000,
+        "decision": "FORMING",
+        "lifecycle_state": "PRE-TRIGGER",
+        "entry_readiness": 72.0,
+        "evidence_coverage_pct": 90.0,
+        "hard_blocked": False,
+        "block_reasons": [],
+        "reason_codes": ["TIMING_INCOMPLETE"],
+        "components": {},
+        "evidence_summary": {},
+        "trade_plan": None,
+        "policy": {},
+        "event_id": 124,
+    }
+    monkeypatch.setattr(
+        main.db,
+        "get_all_active_candidates",
+        lambda: {symbol: {"symbol": symbol, "status": "PRE-TRIGGER"}},
+    )
+    monkeypatch.setattr(
+        main.scanner,
+        "active_candidates",
+        {
+            symbol: {
+                "score": 72.0,
+                "quote_volume": 2_000_000.0,
+                "analysis_observed_at": 1_700_000_000,
+                "metrics": {"entry_decision": stored_decision},
+            }
+        },
+    )
+    monkeypatch.setattr(
+        main.scanner,
+        "get_live_reference",
+        lambda _symbol: (1.0, 1_700_000_195),
+    )
+    monkeypatch.setattr(main.historical_outcome_store, "symbol_summaries", lambda: {})
+    monkeypatch.setattr(
+        main.execution_suitability_enricher,
+        "for_symbol",
+        lambda _symbol: {"status": "UNKNOWN", "observational_only": True},
+    )
+    monkeypatch.setattr(main.entry_decision_store, "recent_changes", lambda limit=10: [])
+
+    payload = main.get_formatted_candidates(evaluation_time=1_700_000_200)
+    projected = payload["candidates"][symbol]["metrics"]["entry_decision"]
+    assert projected["decision"] == "NO_TRADE"
+    assert "STALE_ANALYSIS" in projected["block_reasons"]
+    assert symbol not in payload["decision_terminal"]["forming"]
+
+def test_dashboard_preserves_canonical_invalidation_when_reference_is_unavailable(monkeypatch):
+    import waterfallhunter.main as main
+
+    symbol = "NOREFUI/USDT:USDT"
+    invalidated = {
+        "contract_version": "entry_decision_v1",
+        "policy_version": "entry_policy_v1",
+        "evaluated_at": 1_700_000_100,
+        "decision": "INVALIDATED",
+        "lifecycle_state": "WATCH",
+        "entry_readiness": 40.0,
+        "evidence_coverage_pct": 80.0,
+        "hard_blocked": True,
+        "block_reasons": ["STALE_REFERENCE", "ENTRY_CONDITIONS_LOST"],
+        "reason_codes": ["STALE_REFERENCE"],
+        "components": {},
+        "evidence_summary": {},
+        "trade_plan": None,
+        "policy": {},
+        "event_id": 777,
+    }
+    monkeypatch.setattr(
+        main.db,
+        "get_all_active_candidates",
+        lambda: {symbol: {"symbol": symbol, "status": "WATCH"}},
+    )
+    monkeypatch.setattr(
+        main.scanner,
+        "active_candidates",
+        {
+            symbol: {
+                "score": None,
+                "quote_volume": 2_000_000.0,
+                "analysis_observed_at": 1_700_000_100,
+                "metrics": {
+                    "error": "no fresh reference price in exchange waterfall",
+                    "entry_decision": invalidated,
+                    "derivatives": {"available": True, "funding_rate": 0.123},
+                },
+            }
+        },
+    )
+    monkeypatch.setattr(main.scanner, "get_live_reference", lambda _symbol: (None, None))
+    monkeypatch.setattr(main.historical_outcome_store, "symbol_summaries", lambda: {})
+    monkeypatch.setattr(
+        main.execution_suitability_enricher,
+        "for_symbol",
+        lambda _symbol: {"status": "UNKNOWN", "observational_only": True},
+    )
+    monkeypatch.setattr(main.entry_decision_store, "recent_changes", lambda limit=10: [])
+
+    payload = main.get_formatted_candidates(evaluation_time=1_700_000_120)
+    candidate = payload["candidates"][symbol]
+    assert candidate["data_status"] == "unavailable"
+    assert candidate["metrics"]["entry_decision"]["decision"] == "INVALIDATED"
+    assert candidate["metrics"]["entry_decision"]["event_id"] == 777
+    assert "derivatives" not in candidate["metrics"]
+
+
+def test_compact_metrics_keeps_bounded_observational_reference_trade_plan():
+    compacted = compact_metrics({
+        "technical_trade_plan_shadow": {
+            "version": "technical_trade_plan_shadow_v1",
+            "observational_only": True,
+            "hard_gating_allowed": False,
+            "available": True,
+            "feasible": True,
+            "status": "FEASIBLE",
+            "setup": {
+                "status": "READY", "entry_price": 1.0, "stop_loss": 1.1,
+                "take_profit_1": 0.9, "take_profit_2": 0.8,
+                "take_profit_3": 0.7, "reward_to_risk": 2.0,
+                "raw_heavy_field": [1, 2, 3],
+            },
+            "reference": {"price": 1.01, "source": "mark"},
+        }
+    })
+    assert compacted["technical_trade_plan_shadow"] == {
+        "version": "technical_trade_plan_shadow_v1",
+        "observational_only": True, "hard_gating_allowed": False,
+        "available": True, "feasible": True, "status": "FEASIBLE",
+        "setup": {
+            "status": "READY", "entry_price": 1.0, "stop_loss": 1.1,
+            "take_profit_1": 0.9, "take_profit_2": 0.8,
+            "take_profit_3": 0.7, "reward_to_risk": 2.0,
+        },
+        "reference": {"price": 1.01, "source": "mark"},
+    }

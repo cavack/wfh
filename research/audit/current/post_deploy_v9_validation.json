@@ -1,0 +1,69 @@
+{
+  "artifact_identity_note": "CI digests are portable docker-save config digests. Deployment verified those config digests and revision inside the exact bundle before docker load; Production then used compose up --no-build. Host-local Docker image IDs may differ after load and are not the canonical portable identity (policy introduced by #75). All running images carry exact OCI revision 65c063ffea6209ecd84b224656bbc627ff811898.",
+  "bundle_sha256": "b307f418573d01b0c47127a91464bbddcb770dd69b3af7e51070cf1a8349ca47",
+  "canonical_replay_validation_passed": 325,
+  "deploy_workflow": 33326151899,
+  "deploy_workflow_completed_at_utc": "2026-08-30T17:56:46.134636+00:00",
+  "deployed_artifact_id": 9736306403,
+  "deployed_portable_image_digests": {
+    "backend": "sha256:46e065678d4114b3b9e9246b3b7056bcf19c21735d71bc78e5367f2ddf824b3f",
+    "frontend": "sha256:168b6cecb90e34ef257a7b98c9c433f5dc09faeffe041c43f52d073339de994e",
+    "watchdog": "sha256:ddebcede2d3c99c3e506d9e080e28ffaf67e2b65be84511a13e3671d2fc3bd96"
+  },
+  "full_market_context_valid_for_t0": 262,
+  "observed_at_utc": "2026-08-30T18:30:29.317481+00:00",
+  "post_deploy_validation": {
+    "backend_health": "healthy",
+    "db_foreign_key_violations": 0,
+    "db_integrity": "ok",
+    "db_journal_mode": "wal",
+    "db_user_version": 7,
+    "frontend_dashboard_http": 200,
+    "git_revision_exact": true,
+    "git_worktree_clean": true,
+    "hunter_progress_age_seconds_observed": 10.3,
+    "live_trading_enabled": false,
+    "telegram_signal_delivery_enabled": false
+  },
+  "production_revision": "65c063ffea6209ecd84b224656bbc627ff811898",
+  "replay_complete_false": 0,
+  "replay_complete_true": 325,
+  "replay_unavailable_reason_distribution": {},
+  "rows_without_cascade_due_to_source_unavailability": 63,
+  "runtime_local_image_ids": {
+    "backend": "sha256:48af7de95c9f3a8a1203fee2f06618e5d71ee924933177816cd99f732f3f4969",
+    "frontend": "sha256:0a800f89d931315026a99fc229f33de6209192f1347a79ab698b626f95a46cbe",
+    "watchdog": "sha256:1206906869722df1d56c7ba5b9858e21ea23e2c420a949f0b378edd55dc1977d"
+  },
+  "schema_version": "waterfallhunter_post_deploy_v9_validation_v1",
+  "source_sha": "65c063ffea6209ecd84b224656bbc627ff811898",
+  "v9_evidence_t0": {
+    "bucket_started_at": 1788111900,
+    "cascade_status": "PARTIAL",
+    "contract_sha256": "d048bd7e9344ba5055ca74d89108fbc6cd951e203ce5ecdabbebdc98ec20b9c0",
+    "decision_sha256": "73d2589c147f181aaa432172e8b2ecaa419aa505d9211b9d45b65932c9078490",
+    "evidence_sha256": "f66d70d13aedb02347c7b56b2c82a2394043125bc19988ad489cbdef1160024e",
+    "freshness": {
+      "analysis_age_seconds": 18.382525205612183,
+      "analysis_pass": true,
+      "max_analysis_age_seconds": 180.0,
+      "max_reference_age_seconds": 60.0,
+      "policy_version": "entry_policy_v1",
+      "reference_age_seconds": 26.784871101379395,
+      "reference_pass": true
+    },
+    "lifecycle_id": 8,
+    "liquidation_context": {
+      "available": false,
+      "maximum": 0.0,
+      "points": 0.0,
+      "reason": "observed liquidation flow unavailable"
+    },
+    "observed_at": 1788112672.3887885,
+    "observed_at_utc": "2026-08-30T17:57:52.388788+00:00",
+    "snapshot_id": 482207,
+    "symbol": "IOTA/USDT:USDT",
+    "technical_trade_plan_shadow_status": "FEASIBLE"
+  },
+  "v9_rows_after_deploy_success": 325
+}

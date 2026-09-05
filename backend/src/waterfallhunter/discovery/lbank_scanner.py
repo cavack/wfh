@@ -115,6 +115,11 @@ class LBankCatalogScanner:
             min_volume_usdt
         )
 
+        # Guards concurrent mutation of active_candidates: the six-hour
+        # catalogue swap (update_catalog) versus per-evaluation writes from
+        # concurrently running hunter evaluations.
+        self._candidates_lock = asyncio.Lock()
+
         self.active_candidates: Dict[
             str,
             Dict[str, Any],
@@ -123,6 +128,7 @@ class LBankCatalogScanner:
         self.db = db_adapter
         self.dex_client = dex_client
         self.onchain_client = onchain_client
+        self.on_candidates_removed = None
 
         self._is_running = False
 
@@ -140,6 +146,8 @@ class LBankCatalogScanner:
         symbol: str,
         last_price: float,
         quote_volume: float,
+        *,
+        currently_eligible: bool = False,
     ) -> bool:
         """
         Transitional universe filter.
@@ -149,17 +157,26 @@ class LBankCatalogScanner:
         BTC/ETH remain forced because they are benchmark/reference contracts.
         The rigid volume floor will be removed once LBank execution suitability
         is available.
+
+        Hysteresis: an already-eligible contract must fall 20% below the floor
+        before losing eligibility, so volume oscillating around the threshold
+        no longer flips scan_eligible (and thereby recycles lifecycle_id,
+        wiping ARMED/TRIGGERED state) every refresh.
         """
         if symbol in FORCED_SCAN_SYMBOLS:
             return True
 
-        return (
+        if not (
             0.0
             < last_price
             <= self.max_price
-            and quote_volume
-            >= self.min_volume_usdt
-        )
+        ):
+            return False
+
+        if currently_eligible:
+            return quote_volume >= self.min_volume_usdt * 0.8
+
+        return quote_volume >= self.min_volume_usdt
 
     async def fetch_lbank_futures_symbols(
         self,
@@ -229,6 +246,9 @@ class LBankCatalogScanner:
                         symbol,
                         last_price,
                         quote_volume,
+                        currently_eligible=bool(
+                            (self.active_candidates.get(symbol) or {}).get("scan_eligible")
+                        ),
                     )
                 )
 
@@ -476,6 +496,8 @@ class LBankCatalogScanner:
             - fetched_symbols
         )
 
+        canonical_active: Dict[str, Any] | None = None
+
         if self.db:
             self.db.update_candidates(
                 new_symbols_map
@@ -487,6 +509,10 @@ class LBankCatalogScanner:
                     missing_symbols,
                     removal_after=2,
                 )
+            )
+            canonical_active = (
+                self.db
+                .get_all_active_candidates()
             )
         else:
             removed_now = (
@@ -522,6 +548,26 @@ class LBankCatalogScanner:
                 catalog_data
             )
 
+            if canonical_active is not None:
+                canonical_data = canonical_active.get(symbol)
+                if canonical_data is None:
+                    logger.warning(
+                        "Skipping %s because canonical active lifecycle is unavailable",
+                        symbol,
+                    )
+                    continue
+                current_data["lifecycle_id"] = int(
+                    canonical_data.get("lifecycle_id")
+                    or 1
+                )
+                current_data["status"] = str(
+                    canonical_data.get("status")
+                    or "WATCH"
+                )
+                current_data["scan_eligible"] = bool(
+                    canonical_data.get("scan_eligible")
+                )
+
             next_active[
                 symbol
             ] = current_data
@@ -532,9 +578,27 @@ class LBankCatalogScanner:
                 None,
             )
 
-        self.active_candidates = (
-            next_active
-        )
+        removed_from_active = {
+            symbol: {
+                **dict(previous_active[symbol]),
+                "metrics": dict(previous_active[symbol].get("metrics") or {}),
+            }
+            for symbol in set(previous_active) - set(next_active)
+        }
+
+        # Swap atomically under the candidates lock so in-flight evaluations
+        # either finish against the old dict (their writes are copied into
+        # next_active via the per-symbol merge above) or start on the new one.
+        async with self._candidates_lock:
+            self.active_candidates = (
+                next_active
+            )
+
+        if removed_from_active and callable(self.on_candidates_removed):
+            try:
+                self.on_candidates_removed(removed_from_active)
+            except Exception as exc:
+                logger.warning("Active-candidate removal callback failed: %s", exc)
 
         await self._enrich_dex_context(
             set(

@@ -7,7 +7,7 @@ services:
     container_name: waterfall-backend
     restart: unless-stopped
     env_file:
-      - .env
+      - ${WFH_ENV_FILE:-.env}
     environment:
       # Production invariant: observational execution evidence must survive a
       # normal base-compose deploy. This worker never places orders or gates
@@ -17,9 +17,13 @@ services:
       LBANK_EXECUTION_SHADOW_INTERVAL_SECONDS: "60"
       LBANK_EXECUTION_SHADOW_SUCCESS_RECHECK_SECONDS: "1800"
       LBANK_EXECUTION_SHADOW_FAILURE_RECHECK_SECONDS: "600"
+      # Bound glibc arena multiplication in the long-lived multi-exchange worker.
+      MALLOC_ARENA_MAX: "2"
       # User-authorized, calibration-pending signal discovery. This profile
-      # remains paper-only and is never allowed to place orders.
-      EXPERIMENTAL_PRETRIGGER_ENABLED: "true"
+      # remains SIGNAL_ONLY and is never allowed to place orders. It stays
+      # opt-in: enable it explicitly in .env after reviewing its calibration
+      # status, instead of every base-compose deploy turning it on.
+      # EXPERIMENTAL_PRETRIGGER_ENABLED: "true"
       EXPERIMENTAL_PRETRIGGER_THRESHOLD: "45.0"
     read_only: true
     tmpfs:
@@ -35,7 +39,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1G
+          memory: 2G
           pids: 100
     healthcheck:
       test: ["CMD-SHELL", "/opt/venv/bin/python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')\" || exit 1"]
@@ -103,7 +107,7 @@ services:
     container_name: waterfall-watchdog
     restart: unless-stopped
     env_file:
-      - .env
+      - ${WFH_ENV_FILE:-.env}
     depends_on:
       waterfall-backend:
         condition: service_healthy
@@ -128,10 +132,9 @@ services:
       retries: 3
       start_period: 15s
     networks:
-      application:
-      egress:
-      alerting:
-        ipv4_address: 172.23.0.2
+      - application
+      - egress
+      - alerting
     logging:
       driver: "json-file"
       options:

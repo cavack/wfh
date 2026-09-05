@@ -4,6 +4,7 @@ import sqlite3
 import time
 from typing import Any
 
+from waterfallhunter.core.managed_sqlite import connect_managed_sqlite
 from waterfallhunter.core.schema_contract import require_managed_schema
 
 
@@ -74,7 +75,7 @@ class LBankExecutionStore:
         self,
         timeout: float = 10.0,
     ):
-        return sqlite3.connect(
+        return connect_managed_sqlite(
             self.db_path,
             timeout=timeout,
         )

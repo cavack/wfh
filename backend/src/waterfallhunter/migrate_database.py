@@ -12,7 +12,11 @@ from waterfallhunter.core.migration_preflight import (
     PreflightState,
     classify_database,
 )
-from waterfallhunter.core.migrations import MigrationError, MigrationRunner
+from waterfallhunter.core.migrations import (
+    MigrationError,
+    MigrationRunner,
+    discover_migrations,
+)
 from waterfallhunter.core.schema_contract import CURRENT_RUNTIME_SCHEMA_VERSION
 
 
@@ -87,12 +91,13 @@ def _validated_db_path(raw_value: str) -> Path | None:
 
 def _set_wal_mode(db_path: Path) -> str:
     """Set the persistent journal mode only after successful explicit migration."""
-    with sqlite3.connect(
+    conn = sqlite3.connect(
         db_path,
         timeout=5.0,
         isolation_level=None,
         uri=False,
-    ) as conn:
+    )
+    try:
         row = conn.execute("PRAGMA journal_mode=WAL").fetchone()
         mode = str(row[0] if row else "").lower()
         if mode != "wal":
@@ -102,6 +107,8 @@ def _set_wal_mode(db_path: Path) -> str:
         if verified != "wal":
             raise MigrationError("database journal mode verification failed")
         return verified
+    finally:
+        conn.close()
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -176,6 +183,9 @@ def _run_apply(
         return 3
 
     try:
+        packaged_versions = tuple(
+            migration.version for migration in discover_migrations()
+        )
         runner = MigrationRunner(
             db_path=db_path,
             source_revision=source_revision,
@@ -197,7 +207,7 @@ def _run_apply(
     if (
         postflight.state is not PreflightState.MIGRATED_COMPATIBLE
         or postflight.user_version != CURRENT_RUNTIME_SCHEMA_VERSION
-        or postflight.applied_versions != (1, 2)
+        or postflight.applied_versions != packaged_versions
     ):
         _emit(
             _base_payload(

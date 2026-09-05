@@ -71,7 +71,7 @@ def _valid_signal_packet() -> dict:
         "execution_risk": "SUITABLE",
         "execution_plan_id": "plan-1",
         "reason_codes": ["STRICT_GATES_PASS"],
-        "execution_mode": "PAPER_ONLY",
+        "execution_mode": "SIGNAL_ONLY",
     }
 
 
@@ -184,7 +184,7 @@ def test_signal_decision_packet_keeps_probability_unavailable_explicit():
     contracts = _contracts()
     packet = contracts.SignalDecisionPacket(**_valid_signal_packet())
     assert packet.calibrated_probability is None
-    assert packet.execution_mode.value == "PAPER_ONLY"
+    assert packet.execution_mode.value == "SIGNAL_ONLY"
     assert packet.evidence_quality.coverage_pct == 100.0
 
 

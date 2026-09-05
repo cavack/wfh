@@ -1,0 +1,67 @@
+{
+  "schema_version": "waterfallhunter_leverage_vertical_e2e_evidence_v1",
+  "base_main_sha": "65c063ffea6209ecd84b224656bbc627ff811898",
+  "code_sha": "df35bf041685ac43a4edb8c08892897fccd378c9",
+  "production_mutated": false,
+  "live_trading_enabled": false,
+  "telegram_signal_delivery_enabled": false,
+  "root_cause": {
+    "legacy_source": "get_leverage(symbol): BTC/ETH=2x, other=3x",
+    "adaptive_source": "recommend_signal_leverage(metrics, execution_suitability): evidence-bound 4x..18x",
+    "defect": "The live canonical path populated metrics.applied_leverage from legacy symbol-only leverage before build_entry_decision, so the persisted canonical TradePlan copied 2x/3x. Adaptive leverage was computed only later in the TRIGGERED branch and adaptive errors returned before signal persistence.",
+    "classification": "REPRODUCED_DEFECT"
+  },
+  "red_evidence": [
+    {
+      "test": "vertical success",
+      "observed": "persisted EntryDecision.trade_plan.leverage=3 while canonical adaptive result=4",
+      "expected": "one identical adaptive value across metrics, EntryDecision, DB, API and SSE"
+    },
+    {
+      "test": "vertical missing market evidence",
+      "observed": "metrics.applied_leverage=3 despite unavailable causal evidence",
+      "expected": "UNAVAILABLE with no numeric fallback"
+    },
+    {
+      "test": "tri-state producer",
+      "observed": "ImportError: build_signal_leverage_advisory absent",
+      "expected": "AVAILABLE | UNAVAILABLE | NOT_RECOMMENDED contract"
+    }
+  ],
+  "fix": {
+    "canonical_live_source": "build_signal_leverage_advisory -> recommend_signal_leverage",
+    "legacy_live_injection_removed": true,
+    "computed_before_entry_decision": true,
+    "tri_state": ["AVAILABLE", "UNAVAILABLE", "NOT_RECOMMENDED"],
+    "advisory_only": true,
+    "adaptive_failure_is_signal_gate": false,
+    "legacy_replay_compatibility_preserved": true
+  },
+  "deterministic_vertical_success_fixture": {
+    "score_v2": 100.0,
+    "entry": 97.33,
+    "tp1": 88.81,
+    "tp2": 80.37,
+    "tp3": null,
+    "stop_loss": 105.71,
+    "adaptive_leverage": 4,
+    "lifecycle_id": 1,
+    "canonical_decision": "ACTIVE",
+    "signal_persisted": true
+  },
+  "verification_exact_code_sha": {
+    "targeted_and_neighboring": "129 passed",
+    "full_backend": "1170 passed, 2 warnings",
+    "frontend_typecheck": "PASS",
+    "frontend_build": "PASS",
+    "frontend_contract_test": "PASS",
+    "repository_hygiene": "PASS tracked_files=448",
+    "runtime_parity": "PASS",
+    "skill_validation": "PASS",
+    "git_diff_check": "PASS"
+  },
+  "warnings": [
+    "Pre-existing Starlette TestClient deprecation warning.",
+    "Read-only container pytest cache warning during local artifact-family execution."
+  ]
+}

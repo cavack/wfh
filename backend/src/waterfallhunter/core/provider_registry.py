@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Coroutine, Dict, Optional, Set, Any
 
+from waterfallhunter.core.managed_sqlite import connect_managed_sqlite
 from waterfallhunter.core.schema_contract import require_managed_schema
 
 logger = logging.getLogger("WaterfallHunter.ProviderRegistry")
@@ -76,7 +77,7 @@ class StorageAdapter:
             )
 
     def persist_provider_state(self, p: ProviderMetadata):
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_managed_sqlite(self.db_path) as conn:
             conn.execute("""
                 INSERT INTO provider_states (
                     provider_id, upstream_identity, status, failure_class,
@@ -99,7 +100,7 @@ class StorageAdapter:
             conn.commit()
 
     def load_provider_states(self) -> Dict[str, dict]:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_managed_sqlite(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute("SELECT * FROM provider_states")
             return {row["provider_id"]: dict(row) for row in cursor.fetchall()}
