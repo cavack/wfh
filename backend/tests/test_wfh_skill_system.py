@@ -45,6 +45,7 @@ def test_expected_skill_set_is_exact() -> None:
         "security-supply-chain",
         "observability-incident-response",
         "release-production-certification",
+        "skill-system-curator",
     }
 
 

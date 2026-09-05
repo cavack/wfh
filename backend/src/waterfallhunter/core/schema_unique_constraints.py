@@ -23,6 +23,8 @@ CANONICAL_UNIQUE_KEYS: dict[str, frozenset[tuple[str, ...]]] = {
         }
     ),
     "lifecycle_v2_shadow_events": frozenset({("transition_hash",)}),
+    "decision_outcome_capture": frozenset({("decision_event_id",)}),
+    "decision_outcome_resolution": frozenset({("decision_event_id",)}),
 }
 
 

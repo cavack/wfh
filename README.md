@@ -34,6 +34,7 @@
 - [Evidence model](#evidence-model)
 - [Scientific and promotion boundaries](#scientific-and-promotion-boundaries)
 - [Repository map](#repository-map)
+- [Repository governance](#repository-governance)
 - [Quick start with Docker Compose](#quick-start-with-docker-compose)
 - [Native development](#native-development)
 - [Configuration contract](#configuration-contract)
@@ -99,6 +100,10 @@ WATCH → FUEL-RICH → PRE-TRIGGER → ARMED → TRIGGERED → EXHAUSTED
 ```
 
 Lifecycle `TRIGGERED` does not mean `ENTRY_READY`. An immutable entry event cannot silently disappear; later changes are recorded as explicit transitions with timestamps, reason codes, model/evidence version, and provenance.
+
+### Protected calibration and pending Anti-Chase correction
+
+The protected `entry_policy_v1` bands are `ENTRY_READY >= 78` and `FORMING >= 55`; lower readiness remains `NO_TRADE`. Anti-Chase uses a `1.2 ATR` hard-extension boundary. The canonical Anti-Chase ordering from [#102](https://github.com/cavack/wfh/pull/102) is merged and present in current Production lineage: freshness and deterministic invalidators are evaluated first, and Anti-Chase only converts an otherwise `FORMING`, `ENTRY_READY`, or `ACTIVE` decision to `LATE`. Anti-Chase does not turn sub-`FORMING` evidence into `LATE`, lower either readiness threshold, or manufacture missing evidence. Genuine lifecycle `EXHAUSTED` remains explicitly terminal `LATE`, including when other blockers apply. New `LATE` packets record `late_origin` provenance while `lifecycle_state` continues to reflect the current evaluation.
 
 Read the full contracts in [Decision Engine](docs/DECISION_ENGINE.md), [Model](docs/MODEL.md), and [Dashboard](docs/DASHBOARD.md).
 
@@ -215,6 +220,14 @@ See [Strict Scientific Validation](docs/strict-scientific-validation.md), [Featu
 | [`research/`](research/) | Curated research inputs; generated outputs and datasets stay out of Git |
 | [`skills/waterfallhunter/`](skills/waterfallhunter/) | Repository-local engineering workflows and verification contracts |
 | [`.github/workflows/`](.github/workflows/) | Exact-SHA CI artifact construction and guarded production deployment |
+
+## Repository governance
+
+The canonical repository is protected `main` in `cavack/wfh`. Required CI checks are strict, linear history is enforced, force pushes/deletion are blocked, review conversations must be resolved, and Production deployment is an explicit exact-SHA action rather than a side effect of push.
+
+GitHub Actions reaches Production through a dedicated SSH identity stored in the `production` Environment. The Production host uses authenticated HTTPS/`gh` for normal repository operations and has a repository-scoped read-only SSH fallback for fetch continuity. Runtime recovery is layered across systemd boot assertion, Docker `restart: unless-stopped`, and the bounded one-minute health-recovery timer.
+
+See [Repository Governance](docs/REPOSITORY_GOVERNANCE.md), [Security Policy](SECURITY.md), [Contributing](CONTRIBUTING.md), and [Support](SUPPORT.md).
 
 ## Quick start with Docker Compose
 
@@ -414,6 +427,8 @@ Healthy endpoints do not by themselves prove decision correctness, backup validi
 | Advisory boundary | [AI Advisory](docs/AI_ADVISORY.md) |
 | Common failures | [Troubleshooting](docs/TROUBLESHOOTING.md) |
 | Program sequencing | [Dependency Graph](docs/program/DEPENDENCY_GRAPH.md) |
+| Model and decision changes | [Model Change Ledger](docs/MODEL_CHANGELOG.md) |
+| Repository controls and trust paths | [Repository Governance](docs/REPOSITORY_GOVERNANCE.md) |
 
 ## Contributing
 
@@ -424,7 +439,7 @@ Healthy endpoints do not by themselves prove decision correctness, backup validi
 5. Run `make validate`; run `./scripts/validate_clean_install.sh` for a clean release-candidate commit.
 6. Open a reviewed pull request and require exact-head CI before merge.
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md) before submitting changes or reporting a vulnerability.
+Read [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), and [SUPPORT.md](SUPPORT.md) before submitting changes, requesting support, or reporting a vulnerability.
 
 ## Non-goals
 

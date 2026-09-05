@@ -1,5 +1,7 @@
 import asyncio
+import copy
 import time
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 
 from waterfallhunter.core.channel_strategy import channel_stages
@@ -15,17 +17,88 @@ class MultiTimeframeAnalyzer:
     }
     candle_limit = 120
     max_closed_candle_age_intervals = 2
+    cache_max_entries = 1024
+
+    def __init__(self) -> None:
+        self._closed_series_cache: OrderedDict[tuple[str, str, str, int], dict[str, Any]] = OrderedDict()
+        self._cache_hits = 0
+        self._cache_misses = 0
+        self._cache_evictions = 0
+
+    @staticmethod
+    def _exchange_cache_id(exchange: Any) -> str:
+        exchange_id = getattr(exchange, "id", None)
+        if isinstance(exchange_id, str) and exchange_id:
+            return exchange_id
+        return f"{type(exchange).__module__}.{type(exchange).__qualname__}:{id(exchange)}"
+
+    def _expected_closed_start(self, timeframe: str, *, now_ms: int) -> int:
+        gap = self.timeframe_ms[timeframe]
+        return (int(now_ms) // gap) * gap - gap
+
+    def cache_diagnostics(self) -> Dict[str, int]:
+        return {
+            "hits": self._cache_hits,
+            "misses": self._cache_misses,
+            "evictions": self._cache_evictions,
+            "entries": len(self._closed_series_cache),
+        }
+
+    async def _load_closed_series(
+        self,
+        exchange: Any,
+        symbol: str,
+        timeframe: str,
+        *,
+        now_ms: int | None = None,
+    ) -> Optional[List[List[float]]]:
+        observed_now_ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
+        expected_closed_start = self._expected_closed_start(
+            timeframe, now_ms=observed_now_ms
+        )
+        key = (
+            self._exchange_cache_id(exchange),
+            symbol,
+            timeframe,
+            self.candle_limit,
+        )
+        cached = self._closed_series_cache.get(key)
+        if (
+            isinstance(cached, dict)
+            and cached.get("expected_closed_start") == expected_closed_start
+        ):
+            self._cache_hits += 1
+            self._closed_series_cache.move_to_end(key)
+            return copy.deepcopy(cached["candles"])
+
+        self._cache_misses += 1
+        rows = await exchange.fetch_ohlcv(
+            symbol, timeframe=timeframe, limit=self.candle_limit
+        )
+        candles = self._closed_candles(rows, timeframe, now_ms=observed_now_ms)
+        if candles is not None and candles[-1][0] >= expected_closed_start:
+            self._closed_series_cache[key] = {
+                "expected_closed_start": expected_closed_start,
+                "candles": copy.deepcopy(candles),
+            }
+            self._closed_series_cache.move_to_end(key)
+            while len(self._closed_series_cache) > max(1, int(self.cache_max_entries)):
+                self._closed_series_cache.popitem(last=False)
+                self._cache_evictions += 1
+        return candles
 
     def _closed_candles(
         self,
         rows: List[List[float]],
         timeframe: str,
+        *,
+        now_ms: int | None = None,
     ) -> Optional[List[List[float]]]:
         if not isinstance(rows, list) or len(rows) < 20:
             return None
 
         gap = self.timeframe_ms[timeframe]
-        now = int(time.time() * 1000)
+        now = int(time.time() * 1000) if now_ms is None else int(now_ms)
         candles = []
 
         for row in rows:
@@ -446,12 +519,11 @@ class MultiTimeframeAnalyzer:
         confirmation_exchange: Any = None,
         confirmation_symbol: str | None = None,
     ) -> Dict[str, Any]:
+        observed_now_ms = int(time.time() * 1000)
         primary = await asyncio.gather(
             *(
-                exchange.fetch_ohlcv(
-                    symbol,
-                    timeframe=tf,
-                    limit=self.candle_limit,
+                self._load_closed_series(
+                    exchange, symbol, tf, now_ms=observed_now_ms
                 )
                 for tf in self.timeframes
             ),
@@ -459,28 +531,20 @@ class MultiTimeframeAnalyzer:
         )
 
         source_ohlcv: Dict[str, List[List[float]]] = {}
-        for tf, rows in zip(self.timeframes, primary):
-            candles = (
-                None
-                if isinstance(rows, Exception)
-                else self._closed_candles(rows, tf)
-            )
-            if candles is not None:
-                source_ohlcv[tf] = candles
-
-            if candles is None:
+        for tf, candles in zip(self.timeframes, primary):
+            if isinstance(candles, Exception) or candles is None:
                 continue
             source_ohlcv[tf] = candles
 
         confirmation_ohlcv = None
         if confirmation_exchange and confirmation_symbol:
             try:
-                rows = await confirmation_exchange.fetch_ohlcv(
+                confirmation_ohlcv = await self._load_closed_series(
+                    confirmation_exchange,
                     confirmation_symbol,
-                    timeframe="15m",
-                    limit=self.candle_limit,
+                    "15m",
+                    now_ms=observed_now_ms,
                 )
-                confirmation_ohlcv = self._closed_candles(rows, "15m")
             except Exception:
                 confirmation_ohlcv = None
 

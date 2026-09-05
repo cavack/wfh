@@ -225,7 +225,7 @@ def test_runtime_passes_canonical_replay_context_to_v9_recorder(monkeypatch):
         "available":True, "feasible":True, "status":"FEASIBLE", "setup":{"status":"READY"},
     })
     monkeypatch.setattr(main, "_apply_deterministic_entry_gate", lambda _s, state, _m: (state, False))
-    monkeypatch.setattr(main, "build_signal_leverage_advisory", lambda metrics, execution_suitability=None: {
+    monkeypatch.setattr(main, "build_signal_leverage_advisory", lambda metrics, execution_suitability=None, **kwargs: {
         "policy_version": "adaptive_signal_leverage_v1",
         "minimum": 4, "maximum": 18, "symbol_agnostic": True,
         "signal_only": True, "advisory_only": True,

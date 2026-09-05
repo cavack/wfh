@@ -251,3 +251,34 @@ def test_leverage_advisory_persists_normalized_execution_suitability_input():
     }
     advisory = build_signal_leverage_advisory(_metrics(score=95.0), execution)
     assert advisory["execution_suitability_input"] == execution
+
+
+def test_non_actionable_canonical_decision_is_not_recommended_not_unavailable():
+    advisory = build_signal_leverage_advisory(
+        {"score": None},
+        {"status": "SUITABLE"},
+        decision_status="NO_TRADE",
+    )
+    assert advisory["status"] == "NOT_RECOMMENDED"
+    assert advisory["leverage"] is None
+    assert "NO_TRADE" in advisory["reason"]
+
+
+def test_entry_ready_still_fails_closed_when_causal_leverage_inputs_are_missing():
+    advisory = build_signal_leverage_advisory(
+        {"score": None},
+        {"status": "SUITABLE"},
+        decision_status="ENTRY_READY",
+    )
+    assert advisory["status"] == "UNAVAILABLE"
+    assert advisory["leverage"] is None
+
+
+def test_entry_ready_valid_inputs_keep_numeric_adaptive_leverage():
+    advisory = build_signal_leverage_advisory(
+        _metrics(),
+        {"available": True, "status": "SUITABLE", "maximum_leverage": 18},
+        decision_status="ENTRY_READY",
+    )
+    assert advisory["status"] == "AVAILABLE"
+    assert advisory["leverage"] == 18

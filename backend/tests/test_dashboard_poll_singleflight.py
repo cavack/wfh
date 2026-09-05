@@ -129,7 +129,7 @@ def test_poll_refreshes_retained_snapshot_after_it_becomes_stale(monkeypatch) ->
         },
     )
 
-    snapshot = main._get_dashboard_poll_snapshot()
+    snapshot = asyncio.run(main._get_dashboard_poll_snapshot())
 
     assert "NEW" in snapshot.candidates
     assert "OLD" not in snapshot.candidates

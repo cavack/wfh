@@ -38,7 +38,7 @@ _PRESERVED_TABLES = (
 def test_packaged_migrations_include_runtime_baseline():
     migrations = discover_migrations()
 
-    assert [item.version for item in migrations] == [1, 2, 3, 4, 5, 6, 7]
+    assert [item.version for item in migrations] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
     assert migrations[1].filename == "0002_runtime_schema_baseline.sql"
 
 
@@ -46,8 +46,8 @@ def test_clean_install_reaches_current_runtime_schema(tmp_path: Path):
     db_path = tmp_path / "registry.db"
     runner = MigrationRunner(db_path=db_path, source_revision="test")
 
-    assert runner.apply() == (1, 2, 3, 4, 5, 6, 7)
-    assert runner.verify() == (1, 2, 3, 4, 5, 6, 7)
+    assert runner.apply() == (1, 2, 3, 4, 5, 6, 7, 8, 9)
+    assert runner.verify() == (1, 2, 3, 4, 5, 6, 7, 8, 9)
 
     result = verify_managed_schema(
         db_path,
@@ -93,8 +93,8 @@ def test_canonical_legacy_adoption_preserves_business_and_evidence_rows(tmp_path
         db_path=db_path,
         source_revision="test-legacy-adoption",
     )
-    assert runner.apply() == (1, 2, 3, 4, 5, 6, 7)
-    assert runner.verify() == (1, 2, 3, 4, 5, 6, 7)
+    assert runner.apply() == (1, 2, 3, 4, 5, 6, 7, 8, 9)
+    assert runner.verify() == (1, 2, 3, 4, 5, 6, 7, 8, 9)
 
     after_hashes = business_row_hashes(db_path, _PRESERVED_TABLES)
     assert after_hashes == before_hashes
@@ -129,6 +129,8 @@ def test_canonical_legacy_adoption_preserves_business_and_evidence_rows(tmp_path
         (5, "test-legacy-adoption"),
             (6, "test-legacy-adoption"),
             (7, "test-legacy-adoption"),
+            (8, "test-legacy-adoption"),
+            (9, "test-legacy-adoption"),
         ]
     assert optional_tables == {
         "lbank_execution_observations",
@@ -150,6 +152,6 @@ def test_legacy_adoption_with_existing_optional_tables_is_idempotent(tmp_path: P
         is PreflightState.LEGACY_CANONICAL
     )
     runner = MigrationRunner(db_path=db_path, source_revision="test")
-    assert runner.apply() == (1, 2, 3, 4, 5, 6, 7)
+    assert runner.apply() == (1, 2, 3, 4, 5, 6, 7, 8, 9)
     assert business_row_hashes(db_path, _PRESERVED_TABLES) == before_hashes
     assert runner.apply() == ()

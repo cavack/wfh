@@ -101,10 +101,10 @@ def test_migration_v4_creates_verified_decision_and_outbox_contract(
         check_user_version=CURRENT_RUNTIME_SCHEMA_VERSION,
     )
 
-    assert CURRENT_RUNTIME_SCHEMA_VERSION == 7
+    assert CURRENT_RUNTIME_SCHEMA_VERSION == 9
     assert result.valid is True
     with sqlite3.connect(db_path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone() == (7,)
+        assert conn.execute("PRAGMA user_version").fetchone() == (9,)
         objects = {
             (str(row[0]), str(row[1]))
             for row in conn.execute(

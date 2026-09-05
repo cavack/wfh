@@ -341,6 +341,73 @@ class LBankExecutionStats:
             generated_at=time.time(),
         )
 
+    def summarize_symbols(
+        self,
+        symbols: Iterable[str],
+        *,
+        per_symbol_limit: int = 10_000,
+    ) -> list[dict]:
+        """Summarize an explicit symbol set with bounded set-based history reads."""
+        requested = [str(symbol) for symbol in symbols]
+        if not requested:
+            return []
+
+        bounded_row_limit = max(1, min(int(per_symbol_limit), 100_000))
+        generated_at = time.time()
+        grouped: dict[str, list[sqlite3.Row]] = defaultdict(list)
+        unique_symbols = list(dict.fromkeys(symbol for symbol in requested if symbol))
+
+        try:
+            with self._connect() as conn:
+                conn.row_factory = sqlite3.Row
+                for start in range(0, len(unique_symbols), 32):
+                    batch = unique_symbols[start : start + 32]
+                    placeholders = ",".join("?" for _ in batch)
+                    rows = conn.execute(
+                        f"""
+                        WITH ranked_history AS (
+                            SELECT
+                                history.{', history.'.join(_HISTORY_COLUMNS)},
+                                ROW_NUMBER() OVER (
+                                    PARTITION BY history.symbol
+                                    ORDER BY history.observed_at DESC, history.id DESC
+                                ) AS row_rank
+                            FROM lbank_execution_observation_history AS history
+                            WHERE history.symbol IN ({placeholders})
+                        )
+                        SELECT
+                            {_HISTORY_SELECT},
+                            row_rank
+                        FROM ranked_history
+                        WHERE row_rank <= ?
+                        ORDER BY symbol ASC, row_rank ASC
+                        """,
+                        (*batch, bounded_row_limit),
+                    ).fetchall()
+                    for row in rows:
+                        grouped[str(row["symbol"])].append(row)
+        except Exception:
+            logger.exception("Failed reading exact-symbol LBank execution statistics")
+            return [
+                self._empty_summary(
+                    symbol,
+                    since=None,
+                    generated_at=generated_at,
+                )
+                for symbol in requested
+            ]
+
+        return [
+            self._summary_from_rows(
+                symbol,
+                grouped.get(symbol, ()),
+                since=None,
+                generated_at=generated_at,
+            )
+            for symbol in requested
+        ]
+
+
     def summarize_universe(
         self,
         *,

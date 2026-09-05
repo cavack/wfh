@@ -177,6 +177,8 @@ def recommend_signal_leverage(
 def build_signal_leverage_advisory(
     metrics: Dict[str, Any],
     execution_suitability: Dict[str, Any] | None = None,
+    *,
+    decision_status: str | None = None,
 ) -> dict[str, Any]:
     """Return the canonical live leverage advisory without fabricating a fallback."""
     execution_input = (
@@ -184,6 +186,7 @@ def build_signal_leverage_advisory(
         if isinstance(execution_suitability, dict)
         else {}
     )
+    normalized_decision = str(decision_status or "").upper() or None
     base = {
         "policy_version": LEVERAGE_POLICY_VERSION,
         "minimum": 4,
@@ -191,9 +194,17 @@ def build_signal_leverage_advisory(
         "symbol_agnostic": True,
         "signal_only": True,
         "advisory_only": True,
+        "decision_status": normalized_decision,
         "execution_suitability_input": execution_input,
         "causal_input": _normalized_leverage_causal_input(metrics, execution_suitability),
     }
+    if normalized_decision in {"FORMING", "LATE", "NO_TRADE", "INVALIDATED", "EXPIRED"}:
+        return {
+            **base,
+            "status": "NOT_RECOMMENDED",
+            "leverage": None,
+            "reason": f"canonical entry decision is not actionable: {normalized_decision}",
+        }
     try:
         leverage = recommend_signal_leverage(metrics, execution_suitability)
     except LeverageNotRecommendedError as exc:

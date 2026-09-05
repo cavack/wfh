@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -160,6 +162,14 @@ def test_production_deploy_workflow_pins_ssh_host_identity() -> None:
     assert "StrictHostKeyChecking=no" not in text
 
 
+def test_production_deploy_long_running_ssh_uses_keepalive() -> None:
+    text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+    deploy_step = text.split("- name: Deploy exact CI revision", maxsplit=1)[1]
+    assert "ServerAliveInterval=30" in deploy_step
+    assert "ServerAliveCountMax=6" in deploy_step
+    assert "StrictHostKeyChecking=yes" in deploy_step
+
+
 def test_host_deploy_uses_registered_backend_health_paths() -> None:
     text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
     assert "wait_for_backend_endpoint /livez" in text
@@ -239,6 +249,73 @@ def test_successful_deploy_prunes_backups_before_publishing_certificate() -> Non
     prune_index = main_sequence.index("prune_database_backups")
     certificate_index = main_sequence.index('cat > "${STATE_DIR}/last-successful-deploy.txt"')
     assert prune_index < certificate_index
+
+
+def test_failed_deploy_retention_preserves_current_certified_backup(tmp_path: Path) -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    prune_body = text.split("prune_database_backups() {", maxsplit=1)[1].split(
+        "}\n\nassert_telegram_delivery_disabled()", maxsplit=1
+    )[0]
+    backup_dir = tmp_path / "backups"
+    state_dir = tmp_path / "state"
+    backup_dir.mkdir()
+    state_dir.mkdir()
+    backups = [
+        backup_dir / f"waterfall_registry.{index}.db" for index in range(4)
+    ]
+    for index, backup in enumerate(backups):
+        backup.write_bytes(f"backup-{index}".encode())
+        os.utime(backup, (100 + index, 100 + index))
+        backup.with_suffix(backup.suffix + ".sha256").write_text("evidence\n")
+    certified_alias = backup_dir / "." / backups[0].name
+    (state_dir / "last-successful-deploy.txt").write_text(
+        f"revision={'a' * 40}\nbackup={backup_dir}/./{backups[0].name}\n", encoding="utf-8"
+    )
+    assert certified_alias.resolve() == backups[0].resolve()
+    script = f"""set -euo pipefail
+BACKUP_DIR={shlex.quote(str(backup_dir))}
+STATE_DIR={shlex.quote(str(state_dir))}
+WFH_DEPLOY_BACKUP_RETENTION_COUNT=2
+prune_database_backups() {{{prune_body}
+}}
+prune_database_backups
+"""
+    subprocess.run(["bash", "-c", script], check=True)
+    assert backups[0].exists(), "certificate-bound backup must survive failed-deploy pruning"
+    assert backups[0].with_suffix(backups[0].suffix + ".sha256").exists()
+    assert not backups[1].exists()
+    assert not backups[1].with_suffix(backups[1].suffix + ".sha256").exists()
+    assert backups[2].exists()
+    assert backups[3].exists()
+
+
+def test_backup_retention_rejects_certificate_path_traversal(tmp_path: Path) -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    prune_body = text.split("prune_database_backups() {", maxsplit=1)[1].split(
+        "}\n\nassert_telegram_delivery_disabled()", maxsplit=1
+    )[0]
+    backup_dir = tmp_path / "backups"
+    state_dir = tmp_path / "state"
+    backup_dir.mkdir()
+    state_dir.mkdir()
+    backups = [backup_dir / f"waterfall_registry.{index}.db" for index in range(3)]
+    for index, backup in enumerate(backups):
+        backup.write_bytes(f"backup-{index}".encode())
+        os.utime(backup, (100 + index, 100 + index))
+    (state_dir / "last-successful-deploy.txt").write_text(
+        f"revision={'b' * 40}\nbackup={backup_dir}/../escape.db\n", encoding="utf-8"
+    )
+    script = f"""set -euo pipefail
+BACKUP_DIR={shlex.quote(str(backup_dir))}
+STATE_DIR={shlex.quote(str(state_dir))}
+WFH_DEPLOY_BACKUP_RETENTION_COUNT=1
+prune_database_backups() {{{prune_body}
+}}
+prune_database_backups
+"""
+    result = subprocess.run(["bash", "-c", script], check=False)
+    assert result.returncode != 0
+    assert all(backup.exists() for backup in backups)
 
 
 def test_compose_run_commands_cannot_consume_streamed_deploy_script() -> None:
@@ -423,6 +500,59 @@ def test_database_backup_runs_as_service_owner_and_promotes_only_after_certifica
     ) >= 3
 
 
+def test_release_image_override_scopes_restrictive_umask() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    helper = text.split("write_release_image_override() {", maxsplit=1)[1].split(
+        "verify_image_revision() {", maxsplit=1
+    )[0]
+    assert "umask 027" in helper
+    assert "(\n    umask 027" in helper
+
+
+def test_monitoring_bind_permissions_are_checked_before_database_mutation() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    assert "assert_monitoring_bind_files_readable()" in text
+    helper = text.split("assert_monitoring_bind_files_readable() {", maxsplit=1)[1].split(
+        "configure_production_compose_topology() {", maxsplit=1
+    )[0]
+    assert "--entrypoint /bin/promtool prometheus" in helper
+    assert "check config /etc/prometheus/prometheus.yml" in helper
+    main_sequence = _main_deploy_sequence(text)
+    permission_index = main_sequence.index("assert_monitoring_bind_files_readable")
+    backup_index = main_sequence.index("backup_database")
+    migration_index = main_sequence.index("migrate_database")
+    assert permission_index < backup_index < migration_index
+
+
+def test_schema_rollback_restore_runs_as_backend_service_owner() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    restore = text.split("restore_database_backup() {", maxsplit=1)[1].split(
+        "prune_database_backups() {", maxsplit=1
+    )[0]
+    assert "os.getuid(), os.getgid()" in restore
+    assert '--user 0:0' not in restore
+    assert '--user "$backend_uid:$backend_gid"' in restore
+    assert "backup_gid=\"$(stat -c '%g' \"$DB_BACKUP\")\"" in restore
+    assert "backup_mode=\"$(stat -c '%a' \"$DB_BACKUP\")\"" in restore
+    assert 'chgrp "$backend_gid" "$DB_BACKUP"' in restore
+    assert '-v "${DB_BACKUP}:/backup/${backup_name}:ro"' in restore
+    assert "trap restore_backup_metadata EXIT" in restore
+    assert "trap 'exit 129' HUP" in restore
+    assert "trap 'exit 130' INT" in restore
+    assert "trap 'exit 143' TERM" in restore
+    assert 'chgrp "$backup_gid" "$DB_BACKUP"' in restore
+    assert 'chmod "$backup_mode" "$DB_BACKUP"' in restore
+    assert "source.backup(target)" in restore
+    stop_line = "docker compose stop waterfall-backend frontend watchdog"
+    assert stop_line in restore
+    stop_stmt = next(line.strip() for line in restore.splitlines() if stop_line in line)
+    assert "|| true" not in stop_stmt
+    assert "|| exit 1" in stop_stmt
+    assert restore.index(stop_line) < restore.index("source.backup(target)")
+    assert "shutil.copyfile" not in restore
+    assert ".rollback-" not in restore
+
+
 def test_deploy_clean_worktree_no_longer_depends_on_runtime_files_inside_git() -> None:
     text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
     helper = text.split("assert_clean_deploy_worktree() {", maxsplit=1)[1].split("}\n", maxsplit=1)[0]
@@ -444,7 +574,9 @@ def test_schema_changing_rollback_restores_backup_before_previous_schema_preflig
         "prune_database_backups() {", maxsplit=1
     )[0]
     assert 'sha256sum "$DB_BACKUP"' in restore
-    assert '${BACKUP_DIR}:/backup:ro' in restore
+    assert '${BACKUP_DIR}:/backup:ro' not in restore
+    assert '${DB_BACKUP}:/backup/${backup_name}:ro' in restore
+    assert 'source.backup(target)' in restore
     assert 'file:{src}?mode=ro&immutable=1' in restore
     assert "docker compose stop waterfall-backend frontend watchdog" in restore
     assert "PRAGMA integrity_check" in restore
@@ -596,3 +728,40 @@ def test_ci_tested_image_bundle_upload_path_is_not_hidden() -> None:
     )[0]
     assert "path: ci-artifacts/" in container_job
     assert ".ci-artifacts/" not in container_job
+
+
+def test_deploy_pins_target_images_to_release_specific_tags_before_compose_activation() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    assert 'RELEASE_BACKEND_IMAGE="wfh-release-backend:${WFH_DEPLOY_SHA}"' in text
+    assert 'RELEASE_FRONTEND_IMAGE="wfh-release-frontend:${WFH_DEPLOY_SHA}"' in text
+    assert 'RELEASE_WATCHDOG_IMAGE="wfh-release-watchdog:${WFH_DEPLOY_SHA}"' in text
+    helper = text.split("pin_target_release_images() {", maxsplit=1)[1].split("}\n", maxsplit=1)[0]
+    assert 'docker tag waterfallhunter-waterfall-backend "$RELEASE_BACKEND_IMAGE"' in helper
+    assert 'docker tag waterfallhunter-frontend "$RELEASE_FRONTEND_IMAGE"' in helper
+    assert 'docker tag waterfallhunter-watchdog "$RELEASE_WATCHDOG_IMAGE"' in helper
+    assert "write_release_image_override" in helper
+    main_sequence = _main_deploy_sequence(text)
+    assert main_sequence.index("pin_target_release_images") < main_sequence.index("backup_database")
+    assert main_sequence.index("activate_target_image_override") < main_sequence.index("backup_database")
+
+
+def test_deploy_rollback_pins_previous_running_images_before_loading_target_bundle() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    main_sequence = _main_deploy_sequence(text)
+    assert "pin_previous_running_images" in main_sequence
+    assert main_sequence.index("pin_previous_running_images") < main_sequence.index("load_tested_release_artifacts")
+    rollback = text.split("rollback_previous_revision() {", maxsplit=1)[1].split("terminate_with_cleanup() {", maxsplit=1)[0]
+    assert "activate_rollback_image_override" in rollback
+    assert rollback.index("activate_rollback_image_override") < rollback.index("docker compose up -d")
+
+
+def test_successful_deploy_promotes_immutable_image_override_for_systemd_restarts() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    main_sequence = _main_deploy_sequence(text)
+    assert "promote_target_image_override" in main_sequence
+    assert main_sequence.index("verify_running_revision") < main_sequence.index("promote_target_image_override")
+    assert main_sequence.index("promote_target_image_override") < main_sequence.index("install_systemd_units")
+    wrapper = (ROOT / "scripts/production_compose.sh").read_text(encoding="utf-8")
+    assert 'IMAGE_OVERRIDE="${WFH_PRODUCTION_IMAGE_OVERRIDE:-/srv/waterfallhunter/runtime/production-images.override.yml}"' in wrapper
+    assert 'if [[ -f "$IMAGE_OVERRIDE" ]]; then' in wrapper
+    assert 'compose_args+=(-f "$IMAGE_OVERRIDE")' in wrapper

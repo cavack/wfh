@@ -89,3 +89,51 @@ def test_signal_evidence_refresh_failure_is_throttled(monkeypatch) -> None:
             pass
 
     assert calls == 1
+
+
+def test_adaptive_pipeline_metrics_render_without_symbol_labels(monkeypatch) -> None:
+    record = getattr(main, "_record_adaptive_pipeline_observation", None)
+    update = getattr(main, "_update_adaptive_pipeline_metrics", None)
+    assert record is not None
+    assert update is not None
+
+    monkeypatch.setattr(
+        main.validator.candle_analyzer,
+        "cache_diagnostics",
+        lambda: {"hits": 7, "misses": 3, "evictions": 1, "entries": 9},
+        raising=False,
+    )
+    monkeypatch.setattr(main, "_hunter_in_flight_count", 4, raising=False)
+    monkeypatch.setattr(main, "_hunter_due_backlog", 6, raising=False)
+    record(
+        "PRE-TRIGGER",
+        1.25,
+        {
+            "source_attempts": 2,
+            "ws_evidence_hits": 1,
+            "rest_evidence_fallbacks": 1,
+            "outcome": "complete",
+            "stage_durations_seconds": {"microstructure": 0.2, "candles": 0.4},
+        },
+    )
+    update()
+
+    payload = main.generate_latest().decode("utf-8")
+    names = (
+        "waterfall_hunter_evaluation_duration_seconds",
+        "waterfall_market_evidence_stage_duration_seconds",
+        "waterfall_primary_source_attempts",
+        "waterfall_hunter_in_flight_evaluations",
+        "waterfall_hunter_due_backlog",
+        "waterfall_market_evidence_path_total",
+        "waterfall_candle_cache_events",
+    )
+    for name in names:
+        assert name in payload
+
+    adaptive_lines = [
+        line for line in payload.splitlines()
+        if any(line.startswith(name) for name in names)
+    ]
+    assert adaptive_lines
+    assert all("symbol=" not in line for line in adaptive_lines)

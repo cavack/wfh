@@ -205,6 +205,15 @@ class _FakeWebSocketManager:
     def unsubscribe(self, *_: object) -> None:
         return None
 
+    def subscribe_shared_evidence(self, *_: object) -> bool:
+        return True
+
+    def unsubscribe_shared_evidence(self, *_: object) -> None:
+        return None
+
+    def has_direct_evidence_subscription(self, *_: object) -> bool:
+        return False
+
 
 class _ExecutionSuitability:
     def for_symbol(self, _: str) -> dict:
@@ -217,6 +226,9 @@ class _ExecutionSuitability:
             "observation_span_hours": 48.0,
             "maximum_leverage": 20,
         }
+
+    def for_symbols(self, symbols) -> dict[str, dict]:
+        return {symbol: self.for_symbol(symbol) for symbol in symbols}
 
 
 class _ExecutionDecisionLogger:
@@ -457,7 +469,8 @@ def test_vertical_missing_market_evidence_fails_closed_through_api_and_sse(monke
     live_metrics = scanner.active_candidates[SYMBOL]["metrics"]
     assert live_metrics.get("position_setup") is None
     assert live_metrics.get("applied_leverage") is None
-    assert live_metrics["leverage_advisory"]["status"] == "UNAVAILABLE"
+    assert live_metrics["leverage_advisory"]["status"] == "NOT_RECOMMENDED"
+    assert "NO_TRADE" in live_metrics["leverage_advisory"]["reason"]
     assert live_metrics["entry_decision"]["trade_plan"] is None
     assert live_metrics["analysis_reason"] == "no complete live USDT perpetual data source in exchange waterfall"
 
@@ -466,7 +479,7 @@ def test_vertical_missing_market_evidence_fails_closed_through_api_and_sse(monke
     assert api_candidate["score"] is None
     assert api_candidate["metrics"]["entry_decision"]["trade_plan"] is None
     assert api_candidate["metrics"].get("applied_leverage") is None
-    assert api_candidate["metrics"]["leverage_advisory"]["status"] == "UNAVAILABLE"
+    assert api_candidate["metrics"]["leverage_advisory"]["status"] == "NOT_RECOMMENDED"
     assert "UNAVAILABLE" in api_candidate["metrics"]["analysis_reason"].upper() or "NO COMPLETE" in api_candidate["metrics"]["analysis_reason"].upper()
 
     main._dashboard_event_buffer.publish_snapshot(
@@ -478,6 +491,7 @@ def test_vertical_missing_market_evidence_fails_closed_through_api_and_sse(monke
     sse_candidate = event["payload"]["candidates"][SYMBOL]
     assert sse_candidate["metrics"]["entry_decision"]["trade_plan"] is None
     assert sse_candidate["metrics"].get("applied_leverage") is None
+    assert sse_candidate["metrics"]["leverage_advisory"]["status"] == "NOT_RECOMMENDED"
 
 
 @pytest.mark.parametrize("status", ["UNAVAILABLE", "NOT_RECOMMENDED"])
@@ -493,7 +507,7 @@ def test_leverage_advisory_status_never_becomes_a_strategy_or_signal_gate(
     monkeypatch.setattr(
         main,
         "build_signal_leverage_advisory",
-        lambda metrics, execution_suitability=None: {
+        lambda metrics, execution_suitability=None, **kwargs: {
             "policy_version": "adaptive_signal_leverage_v1",
             "minimum": 4,
             "maximum": 18,
