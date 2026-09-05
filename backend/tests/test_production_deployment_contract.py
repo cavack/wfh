@@ -160,6 +160,14 @@ def test_production_deploy_workflow_pins_ssh_host_identity() -> None:
     assert "StrictHostKeyChecking=no" not in text
 
 
+def test_production_deploy_long_running_ssh_uses_keepalive() -> None:
+    text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+    deploy_step = text.split("- name: Deploy exact CI revision", maxsplit=1)[1]
+    assert "ServerAliveInterval=30" in deploy_step
+    assert "ServerAliveCountMax=6" in deploy_step
+    assert "StrictHostKeyChecking=yes" in deploy_step
+
+
 def test_host_deploy_uses_registered_backend_health_paths() -> None:
     text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
     assert "wait_for_backend_endpoint /livez" in text

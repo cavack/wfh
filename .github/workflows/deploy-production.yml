@@ -171,6 +171,8 @@ jobs:
             -i "$HOME/.ssh/waterfallhunter-deploy" \
             -p "$port" \
             -o BatchMode=yes \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=6 \
             -o StrictHostKeyChecking=yes \
             -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
             -- "$WFH_PROD_USER@$WFH_PROD_HOST" \
