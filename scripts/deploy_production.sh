@@ -65,6 +65,12 @@ assert_clean_deploy_worktree() {
   [[ -z "$dirty" ]]
 }
 
+assert_monitoring_bind_files_readable() {
+  docker compose run --rm --no-deps --interactive=false -T \
+    --entrypoint /bin/promtool prometheus \
+    check config /etc/prometheus/prometheus.yml >/dev/null
+}
+
 configure_production_compose_topology() {
   if [[ -f "$PRODUCTION_COMPOSE_OVERRIDE" ]]; then
     export COMPOSE_FILE="${WFH_DEPLOY_ROOT}/docker-compose.yml:${PRODUCTION_COMPOSE_OVERRIDE}"
@@ -97,8 +103,9 @@ activate_rollback_image_override() {
 write_release_image_override() {
   local path="$1" backend_image="$2" frontend_image="$3" watchdog_image="$4" tmp
   tmp="${path}.tmp.$$"
-  umask 027
-  cat > "$tmp" <<EOF
+  (
+    umask 027
+    cat > "$tmp" <<EOF
 services:
   waterfall-backend:
     image: ${backend_image}
@@ -107,8 +114,9 @@ services:
   watchdog:
     image: ${watchdog_image}
 EOF
-  chmod 0640 "$tmp"
-  mv -- "$tmp" "$path"
+    chmod 0640 "$tmp"
+    mv -- "$tmp" "$path"
+  )
 }
 
 verify_image_revision() {
@@ -568,20 +576,48 @@ print(h.hexdigest())' \
 }
 
 restore_database_backup() {
-  local backup_name actual_sha
+  local actual_sha backend_gid backend_identity backend_uid backup_gid backup_mode backup_name
   [[ -n "$DB_BACKUP" && -f "$DB_BACKUP" ]] || return 1
   [[ "$DB_BACKUP" == "${BACKUP_DIR}/"* ]] || return 1
   [[ "$DB_BACKUP_SHA256" =~ ^[0-9a-f]{64}$ ]] || return 1
   actual_sha="$(sha256sum "$DB_BACKUP" | awk '{print $1}')" || return 1
   [[ "$actual_sha" == "$DB_BACKUP_SHA256" ]] || return 1
 
-  docker compose stop waterfall-backend frontend watchdog >/dev/null 2>&1 || true
-  backup_name="$(basename "$DB_BACKUP")"
-  docker compose run --rm --no-deps --interactive=false -T --user 0:0 \
-    -v "${BACKUP_DIR}:/backup:ro" \
+  backend_identity="$(docker compose run --rm --no-deps --interactive=false -T \
     waterfall-backend \
-    /opt/venv/bin/python -c \
-    'import hashlib, os, pathlib, shutil, sqlite3, sys
+    /opt/venv/bin/python -c 'import os; print(os.getuid(), os.getgid())')" \
+    || return 1
+  read -r backend_uid backend_gid <<< "$backend_identity"
+  [[ "$backend_uid" =~ ^[0-9]+$ && "$backend_gid" =~ ^[0-9]+$ ]] || return 1
+
+  backup_gid="$(stat -c '%g' "$DB_BACKUP")" || return 1
+  backup_mode="$(stat -c '%a' "$DB_BACKUP")" || return 1
+  [[ "$backup_gid" =~ ^[0-9]+$ && "$backup_mode" =~ ^[0-7]{3,4}$ ]] || return 1
+  backup_name="$(basename "$DB_BACKUP")"
+
+  (
+    metadata_changed=0
+    restore_backup_metadata() {
+      if [[ "$metadata_changed" -eq 1 ]]; then
+        chgrp "$backup_gid" "$DB_BACKUP" >/dev/null 2>&1 || true
+        chmod "$backup_mode" "$DB_BACKUP" >/dev/null 2>&1 || true
+      fi
+    }
+    trap restore_backup_metadata EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    chgrp "$backend_gid" "$DB_BACKUP"
+    metadata_changed=1
+    chmod 0640 "$DB_BACKUP"
+
+    docker compose stop waterfall-backend frontend watchdog >/dev/null 2>&1 || exit 1
+    docker compose run --rm --no-deps --interactive=false -T \
+      --user "$backend_uid:$backend_gid" \
+      -v "${DB_BACKUP}:/backup/${backup_name}:ro" \
+      waterfall-backend \
+      /opt/venv/bin/python -c \
+      'import hashlib, pathlib, sqlite3, sys
 src = pathlib.Path("/backup") / sys.argv[1]
 expected = sys.argv[2]
 dst = pathlib.Path("/app/data/waterfall_registry.db")
@@ -590,25 +626,21 @@ h = hashlib.sha256()
 with src.open("rb") as fh:
     for chunk in iter(lambda: fh.read(1024 * 1024), b""): h.update(chunk)
 if h.hexdigest() != expected: raise SystemExit("rollback backup checksum mismatch")
-with sqlite3.connect(f"file:{src}?mode=ro&immutable=1", uri=True) as check:
-    row = check.execute("PRAGMA integrity_check").fetchone()
+with sqlite3.connect(f"file:{src}?mode=ro&immutable=1", uri=True) as source:
+    row = source.execute("PRAGMA integrity_check").fetchone()
     if not row or str(row[0]).lower() != "ok": raise SystemExit("rollback backup integrity failure")
-owner = dst.stat() if dst.exists() else dst.parent.stat()
-tmp = dst.with_name(f".{dst.name}.rollback-{os.getpid()}")
-try:
-    tmp.unlink(missing_ok=True)
-    shutil.copyfile(src, tmp)
-    os.chown(tmp, owner.st_uid, owner.st_gid)
-    os.chmod(tmp, (owner.st_mode & 0o777) if dst.exists() else 0o600)
     pathlib.Path(str(dst) + "-wal").unlink(missing_ok=True)
     pathlib.Path(str(dst) + "-shm").unlink(missing_ok=True)
-    os.replace(tmp, dst)
-finally:
-    tmp.unlink(missing_ok=True)
+    with sqlite3.connect(dst) as target:
+        source.backup(target)
 with sqlite3.connect(dst) as check:
     row = check.execute("PRAGMA integrity_check").fetchone()
     if not row or str(row[0]).lower() != "ok": raise SystemExit("restored database integrity failure")' \
-    "$backup_name" "$DB_BACKUP_SHA256" || return 1
+      "$backup_name" "$DB_BACKUP_SHA256"
+  ) || return 1
+
+  [[ "$(stat -c '%g' "$DB_BACKUP")" == "$backup_gid" ]] || return 1
+  [[ "$(stat -c '%a' "$DB_BACKUP")" == "$backup_mode" ]] || return 1
   log "database restored from certified pre-migration backup: ${DB_BACKUP}"
 }
 
@@ -781,6 +813,8 @@ assert_signal_only_runtime_boundary
 git checkout --detach "$WFH_DEPLOY_SHA"
 docker compose config --quiet
 assert_signal_only_runtime_boundary
+assert_monitoring_bind_files_readable \
+  || fail "Prometheus bind-mounted configuration is not readable by the non-root service"
 
 load_tested_release_artifacts
 pin_target_release_images
