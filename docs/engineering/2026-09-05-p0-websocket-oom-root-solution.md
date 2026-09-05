@@ -89,3 +89,16 @@ Before implementation, add regressions for:
 10. isolated real-CCXT Binance and Bybit tests recording clients, subscriptions, FDs, and RSS after each generation.
 
 Acceptance is a bounded plateau after every cycle, not a periodic reset after threshold recycling. After this runtime fix is GREEN, re-measure hunter arrival rate, service rate, queue wait, lifecycle-specific duration, backlog drain, and candidate freshness before making any scheduler/concurrency change.
+
+## Second recheck amendment — transport retirement semantics
+
+A second real-CCXT review after the initial decision record tested two possible optimizations before implementation was resumed.
+
+- `REPRODUCED_DEFECT`: Binance 4.5.74 watch of `[A,B,C,D]` followed by full unwatch of the same four symbols in reverse order creates a different membership hash; clients rise from 3 to 6 while the original 12 subscriptions remain. Exact membership ordering is therefore part of CCXT transport identity.
+- `REPRODUCED_DEFECT`: `exchange.close_ws_clients()` removes live clients/subscriptions but reusing the same Binance exchange object with new membership sets retains `options.streamBySubscriptionsHash` and `options.numSubscriptionsByStream`; the retained routing map grew 3 -> 6 -> 9 -> ... -> 30 entries over ten unique four-symbol generations. Same-object reuse therefore does not provide a churn-independent bound even when sockets are closed.
+- `VERIFIED_FACT`: a fresh CCXT exchange object has empty WebSocket routing metadata. After closing the old exchange, `new_exchange.set_markets_from_exchange(old_exchange)` transfers static market metadata without carrying WebSocket client/routing state.
+- `VERIFIED_FACT`: real Binance and Bybit tests with 24 symbols across three changing generations, using close-before-open plus fresh exchange objects and `set_markets_from_exchange`, plateaued at Binance 3 clients/72 subscriptions and Bybit 1 client/72 subscriptions for every active generation, returning to zero clients/subscriptions after each close. No market reload was required between generations.
+
+Therefore the earlier chat-level optimization of exact-set unwatch plus same-exchange reuse is **rejected** as a root solution. The canonical decision remains Option C: immutable membership per transport generation, full retirement of the old exchange, and a fresh exchange object before the next generation. The implementation may use CCXT's `set_markets_from_exchange` only as a static-market metadata handoff after retirement; it must never copy or preserve `clients`, subscription maps, stream hashes, stream indices, or other WebSocket routing state.
+
+The correctness fallback remains fail-closed: if consumer settlement or `exchange.close()` cannot be proven, no replacement generation starts. Static market metadata handoff is an optimization, not a prerequisite; if it is unavailable or fails, the fresh generation may perform its ordinary market load rather than weakening transport retirement.
