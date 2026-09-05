@@ -285,7 +285,7 @@ Use expected-head SHA protection. Do not treat green CI alone as Production cert
 
 - [ ] **Step 4: Use release-production-certification for deployment prerequisites**
 
-Verify rollback target, certified backup/restore evidence where required by the official workflow, exact immutable image/revision identity, and mandatory `LIVE_TRADING_ENABLED=false`/paper-only invariants.
+Verify rollback target, certified backup/restore evidence where required by the official workflow, exact immutable image/revision identity, and mandatory `LIVE_TRADING_ENABLED=false`/signal-only invariants.
 
 - [ ] **Step 5: Deploy the exact merged/approved artifact through the official path**
 
