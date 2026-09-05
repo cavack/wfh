@@ -449,3 +449,136 @@ def test_shared_membership_churn_schedules_bounded_client_recycle(monkeypatch) -
 
     asyncio.run(scenario())
     assert recycled == ["binance"]
+
+
+class _ModeledCcxtClient:
+    def __init__(self, subscriptions: tuple[str, ...]) -> None:
+        self.subscriptions = {key: object() for key in subscriptions}
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+        self.subscriptions.clear()
+
+
+class _ModeledCcxtChurnExchange(_CapabilityExchange):
+    """Model CCXT's membership-hash client fan-out observed on real Binance."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.clients: dict[str, _ModeledCcxtClient] = {}
+        self._watch_keys: set[tuple[str, tuple[str, ...]]] = set()
+        self._unwatch_keys: set[tuple[str, tuple[str, ...]]] = set()
+        self._release = {kind: asyncio.Event() for kind in ("orderbook", "trades", "ticker")}
+        self.closed = False
+
+    def _record_watch(self, kind: str, symbols: tuple[str, ...]) -> None:
+        key = (kind, symbols)
+        if key in self._watch_keys:
+            return
+        self._watch_keys.add(key)
+        self.clients[f"watch:{kind}:{len(self.clients)}"] = _ModeledCcxtClient(symbols)
+    def _record_unwatch(self, kind: str, symbols: tuple[str, ...]) -> None:
+        key = (kind, symbols)
+        if key in self._unwatch_keys:
+            return
+        self._unwatch_keys.add(key)
+        self.clients[f"unwatch:{kind}:{len(self.clients)}"] = _ModeledCcxtClient(())
+
+    async def _wait_for_release(self, kind: str) -> None:
+        event = self._release[kind]
+        await event.wait()
+        event.clear()
+
+    def release_all(self) -> None:
+        for event in self._release.values():
+            event.set()
+
+    async def watch_order_book_for_symbols(self, symbols, limit=None, params=None):
+        del limit, params
+        members = tuple(symbols)
+        self._record_watch("orderbook", members)
+        await self._wait_for_release("orderbook")
+        return {"symbol": members[0], "bids": [[1.0, 1.0]], "asks": [[1.01, 1.0]]}
+
+    async def un_watch_order_book_for_symbols(self, symbols, params=None):
+        del params
+        self._record_unwatch("orderbook", tuple(symbols))
+        return {}
+
+    async def watch_trades_for_symbols(self, symbols, since=None, limit=None, params=None):
+        del since, limit, params
+        members = tuple(symbols)
+        self._record_watch("trades", members)
+        await self._wait_for_release("trades")
+        now_ms = int(time.time() * 1000)
+        return [{"id": f"{members[0]}:{now_ms}", "symbol": members[0], "timestamp": now_ms, "side": "sell", "price": 1.0, "amount": 1.0}]
+
+    async def un_watch_trades_for_symbols(self, symbols, params=None):
+        del params
+        self._record_unwatch("trades", tuple(symbols))
+        return {}
+
+    async def watch_tickers(self, symbols=None, params=None):
+        del params
+        members = tuple(symbols or ())
+        self._record_watch("ticker", members)
+        await self._wait_for_release("ticker")
+        return {symbol: {"symbol": symbol, "last": 1.0} for symbol in members}
+
+    async def un_watch_tickers(self, symbols=None, params=None):
+        del params
+        self._record_unwatch("ticker", tuple(symbols or ()))
+        return {}
+
+    async def close(self) -> None:
+        self.closed = True
+        self.release_all()
+        for client in tuple(self.clients.values()):
+            await client.close()
+        self.clients.clear()
+
+
+def _live_modeled_client_counts(exchanges: list[_ModeledCcxtChurnExchange]) -> tuple[int, int]:
+    clients = [client for exchange in exchanges if not exchange.closed for client in exchange.clients.values()]
+    return len(clients), sum(len(client.subscriptions) for client in clients)
+
+
+def test_shared_membership_churn_keeps_one_transport_generation(monkeypatch) -> None:
+    manager = WebSocketManager()
+    created: list[_ModeledCcxtChurnExchange] = []
+
+    def new_exchange(_name: str):
+        exchange = _ModeledCcxtChurnExchange()
+        created.append(exchange)
+        return exchange
+
+    monkeypatch.setattr(manager, "_new_exchange", new_exchange)
+
+    async def settle() -> None:
+        for _ in range(40):
+            await asyncio.sleep(0.01)
+
+    async def scenario() -> list[tuple[int, int]]:
+        symbols = [f"S{i}/USDT:USDT" for i in range(7)]
+        active = set(symbols[:4])
+        for symbol in active:
+            assert manager.subscribe_shared_evidence("binance", symbol) is True
+        await settle()
+        observed = [_live_modeled_client_counts(created)]
+
+        for retired, added in zip(symbols[3::-1], symbols[4:7]):
+            prior_exchange = manager.shared_evidence_exchanges["binance"]
+            manager.subscribe_shared_evidence("binance", added)
+            manager.unsubscribe_shared_evidence("binance", retired)
+            prior_exchange.release_all()
+            active.discard(retired)
+            active.add(added)
+            await settle()
+            observed.append(_live_modeled_client_counts(created))
+
+        await manager.close_all()
+        return observed
+
+    observed = asyncio.run(scenario())
+    assert observed == [(3, 12), (3, 12), (3, 12), (3, 12)]
