@@ -19,6 +19,12 @@ def test_update_websocket_metrics_exports_runtime_fanout(monkeypatch) -> None:
         "shared_liquidation_subscribers": 19,
         "shared_evidence_tasks": 3,
         "shared_evidence_subscribers": 43,
+        "shared_evidence_active_subscribers": 37,
+        "shared_evidence_exchange_instances": 2,
+        "shared_evidence_reconcile_tasks": 1,
+        "shared_evidence_retirement_failures": 4,
+        "shared_evidence_blocked_exchanges": 1,
+        "shared_evidence_generations": 9,
         "direct_exchange_instances": 2,
         "liquidation_exchange_instances": 1,
         "direct_exchange_retire_tasks": 4,
@@ -38,6 +44,12 @@ def test_update_websocket_metrics_exports_runtime_fanout(monkeypatch) -> None:
     subscribers = _GaugeCapture()
     shared_evidence_tasks = _GaugeCapture()
     shared_evidence_subscribers = _GaugeCapture()
+    shared_evidence_active_subscribers = _GaugeCapture()
+    shared_evidence_instances = _GaugeCapture()
+    shared_evidence_reconcile = _GaugeCapture()
+    shared_evidence_retirement_failures = _GaugeCapture()
+    shared_evidence_blocked = _GaugeCapture()
+    shared_evidence_generations = _GaugeCapture()
     direct_instances = _GaugeCapture()
     liquidation_instances = _GaugeCapture()
     direct_retire = _GaugeCapture()
@@ -50,6 +62,12 @@ def test_update_websocket_metrics_exports_runtime_fanout(monkeypatch) -> None:
     monkeypatch.setattr(main, "websocket_shared_liquidation_subscribers_metric", subscribers, raising=False)
     monkeypatch.setattr(main, "websocket_shared_evidence_tasks_metric", shared_evidence_tasks, raising=False)
     monkeypatch.setattr(main, "websocket_shared_evidence_subscribers_metric", shared_evidence_subscribers, raising=False)
+    monkeypatch.setattr(main, "websocket_shared_evidence_active_subscribers_metric", shared_evidence_active_subscribers, raising=False)
+    monkeypatch.setattr(main, "websocket_shared_evidence_exchange_instances_metric", shared_evidence_instances, raising=False)
+    monkeypatch.setattr(main, "websocket_shared_evidence_reconcile_tasks_metric", shared_evidence_reconcile, raising=False)
+    monkeypatch.setattr(main, "websocket_shared_evidence_retirement_failures_metric", shared_evidence_retirement_failures, raising=False)
+    monkeypatch.setattr(main, "websocket_shared_evidence_blocked_exchanges_metric", shared_evidence_blocked, raising=False)
+    monkeypatch.setattr(main, "websocket_shared_evidence_generations_metric", shared_evidence_generations, raising=False)
     monkeypatch.setattr(main, "websocket_direct_exchange_instances_metric", direct_instances, raising=False)
     monkeypatch.setattr(main, "websocket_liquidation_exchange_instances_metric", liquidation_instances, raising=False)
     monkeypatch.setattr(main, "websocket_direct_exchange_retire_tasks_metric", direct_retire, raising=False)
@@ -65,6 +83,12 @@ def test_update_websocket_metrics_exports_runtime_fanout(monkeypatch) -> None:
     assert subscribers.values == [19.0]
     assert shared_evidence_tasks.values == [3.0]
     assert shared_evidence_subscribers.values == [43.0]
+    assert shared_evidence_active_subscribers.values == [37.0]
+    assert shared_evidence_instances.values == [2.0]
+    assert shared_evidence_reconcile.values == [1.0]
+    assert shared_evidence_retirement_failures.values == [4.0]
+    assert shared_evidence_blocked.values == [1.0]
+    assert shared_evidence_generations.values == [9.0]
     assert direct_instances.values == [2.0]
     assert liquidation_instances.values == [1.0]
     assert direct_retire.values == [4.0]
