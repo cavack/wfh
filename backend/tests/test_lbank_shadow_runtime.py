@@ -17,8 +17,6 @@ def test_entry_outcome_provenance_keeps_cost_components_distinct(monkeypatch):
     monkeypatch.setattr(main.settings, "source_revision", "a" * 40)
     provenance = main._entry_outcome_research_provenance(
         {
-            "exchange": "lbank",
-            "mapped_symbol": "SXT/USDT:USDT",
             "microstructure": {
                 "entry_slippage_pct": 0.05,
                 "exit_slippage_pct": 0.08,
@@ -26,6 +24,8 @@ def test_entry_outcome_provenance_keeps_cost_components_distinct(monkeypatch):
         },
         decision_contract_hash="b" * 64,
         decision_at=100,
+        reference_source="lbank",
+        reference_mapped_symbol="SXT/USDT:USDT",
     )
 
     assert provenance["source_revision"] == "a" * 40
@@ -34,6 +34,62 @@ def test_entry_outcome_provenance_keeps_cost_components_distinct(monkeypatch):
     assert provenance["costs"]["exit_slippage"]["value"] == 0.08
     assert provenance["costs"]["fees"]["classification"] == "UNAVAILABLE"
     assert provenance["costs"]["funding"]["value"] is None
+
+
+def test_entry_outcome_provenance_binds_primary_lbank_reference_not_cross_check(
+    monkeypatch,
+):
+    import waterfallhunter.main as main
+
+    monkeypatch.setattr(main.settings, "source_revision", "a" * 40)
+    provenance = main._entry_outcome_research_provenance(
+        {
+            "exchange": "bybit",
+            "mapped_symbol": "SXT/USDT:USDT",
+            "microstructure": {},
+        },
+        decision_contract_hash="b" * 64,
+        decision_at=100,
+        reference_source="lbank",
+        reference_mapped_symbol="SXT/USDT:USDT",
+    )
+
+    assert provenance["contract"] == {
+        "available": True,
+        "exchange": "lbank",
+        "mapped_symbol": "SXT/USDT:USDT",
+        "market_type": "linear_usdt_perpetual",
+        "settlement_asset": "USDT",
+        "spot_substitution_allowed": False,
+        "cross_venue_substitution_allowed": False,
+    }
+
+
+def test_entry_outcome_provenance_marks_fallback_reference_unavailable(monkeypatch):
+    import waterfallhunter.main as main
+
+    monkeypatch.setattr(main.settings, "source_revision", "a" * 40)
+    provenance = main._entry_outcome_research_provenance(
+        {"exchange": "bybit", "mapped_symbol": "SXT/USDT:USDT"},
+        decision_contract_hash="b" * 64,
+        decision_at=100,
+        reference_source="binance",
+        reference_mapped_symbol="SXT/USDT:USDT",
+    )
+
+    assert provenance["contract"]["available"] is False
+    assert provenance["contract"]["exchange"] == "binance"
+    assert provenance["contract"]["mapped_symbol"] == "SXT/USDT:USDT"
+
+
+def test_entry_outcome_worker_builder_uses_bounded_two_lane_cadence():
+    import waterfallhunter.main as main
+
+    worker = main._build_entry_outcome_resolution_worker()
+
+    assert worker.batch_size == 36
+    assert worker.local_batch_size == 300
+    assert worker.interval_seconds == 900.0
 
 
 def test_entry_outcome_resolver_uses_exact_complete_lbank_window(monkeypatch):

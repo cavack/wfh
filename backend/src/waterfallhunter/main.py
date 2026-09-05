@@ -560,6 +560,42 @@ if "websocket_shared_evidence_subscribers_metric" not in globals():
         "Symbols routed through shared FUEL-RICH market-evidence consumers.",
     )
 
+if "websocket_shared_evidence_active_subscribers_metric" not in globals():
+    websocket_shared_evidence_active_subscribers_metric = Gauge(
+        "waterfall_websocket_shared_evidence_active_subscribers",
+        "Symbols owned by the current immutable shared-evidence transport generations.",
+    )
+
+if "websocket_shared_evidence_exchange_instances_metric" not in globals():
+    websocket_shared_evidence_exchange_instances_metric = Gauge(
+        "waterfall_websocket_shared_evidence_exchange_instances",
+        "Current shared-evidence CCXT Pro exchange generations.",
+    )
+
+if "websocket_shared_evidence_reconcile_tasks_metric" not in globals():
+    websocket_shared_evidence_reconcile_tasks_metric = Gauge(
+        "waterfall_websocket_shared_evidence_reconcile_tasks",
+        "Current single-flight shared-evidence reconciliation tasks.",
+    )
+
+if "websocket_shared_evidence_retirement_failures_metric" not in globals():
+    websocket_shared_evidence_retirement_failures_metric = Gauge(
+        "waterfall_websocket_shared_evidence_retirement_failures",
+        "Cumulative shared-evidence transport retirement failures in this process.",
+    )
+
+if "websocket_shared_evidence_blocked_exchanges_metric" not in globals():
+    websocket_shared_evidence_blocked_exchanges_metric = Gauge(
+        "waterfall_websocket_shared_evidence_blocked_exchanges",
+        "Shared-evidence venues blocked because prior transport retirement is unproven.",
+    )
+
+if "websocket_shared_evidence_generations_metric" not in globals():
+    websocket_shared_evidence_generations_metric = Gauge(
+        "waterfall_websocket_shared_evidence_generations",
+        "Cumulative shared-evidence transport generations started in this process.",
+    )
+
 if "websocket_direct_exchange_instances_metric" not in globals():
     websocket_direct_exchange_instances_metric = Gauge(
         "waterfall_websocket_direct_exchange_instances",
@@ -582,6 +618,48 @@ if "websocket_liquidation_exchange_retire_tasks_metric" not in globals():
     websocket_liquidation_exchange_retire_tasks_metric = Gauge(
         "waterfall_websocket_liquidation_exchange_retire_tasks",
         "Liquidation CCXT Pro exchange instances currently being retired.",
+    )
+
+if "websocket_direct_ccxt_clients_metric" not in globals():
+    websocket_direct_ccxt_clients_metric = Gauge(
+        "waterfall_websocket_direct_ccxt_clients",
+        "CCXT Pro WebSocket client objects owned by direct-evidence exchanges.",
+    )
+
+if "websocket_direct_ccxt_subscriptions_metric" not in globals():
+    websocket_direct_ccxt_subscriptions_metric = Gauge(
+        "waterfall_websocket_direct_ccxt_subscriptions",
+        "CCXT Pro WebSocket subscriptions owned by direct-evidence exchanges.",
+    )
+
+if "websocket_direct_idle_ccxt_clients_metric" not in globals():
+    websocket_direct_idle_ccxt_clients_metric = Gauge(
+        "waterfall_websocket_direct_idle_ccxt_clients",
+        "Direct-evidence CCXT clients with no subscriptions or pending futures.",
+    )
+
+if "websocket_liquidation_ccxt_clients_metric" not in globals():
+    websocket_liquidation_ccxt_clients_metric = Gauge(
+        "waterfall_websocket_liquidation_ccxt_clients",
+        "CCXT Pro WebSocket client objects owned by liquidation exchanges.",
+    )
+
+if "websocket_liquidation_ccxt_subscriptions_metric" not in globals():
+    websocket_liquidation_ccxt_subscriptions_metric = Gauge(
+        "waterfall_websocket_liquidation_ccxt_subscriptions",
+        "CCXT Pro WebSocket subscriptions owned by liquidation exchanges.",
+    )
+
+if "websocket_shared_evidence_ccxt_clients_metric" not in globals():
+    websocket_shared_evidence_ccxt_clients_metric = Gauge(
+        "waterfall_websocket_shared_evidence_ccxt_clients",
+        "CCXT Pro WebSocket client objects owned by shared-evidence generations.",
+    )
+
+if "websocket_shared_evidence_ccxt_subscriptions_metric" not in globals():
+    websocket_shared_evidence_ccxt_subscriptions_metric = Gauge(
+        "waterfall_websocket_shared_evidence_ccxt_subscriptions",
+        "CCXT Pro WebSocket subscriptions owned by shared-evidence generations.",
     )
 
 if "websocket_ccxt_clients_metric" not in globals():
@@ -1189,10 +1267,12 @@ def _entry_outcome_research_provenance(
     *,
     decision_contract_hash: str,
     decision_at: int,
+    reference_source: str | None,
+    reference_mapped_symbol: str | None,
 ) -> dict[str, Any]:
     """Freeze decision-time identity and costs without changing model behavior."""
-    exchange = str(metrics.get("exchange") or "").strip().lower()
-    mapped_symbol = str(metrics.get("mapped_symbol") or "").strip()
+    exchange = str(reference_source or "").strip().lower()
+    mapped_symbol = str(reference_mapped_symbol or "").strip()
     microstructure = (
         metrics.get("microstructure")
         if isinstance(metrics.get("microstructure"), dict)
@@ -1448,7 +1528,8 @@ def _build_entry_outcome_resolution_worker() -> EntryOutcomeResolutionWorker:
     return EntryOutcomeResolutionWorker(
         entry_decision_store,
         _resolve_entry_outcome,
-        batch_size=3,
+        batch_size=36,
+        local_batch_size=300,
         interval_seconds=900.0,
     )
 
@@ -1549,6 +1630,24 @@ def _update_websocket_metrics() -> None:
     websocket_shared_evidence_subscribers_metric.set(
         float(snapshot["shared_evidence_subscribers"])
     )
+    websocket_shared_evidence_active_subscribers_metric.set(
+        float(snapshot["shared_evidence_active_subscribers"])
+    )
+    websocket_shared_evidence_exchange_instances_metric.set(
+        float(snapshot["shared_evidence_exchange_instances"])
+    )
+    websocket_shared_evidence_reconcile_tasks_metric.set(
+        float(snapshot["shared_evidence_reconcile_tasks"])
+    )
+    websocket_shared_evidence_retirement_failures_metric.set(
+        float(snapshot["shared_evidence_retirement_failures"])
+    )
+    websocket_shared_evidence_blocked_exchanges_metric.set(
+        float(snapshot["shared_evidence_blocked_exchanges"])
+    )
+    websocket_shared_evidence_generations_metric.set(
+        float(snapshot["shared_evidence_generations"])
+    )
     websocket_direct_exchange_instances_metric.set(
         float(snapshot["direct_exchange_instances"])
     )
@@ -1560,6 +1659,25 @@ def _update_websocket_metrics() -> None:
     )
     websocket_liquidation_exchange_retire_tasks_metric.set(
         float(snapshot["liquidation_exchange_retire_tasks"])
+    )
+    websocket_direct_ccxt_clients_metric.set(float(snapshot["direct_ccxt_clients"]))
+    websocket_direct_ccxt_subscriptions_metric.set(
+        float(snapshot["direct_ccxt_subscriptions"])
+    )
+    websocket_direct_idle_ccxt_clients_metric.set(
+        float(snapshot["direct_idle_ccxt_clients"])
+    )
+    websocket_liquidation_ccxt_clients_metric.set(
+        float(snapshot["liquidation_ccxt_clients"])
+    )
+    websocket_liquidation_ccxt_subscriptions_metric.set(
+        float(snapshot["liquidation_ccxt_subscriptions"])
+    )
+    websocket_shared_evidence_ccxt_clients_metric.set(
+        float(snapshot["shared_evidence_ccxt_clients"])
+    )
+    websocket_shared_evidence_ccxt_subscriptions_metric.set(
+        float(snapshot["shared_evidence_ccxt_subscriptions"])
     )
     websocket_ccxt_clients_metric.set(float(snapshot["ccxt_clients"]))
     websocket_ccxt_subscriptions_metric.set(float(snapshot["ccxt_subscriptions"]))
@@ -2639,6 +2757,7 @@ async def evaluate_candidate(
     )
 
     reference_source = "lbank"
+    reference_mapped_symbol = symbol
 
     decision_contract = build_decision_contract(
         app_version=app.version,
@@ -2703,6 +2822,8 @@ async def evaluate_candidate(
                         reference_failure_metrics,
                         decision_contract_hash=decision_contract_hash,
                         decision_at=decision_now,
+                        reference_source=None,
+                        reference_mapped_symbol=None,
                     )
                 )
                 try:
@@ -2812,6 +2933,12 @@ async def evaluate_candidate(
             fallback_reference[
                 "exchange"
             ]
+        )
+
+        reference_mapped_symbol = (
+            fallback_reference.get(
+                "mapped_symbol"
+            )
         )
 
         live_data = (
@@ -2971,6 +3098,8 @@ async def evaluate_candidate(
         result_metrics,
         decision_contract_hash=decision_contract_hash,
         decision_at=decision_now,
+        reference_source=reference_source,
+        reference_mapped_symbol=reference_mapped_symbol,
     )
     try:
         event_id = entry_decision_store.append_if_changed_with_capture(
@@ -4048,7 +4177,10 @@ async def startup_event():
 
     _entry_outcome_resolution_worker = _build_entry_outcome_resolution_worker()
     _start_background_task(_entry_outcome_resolution_worker.run_forever())
-    logger.info("Entry outcome resolution enabled (batch=3 interval=900s)")
+    logger.info(
+        "Entry outcome resolution enabled "
+        "(provider_batch=36 local_batch=300 interval=900s)"
+    )
 
 
 async def shutdown_event():

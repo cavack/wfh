@@ -30,7 +30,7 @@ groups:
         annotations:
           summary: Waterfall backend process restarted within the last 10 minutes
       - alert: WaterfallWebSocketOrphanSubscriptions
-        expr: waterfall_websocket_ccxt_subscriptions > waterfall_websocket_active_tasks + 3 * waterfall_websocket_shared_evidence_subscribers + 8
+        expr: waterfall_websocket_ccxt_subscriptions > waterfall_websocket_active_tasks + 3 * waterfall_websocket_shared_evidence_active_subscribers + 8
         for: 5m
         labels:
           severity: critical
@@ -43,10 +43,24 @@ groups:
           severity: warning
         annotations:
           summary: CCXT WebSocket clients remain without corresponding subscriptions
+      - alert: WaterfallWebSocketDirectIdleClients
+        expr: waterfall_websocket_direct_idle_ccxt_clients > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Direct-evidence CCXT clients remain without subscriptions or pending futures
       - alert: WaterfallWebSocketRetirementBacklog
-        expr: waterfall_websocket_direct_exchange_retire_tasks + waterfall_websocket_liquidation_exchange_retire_tasks > 8
+        expr: waterfall_websocket_direct_exchange_retire_tasks + waterfall_websocket_liquidation_exchange_retire_tasks + waterfall_websocket_shared_evidence_reconcile_tasks > 8
         for: 2m
         labels:
           severity: warning
         annotations:
           summary: WebSocket exchange retirement tasks are not draining
+      - alert: WaterfallSharedWebSocketRetirementBlocked
+        expr: waterfall_websocket_shared_evidence_blocked_exchanges > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Shared WebSocket replacement is blocked by unproven transport retirement
