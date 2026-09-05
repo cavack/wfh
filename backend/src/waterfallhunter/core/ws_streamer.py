@@ -187,19 +187,6 @@ class WebSocketManager:
     def _direct_venue_lock(self, ex_name: str) -> asyncio.Lock:
         return self._direct_venue_locks.setdefault(ex_name, asyncio.Lock())
 
-    def _has_active_direct_tasks_for_venue(self, ex_name: str) -> bool:
-        prefix = f"{ex_name}:"
-        for task_id, task in self.active_tasks.items():
-            if not task_id.startswith(prefix):
-                continue
-            if task_id == f"{ex_name}:liquidations" or task_id.endswith(
-                ":liquidations"
-            ):
-                continue
-            if not task.done():
-                return True
-        return False
-
     async def _get_exchange(self, ex_name: str) -> Any:
         if ex_name not in self.exchanges:
             self.exchanges[ex_name] = self._new_exchange(ex_name)
@@ -1054,34 +1041,67 @@ class WebSocketManager:
         else:
             self.unsupported_liquidation_exchanges.discard(ex_name)
 
-    async def _close_idle_ccxt_clients(self, ex_name: str, exchange: Any) -> None:
-        async with self._direct_venue_lock(ex_name):
-            if self._has_active_direct_tasks_for_venue(ex_name):
-                return
+    @staticmethod
+    def _ccxt_client_is_idle(client: Any) -> bool:
+        subscriptions = getattr(client, "subscriptions", None)
+        futures = getattr(client, "futures", None)
+        return (
+            hasattr(subscriptions, "__len__")
+            and len(subscriptions) == 0
+            and hasattr(futures, "__len__")
+            and len(futures) == 0
+        )
+
+    @classmethod
+    def _ccxt_transport_counts(cls, exchanges: tuple[Any, ...]) -> tuple[int, int, int]:
+        client_count = 0
+        subscription_count = 0
+        idle_client_count = 0
+        seen_exchanges: set[int] = set()
+        for exchange in exchanges:
+            identity = id(exchange)
+            if identity in seen_exchanges:
+                continue
+            seen_exchanges.add(identity)
             clients = getattr(exchange, "clients", None)
             if not isinstance(clients, dict):
-                return
-            for url, client in list(clients.items()):
+                continue
+            client_count += len(clients)
+            for client in clients.values():
                 subscriptions = getattr(client, "subscriptions", None)
-                if not hasattr(subscriptions, "__len__") or len(subscriptions) != 0:
-                    continue
-                if self._has_active_direct_tasks_for_venue(ex_name):
-                    return
-                close = getattr(client, "close", None)
-                try:
-                    if callable(close):
-                        result = close()
-                        if asyncio.iscoroutine(result):
-                            await asyncio.wait_for(result, timeout=5.0)
-                except Exception as exc:
-                    logger.debug(
-                        "Idle CCXT client close failed for %s: %s",
-                        url,
-                        type(exc).__name__,
-                    )
-                    continue
-                if clients.get(url) is client:
-                    clients.pop(url, None)
+                if hasattr(subscriptions, "__len__"):
+                    subscription_count += len(subscriptions)
+                if cls._ccxt_client_is_idle(client):
+                    idle_client_count += 1
+        return client_count, subscription_count, idle_client_count
+
+    async def _close_idle_ccxt_clients_locked(self, ex_name: str, exchange: Any) -> None:
+        clients = getattr(exchange, "clients", None)
+        if not isinstance(clients, dict):
+            return
+        for url, client in list(clients.items()):
+            if not self._ccxt_client_is_idle(client):
+                continue
+            close = getattr(client, "close", None)
+            try:
+                if callable(close):
+                    result = close()
+                    if asyncio.iscoroutine(result):
+                        await asyncio.wait_for(result, timeout=5.0)
+            except Exception as exc:
+                logger.debug(
+                    "Idle CCXT client close failed for %s:%s: %s",
+                    ex_name,
+                    url,
+                    type(exc).__name__,
+                )
+                continue
+            if clients.get(url) is client:
+                clients.pop(url, None)
+
+    async def _close_idle_ccxt_clients(self, ex_name: str, exchange: Any) -> None:
+        async with self._direct_venue_lock(ex_name):
+            await self._close_idle_ccxt_clients_locked(ex_name, exchange)
 
     @staticmethod
     def _consume_settled_task_result(task: asyncio.Task) -> None:
@@ -1137,7 +1157,7 @@ class WebSocketManager:
                         ex_name, symbol, method_name, type(exc).__name__,
                     )
             self._purge_exchange_symbol_state(exchange, (symbol,))
-        await self._close_idle_ccxt_clients(ex_name, exchange)
+            await self._close_idle_ccxt_clients_locked(ex_name, exchange)
 
     def _schedule_direct_symbol_retire(
         self, ex_name: str, symbol: str, cancelled_tasks: tuple[asyncio.Task, ...] = ()
@@ -1399,28 +1419,27 @@ class WebSocketManager:
         shared_evidence_task_ids = tuple(
             task_id for task_id in task_ids if task_id.startswith("shared-evidence:")
         )
-        exchanges = (
-            *self.exchanges.values(),
+        direct_exchanges = tuple(self.exchanges.values())
+        liquidation_exchanges = (
             *self.liquidation_exchanges.values(),
             *self.shared_liquidation_exchanges.values(),
-            *self.shared_evidence_exchanges.values(),
         )
-        ccxt_clients = 0
-        ccxt_subscriptions = 0
-        seen_exchanges: set[int] = set()
-        for exchange in exchanges:
-            identity = id(exchange)
-            if identity in seen_exchanges:
-                continue
-            seen_exchanges.add(identity)
-            clients = getattr(exchange, "clients", {})
-            if not isinstance(clients, dict):
-                continue
-            ccxt_clients += len(clients)
-            for client in clients.values():
-                subscriptions = getattr(client, "subscriptions", {})
-                if hasattr(subscriptions, "__len__"):
-                    ccxt_subscriptions += len(subscriptions)
+        shared_evidence_exchanges = tuple(self.shared_evidence_exchanges.values())
+        all_exchanges = (
+            *direct_exchanges,
+            *liquidation_exchanges,
+            *shared_evidence_exchanges,
+        )
+        direct_ccxt_clients, direct_ccxt_subscriptions, direct_idle_ccxt_clients = (
+            self._ccxt_transport_counts(direct_exchanges)
+        )
+        liquidation_ccxt_clients, liquidation_ccxt_subscriptions, _ = (
+            self._ccxt_transport_counts(liquidation_exchanges)
+        )
+        shared_evidence_ccxt_clients, shared_evidence_ccxt_subscriptions, _ = (
+            self._ccxt_transport_counts(shared_evidence_exchanges)
+        )
+        ccxt_clients, ccxt_subscriptions, _ = self._ccxt_transport_counts(all_exchanges)
         return {
             "active_tasks": len(task_ids),
             "liquidation_tasks": len(liquidation_task_ids),
@@ -1454,6 +1473,13 @@ class WebSocketManager:
             "liquidation_exchange_instances": (
                 len(self.liquidation_exchanges) + len(self.shared_liquidation_exchanges)
             ),
+            "direct_ccxt_clients": direct_ccxt_clients,
+            "direct_ccxt_subscriptions": direct_ccxt_subscriptions,
+            "direct_idle_ccxt_clients": direct_idle_ccxt_clients,
+            "liquidation_ccxt_clients": liquidation_ccxt_clients,
+            "liquidation_ccxt_subscriptions": liquidation_ccxt_subscriptions,
+            "shared_evidence_ccxt_clients": shared_evidence_ccxt_clients,
+            "shared_evidence_ccxt_subscriptions": shared_evidence_ccxt_subscriptions,
             "direct_exchange_retire_tasks": sum(
                 1 for task in self._direct_symbol_retire_tasks.values() if not task.done()
             ),

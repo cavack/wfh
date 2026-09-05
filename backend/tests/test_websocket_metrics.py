@@ -29,6 +29,13 @@ def test_update_websocket_metrics_exports_runtime_fanout(monkeypatch) -> None:
         "liquidation_exchange_instances": 1,
         "direct_exchange_retire_tasks": 4,
         "liquidation_exchange_retire_tasks": 1,
+        "direct_ccxt_clients": 8,
+        "direct_ccxt_subscriptions": 6,
+        "direct_idle_ccxt_clients": 2,
+        "liquidation_ccxt_clients": 2,
+        "liquidation_ccxt_subscriptions": 1,
+        "shared_evidence_ccxt_clients": 1,
+        "shared_evidence_ccxt_subscriptions": 2,
         "ccxt_clients": 11,
         "ccxt_subscriptions": 9,
     }
@@ -54,6 +61,13 @@ def test_update_websocket_metrics_exports_runtime_fanout(monkeypatch) -> None:
     liquidation_instances = _GaugeCapture()
     direct_retire = _GaugeCapture()
     liquidation_retire = _GaugeCapture()
+    direct_ccxt_clients = _GaugeCapture()
+    direct_ccxt_subscriptions = _GaugeCapture()
+    direct_idle_ccxt_clients = _GaugeCapture()
+    liquidation_ccxt_clients = _GaugeCapture()
+    liquidation_ccxt_subscriptions = _GaugeCapture()
+    shared_evidence_ccxt_clients = _GaugeCapture()
+    shared_evidence_ccxt_subscriptions = _GaugeCapture()
     ccxt_clients = _GaugeCapture()
     ccxt_subscriptions = _GaugeCapture()
     monkeypatch.setattr(main, "websocket_active_tasks_metric", active, raising=False)
@@ -72,6 +86,13 @@ def test_update_websocket_metrics_exports_runtime_fanout(monkeypatch) -> None:
     monkeypatch.setattr(main, "websocket_liquidation_exchange_instances_metric", liquidation_instances, raising=False)
     monkeypatch.setattr(main, "websocket_direct_exchange_retire_tasks_metric", direct_retire, raising=False)
     monkeypatch.setattr(main, "websocket_liquidation_exchange_retire_tasks_metric", liquidation_retire, raising=False)
+    monkeypatch.setattr(main, "websocket_direct_ccxt_clients_metric", direct_ccxt_clients, raising=False)
+    monkeypatch.setattr(main, "websocket_direct_ccxt_subscriptions_metric", direct_ccxt_subscriptions, raising=False)
+    monkeypatch.setattr(main, "websocket_direct_idle_ccxt_clients_metric", direct_idle_ccxt_clients, raising=False)
+    monkeypatch.setattr(main, "websocket_liquidation_ccxt_clients_metric", liquidation_ccxt_clients, raising=False)
+    monkeypatch.setattr(main, "websocket_liquidation_ccxt_subscriptions_metric", liquidation_ccxt_subscriptions, raising=False)
+    monkeypatch.setattr(main, "websocket_shared_evidence_ccxt_clients_metric", shared_evidence_ccxt_clients, raising=False)
+    monkeypatch.setattr(main, "websocket_shared_evidence_ccxt_subscriptions_metric", shared_evidence_ccxt_subscriptions, raising=False)
     monkeypatch.setattr(main, "websocket_ccxt_clients_metric", ccxt_clients, raising=False)
     monkeypatch.setattr(main, "websocket_ccxt_subscriptions_metric", ccxt_subscriptions, raising=False)
 
@@ -93,5 +114,12 @@ def test_update_websocket_metrics_exports_runtime_fanout(monkeypatch) -> None:
     assert liquidation_instances.values == [1.0]
     assert direct_retire.values == [4.0]
     assert liquidation_retire.values == [1.0]
+    assert direct_ccxt_clients.values == [8.0]
+    assert direct_ccxt_subscriptions.values == [6.0]
+    assert direct_idle_ccxt_clients.values == [2.0]
+    assert liquidation_ccxt_clients.values == [2.0]
+    assert liquidation_ccxt_subscriptions.values == [1.0]
+    assert shared_evidence_ccxt_clients.values == [1.0]
+    assert shared_evidence_ccxt_subscriptions.values == [2.0]
     assert ccxt_clients.values == [11.0]
     assert ccxt_subscriptions.values == [9.0]

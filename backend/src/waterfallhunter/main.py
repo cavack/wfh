@@ -620,6 +620,48 @@ if "websocket_liquidation_exchange_retire_tasks_metric" not in globals():
         "Liquidation CCXT Pro exchange instances currently being retired.",
     )
 
+if "websocket_direct_ccxt_clients_metric" not in globals():
+    websocket_direct_ccxt_clients_metric = Gauge(
+        "waterfall_websocket_direct_ccxt_clients",
+        "CCXT Pro WebSocket client objects owned by direct-evidence exchanges.",
+    )
+
+if "websocket_direct_ccxt_subscriptions_metric" not in globals():
+    websocket_direct_ccxt_subscriptions_metric = Gauge(
+        "waterfall_websocket_direct_ccxt_subscriptions",
+        "CCXT Pro WebSocket subscriptions owned by direct-evidence exchanges.",
+    )
+
+if "websocket_direct_idle_ccxt_clients_metric" not in globals():
+    websocket_direct_idle_ccxt_clients_metric = Gauge(
+        "waterfall_websocket_direct_idle_ccxt_clients",
+        "Direct-evidence CCXT clients with no subscriptions or pending futures.",
+    )
+
+if "websocket_liquidation_ccxt_clients_metric" not in globals():
+    websocket_liquidation_ccxt_clients_metric = Gauge(
+        "waterfall_websocket_liquidation_ccxt_clients",
+        "CCXT Pro WebSocket client objects owned by liquidation exchanges.",
+    )
+
+if "websocket_liquidation_ccxt_subscriptions_metric" not in globals():
+    websocket_liquidation_ccxt_subscriptions_metric = Gauge(
+        "waterfall_websocket_liquidation_ccxt_subscriptions",
+        "CCXT Pro WebSocket subscriptions owned by liquidation exchanges.",
+    )
+
+if "websocket_shared_evidence_ccxt_clients_metric" not in globals():
+    websocket_shared_evidence_ccxt_clients_metric = Gauge(
+        "waterfall_websocket_shared_evidence_ccxt_clients",
+        "CCXT Pro WebSocket client objects owned by shared-evidence generations.",
+    )
+
+if "websocket_shared_evidence_ccxt_subscriptions_metric" not in globals():
+    websocket_shared_evidence_ccxt_subscriptions_metric = Gauge(
+        "waterfall_websocket_shared_evidence_ccxt_subscriptions",
+        "CCXT Pro WebSocket subscriptions owned by shared-evidence generations.",
+    )
+
 if "websocket_ccxt_clients_metric" not in globals():
     websocket_ccxt_clients_metric = Gauge(
         "waterfall_websocket_ccxt_clients",
@@ -1617,6 +1659,25 @@ def _update_websocket_metrics() -> None:
     )
     websocket_liquidation_exchange_retire_tasks_metric.set(
         float(snapshot["liquidation_exchange_retire_tasks"])
+    )
+    websocket_direct_ccxt_clients_metric.set(float(snapshot["direct_ccxt_clients"]))
+    websocket_direct_ccxt_subscriptions_metric.set(
+        float(snapshot["direct_ccxt_subscriptions"])
+    )
+    websocket_direct_idle_ccxt_clients_metric.set(
+        float(snapshot["direct_idle_ccxt_clients"])
+    )
+    websocket_liquidation_ccxt_clients_metric.set(
+        float(snapshot["liquidation_ccxt_clients"])
+    )
+    websocket_liquidation_ccxt_subscriptions_metric.set(
+        float(snapshot["liquidation_ccxt_subscriptions"])
+    )
+    websocket_shared_evidence_ccxt_clients_metric.set(
+        float(snapshot["shared_evidence_ccxt_clients"])
+    )
+    websocket_shared_evidence_ccxt_subscriptions_metric.set(
+        float(snapshot["shared_evidence_ccxt_subscriptions"])
     )
     websocket_ccxt_clients_metric.set(float(snapshot["ccxt_clients"]))
     websocket_ccxt_subscriptions_metric.set(float(snapshot["ccxt_subscriptions"]))
