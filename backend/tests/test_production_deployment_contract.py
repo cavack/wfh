@@ -431,6 +431,53 @@ def test_database_backup_runs_as_service_owner_and_promotes_only_after_certifica
     ) >= 3
 
 
+def test_release_image_override_scopes_restrictive_umask() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    helper = text.split("write_release_image_override() {", maxsplit=1)[1].split(
+        "verify_image_revision() {", maxsplit=1
+    )[0]
+    assert "umask 027" in helper
+    assert "(\n    umask 027" in helper
+
+
+def test_monitoring_bind_permissions_are_checked_before_database_mutation() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    assert "assert_monitoring_bind_files_readable()" in text
+    helper = text.split("assert_monitoring_bind_files_readable() {", maxsplit=1)[1].split(
+        "configure_production_compose_topology() {", maxsplit=1
+    )[0]
+    assert "--entrypoint /bin/promtool prometheus" in helper
+    assert "check config /etc/prometheus/prometheus.yml" in helper
+    main_sequence = _main_deploy_sequence(text)
+    permission_index = main_sequence.index("assert_monitoring_bind_files_readable")
+    backup_index = main_sequence.index("backup_database")
+    migration_index = main_sequence.index("migrate_database")
+    assert permission_index < backup_index < migration_index
+
+
+def test_schema_rollback_restore_runs_as_backend_service_owner() -> None:
+    text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    restore = text.split("restore_database_backup() {", maxsplit=1)[1].split(
+        "prune_database_backups() {", maxsplit=1
+    )[0]
+    assert "os.getuid(), os.getgid()" in restore
+    assert '--user 0:0' not in restore
+    assert '--user "$backend_uid:$backend_gid"' in restore
+    assert "backup_gid=\"$(stat -c '%g' \"$DB_BACKUP\")\"" in restore
+    assert "backup_mode=\"$(stat -c '%a' \"$DB_BACKUP\")\"" in restore
+    assert 'chgrp "$backend_gid" "$DB_BACKUP"' in restore
+    assert '-v "${DB_BACKUP}:/backup/${backup_name}:ro"' in restore
+    assert "trap restore_backup_metadata EXIT" in restore
+    assert "trap 'exit 129' HUP" in restore
+    assert "trap 'exit 130' INT" in restore
+    assert "trap 'exit 143' TERM" in restore
+    assert 'chgrp "$backup_gid" "$DB_BACKUP"' in restore
+    assert 'chmod "$backup_mode" "$DB_BACKUP"' in restore
+    assert "source.backup(target)" in restore
+    assert "shutil.copyfile" not in restore
+    assert ".rollback-" not in restore
+
+
 def test_deploy_clean_worktree_no_longer_depends_on_runtime_files_inside_git() -> None:
     text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
     helper = text.split("assert_clean_deploy_worktree() {", maxsplit=1)[1].split("}\n", maxsplit=1)[0]
@@ -452,7 +499,9 @@ def test_schema_changing_rollback_restores_backup_before_previous_schema_preflig
         "prune_database_backups() {", maxsplit=1
     )[0]
     assert 'sha256sum "$DB_BACKUP"' in restore
-    assert '${BACKUP_DIR}:/backup:ro' in restore
+    assert '${BACKUP_DIR}:/backup:ro' not in restore
+    assert '${DB_BACKUP}:/backup/${backup_name}:ro' in restore
+    assert 'source.backup(target)' in restore
     assert 'file:{src}?mode=ro&immutable=1' in restore
     assert "docker compose stop waterfall-backend frontend watchdog" in restore
     assert "PRAGMA integrity_check" in restore
