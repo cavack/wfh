@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from schema_test_support import migrate_test_database
+from waterfallhunter.core import entry_decision_store as entry_store_module
 from waterfallhunter.core.entry_decision_store import (
     EntryDecisionStore,
     EntryOutcomeResolutionWorker,
@@ -55,6 +56,129 @@ def test_entry_ready_history_survives_later_transition(tmp_path) -> None:
     store.append_if_changed("SXT/USDT:USDT", packet("INVALIDATED", 40.0, 130))
     history = store.history_for_symbol("SXT/USDT:USDT", limit=10)
     assert [row["decision"] for row in history] == ["INVALIDATED", "ENTRY_READY"]
+
+
+
+
+def test_recent_transitions_excludes_material_same_decision_events(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path)
+    first = packet("LATE", 60.0, 100)
+    second = packet("LATE", 61.0, 110)
+    second["block_reasons"] = ["ANTI_CHASE_HARD_BLOCK", "STALE_REFERENCE"]
+    third = packet("NO_TRADE", 20.0, 120)
+
+    assert store.append_if_changed("TEST/USDT:USDT", first) is not None
+    assert store.append_if_changed("TEST/USDT:USDT", second) is not None
+    assert store.append_if_changed("TEST/USDT:USDT", third) is not None
+
+    rows = store.recent_transitions(limit=10)
+
+    assert [(row["previous_decision"], row["decision"]) for row in rows] == [
+        ("LATE", "NO_TRADE"),
+    ]
+
+
+
+def test_recent_transitions_stays_bounded_under_long_same_state_tail(tmp_path, monkeypatch) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    base = packet("LATE", 60.0, 100)
+    base_json = json.dumps(base, sort_keys=True, separators=(",", ":"))
+    base_hash = entry_store_module.canonical_sha256(base)
+    first_packet = packet("ENTRY_READY", 84.0, 1)
+    first_json = json.dumps(first_packet, sort_keys=True, separators=(",", ":"))
+    first_hash = entry_store_module.canonical_sha256(first_packet)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO entry_decision_events "
+            "(symbol,event_at,decision,lifecycle_state,entry_readiness,evidence_coverage_pct,"
+            "policy_version,packet_json,packet_hash,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ("TAIL/USDT:USDT", 1, "ENTRY_READY", "ARMED", 84.0, 82.0, "entry_policy_v1",
+             first_json, first_hash, 1),
+        )
+        conn.executemany(
+            "INSERT INTO entry_decision_events "
+            "(symbol,event_at,decision,lifecycle_state,entry_readiness,evidence_coverage_pct,"
+            "policy_version,packet_json,packet_hash,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            [
+                ("TAIL/USDT:USDT", index, "LATE", "ARMED", 60.0, 82.0, "entry_policy_v1", base_json, base_hash, index)
+                for index in range(2, 2002)
+            ],
+        )
+
+    original_connect = entry_store_module.connect_managed_sqlite
+    progress_calls = 0
+
+    def bounded_connect(*args, **kwargs):
+        nonlocal progress_calls
+        conn = original_connect(*args, **kwargs)
+
+        def progress() -> int:
+            nonlocal progress_calls
+            progress_calls += 1
+            return 1 if progress_calls > 5_000 else 0
+
+        conn.set_progress_handler(progress, 100)
+        return conn
+
+    monkeypatch.setattr(entry_store_module, "connect_managed_sqlite", bounded_connect)
+    rows = EntryDecisionStore(db_path).recent_transitions(limit=20)
+
+    assert [(row["previous_decision"], row["decision"]) for row in rows] == [("ENTRY_READY", "LATE")]
+    assert progress_calls <= 5_000
+
+def test_recent_transitions_reuses_incremental_history_after_bootstrap(tmp_path, monkeypatch) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    base = packet("LATE", 60.0, 100)
+    base_json = json.dumps(base, sort_keys=True, separators=(",", ":"))
+    base_hash = entry_store_module.canonical_sha256(base)
+    first_packet = packet("ENTRY_READY", 84.0, 1)
+    first_json = json.dumps(first_packet, sort_keys=True, separators=(",", ":"))
+    first_hash = entry_store_module.canonical_sha256(first_packet)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO entry_decision_events "
+            "(symbol,event_at,decision,lifecycle_state,entry_readiness,evidence_coverage_pct,"
+            "policy_version,packet_json,packet_hash,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ("CACHE/USDT:USDT", 1, "ENTRY_READY", "ARMED", 84.0, 82.0, "entry_policy_v1",
+             first_json, first_hash, 1),
+        )
+        conn.executemany(
+            "INSERT INTO entry_decision_events "
+            "(symbol,event_at,decision,lifecycle_state,entry_readiness,evidence_coverage_pct,"
+            "policy_version,packet_json,packet_hash,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            [
+                ("CACHE/USDT:USDT", index, "LATE", "ARMED", 60.0, 82.0, "entry_policy_v1", base_json, base_hash, index)
+                for index in range(2, 2002)
+            ],
+        )
+
+    store = EntryDecisionStore(db_path)
+    baseline = store.recent_transitions(limit=20)
+    assert baseline[0]["decision"] == "LATE"
+    store.append_if_changed("CACHE/USDT:USDT", packet("NO_TRADE", 20.0, 3000))
+
+    original_connect = entry_store_module.connect_managed_sqlite
+    progress_calls = 0
+
+    def bounded_connect(*args, **kwargs):
+        nonlocal progress_calls
+        conn = original_connect(*args, **kwargs)
+
+        def progress() -> int:
+            nonlocal progress_calls
+            progress_calls += 1
+            return 1 if progress_calls > 100 else 0
+
+        conn.set_progress_handler(progress, 100)
+        return conn
+
+    monkeypatch.setattr(entry_store_module, "connect_managed_sqlite", bounded_connect)
+    rows = store.recent_transitions(limit=20)
+
+    assert rows[0]["decision"] == "NO_TRADE"
+    assert rows[0]["previous_decision"] == "LATE"
+    assert progress_calls <= 100
 
 
 def test_decision_events_are_immutable(tmp_path) -> None:

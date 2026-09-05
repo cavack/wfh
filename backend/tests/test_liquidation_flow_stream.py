@@ -155,7 +155,7 @@ def test_liquidation_stream_skips_provider_without_declared_support(monkeypatch)
     async def get_exchange(_name):
         return Exchange()
 
-    monkeypatch.setattr(manager, "_get_exchange", get_exchange)
+    monkeypatch.setattr(manager, "_get_liquidation_exchange", lambda _name, _symbol: get_exchange(_name))
 
     async def scenario() -> None:
         task_id = f"bingx:{symbol}:liquidations"
@@ -207,7 +207,7 @@ def test_unsupported_liquidation_capability_is_cached_between_subscriptions(monk
         lookups += 1
         return Exchange()
 
-    monkeypatch.setattr(manager, "_get_exchange", get_exchange)
+    monkeypatch.setattr(manager, "_get_liquidation_exchange", lambda _name, _symbol: get_exchange(_name))
 
     async def scenario() -> None:
         manager.subscribe_liquidations("bingx", symbol)
@@ -263,7 +263,11 @@ def test_cancelled_liquidation_task_cannot_remove_replacement(monkeypatch) -> No
     async def get_exchange(_name):
         return Exchange()
 
-    monkeypatch.setattr(manager, "_get_exchange", get_exchange)
+    monkeypatch.setattr(
+        manager,
+        "_get_liquidation_exchange",
+        lambda _name, _symbol: get_exchange(_name),
+    )
 
     async def scenario() -> None:
         task_id = f"bybit:{symbol}:liquidations"
@@ -341,7 +345,7 @@ def test_binance_shared_stream_routes_only_current_subscribers(monkeypatch) -> N
     async def get_exchange(_name):
         return Exchange()
 
-    monkeypatch.setattr(manager, "_get_exchange", get_exchange)
+    monkeypatch.setattr(manager, "_get_shared_liquidation_exchange", get_exchange)
 
     async def scenario() -> None:
         manager.subscribe_liquidations("binance", first)
@@ -406,7 +410,7 @@ def test_binance_shared_capability_failure_is_cached(monkeypatch) -> None:
         lookups += 1
         return Exchange()
 
-    monkeypatch.setattr(manager, "_get_exchange", get_exchange)
+    monkeypatch.setattr(manager, "_get_shared_liquidation_exchange", get_exchange)
 
     async def scenario() -> None:
         manager.subscribe_liquidations("binance", "AAA/USDT:USDT")
@@ -439,6 +443,12 @@ def test_runtime_diagnostics_exposes_liquidation_fanout_shape() -> None:
         "shared_liquidation_subscribers": 2,
         "shared_evidence_tasks": 0,
         "shared_evidence_subscribers": 0,
+        "direct_exchange_instances": 0,
+        "liquidation_exchange_instances": 0,
+        "direct_exchange_retire_tasks": 0,
+        "liquidation_exchange_retire_tasks": 0,
+        "ccxt_clients": 0,
+        "ccxt_subscriptions": 0,
     }
 
 
@@ -458,7 +468,7 @@ def test_cancelled_shared_liquidation_task_cannot_remove_replacement(monkeypatch
     async def get_exchange(_name):
         return Exchange()
 
-    monkeypatch.setattr(manager, "_get_exchange", get_exchange)
+    monkeypatch.setattr(manager, "_get_shared_liquidation_exchange", get_exchange)
 
     async def scenario() -> None:
         task_id = "binance:liquidations"

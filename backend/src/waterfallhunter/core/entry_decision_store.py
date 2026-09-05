@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import inspect
+import threading
+from collections import deque
 import logging
 import math
 import sqlite3
@@ -72,6 +74,11 @@ class EntryDecisionStore:
                 self.db_path,
                 required_tables=frozenset({"entry_decision_events"}),
             )
+        self._transition_cache_lock = threading.RLock()
+        self._transition_cache_initialized = False
+        self._transition_cache_max_id = 0
+        self._transition_cache_latest_by_symbol: dict[str, str] = {}
+        self._transition_cache_recent: deque[tuple[int, str]] = deque(maxlen=200)
 
     @staticmethod
     def _validate_packet(packet: dict[str, Any]) -> tuple[str, int, float, float, str]:
@@ -948,6 +955,7 @@ class EntryDecisionStore:
         return {str(row[1]): self._row_packet(row) for row in rows}
 
     def recent_changes(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        """Return recent immutable canonical decision events."""
         bounded = max(1, min(int(limit), 200))
         with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
             rows = conn.execute(
@@ -955,6 +963,84 @@ class EntryDecisionStore:
                 (bounded,),
             ).fetchall()
         return [self._row_packet(row) for row in rows]
+
+    def _reset_transition_cache(self) -> None:
+        self._transition_cache_initialized = False
+        self._transition_cache_max_id = 0
+        self._transition_cache_latest_by_symbol.clear()
+        self._transition_cache_recent.clear()
+
+    def _refresh_transition_cache(self, conn: sqlite3.Connection) -> None:
+        """Incrementally index transitions from the immutable decision ledger."""
+        while True:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(id),0) FROM entry_decision_events"
+            ).fetchone()
+            current_max = int(row[0] or 0) if row is not None else 0
+            if (
+                not self._transition_cache_initialized
+                or current_max < self._transition_cache_max_id
+            ):
+                self._reset_transition_cache()
+
+            start_id = self._transition_cache_max_id
+            if current_max <= start_id:
+                self._transition_cache_initialized = True
+                return
+
+            rows = conn.execute(
+                "SELECT id,symbol,decision FROM entry_decision_events "
+                "WHERE id>? AND id<=? ORDER BY id ASC",
+                (start_id, current_max),
+            )
+            for event_id, symbol, decision in rows:
+                event_id_int = int(event_id)
+                symbol_text = str(symbol)
+                decision_text = str(decision)
+                previous = self._transition_cache_latest_by_symbol.get(symbol_text)
+                if previous is not None and previous != decision_text:
+                    self._transition_cache_recent.append((event_id_int, previous))
+                self._transition_cache_latest_by_symbol[symbol_text] = decision_text
+                self._transition_cache_max_id = event_id_int
+            self._transition_cache_initialized = True
+
+    def _transition_packets(
+        self,
+        conn: sqlite3.Connection,
+        transitions: dict[int, str],
+        *,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        event_ids = sorted(transitions, reverse=True)[:limit]
+        if not event_ids:
+            return []
+        placeholders = ",".join("?" for _ in event_ids)
+        query = f"""
+        SELECT e.id,e.symbol,e.event_at,e.decision,e.entry_readiness,
+               e.evidence_coverage_pct,e.packet_json,e.packet_hash,
+               (SELECT a.advisory_json FROM entry_decision_advisories a
+                WHERE a.decision_event_id=e.id ORDER BY a.id DESC LIMIT 1),
+               (SELECT a.advisory_hash FROM entry_decision_advisories a
+                WHERE a.decision_event_id=e.id ORDER BY a.id DESC LIMIT 1)
+        FROM entry_decision_events e
+        WHERE e.id IN ({placeholders})
+        ORDER BY e.id DESC
+        """
+        packets = []
+        for row in conn.execute(query, event_ids).fetchall():
+            packet = self._row_packet(row)
+            packet["previous_decision"] = transitions[int(row[0])]
+            packets.append(packet)
+        return packets
+
+    def recent_transitions(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        """Return recent transitions from a thread-safe incremental ledger index."""
+        bounded = max(1, min(int(limit), 200))
+        with self._transition_cache_lock:
+            with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
+                self._refresh_transition_cache(conn)
+                transitions = dict(list(self._transition_cache_recent)[-bounded:])
+                return self._transition_packets(conn, transitions, limit=bounded)
 
 
 class EntryOutcomeResolutionWorker:
