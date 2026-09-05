@@ -603,3 +603,41 @@ def test_close_all_closes_direct_shared_and_reconcile_resources(monkeypatch) -> 
     assert created[0].closed is True
     assert manager.exchanges == {}
     assert manager.shared_evidence_exchanges == {}
+
+
+def test_close_all_drains_reconcile_blocked_in_exchange_close(monkeypatch) -> None:
+    manager = WebSocketManager()
+    created: list[_GenerationExchange] = []
+
+    def new_exchange(_name: str):
+        exchange = _GenerationExchange()
+        created.append(exchange)
+        return exchange
+
+    monkeypatch.setattr(manager, "_new_exchange", new_exchange)
+
+    async def scenario() -> None:
+        manager.subscribe_shared_evidence("binance", "A/USDT:USDT")
+        manager.subscribe_shared_evidence("binance", "B/USDT:USDT")
+        await _wait_until(lambda: len(created) == 1 and _client_counts(created) == (3, 6))
+
+        created[0].close_release.clear()
+        manager.subscribe_shared_evidence("binance", "C/USDT:USDT")
+        manager.unsubscribe_shared_evidence("binance", "A/USDT:USDT")
+        await _wait_until(lambda: created[0].close_started.is_set())
+
+        shutdown = asyncio.create_task(manager.close_all())
+        await asyncio.sleep(0.02)
+        created[0].close_release.set()
+        await asyncio.wait_for(shutdown, timeout=1.0)
+
+        assert manager.shared_evidence_exchanges == {}
+        assert manager._shared_evidence_reconcile_tasks == {}
+        assert not [
+            task_id
+            for task_id in manager.active_tasks
+            if task_id.startswith("shared-evidence:binance:")
+        ]
+        assert _client_counts(created) == (0, 0)
+
+    asyncio.run(scenario())
