@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 
 from waterfallhunter.core.ws_streamer import WebSocketManager
 
@@ -279,6 +280,115 @@ def test_last_binance_liquidation_subscriber_closes_shared_exchange() -> None:
     assert exchange.close_calls == 1
     assert "binance" not in manager.shared_liquidation_exchanges
     assert "binance" not in manager.liquidation_subscribers
+
+
+def test_cancelled_task_settlement_consumes_completed_exceptions() -> None:
+    manager = WebSocketManager()
+    unhandled: list[dict] = []
+
+    async def fail() -> None:
+        raise RuntimeError("synthetic settled-task failure")
+
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+        loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+        task = asyncio.create_task(fail())
+        await asyncio.sleep(0)
+        assert task.done()
+        await manager._settle_cancelled_tasks((task,), context="test")
+        del task
+        gc.collect()
+        await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+
+    assert unhandled == []
+
+
+def test_direct_retirement_bounds_cancelled_task_settlement() -> None:
+    manager = WebSocketManager()
+    manager.retirement_timeout_seconds = 0.02
+
+    async def slow_cancel() -> None:
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.2)
+
+    async def scenario() -> None:
+        task = asyncio.create_task(slow_cancel())
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.wait_for(
+            manager._retire_direct_symbol("binance", "TEST/USDT:USDT", (task,)),
+            timeout=0.1,
+        )
+
+    asyncio.run(scenario())
+
+
+def test_exchange_retirement_bounds_cancelled_task_settlement() -> None:
+    manager = WebSocketManager()
+    manager.retirement_timeout_seconds = 0.02
+    exchange = _ClosableExchange()
+
+    async def slow_cancel() -> None:
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.2)
+
+    async def scenario() -> None:
+        task = asyncio.create_task(slow_cancel())
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.wait_for(
+            manager._close_exchange_instance(
+                "binance", "binance:test", exchange, (task,)
+            ),
+            timeout=0.1,
+        )
+
+    asyncio.run(scenario())
+    assert exchange.close_calls == 1
+
+
+def test_close_all_continues_after_exchange_close_failure() -> None:
+    manager = WebSocketManager()
+
+    class BrokenClose:
+        async def close(self) -> None:
+            raise RuntimeError("synthetic close failure")
+
+    good = _ClosableExchange()
+    manager.exchanges["broken"] = BrokenClose()
+    manager.exchanges["good"] = good
+
+    asyncio.run(manager.close_all())
+
+    assert good.close_calls == 1
+    assert manager.exchanges == {}
+
+
+def test_close_all_bounds_slow_exchange_close() -> None:
+    manager = WebSocketManager()
+    manager.exchange_close_timeout_seconds = 0.02
+
+    class SlowClose:
+        async def close(self) -> None:
+            await asyncio.sleep(0.2)
+
+    good = _ClosableExchange()
+    manager.exchanges["slow"] = SlowClose()
+    manager.exchanges["good"] = good
+
+    async def scenario() -> None:
+        await asyncio.wait_for(manager.close_all(), timeout=0.1)
+
+    asyncio.run(scenario())
+
+    assert good.close_calls == 1
+    assert manager.exchanges == {}
 
 
 def test_runtime_diagnostics_exposes_ccxt_client_ownership() -> None:

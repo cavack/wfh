@@ -58,6 +58,8 @@ class WebSocketManager:
         self._direct_symbol_retire_tasks: Dict[str, asyncio.Task] = {}
         self._liquidation_exchange_retire_tasks: Dict[str, asyncio.Task] = {}
         self._shared_liquidation_retire_tasks: Dict[str, asyncio.Task] = {}
+        self.retirement_timeout_seconds = 10.0
+        self.exchange_close_timeout_seconds = 10.0
         # Keep shared FUEL-RICH subscriptions on dedicated CCXT Pro clients so
         # their dynamic unwatch operations cannot cancel PRE-TRIGGER/ARMED
         # direct subscriptions that use the same venue/message hashes.
@@ -967,11 +969,39 @@ class WebSocketManager:
             if clients.get(url) is client:
                 clients.pop(url, None)
 
+    @staticmethod
+    def _consume_settled_task_result(task: asyncio.Task) -> None:
+        try:
+            task.result()
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    async def _settle_cancelled_tasks(
+        self, cancelled_tasks: tuple[asyncio.Task, ...], *, context: str
+    ) -> None:
+        if not cancelled_tasks:
+            return
+        done, pending = await asyncio.wait(
+            cancelled_tasks, timeout=self.retirement_timeout_seconds
+        )
+        for task in done:
+            self._consume_settled_task_result(task)
+        if pending:
+            logger.warning(
+                "WebSocket cancelled-task retirement timed out for %s: pending=%d",
+                context,
+                len(pending),
+            )
+            for task in pending:
+                task.add_done_callback(self._consume_settled_task_result)
+                task.cancel()
+
     async def _retire_direct_symbol(
         self, ex_name: str, symbol: str, cancelled_tasks: tuple[asyncio.Task, ...]
     ) -> None:
-        if cancelled_tasks:
-            await asyncio.gather(*cancelled_tasks, return_exceptions=True)
+        await self._settle_cancelled_tasks(
+            cancelled_tasks, context=f"{ex_name}:{symbol}"
+        )
         exchange = self.exchanges.get(ex_name)
         if exchange is None:
             return
@@ -1022,10 +1052,11 @@ class WebSocketManager:
     async def _close_exchange_instance(
         self, ex_name: str, stream_id: str, exchange: Any, cancelled_tasks: tuple[asyncio.Task, ...]
     ) -> None:
-        if cancelled_tasks:
-            await asyncio.gather(*cancelled_tasks, return_exceptions=True)
+        await self._settle_cancelled_tasks(cancelled_tasks, context=stream_id)
         try:
-            await asyncio.wait_for(exchange.close(), timeout=10.0)
+            await asyncio.wait_for(
+                exchange.close(), timeout=self.exchange_close_timeout_seconds
+            )
         except Exception as exc:
             logger.warning(
                 "WebSocket exchange close failed for %s (%s): %s",
@@ -1399,13 +1430,17 @@ class WebSocketManager:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-        for ex in (
-            *self.exchanges.values(),
-            *self.liquidation_exchanges.values(),
-            *self.shared_liquidation_exchanges.values(),
-            *self.shared_evidence_exchanges.values(),
-        ):
-            await ex.close()
+        exchange_groups = (
+            self.exchanges,
+            self.liquidation_exchanges,
+            self.shared_liquidation_exchanges,
+            self.shared_evidence_exchanges,
+        )
+        for exchanges in exchange_groups:
+            for stream_id, exchange in tuple(exchanges.items()):
+                await self._close_exchange_instance(
+                    "shutdown", str(stream_id), exchange, ()
+                )
         self.exchanges.clear()
         self.liquidation_exchanges.clear()
         self.shared_liquidation_exchanges.clear()

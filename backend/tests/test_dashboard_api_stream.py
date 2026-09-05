@@ -149,7 +149,7 @@ def test_polling_refreshes_stale_snapshot_even_while_sse_client_is_registered(mo
     monkeypatch.setattr(main, "_get_live_dashboard_payload", fresh_payload)
     monkeypatch.setattr(main.time, "time", lambda: 100.0)
 
-    snapshot = main._get_dashboard_poll_snapshot()
+    snapshot = asyncio.run(main._get_dashboard_poll_snapshot())
 
     assert builds == [100.0]
     assert snapshot.generated_at == 100.0
@@ -406,6 +406,66 @@ def test_initial_sse_snapshot_failure_waits_for_next_queued_event(monkeypatch) -
     event = json.loads(chunk.split("data: ", 1)[1])
     assert event["event_type"] == "snapshot"
     assert event["payload"]["state"] == "READY"
+
+
+def test_initial_sse_snapshot_preserves_queued_event_order(monkeypatch) -> None:
+    buffer = DashboardEventBuffer()
+    started = threading.Event()
+    release = threading.Event()
+
+    def aggregate(**_):
+        started.set()
+        assert release.wait(timeout=1.0)
+        return buffer.publish_snapshot(PAYLOAD, generated_at=20.0, full_snapshot=True)
+
+    monkeypatch.setattr(main, "_dashboard_event_buffer", buffer)
+    monkeypatch.setattr(main, "_publish_dashboard_snapshot_safely", aggregate)
+    monkeypatch.setattr(main, "_sse_clients", set())
+
+    async def first_two_event_ids() -> list[int]:
+        response = await main.stream_candidates(last_event_id="missing")
+        iterator = response.body_iterator
+        first = asyncio.create_task(anext(iterator))
+        try:
+            assert await asyncio.to_thread(started.wait, 1.0)
+            queue = next(iter(main._sse_clients))
+            earlier = buffer.publish_heartbeat(generated_at=19.0)
+            queue.put_nowait(earlier)
+            release.set()
+            first_chunk = await asyncio.wait_for(first, timeout=1.0)
+            second_chunk = await asyncio.wait_for(anext(iterator), timeout=1.0)
+            return [
+                int(json.loads(chunk.split("data: ", 1)[1])["event_id"])
+                for chunk in (first_chunk, second_chunk)
+            ]
+        finally:
+            release.set()
+            if not first.done():
+                first.cancel()
+                await asyncio.gather(first, return_exceptions=True)
+            await iterator.aclose()
+
+    assert asyncio.run(first_two_event_ids()) == [1, 2]
+
+
+def test_stale_poll_aggregation_runs_off_event_loop_thread(monkeypatch) -> None:
+    buffer = DashboardEventBuffer()
+    caller_thread = threading.get_ident()
+    worker_threads: list[int] = []
+
+    def aggregate(*, evaluation_time: float):
+        worker_threads.append(threading.get_ident())
+        return PAYLOAD
+
+    monkeypatch.setattr(main, "_dashboard_event_buffer", buffer)
+    monkeypatch.setattr(main, "_dashboard_preview_cache", None)
+    monkeypatch.setattr(main, "_get_live_dashboard_payload", aggregate)
+
+    snapshot = asyncio.run(main.get_candidates(Response()))
+
+    assert snapshot.state == "READY"
+    assert worker_threads
+    assert worker_threads[0] != caller_thread
 
 
 def test_sse_snapshot_rebuild_is_coalesced_to_five_second_budget() -> None:

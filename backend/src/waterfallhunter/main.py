@@ -343,6 +343,7 @@ _dashboard_preview_cache: tuple[
     DashboardSnapshot,
     float,
 ] | None = None
+_dashboard_poll_build_task: asyncio.Task[tuple[float, dict[str, Any]]] | None = None
 _DASHBOARD_PREVIEW_CACHE_SECONDS = 1.0
 _background_tasks = set()
 
@@ -4380,7 +4381,22 @@ async def stream_candidates(
                     full_snapshot=True,
                     only_if_changed=False,
                 )
-                replay = [] if full_snapshot is None else [full_snapshot]
+                if full_snapshot is None:
+                    replay = []
+                else:
+                    queued: list[DashboardStreamEvent] = []
+                    while True:
+                        try:
+                            queued.append(q.get_nowait())
+                        except asyncio.QueueEmpty:
+                            break
+                    replay = sorted(
+                        {
+                            int(event.event_id): event
+                            for event in (*queued, full_snapshot)
+                        }.values(),
+                        key=lambda event: int(event.event_id),
+                    )
             for event in replay:
                 delivered_event_id = max(delivered_event_id, int(event.event_id))
                 yield serialize_sse_event(event)
@@ -4408,8 +4424,8 @@ async def stream_candidates(
     )
 
 
-def _get_dashboard_poll_snapshot() -> DashboardSnapshot:
-    global _dashboard_preview_cache
+async def _get_dashboard_poll_snapshot() -> DashboardSnapshot:
+    global _dashboard_preview_cache, _dashboard_poll_build_task
 
     latest = _dashboard_event_buffer.latest_snapshot()
     if (
@@ -4420,35 +4436,41 @@ def _get_dashboard_poll_snapshot() -> DashboardSnapshot:
 
     now_monotonic = time.monotonic()
     cached = _dashboard_preview_cache
-
     if cached is not None:
-        (
-            cached_buffer,
-            cached_snapshot,
-            cached_at,
-        ) = cached
-
+        cached_buffer, cached_snapshot, cached_at = cached
         if (
             cached_buffer is _dashboard_event_buffer
-            and now_monotonic - cached_at
-            <= _DASHBOARD_PREVIEW_CACHE_SECONDS
+            and now_monotonic - cached_at <= _DASHBOARD_PREVIEW_CACHE_SECONDS
         ):
             return cached_snapshot
 
-    generated_at = time.time()
-    snapshot = _dashboard_event_buffer.preview_snapshot(
-        _get_live_dashboard_payload(
-            evaluation_time=generated_at
-        ),
-        generated_at=generated_at,
-    )
+    task = _dashboard_poll_build_task
+    if task is None or task.done():
+        generated_at = time.time()
 
+        async def build() -> tuple[float, dict[str, Any]]:
+            payload = await asyncio.to_thread(
+                _get_live_dashboard_payload, evaluation_time=generated_at
+            )
+            return generated_at, payload
+
+        task = asyncio.create_task(build())
+        _dashboard_poll_build_task = task
+
+    try:
+        generated_at, payload = await asyncio.shield(task)
+    finally:
+        if task.done() and _dashboard_poll_build_task is task:
+            _dashboard_poll_build_task = None
+
+    snapshot = _dashboard_event_buffer.preview_snapshot(
+        payload, generated_at=generated_at
+    )
     _dashboard_preview_cache = (
         _dashboard_event_buffer,
         snapshot,
         time.monotonic(),
     )
-
     return snapshot
 
 
@@ -4459,7 +4481,7 @@ def _get_dashboard_poll_snapshot() -> DashboardSnapshot:
 )
 async def get_candidates(response: Response):
     response.headers["Cache-Control"] = "no-store"
-    return _get_dashboard_poll_snapshot()
+    return await _get_dashboard_poll_snapshot()
 
 
 @app.get(
