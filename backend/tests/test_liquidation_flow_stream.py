@@ -460,6 +460,8 @@ def test_runtime_diagnostics_exposes_liquidation_fanout_shape() -> None:
         "shared_evidence_ccxt_subscriptions": 0,
         "direct_exchange_retire_tasks": 0,
         "liquidation_exchange_retire_tasks": 0,
+        "exchange_close_finalizer_tasks": 0,
+        "exchange_close_timeouts": 0,
         "ccxt_clients": 0,
         "ccxt_subscriptions": 0,
     }
@@ -502,3 +504,112 @@ def test_cancelled_shared_liquidation_task_cannot_remove_replacement(monkeypatch
 
     asyncio.run(scenario())
     assert started >= 1
+
+
+def test_liquidation_close_timeout_keeps_owned_finalizer_until_exchange_closes() -> None:
+    manager = WebSocketManager()
+    manager.exchange_close_timeout_seconds = 0.01
+    symbol = "RETRY/USDT:USDT"
+    stream_id = f"bybit:{symbol}"
+
+    class Exchange:
+        def __init__(self) -> None:
+            self.close_calls = 0
+            self.release_retry = asyncio.Event()
+            self.closed = False
+
+        async def close(self) -> None:
+            self.close_calls += 1
+            await self.release_retry.wait()
+            self.closed = True
+
+    exchange = Exchange()
+    manager.liquidation_exchanges[stream_id] = exchange
+
+    async def scenario() -> None:
+        manager._schedule_liquidation_exchange_retire("bybit", symbol)
+        await asyncio.sleep(0.03)
+        assert exchange.close_calls == 1
+        assert any(
+            not task.done()
+            for task in manager._liquidation_exchange_retire_tasks.values()
+        )
+        exchange.release_retry.set()
+        await asyncio.sleep(0.03)
+        assert exchange.closed is True
+        assert not manager._liquidation_exchange_retire_tasks
+
+    asyncio.run(scenario())
+
+
+def test_liquidation_replacement_waits_for_prior_exchange_retirement(monkeypatch) -> None:
+    manager = WebSocketManager()
+    manager.exchange_close_timeout_seconds = 0.01
+    symbol = "SERIAL/USDT:USDT"
+    stream_id = f"bybit:{symbol}"
+
+    class OldExchange:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.release = asyncio.Event()
+        async def close(self) -> None:
+            self.calls += 1
+            await self.release.wait()
+
+    old = OldExchange()
+    replacement = object()
+    manager.liquidation_exchanges[stream_id] = old
+    monkeypatch.setattr(manager, "_new_exchange", lambda _name: replacement)
+
+    async def scenario() -> None:
+        manager._schedule_liquidation_exchange_retire("bybit", symbol)
+        starter = asyncio.create_task(manager._get_liquidation_exchange("bybit", symbol))
+        await asyncio.sleep(0.03)
+        assert starter.done() is False
+        old.release.set()
+        assert await asyncio.wait_for(starter, timeout=0.1) is replacement
+
+    asyncio.run(scenario())
+
+
+def test_close_all_bounds_unfinished_exchange_close_finalizers() -> None:
+    manager = WebSocketManager()
+    manager.exchange_close_timeout_seconds = 0.01
+    manager.retirement_timeout_seconds = 0.02
+    symbol = "HANG/USDT:USDT"
+    stream_id = f"bybit:{symbol}"
+
+    class Exchange:
+        async def close(self) -> None:
+            await asyncio.Future()
+
+    manager.liquidation_exchanges[stream_id] = Exchange()
+
+    async def scenario() -> None:
+        manager._schedule_liquidation_exchange_retire("bybit", symbol)
+        await asyncio.sleep(0.03)
+        assert manager._exchange_close_finalizer_tasks
+        await asyncio.wait_for(manager.close_all(), timeout=0.2)
+        assert not manager._exchange_close_finalizer_tasks
+        assert not manager._liquidation_exchange_retire_tasks
+
+    asyncio.run(scenario())
+
+
+def test_close_all_bounds_hung_live_exchange_close() -> None:
+    manager = WebSocketManager()
+    manager.exchange_close_timeout_seconds = 0.01
+    manager.retirement_timeout_seconds = 0.02
+
+    class Exchange:
+        async def close(self) -> None:
+            await asyncio.Future()
+
+    manager.exchanges["bybit"] = Exchange()
+
+    async def scenario() -> None:
+        await asyncio.wait_for(manager.close_all(), timeout=0.2)
+        assert not manager._exchange_close_finalizer_tasks
+        assert not manager.exchanges
+
+    asyncio.run(scenario())
