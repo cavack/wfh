@@ -58,6 +58,8 @@ class WebSocketManager:
         self._direct_symbol_retire_tasks: Dict[str, asyncio.Task] = {}
         self._liquidation_exchange_retire_tasks: Dict[str, asyncio.Task] = {}
         self._shared_liquidation_retire_tasks: Dict[str, asyncio.Task] = {}
+        self._exchange_close_finalizer_tasks: set[asyncio.Task] = set()
+        self.exchange_close_timeouts = 0
         self._direct_venue_locks: Dict[str, asyncio.Lock] = {}
         self.retirement_timeout_seconds = 10.0
         self.exchange_close_timeout_seconds = 10.0
@@ -206,6 +208,7 @@ class WebSocketManager:
 
     async def _get_liquidation_exchange(self, ex_name: str, symbol: str) -> Any:
         stream_id = f"{ex_name}:{symbol}"
+        await self._await_liquidation_exchange_retirement(ex_name, symbol)
         async with self._lock:
             if stream_id not in self.liquidation_exchanges:
                 self.liquidation_exchanges[stream_id] = self._new_exchange(ex_name)
@@ -1239,15 +1242,60 @@ class WebSocketManager:
         self, ex_name: str, stream_id: str, exchange: Any, cancelled_tasks: tuple[asyncio.Task, ...]
     ) -> None:
         await self._settle_cancelled_tasks(cancelled_tasks, context=stream_id)
+        close_task = asyncio.create_task(exchange.close())
+        timed_out = False
         try:
-            await asyncio.wait_for(
-                exchange.close(), timeout=self.exchange_close_timeout_seconds
-            )
-        except Exception as exc:
-            logger.warning(
-                "WebSocket exchange close failed for %s (%s): %s",
-                stream_id, ex_name, type(exc).__name__,
-            )
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(close_task),
+                    timeout=self.exchange_close_timeout_seconds,
+                )
+                return
+            except asyncio.TimeoutError:
+                self.exchange_close_timeouts += 1
+                timed_out = True
+                self._exchange_close_finalizer_tasks.add(close_task)
+                logger.warning(
+                    "WebSocket exchange close timed out for %s (%s); "
+                    "retaining ownership until the original close completes",
+                    stream_id, ex_name,
+                )
+                try:
+                    await close_task
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        "WebSocket exchange close finalizer failed for %s (%s): %s",
+                        stream_id, ex_name, type(exc).__name__,
+                    )
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "WebSocket exchange close failed for %s (%s): %s",
+                    stream_id, ex_name, type(exc).__name__,
+                )
+                return
+        finally:
+            if not close_task.done():
+                close_task.cancel()
+                await asyncio.gather(close_task, return_exceptions=True)
+            if timed_out:
+                self._exchange_close_finalizer_tasks.discard(close_task)
+
+    async def _await_liquidation_exchange_retirement(
+        self, ex_name: str, symbol: str
+    ) -> None:
+        prefix = f"{ex_name}:{symbol}:"
+        tasks = tuple(
+            task
+            for retire_id, task in self._liquidation_exchange_retire_tasks.items()
+            if retire_id.startswith(prefix) and not task.done()
+        )
+        if tasks:
+            await asyncio.gather(*(asyncio.shield(task) for task in tasks))
 
     def _schedule_liquidation_exchange_retire(
         self, ex_name: str, symbol: str, cancelled_tasks: tuple[asyncio.Task, ...] = ()
@@ -1539,6 +1587,10 @@ class WebSocketManager:
             ) + sum(
                 1 for task in self._shared_liquidation_retire_tasks.values() if not task.done()
             ),
+            "exchange_close_finalizer_tasks": sum(
+                1 for task in self._exchange_close_finalizer_tasks if not task.done()
+            ),
+            "exchange_close_timeouts": self.exchange_close_timeouts,
             "ccxt_clients": ccxt_clients,
             "ccxt_subscriptions": ccxt_subscriptions,
         }
@@ -1612,46 +1664,85 @@ class WebSocketManager:
             now_ms=now * 1000.0,
         )
 
-    async def close_all(self):
-        direct_retire_tasks = [
-            *self._direct_symbol_retire_tasks.values(),
-            *self._liquidation_exchange_retire_tasks.values(),
-            *self._shared_liquidation_retire_tasks.values(),
-        ]
-        if direct_retire_tasks:
-            await asyncio.gather(*direct_retire_tasks, return_exceptions=True)
-        self._direct_symbol_retire_tasks.clear()
-        self._liquidation_exchange_retire_tasks.clear()
-        self._shared_liquidation_retire_tasks.clear()
-        reconcile_tasks = tuple(self._shared_evidence_reconcile_tasks.values())
-        for task in reconcile_tasks:
+    async def _settle_shutdown_tasks(
+        self,
+        tasks: tuple[asyncio.Task, ...],
+        *,
+        context: str,
+        timeout: float,
+    ) -> None:
+        if not tasks:
+            return
+        done, pending = await asyncio.wait(tasks, timeout=timeout)
+        for task in done:
+            self._consume_settled_task_result(task)
+        if not pending:
+            return
+        for task in pending:
             task.cancel()
-        self._shared_evidence_reconcile_tasks.clear()
-        self._shared_evidence_reconcile_dirty.clear()
-        if reconcile_tasks:
-            await self._settle_cancelled_tasks(
-                reconcile_tasks, context="shared-evidence-reconcile-shutdown"
-            )
-        tasks = tuple(self.active_tasks.values())
-        for task in tasks:
-            task.cancel()
-        self.active_tasks.clear()
-        self.liquidation_subscribers.clear()
-        self.shared_evidence_subscribers.clear()
-        if tasks:
-            await self._settle_cancelled_tasks(tasks, context="websocket-shutdown")
+        await self._settle_cancelled_tasks(tuple(pending), context=context)
 
+    async def _close_remaining_exchanges(self) -> None:
         exchange_groups = (
             self.exchanges,
             self.liquidation_exchanges,
             self.shared_liquidation_exchanges,
             self.shared_evidence_exchanges,
         )
-        for exchanges in exchange_groups:
-            for stream_id, exchange in tuple(exchanges.items()):
-                await self._close_exchange_instance(
+        close_tasks = tuple(
+            asyncio.create_task(
+                self._close_exchange_instance(
                     "shutdown", str(stream_id), exchange, ()
                 )
+            )
+            for exchanges in exchange_groups
+            for stream_id, exchange in tuple(exchanges.items())
+        )
+        shutdown_close_timeout = min(
+            self.retirement_timeout_seconds,
+            max(0.05, self.exchange_close_timeout_seconds * 2.0),
+        )
+        await self._settle_shutdown_tasks(
+            close_tasks,
+            context="exchange-close-shutdown",
+            timeout=shutdown_close_timeout,
+        )
+
+    async def close_all(self):
+        direct_retire_tasks = tuple(
+            [
+                *self._direct_symbol_retire_tasks.values(),
+                *self._liquidation_exchange_retire_tasks.values(),
+                *self._shared_liquidation_retire_tasks.values(),
+            ]
+        )
+        await self._settle_shutdown_tasks(
+            direct_retire_tasks,
+            context="exchange-retire-shutdown",
+            timeout=self.retirement_timeout_seconds,
+        )
+        self._direct_symbol_retire_tasks.clear()
+        self._liquidation_exchange_retire_tasks.clear()
+        self._shared_liquidation_retire_tasks.clear()
+
+        reconcile_tasks = tuple(self._shared_evidence_reconcile_tasks.values())
+        for task in reconcile_tasks:
+            task.cancel()
+        self._shared_evidence_reconcile_tasks.clear()
+        self._shared_evidence_reconcile_dirty.clear()
+        await self._settle_cancelled_tasks(
+            reconcile_tasks, context="shared-evidence-reconcile-shutdown"
+        )
+
+        tasks = tuple(self.active_tasks.values())
+        for task in tasks:
+            task.cancel()
+        self.active_tasks.clear()
+        self.liquidation_subscribers.clear()
+        self.shared_evidence_subscribers.clear()
+        await self._settle_cancelled_tasks(tasks, context="websocket-shutdown")
+
+        await self._close_remaining_exchanges()
         self.exchanges.clear()
         self.liquidation_exchanges.clear()
         self.shared_liquidation_exchanges.clear()
