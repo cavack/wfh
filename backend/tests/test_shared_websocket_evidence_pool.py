@@ -59,6 +59,7 @@ class _GenerationExchange(_CapabilityExchange):
         fail_close: bool = False,
         suppress_cancel: bool = False,
         retain_clients_on_close: bool = False,
+        hang_close_seconds: float = 0.0,
     ) -> None:
         super().__init__()
         self.clients: dict[str, _ModeledClient] = {}
@@ -74,6 +75,7 @@ class _GenerationExchange(_CapabilityExchange):
         self.fail_close = fail_close
         self.suppress_cancel = suppress_cancel
         self.retain_clients_on_close = retain_clients_on_close
+        self.hang_close_seconds = hang_close_seconds
         self.cancel_release = asyncio.Event()
         self._watch_keys: set[tuple[str, tuple[str, ...]]] = set()
         self._unwatch_keys: set[tuple[str, tuple[str, ...]]] = set()
@@ -164,6 +166,8 @@ class _GenerationExchange(_CapabilityExchange):
 
     async def close(self) -> None:
         self.close_started.set()
+        if self.hang_close_seconds:
+            await asyncio.sleep(self.hang_close_seconds)
         await self.close_release.wait()
         if self.fail_close:
             raise RuntimeError("close failed")
@@ -476,6 +480,36 @@ def test_close_that_retains_ccxt_clients_blocks_replacement(monkeypatch) -> None
     async def scenario() -> None:
         await _assert_replacement_is_blocked(manager, created)
         created[0].retain_clients_on_close = False
+        await manager.close_all()
+
+    asyncio.run(scenario())
+
+
+def test_close_timeout_abandons_instance_and_replaces_generation(monkeypatch) -> None:
+    manager = WebSocketManager()
+    manager.exchange_close_timeout_seconds = 0.05
+    created: list[_GenerationExchange] = []
+
+    def new_exchange(_name: str):
+        exchange = _GenerationExchange(hang_close_seconds=0.15)
+        created.append(exchange)
+        return exchange
+
+    monkeypatch.setattr(manager, "_new_exchange", new_exchange)
+
+    async def scenario() -> None:
+        manager.subscribe_shared_evidence("binance", "A/USDT:USDT")
+        manager.subscribe_shared_evidence("binance", "B/USDT:USDT")
+        await _wait_until(lambda: len(created) == 1 and _client_counts(created) == (3, 6))
+        manager.subscribe_shared_evidence("binance", "C/USDT:USDT")
+        manager.unsubscribe_shared_evidence("binance", "A/USDT:USDT")
+        await _wait_until(lambda: len(created) == 2)
+        assert "binance" not in manager.shared_evidence_blocked_exchanges
+        await _wait_until(
+            lambda: ("B/USDT:USDT", "C/USDT:USDT")
+            in {members for _, members in created[1].watch_memberships}
+        )
+        await _wait_until(lambda: created[0].closed)
         await manager.close_all()
 
     asyncio.run(scenario())
