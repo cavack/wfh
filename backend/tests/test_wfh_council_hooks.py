@@ -4,6 +4,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -150,6 +151,23 @@ def test_pre_commit_rejects_invalid_staged_index_even_if_worktree_is_fixed(tmp_p
 ZERO_SHA = "0" * 40
 
 
+def _python3_shim(directory: Path) -> Path:
+    """Expose the interpreter running the suite as ``python3`` for hook runs."""
+    shim = directory / "python3"
+    shim.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
+    shim.chmod(0o755)
+    return shim
+
+
+def _interpreter_env(root: Path) -> dict[str, str]:
+    bin_dir = root / "interpreter"
+    bin_dir.mkdir()
+    _python3_shim(bin_dir)
+    env = os.environ.copy()
+    env["PATH"] = os.pathsep.join([str(bin_dir), env.get("PATH", "")])
+    return env
+
+
 def _commit_all(repo: Path, message: str) -> str:
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-qm", message], cwd=repo, check=True)
@@ -169,7 +187,7 @@ def test_pre_push_validates_exact_local_sha_not_mutable_worktree(tmp_path: Path)
 
     result = subprocess.run(
         ["bash", str(repo / ".githooks/pre-push"), "origin", "example.invalid/repo"],
-        cwd=repo, input=hook_input, text=True,
+        cwd=repo, input=hook_input, text=True, env=_interpreter_env(tmp_path),
     )
 
     assert result.returncode == 0
@@ -204,6 +222,9 @@ def _closed_allowlist_env(root: Path, source: Path) -> dict[str, str]:
     bin_dir = root / f"allow-{source.name}"
     bin_dir.mkdir()
     for command in _declared_external_allowlist(source):
+        if command == "python3":
+            _python3_shim(bin_dir)
+            continue
         target = shutil.which(command)
         assert target is not None, f"required test command unavailable: {command}"
         os.symlink(target, bin_dir / command)

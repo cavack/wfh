@@ -3,12 +3,15 @@ PYTHON ?= python3
 VENV_PYTHON := .venv/bin/python
 DB_PATH ?= /srv/waterfallhunter/data/waterfall_registry.db
 
-.PHONY: help setup test typecheck build validate clean-install-check status logs backup-check migration-rehearsal
+.PHONY: help setup check-python test typecheck build validate clean-install-check status logs backup-check migration-rehearsal
 
 help:
 	@printf '%s\n' 'setup test typecheck build validate clean-install-check status logs backup-check migration-rehearsal'
 
-setup:
+check-python:
+	@$(PYTHON) scripts/check_python_runtime.py
+
+setup: check-python
 	$(PYTHON) -m venv .venv
 	.venv/bin/python -m pip install --only-binary=:all: --require-hashes -r backend/requirements.lock
 	npm --prefix frontend ci
