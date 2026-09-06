@@ -93,6 +93,7 @@ class WebSocketManager:
         self.shared_evidence_generation: Dict[str, int] = {}
         self.shared_evidence_retirement_failures: Dict[str, int] = {}
         self.shared_evidence_blocked_exchanges: set[str] = set()
+        self._abandoned_close_tasks: set[asyncio.Task] = set()
         self.unsupported_shared_evidence_exchanges: set[str] = set()
         self.shared_evidence_symbol_limit = 64
         self._shared_evidence_reconcile_tasks: Dict[str, asyncio.Task] = {}
@@ -788,6 +789,38 @@ class WebSocketManager:
                 subscriptions += len(client_subscriptions)
         return len(clients), subscriptions
 
+    def _finish_abandoned_exchange_close(self, ex_name: str, exchange: Any) -> None:
+        """Best-effort background close for a transport that already timed out.
+
+        The retired generation is detached from the pool at this point, so the
+        abandoned instance only needs its websocket transport released. The
+        close runs with a generous timeout and never blocks reconciliation.
+        """
+
+        async def _finish() -> None:
+            try:
+                await asyncio.wait_for(
+                    exchange.close(),
+                    timeout=self.exchange_close_timeout_seconds * 4,
+                )
+                logger.info(
+                    "Abandoned shared evidence exchange closed for %s",
+                    ex_name,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug(
+                    "Abandoned shared evidence exchange close still unfinished "
+                    "for %s: %s",
+                    ex_name,
+                    type(exc).__name__,
+                )
+
+        task = asyncio.create_task(_finish())
+        self._abandoned_close_tasks.add(task)
+        task.add_done_callback(self._abandoned_close_tasks.discard)
+
     async def _retire_shared_evidence_generation(
         self, ex_name: str
     ) -> tuple[bool, Any | None]:
@@ -797,11 +830,23 @@ class WebSocketManager:
             cancelled, context=ex_name
         )
 
+        close_abandoned = False
         close_ok = True
         if exchange is not None:
             try:
                 await asyncio.wait_for(
                     exchange.close(), timeout=self.exchange_close_timeout_seconds
+                )
+            except asyncio.TimeoutError:
+                # A hung CCXT websocket close must not suppress the replacement
+                # generation indefinitely: a dead evidence pool blocks live
+                # decision data for every subscriber. The instance is detached
+                # below and the transport close finishes in the background.
+                close_abandoned = True
+                logger.warning(
+                    "Shared evidence exchange close timed out for %s; "
+                    "abandoning instance and completing retirement",
+                    ex_name,
                 )
             except Exception as exc:
                 close_ok = False
@@ -825,11 +870,17 @@ class WebSocketManager:
             or subscriptions is None
             or (clients == 0 and subscriptions == 0)
         )
-        if close_ok and not pending and transport_empty:
+        retirement_complete = (
+            not pending and (close_ok or close_abandoned)
+        )
+        transport_acceptable = transport_empty or close_abandoned
+        if retirement_complete and transport_acceptable:
             if self.shared_evidence_exchanges.get(ex_name) is exchange:
                 self.shared_evidence_exchanges.pop(ex_name, None)
             self.shared_evidence_active_symbols.pop(ex_name, None)
             self.shared_evidence_blocked_exchanges.discard(ex_name)
+            if close_abandoned:
+                self._finish_abandoned_exchange_close(ex_name, exchange)
             return True, exchange
 
         self.shared_evidence_retirement_failures[ex_name] = (
