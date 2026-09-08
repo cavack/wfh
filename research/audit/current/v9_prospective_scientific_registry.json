@@ -1,0 +1,99 @@
+{
+  "candidate_freeze_rule": {
+    "frozen_at_v9_evidence_t0": true,
+    "rule": "The candidate registry and selection protocol above are sealed for this prospective cohort. Adding/removing/reparameterizing candidates or changing selection logic requires a new registry/version and cannot reuse this cohort holdout as untouched evidence.",
+    "selection_source": "WALK_FORWARD_DEVELOPMENT_OOS_ONLY"
+  },
+  "candidate_registry": [
+    {
+      "complexity_rank": 0,
+      "family": "CONSTANT_PREVALENCE",
+      "model_id": "prevalence_baseline_v1"
+    },
+    {
+      "complexity_rank": 1,
+      "family": "REGULARIZED_LOGISTIC",
+      "iterations": 1000,
+      "l2_penalty": 0.1,
+      "learning_rate": 0.05,
+      "model_id": "regularized_logistic_score_v1"
+    }
+  ],
+  "contract_version": "wfh_v9_prospective_scientific_registry_v1",
+  "generated_at": 1788835465,
+  "holdout_unlock_rule": {
+    "minimum_time_gate": 1792463720.3338542,
+    "minimum_time_gate_iso": "2026-10-20T02:35:20.333854Z",
+    "rule": "Do not inspect or use holdout outcomes for selection/tuning. Holdout evaluation may begin only after the minimum eligible observation-end is reached, development selection is frozen, independent calibration is complete, and current policy row/regime sufficiency gates are satisfied. Holdout remains evaluation-only.",
+    "sealed": true
+  },
+  "production_product_mode": "SIGNAL_ONLY",
+  "production_revision": "3f9ee2b03dd66581007a44b6fa4e0709bc1346df",
+  "prospective_time_plan": {
+    "boundary_semantics": "[start,end)",
+    "calibration_end": 1791556520.3338542,
+    "calibration_end_iso": "2026-10-09T14:35:20.333854Z",
+    "calibration_start_after_embargo": 1791098600.3338542,
+    "calibration_start_after_embargo_iso": "2026-10-04T07:23:20.333854Z",
+    "derivation": "ScientificValidationPolicy.v1 fractions applied prospectively to the minimum six-week span; one-day embargo starts calibration after development_end and holdout after calibration_end, matching _split_rows semantics.",
+    "development_end": 1791012200.3338542,
+    "development_end_iso": "2026-10-03T07:23:20.333854Z",
+    "development_start": 1788834920.3338542,
+    "development_start_iso": "2026-09-08T02:35:20.333854Z",
+    "holdout_end_minimum": 1792463720.3338542,
+    "holdout_end_minimum_iso": "2026-10-20T02:35:20.333854Z",
+    "holdout_start_after_embargo": 1791642920.3338542,
+    "holdout_start_after_embargo_iso": "2026-10-10T14:35:20.333854Z",
+    "minimum_eligible_observation_end": 1792463720.3338542,
+    "minimum_eligible_observation_end_iso": "2026-10-20T02:35:20.333854Z"
+  },
+  "registry_body_sha256": "8678c4fe5923ef2b1f938bf29292891b1ece2bcef6ec94c99087d872c39e5300",
+  "safety_invariants": {
+    "live_trading_enabled": false,
+    "production_anti_chase_atr": 1.2,
+    "production_entry_readiness_threshold": 78,
+    "production_weights_and_gates": "UNCHANGED/FROZEN",
+    "telegram_signal_delivery_enabled": false
+  },
+  "scientific_validation_policy": {
+    "bootstrap_block_size": 5,
+    "bootstrap_iterations": 1000,
+    "calibration_fraction": 0.15,
+    "contract_version": "strict_scientific_validation_policy_v1",
+    "development_fraction": 0.6,
+    "embargo_seconds": 86400,
+    "holdout_fraction": 0.25,
+    "maximum_selected_symbol_share": 0.6,
+    "minimum_calibration_rows": 20,
+    "minimum_holdout_regimes": 2,
+    "minimum_holdout_rows": 30,
+    "minimum_holdout_rows_per_regime": 10,
+    "minimum_observation_weeks": 6,
+    "minimum_selected_holdout_rows": 10,
+    "minimum_total_rows": 100,
+    "minimum_walk_forward_test_rows": 10,
+    "policy_hash": "03abb5c4932c05aed61b5508f57243512369e73f7b080c6e2d33ac7448da823c",
+    "walk_forward_folds": 3
+  },
+  "sealed": true,
+  "source_revision": "3f9ee2b03dd66581007a44b6fa4e0709bc1346df",
+  "v9_evidence_t0": {
+    "bucket_started_at": 1788834600,
+    "canonical_entry_decision_sha256": "f8446a2a4df99ba205d923ade3c480f31f432431d02b92051da483c848e900b7",
+    "decision_contract_sha256": "c1d9908e4e5a12b2bf5d30c6d2e21815560d3470a25484032bbb0ccf9dc787b3",
+    "decision_evaluated_at": 1788834920,
+    "decision_policy_version": "entry_policy_v1",
+    "first_evidence_sha256": "3d0992539289048aed6896acdbed0a2c2092a7eb9194c777c5e0632bb4bffc95",
+    "lifecycle_id": 2,
+    "observed_at": 1788834920.3338542,
+    "observed_at_iso": "2026-09-08T02:35:20.333854Z",
+    "replay_complete": true,
+    "replay_unavailable_reason": null,
+    "schema_version": "production_decision_evidence_v9",
+    "selection_rule": "first production_decision_evidence_v9 row at or after target runtime start with replay_complete=true and source_tree_sha256 equal to the deployed runtime source tree hash",
+    "snapshot_id": 674027,
+    "source_file_count": 95,
+    "source_tree_sha256": "680775bc8fc5c24fa16b5e1ac195b8ef5e08b82582e47c3950ef32d015fe35fc",
+    "symbol": "PLAY/USDT:USDT"
+  }
+}

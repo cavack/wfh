@@ -1,0 +1,10 @@
+{
+  "contract_version": "wfh_v9_prospective_scientific_registry_seal_v1",
+  "registry_artifact_sha256": "4c5f0765665044d1552c1a341566d913d6781e089145286ad048aca3817a2d5c",
+  "registry_body_sha256": "8678c4fe5923ef2b1f938bf29292891b1ece2bcef6ec94c99087d872c39e5300",
+  "registry_path": "research/audit/current/v9_prospective_scientific_registry.json",
+  "seal_body_sha256": "5afb22cea8018f95f721aa852c6dcab963edba64c52469f2137609f7845fcd96",
+  "sealed": true,
+  "source_revision": "3f9ee2b03dd66581007a44b6fa4e0709bc1346df",
+  "v9_evidence_t0": 1788834920.3338542
+}
