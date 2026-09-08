@@ -620,6 +620,18 @@ if "websocket_liquidation_exchange_retire_tasks_metric" not in globals():
         "Liquidation CCXT Pro exchange instances currently being retired.",
     )
 
+if "websocket_exchange_close_finalizer_tasks_metric" not in globals():
+    websocket_exchange_close_finalizer_tasks_metric = Gauge(
+        "waterfall_websocket_exchange_close_finalizer_tasks",
+        "Timed-out CCXT exchange closes still owned by retrying finalizers.",
+    )
+
+if "websocket_exchange_close_timeouts_metric" not in globals():
+    websocket_exchange_close_timeouts_metric = Gauge(
+        "waterfall_websocket_exchange_close_timeouts",
+        "Cumulative generic CCXT exchange close timeouts in this process.",
+    )
+
 if "websocket_direct_ccxt_clients_metric" not in globals():
     websocket_direct_ccxt_clients_metric = Gauge(
         "waterfall_websocket_direct_ccxt_clients",
@@ -1659,6 +1671,12 @@ def _update_websocket_metrics() -> None:
     )
     websocket_liquidation_exchange_retire_tasks_metric.set(
         float(snapshot["liquidation_exchange_retire_tasks"])
+    )
+    websocket_exchange_close_finalizer_tasks_metric.set(
+        float(snapshot["exchange_close_finalizer_tasks"])
+    )
+    websocket_exchange_close_timeouts_metric.set(
+        float(snapshot["exchange_close_timeouts"])
     )
     websocket_direct_ccxt_clients_metric.set(float(snapshot["direct_ccxt_clients"]))
     websocket_direct_ccxt_subscriptions_metric.set(

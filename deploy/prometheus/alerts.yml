@@ -57,6 +57,13 @@ groups:
           severity: warning
         annotations:
           summary: WebSocket exchange retirement tasks are not draining
+      - alert: WaterfallWebSocketExchangeCloseFinalizerStuck
+        expr: waterfall_websocket_exchange_close_finalizer_tasks > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: A WebSocket exchange close finalizer has remained unfinished
       - alert: WaterfallSharedWebSocketRetirementBlocked
         expr: waterfall_websocket_shared_evidence_blocked_exchanges > 0
         for: 2m
