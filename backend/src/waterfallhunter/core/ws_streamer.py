@@ -209,6 +209,7 @@ class WebSocketManager:
     async def _get_liquidation_exchange(self, ex_name: str, symbol: str) -> Any:
         stream_id = f"{ex_name}:{symbol}"
         await self._await_liquidation_exchange_retirement(ex_name, symbol)
+        await self._await_exchange_close_finalizers()
         async with self._lock:
             if stream_id not in self.liquidation_exchanges:
                 self.liquidation_exchanges[stream_id] = self._new_exchange(ex_name)
@@ -1285,6 +1286,23 @@ class WebSocketManager:
             if timed_out:
                 self._exchange_close_finalizer_tasks.discard(close_task)
 
+    async def _await_exchange_close_finalizers(self) -> None:
+        tasks = tuple(
+            task
+            for task in self._exchange_close_finalizer_tasks
+            if not task.done()
+        )
+        if not tasks:
+            return
+        logger.warning(
+            "WebSocket exchange creation waiting for %d unfinished close finalizer(s)",
+            len(tasks),
+        )
+        await asyncio.gather(
+            *(asyncio.shield(task) for task in tasks),
+            return_exceptions=True,
+        )
+
     async def _await_liquidation_exchange_retirement(
         self, ex_name: str, symbol: str
     ) -> None:
@@ -1708,8 +1726,8 @@ class WebSocketManager:
             timeout=shutdown_close_timeout,
         )
 
-    async def close_all(self):
-        direct_retire_tasks = tuple(
+    async def _drain_exchange_retirements_for_shutdown(self) -> None:
+        retire_tasks = tuple(
             [
                 *self._direct_symbol_retire_tasks.values(),
                 *self._liquidation_exchange_retire_tasks.values(),
@@ -1717,7 +1735,7 @@ class WebSocketManager:
             ]
         )
         await self._settle_shutdown_tasks(
-            direct_retire_tasks,
+            retire_tasks,
             context="exchange-retire-shutdown",
             timeout=self.retirement_timeout_seconds,
         )
@@ -1725,6 +1743,7 @@ class WebSocketManager:
         self._liquidation_exchange_retire_tasks.clear()
         self._shared_liquidation_retire_tasks.clear()
 
+    async def close_all(self):
         reconcile_tasks = tuple(self._shared_evidence_reconcile_tasks.values())
         for task in reconcile_tasks:
             task.cancel()
@@ -1741,6 +1760,11 @@ class WebSocketManager:
         self.liquidation_subscribers.clear()
         self.shared_evidence_subscribers.clear()
         await self._settle_cancelled_tasks(tasks, context="websocket-shutdown")
+
+        # Active stream ``finally`` blocks may schedule exchange retirement.
+        # Drain those tasks only after all active consumers are settled so no
+        # retirement/finalizer can escape the bounded shutdown window.
+        await self._drain_exchange_retirements_for_shutdown()
 
         await self._close_remaining_exchanges()
         self.exchanges.clear()

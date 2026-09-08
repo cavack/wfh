@@ -613,3 +613,69 @@ def test_close_all_bounds_hung_live_exchange_close() -> None:
         assert not manager.exchanges
 
     asyncio.run(scenario())
+
+
+def test_new_liquidation_exchange_waits_while_any_close_finalizer_is_unfinished(monkeypatch) -> None:
+    manager = WebSocketManager()
+    manager.exchange_close_timeout_seconds = 0.01
+    old_symbol = "OLD/USDT:USDT"
+    new_symbol = "NEW/USDT:USDT"
+    old_stream_id = f"bybit:{old_symbol}"
+
+    class OldExchange:
+        def __init__(self) -> None:
+            self.release = asyncio.Event()
+
+        async def close(self) -> None:
+            await self.release.wait()
+
+    old = OldExchange()
+    replacement = object()
+    manager.liquidation_exchanges[old_stream_id] = old
+    monkeypatch.setattr(manager, "_new_exchange", lambda _name: replacement)
+
+    async def scenario() -> None:
+        manager._schedule_liquidation_exchange_retire("bybit", old_symbol)
+        await asyncio.sleep(0.03)
+        assert manager._exchange_close_finalizer_tasks
+        starter = asyncio.create_task(
+            manager._get_liquidation_exchange("bybit", new_symbol)
+        )
+        await asyncio.sleep(0.02)
+        assert starter.done() is False
+        old.release.set()
+        assert await asyncio.wait_for(starter, timeout=0.1) is replacement
+
+    asyncio.run(scenario())
+
+
+def test_close_all_drains_retirement_scheduled_by_cancelled_active_stream() -> None:
+    manager = WebSocketManager()
+    manager.exchange_close_timeout_seconds = 0.01
+    manager.retirement_timeout_seconds = 0.02
+    symbol = "SHUTDOWN/USDT:USDT"
+    stream_id = f"bybit:{symbol}"
+
+    class Exchange:
+        async def close(self) -> None:
+            await asyncio.Future()
+
+    manager.liquidation_exchanges[stream_id] = Exchange()
+
+    async def active_stream() -> None:
+        try:
+            await asyncio.Future()
+        finally:
+            manager._schedule_liquidation_exchange_retire("bybit", symbol)
+
+    async def scenario() -> None:
+        task_id = f"{stream_id}:liquidations"
+        task = asyncio.create_task(active_stream())
+        manager.active_tasks[task_id] = task
+        await asyncio.sleep(0)
+        await asyncio.wait_for(manager.close_all(), timeout=0.2)
+        await asyncio.sleep(0.03)
+        assert not manager._liquidation_exchange_retire_tasks
+        assert not manager._exchange_close_finalizer_tasks
+
+    asyncio.run(scenario())
