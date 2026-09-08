@@ -615,7 +615,7 @@ def test_close_all_bounds_hung_live_exchange_close() -> None:
     asyncio.run(scenario())
 
 
-def test_new_liquidation_exchange_waits_while_any_close_finalizer_is_unfinished(monkeypatch) -> None:
+def test_new_liquidation_exchange_waits_only_for_same_venue_close_finalizer(monkeypatch) -> None:
     manager = WebSocketManager()
     manager.exchange_close_timeout_seconds = 0.01
     old_symbol = "OLD/USDT:USDT"
@@ -630,21 +630,38 @@ def test_new_liquidation_exchange_waits_while_any_close_finalizer_is_unfinished(
             await self.release.wait()
 
     old = OldExchange()
-    replacement = object()
+    created: list[tuple[str, object]] = []
+
+    def new_exchange(ex_name: str) -> object:
+        replacement = object()
+        created.append((ex_name, replacement))
+        return replacement
+
     manager.liquidation_exchanges[old_stream_id] = old
-    monkeypatch.setattr(manager, "_new_exchange", lambda _name: replacement)
+    monkeypatch.setattr(manager, "_new_exchange", new_exchange)
 
     async def scenario() -> None:
         manager._schedule_liquidation_exchange_retire("bybit", old_symbol)
         await asyncio.sleep(0.03)
         assert manager._exchange_close_finalizer_tasks
-        starter = asyncio.create_task(
+
+        same_venue = asyncio.create_task(
             manager._get_liquidation_exchange("bybit", new_symbol)
         )
         await asyncio.sleep(0.02)
-        assert starter.done() is False
+        assert same_venue.done() is False
+
+        unrelated = await asyncio.wait_for(
+            manager._get_liquidation_exchange("okx", "OKX/USDT:USDT"),
+            timeout=0.05,
+        )
+        assert unrelated is created[-1][1]
+        assert created[-1][0] == "okx"
+
         old.release.set()
-        assert await asyncio.wait_for(starter, timeout=0.1) is replacement
+        bybit = await asyncio.wait_for(same_venue, timeout=0.1)
+        assert bybit is created[-1][1]
+        assert created[-1][0] == "bybit"
 
     asyncio.run(scenario())
 

@@ -59,6 +59,7 @@ class WebSocketManager:
         self._liquidation_exchange_retire_tasks: Dict[str, asyncio.Task] = {}
         self._shared_liquidation_retire_tasks: Dict[str, asyncio.Task] = {}
         self._exchange_close_finalizer_tasks: set[asyncio.Task] = set()
+        self._exchange_close_finalizer_venues: Dict[asyncio.Task, str] = {}
         self.exchange_close_timeouts = 0
         self._direct_venue_locks: Dict[str, asyncio.Lock] = {}
         self.retirement_timeout_seconds = 10.0
@@ -209,7 +210,7 @@ class WebSocketManager:
     async def _get_liquidation_exchange(self, ex_name: str, symbol: str) -> Any:
         stream_id = f"{ex_name}:{symbol}"
         await self._await_liquidation_exchange_retirement(ex_name, symbol)
-        await self._await_exchange_close_finalizers()
+        await self._await_exchange_close_finalizers(ex_name)
         async with self._lock:
             if stream_id not in self.liquidation_exchanges:
                 self.liquidation_exchanges[stream_id] = self._new_exchange(ex_name)
@@ -1256,6 +1257,7 @@ class WebSocketManager:
                 self.exchange_close_timeouts += 1
                 timed_out = True
                 self._exchange_close_finalizer_tasks.add(close_task)
+                self._exchange_close_finalizer_venues[close_task] = ex_name
                 logger.warning(
                     "WebSocket exchange close timed out for %s (%s); "
                     "retaining ownership until the original close completes",
@@ -1285,17 +1287,20 @@ class WebSocketManager:
                 await asyncio.gather(close_task, return_exceptions=True)
             if timed_out:
                 self._exchange_close_finalizer_tasks.discard(close_task)
+                self._exchange_close_finalizer_venues.pop(close_task, None)
 
-    async def _await_exchange_close_finalizers(self) -> None:
+    async def _await_exchange_close_finalizers(self, ex_name: str) -> None:
         tasks = tuple(
             task
             for task in self._exchange_close_finalizer_tasks
             if not task.done()
+            and self._exchange_close_finalizer_venues.get(task) == ex_name
         )
         if not tasks:
             return
         logger.warning(
-            "WebSocket exchange creation waiting for %d unfinished close finalizer(s)",
+            "WebSocket %s exchange creation waiting for %d unfinished close finalizer(s)",
+            ex_name,
             len(tasks),
         )
         await asyncio.gather(
