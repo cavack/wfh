@@ -12,7 +12,11 @@ from waterfallhunter.core.migration_preflight import (
     PreflightState,
     classify_database,
 )
-from waterfallhunter.core.migrations import MigrationError, MigrationRunner
+from waterfallhunter.core.migrations import (
+    MigrationError,
+    MigrationRunner,
+    discover_migrations,
+)
 from waterfallhunter.core.schema_contract import CURRENT_RUNTIME_SCHEMA_VERSION
 
 
@@ -73,9 +77,6 @@ def _validated_db_path(raw_value: str) -> Path | None:
     except (OSError, RuntimeError):
         return None
 
-    # Reject parent-symlink and traversal aliases so the validated target is
-    # exactly the file SQLite will open. Production uses /app/data directly;
-    # tests use canonical absolute tmp paths.
     if resolved != candidate:
         return None
 
@@ -192,6 +193,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 3
 
     try:
+        packaged_versions = tuple(
+            migration.version
+            for migration in discover_migrations()
+        )
         runner = MigrationRunner(
             db_path=db_path,
             source_revision=source_revision,
@@ -213,7 +218,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if (
         postflight.state is not PreflightState.MIGRATED_COMPATIBLE
         or postflight.user_version != CURRENT_RUNTIME_SCHEMA_VERSION
-        or postflight.applied_versions != (1, 2)
+        or postflight.applied_versions != packaged_versions
     ):
         _emit(
             _base_payload(
