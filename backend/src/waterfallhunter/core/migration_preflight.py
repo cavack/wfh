@@ -55,6 +55,8 @@ _LEGACY_OPTIONAL_TABLES = frozenset(
         "lbank_execution_observation_history",
         "provider_states",
         "signal_metadata",
+        "signal_decisions",
+        "domain_outbox_events",
     }
 )
 
@@ -197,11 +199,13 @@ def _verified_schema_result(
     conn: sqlite3.Connection,
     *,
     required_tables: frozenset[str] | None = None,
+    allow_missing_tables: frozenset[str] = frozenset(),
     check_user_version: int,
 ) -> tuple[bool, tuple[str, ...]]:
     schema = verify_managed_schema_connection(
         conn,
         required_tables=required_tables,
+        allow_missing_tables=allow_missing_tables,
         check_user_version=check_user_version,
     )
     valid = (
@@ -222,10 +226,25 @@ def _applied_runtime_schema_valid(
             conn,
             check_user_version=CURRENT_RUNTIME_SCHEMA_VERSION,
         )
+    if applied == (1, 2, 3):
+        return _verified_schema_result(
+            conn,
+            allow_missing_tables=frozenset(
+                {"signal_decisions", "domain_outbox_events"}
+            ),
+            check_user_version=3,
+        )
     if applied == (1, 2):
         return _verified_schema_result(
             conn,
-            required_tables=managed_runtime_table_names() - {"signal_metadata"},
+            required_tables=(
+                managed_runtime_table_names()
+                - {
+                    "signal_metadata",
+                    "signal_decisions",
+                    "domain_outbox_events",
+                }
+            ),
             check_user_version=2,
         )
     if applied == (1,):

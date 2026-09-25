@@ -17,6 +17,8 @@ from waterfallhunter.core.runtime_fingerprint import (
 CORPUS_CONTRACT_VERSION = "golden_regression_corpus_v1"
 LEGACY_RUNTIME_CORPUS = "LEGACY_RUNTIME_CORPUS"
 CANONICAL_MAIN_REPLAY_CORPUS = "CANONICAL_MAIN_REPLAY_CORPUS"
+MODEL_CHANGE_REPLAY_CORPUS = "MODEL_CHANGE_REPLAY_CORPUS"
+MODEL_CONTRACT_REVISION = "MODEL_CONTRACT_REVISION"
 DEFAULT_VOLATILE_FIELDS = frozenset(
     {"generated_at", "wall_clock_duration_ms", "worker_pid", "host_name"}
 )
@@ -81,23 +83,41 @@ def build_corpus(
     cases: list[dict[str, Any]],
     git_sha: str | None = None,
     runtime_fingerprint_id: str | None = None,
+    model_contract_id: str | None = None,
 ) -> dict[str, Any]:
     if corpus_type == LEGACY_RUNTIME_CORPUS:
         if not (
             runtime_fingerprint_id
             and _SHA256.fullmatch(runtime_fingerprint_id)
             and git_sha is None
+            and model_contract_id is None
         ):
             raise ValueError(
                 "legacy corpus requires exactly a 64-character runtime fingerprint"
             )
         revision_status = LEGACY_RUNTIME_UNVERIFIED_REVISION
     elif corpus_type == CANONICAL_MAIN_REPLAY_CORPUS:
-        if not (git_sha and _GIT_SHA.fullmatch(git_sha) and runtime_fingerprint_id is None):
+        if not (
+            git_sha
+            and _GIT_SHA.fullmatch(git_sha)
+            and runtime_fingerprint_id is None
+            and model_contract_id is None
+        ):
             raise ValueError(
                 "canonical corpus requires exactly a 40-character Git SHA"
             )
         revision_status = VERIFIED_GIT_REVISION
+    elif corpus_type == MODEL_CHANGE_REPLAY_CORPUS:
+        if not (
+            model_contract_id
+            and re.fullmatch(r"[a-z0-9][a-z0-9_-]{2,63}", model_contract_id)
+            and git_sha is None
+            and runtime_fingerprint_id is None
+        ):
+            raise ValueError(
+                "model-change corpus requires exactly one stable model_contract_id"
+            )
+        revision_status = MODEL_CONTRACT_REVISION
     else:
         raise ValueError("unknown corpus type")
 
@@ -111,6 +131,7 @@ def build_corpus(
         "revision_status": revision_status,
         "git_sha": git_sha,
         "runtime_fingerprint_id": runtime_fingerprint_id,
+        "model_contract_id": model_contract_id,
         "volatile_fields": sorted(DEFAULT_VOLATILE_FIELDS),
         "cases": built_cases,
     }

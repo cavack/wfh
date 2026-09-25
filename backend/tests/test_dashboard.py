@@ -23,7 +23,6 @@ def test_compact_metrics_keeps_both_stage_chain_views():
 def test_live_candidate_without_completed_analysis_has_an_explicit_pending_reason(
     monkeypatch,
 ):
-    import time
     import waterfallhunter.main as main
 
     symbol = "TEST/USDT:USDT"
@@ -46,6 +45,7 @@ def test_live_candidate_without_completed_analysis_has_an_explicit_pending_reaso
             symbol: {
                 "score": None,
                 "quote_volume": 1_000_000,
+                "analysis_observed_at": 1_700_000_010,
             },
         },
     )
@@ -55,18 +55,22 @@ def test_live_candidate_without_completed_analysis_has_an_explicit_pending_reaso
         "get_live_reference",
         lambda _: (
             0.5,
-            time.time(),
+            1_700_000_015,
         ),
     )
 
     candidate = (
-        main.get_formatted_candidates()
+        main.get_formatted_candidates(evaluation_time=1_700_000_020)
         ["candidates"][symbol]
     )
 
     assert candidate["data_status"] == "live"
     assert candidate["analysis_status"] == "pending"
     assert candidate["score"] is None
+    assert candidate["analysis_observed_at"] == 1_700_000_010
+    assert candidate["analysis_age_seconds"] == 10.0
+    assert candidate["reference_observed_at"] == 1_700_000_015
+    assert candidate["reference_age_seconds"] == 5.0
 
     assert candidate["metrics"] == {
         "analysis_reason": "live analysis pending"
@@ -150,7 +154,6 @@ def test_compact_metrics_excludes_heavy_market_payloads():
             },
             "position_setup": {
                 "entry_price": 1.0,
-                "tp_24h_probability": 0.75,
             },
         }
     )
@@ -163,7 +166,6 @@ def test_compact_metrics_excludes_heavy_market_payloads():
         },
         "position_setup": {
             "entry_price": 1.0,
-            "tp_24h_probability": 0.75,
         },
     }
 

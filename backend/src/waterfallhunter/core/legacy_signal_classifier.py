@@ -21,7 +21,7 @@ from waterfallhunter.core.signal_metadata import (
 )
 
 
-_REQUIRED_SCHEMA_VERSION = 3
+_REQUIRED_SCHEMA_VERSION = 4
 _EVIDENCE_CONTRACT_VERSION = "legacy_signal_classification_evidence_v1"
 _REPORT_CONTRACT_VERSION = "legacy_signal_classification_report_v1"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")

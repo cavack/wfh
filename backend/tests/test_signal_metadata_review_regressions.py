@@ -7,7 +7,10 @@ from pathlib import Path
 import pytest
 
 from schema_test_support import migrate_test_database
-from waterfallhunter.core.schema_contract import verify_managed_schema
+from waterfallhunter.core.schema_contract import (
+    CURRENT_RUNTIME_SCHEMA_VERSION,
+    verify_managed_schema,
+)
 from waterfallhunter.core import signal_metadata_store as metadata_store
 
 
@@ -206,7 +209,10 @@ def test_schema_verifier_rejects_missing_binding_metadata_check(
         transform=lambda sql: _remove_check_containing(sql, marker),
     )
 
-    result = verify_managed_schema(db_path, check_user_version=3)
+    result = verify_managed_schema(
+        db_path,
+        check_user_version=CURRENT_RUNTIME_SCHEMA_VERSION,
+    )
 
     assert result.valid is False
     assert any(
@@ -246,7 +252,10 @@ def test_schema_verifier_rejects_missing_canonical_metadata_projection(
         conn.execute("DROP VIEW canonical_signal_view")
         conn.execute(rewritten)
 
-    result = verify_managed_schema(db_path, check_user_version=3)
+    result = verify_managed_schema(
+        db_path,
+        check_user_version=CURRENT_RUNTIME_SCHEMA_VERSION,
+    )
 
     assert result.valid is False
     assert any(

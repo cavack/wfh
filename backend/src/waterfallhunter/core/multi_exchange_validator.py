@@ -2266,9 +2266,6 @@ class MultiExchangeValidator:
                     market_info=(
                         market_info
                     ),
-                    historical_candles=(
-                        history
-                    ),
                     mark_price=(
                         mark_price
                     ),
@@ -2281,9 +2278,6 @@ class MultiExchangeValidator:
                         microstructure.get(
                             "exit_slippage_pct"
                         )
-                    ),
-                    evaluation_time_ms=(
-                        position_evaluated_at_ms
                     ),
                 )
             )

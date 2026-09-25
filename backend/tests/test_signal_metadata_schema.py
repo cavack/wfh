@@ -106,7 +106,7 @@ def _insert_metadata(
     )
 
 
-def test_packaged_migrations_create_schema_v3_metadata_and_view(
+def test_packaged_migrations_create_current_metadata_and_view(
     tmp_path: Path,
 ) -> None:
     db_path = migrate_test_database(tmp_path / "metadata-v3.db")
@@ -122,8 +122,8 @@ def test_packaged_migrations_create_schema_v3_metadata_and_view(
             "WHERE type='view' AND name='canonical_signal_view'"
         ).fetchone()
 
-    assert CURRENT_RUNTIME_SCHEMA_VERSION == 3
-    assert user_version == 3
+    assert CURRENT_RUNTIME_SCHEMA_VERSION == 4
+    assert user_version == 4
     assert columns == EXPECTED_METADATA_COLUMNS
     assert view_sql is not None
     normalized = " ".join(str(view_sql[0]).split()).upper()
@@ -287,7 +287,7 @@ def test_schema_verifier_rejects_canonical_view_drift(
 
     result = verify_managed_schema(
         db_path,
-        check_user_version=3,
+        check_user_version=CURRENT_RUNTIME_SCHEMA_VERSION,
     )
     assert result.valid is False
     assert any(

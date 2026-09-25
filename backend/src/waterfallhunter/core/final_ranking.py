@@ -6,14 +6,14 @@ from typing import Any
 class FinalRanking:
     """Read-only ranking over already-produced candidate measurements."""
 
-    VERSION = "final_ranking_observational_v1"
+    VERSION = "final_ranking_observational_v2"
     WEIGHTS = {
         "cascade_readiness": 25.0,
         "signal_score": 20.0,
         "execution_quality": 20.0,
         "relative_weakness": 15.0,
-        "empirical_probability": 10.0,
-        "freshness": 10.0,
+        "analysis_freshness": 5.0,
+        "reference_freshness": 5.0,
     }
 
     @staticmethod
@@ -63,20 +63,33 @@ class FinalRanking:
         return min(max(-median(values) / 5.0, 0.0), 1.0)
 
     @classmethod
-    def for_candidate(cls, symbol: str, candidate: dict) -> dict:
+    def _freshness(
+        cls,
+        observed_at: Any,
+        evaluation_time: float,
+    ) -> float | None:
+        observed = cls._finite(observed_at)
+        if observed is None or observed < 0 or observed > evaluation_time:
+            return None
+        return max(0.0, 1.0 - (evaluation_time - observed) / 180.0)
+
+    @classmethod
+    def for_candidate(
+        cls,
+        symbol: str,
+        candidate: dict,
+        *,
+        evaluation_time: float,
+    ) -> dict:
+        evaluated_at = cls._finite(evaluation_time)
+        if evaluated_at is None or evaluated_at < 0:
+            raise ValueError("evaluation_time must be a non-negative finite timestamp")
         metrics = candidate.get("metrics") if isinstance(candidate.get("metrics"), dict) else {}
         score = cls._finite(candidate.get("score"))
         if score is None:
             score = cls._finite(metrics.get("observation_score"))
         execution = candidate.get("execution_suitability")
         execution_status = execution.get("status") if isinstance(execution, dict) else None
-        probability = None
-        position = metrics.get("position_setup")
-        if isinstance(position, dict):
-            raw_probability = cls._finite(position.get("tp_24h_probability"))
-            if raw_probability is not None:
-                probability = raw_probability / 100.0 if raw_probability > 1.0 else raw_probability
-        age = cls._finite(candidate.get("age_seconds"))
         components = {
             "cascade_readiness": cls._component(
                 cls._readiness(candidate, metrics), cls.WEIGHTS["cascade_readiness"], "lifecycle stages unavailable",
@@ -91,12 +104,15 @@ class FinalRanking:
             "relative_weakness": cls._component(
                 cls._relative_weakness(metrics), cls.WEIGHTS["relative_weakness"], "benchmark-relative returns unavailable",
             ),
-            "empirical_probability": cls._component(
-                probability, cls.WEIGHTS["empirical_probability"], "candidate-specific empirical probability unavailable",
+            "analysis_freshness": cls._component(
+                cls._freshness(candidate.get("analysis_observed_at"), evaluated_at),
+                cls.WEIGHTS["analysis_freshness"],
+                "analysis observation timestamp unavailable, invalid, or in the future",
             ),
-            "freshness": cls._component(
-                max(0.0, 1.0 - age / 180.0) if age is not None and age >= 0 else None,
-                cls.WEIGHTS["freshness"], "observation age unavailable",
+            "reference_freshness": cls._component(
+                cls._freshness(candidate.get("reference_observed_at"), evaluated_at),
+                cls.WEIGHTS["reference_freshness"],
+                "reference observation timestamp unavailable, invalid, or in the future",
             ),
         }
         available_weight = sum(packet["weight"] for packet in components.values() if packet["available"])
@@ -108,6 +124,9 @@ class FinalRanking:
         return {
             "version": cls.VERSION,
             "symbol": symbol,
+            "evaluation_time": evaluated_at,
+            "analysis_observed_at": cls._finite(candidate.get("analysis_observed_at")),
+            "reference_observed_at": cls._finite(candidate.get("reference_observed_at")),
             "score": round(ranking_score, 6) if ranking_score is not None else None,
             "normalized_available_score": round(normalized, 6) if normalized is not None else None,
             "confidence": round(confidence, 6),
@@ -120,8 +139,24 @@ class FinalRanking:
         }
 
     @classmethod
-    def rank(cls, candidates: dict[str, dict], limit: int = 3) -> dict:
-        packets = [cls.for_candidate(symbol, candidate) for symbol, candidate in candidates.items()]
+    def rank(
+        cls,
+        candidates: dict[str, dict],
+        limit: int = 3,
+        *,
+        evaluation_time: float,
+    ) -> dict:
+        evaluated_at = cls._finite(evaluation_time)
+        if evaluated_at is None or evaluated_at < 0:
+            raise ValueError("evaluation_time must be a non-negative finite timestamp")
+        packets = [
+            cls.for_candidate(
+                symbol,
+                candidate,
+                evaluation_time=evaluated_at,
+            )
+            for symbol, candidate in candidates.items()
+        ]
         packets.sort(key=lambda packet: (
             packet["score"] is not None,
             packet["score"] if packet["score"] is not None else -1.0,
@@ -132,6 +167,7 @@ class FinalRanking:
             packet["rank"] = index
         return {
             "version": cls.VERSION,
+            "evaluation_time": evaluated_at,
             "observational_only": True,
             "trade_eligible": None,
             "ranked_count": len(packets),

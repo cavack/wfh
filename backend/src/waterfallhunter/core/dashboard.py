@@ -150,7 +150,6 @@ def compact_metrics(
             "is_api_ready",
             "risk_pct",
             "reward_to_risk",
-            "tp_24h_probability",
             "monitoring",
             "slippage",
             "status",

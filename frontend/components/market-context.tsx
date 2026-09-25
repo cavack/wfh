@@ -34,26 +34,22 @@ export function MarketContext({ candidate, hasFreshSnapshot }: { candidate: Cand
   const metrics = live ? asRecord(candidate.metrics) : undefined;
   const microstructure = asRecord(metrics?.microstructure);
   const derivatives = asRecord(metrics?.derivatives);
-  const position = asRecord(metrics?.position_setup);
   const derivativesAvailable = derivatives?.available === true;
   const volume = live ? candidate.quote_volume : undefined;
-  const probability = finiteNumber(position?.tp_24h_probability);
 
   return <div className="grid gap-3 border-t border-slate-800 bg-slate-950/35 p-5 text-sm sm:p-6 lg:grid-cols-3">
-    <ExecutionMetrics volume={volume} microstructure={microstructure} probability={probability} />
+    <ExecutionMetrics volume={volume} microstructure={microstructure} />
     <DerivativeMetrics derivatives={derivatives} available={derivativesAvailable} />
     <ProvenanceMetrics metrics={metrics} derivatives={derivatives} microstructure={microstructure} />
   </div>;
 }
 
-function ExecutionMetrics({ volume, microstructure, probability }: { volume: unknown; microstructure: Record<string, unknown> | undefined; probability: number | undefined }) {
-  const probabilityText = probability === undefined ? "—" : `${(probability * 100).toFixed(2)}%`;
+function ExecutionMetrics({ volume, microstructure }: { volume: unknown; microstructure: Record<string, unknown> | undefined }) {
   return <section className="metric-card"><p className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-slate-400"><Waves size={14} /> Execution</p><dl>
     <Metric label="24h futures volume" value={valueText(volume, 0, "$")} />
     <Metric label="Spread" value={valueText(microstructure?.spread_pct, 3)} />
     <Metric label="Slippage" value={valueText(microstructure?.slippage_pct, 3)} />
     <Metric label="Sell flow" value={valueText(microstructure?.sell_flow_usdt, 0, "$")} />
-    <Metric label="TP within 24h" value={probabilityText} />
   </dl></section>;
 }
 

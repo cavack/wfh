@@ -137,7 +137,7 @@ function CandidateHeader({ symbol, candidate, live, state }: {
       <div>
         <p className="font-mono text-lg font-semibold text-sky-300">{symbol}</p>
         <p className="mt-1 text-2xl font-semibold tabular-nums">${numberText(live ? candidate.last_price : undefined)}</p>
-        <p className="mt-1 text-xs text-slate-500">{live ? `live · ${numberText(candidate.age_seconds, 1)}s ago` : "live reference unavailable"}</p>
+        <p className="mt-1 text-xs text-slate-500">{live ? `reference ${numberText(candidate.reference_age_seconds, 1)}s · analysis ${numberText(candidate.analysis_age_seconds, 1)}s` : "live reference unavailable"}</p>
       </div>
       <span className={`status-pill ${stateClass(state)}`}>{state}</span>
     </div>

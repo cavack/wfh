@@ -58,6 +58,7 @@ def replay_model_case(case_input: dict[str, Any]) -> dict[str, Any]:
         result = FinalRanking.rank(
             arguments["candidates"],
             limit=int(arguments.get("limit", 3)),
+            evaluation_time=float(arguments["evaluation_time"]),
         )
         return _envelope(
             result,
