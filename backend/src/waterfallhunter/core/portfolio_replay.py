@@ -110,6 +110,20 @@ def _number(value: Any, field: str, *, positive: bool = False) -> float:
     return number
 
 
+def _non_negative_number(value: Any, field: str) -> float:
+    number = _number(value, field)
+    if number < 0:
+        raise ValueError(f"{field} must be non-negative")
+    return number
+
+
+def _rate(value: Any, field: str) -> float:
+    number = _non_negative_number(value, field)
+    if number >= 1:
+        raise ValueError(f"{field} must be below one")
+    return number
+
+
 def replay_paper_portfolio(
     events: list[PortfolioEvent | dict[str, Any]],
     *,
@@ -165,6 +179,9 @@ class _ReplayState:
     closed_positions: list[dict[str, Any]] = field(default_factory=list)
     partial_fills: list[dict[str, Any]] = field(default_factory=list)
     rejected_orders: list[dict[str, Any]] = field(default_factory=list)
+    total_entry_cost: float = 0.0
+    total_exit_cost: float = 0.0
+    total_net_funding: float = 0.0
 
     def total_unrealized(self) -> float:
         return sum(position.unrealized_pnl() for position in self.positions.values())
@@ -228,6 +245,7 @@ class _ReplayState:
         if reason is not None:
             return self._skip(event, reason)
         self.cash_equity -= position.entry_cost
+        self.total_entry_cost += position.entry_cost
         self.positions[position.position_id] = position
         if event.fill_fraction < 1:
             self.partial_fills.append(
@@ -257,6 +275,7 @@ class _ReplayState:
             return "IGNORED", "POSITION_NOT_OPEN"
         amount = float(event.amount or 0.0)
         position.funding += amount
+        self.total_net_funding += amount
         self.cash_equity += amount
         position.isolated_margin += amount
         if position.isolated_margin <= 0:
@@ -311,6 +330,7 @@ class _ReplayState:
             exit_price=exit_price,
             exit_cost=float(event.exit_cost),
         )
+        self.total_exit_cost += float(event.exit_cost)
         self.cash_equity += realized
         self.positions.pop(position.position_id)
         self.closed_positions.append(
@@ -356,6 +376,10 @@ class _ReplayState:
         risk_policy: RiskPolicy,
         dataset_manifest_hash: str,
     ) -> dict[str, Any]:
+        open_positions = sorted(
+            self.positions.values(),
+            key=lambda item: item.position_id,
+        )
         return {
             "contract_version": "paper_portfolio_replay_v1",
             "report_type": "PORTFOLIO_REALIZABLE",
@@ -376,6 +400,15 @@ class _ReplayState:
                 for item in self.skipped_signals
                 if str(item.get("reason") or "").startswith("PORTFOLIO_")
             ),
+            "cost_attribution": {
+                "entry_cost": round(self.total_entry_cost, 8),
+                "exit_cost": round(self.total_exit_cost, 8),
+                "modeled_trading_cost": round(
+                    self.total_entry_cost + self.total_exit_cost,
+                    8,
+                ),
+                "net_funding": round(self.total_net_funding, 8),
+            },
             "closed_positions": self.closed_positions,
             "open_positions": [
                 {
@@ -388,10 +421,7 @@ class _ReplayState:
                     "funding": round(position.funding, 8),
                     "unrealized_pnl": round(position.unrealized_pnl(), 8),
                 }
-                for position in sorted(
-                    self.positions.values(),
-                    key=lambda item: item.position_id,
-                )
+                for position in open_positions
             ],
         }
 
@@ -451,12 +481,12 @@ def _position_from_plan(event: PortfolioEvent, plan: dict[str, Any]) -> _Positio
             positive=True,
         ),
         mark_price=_number(levels.get("entry"), "entry", positive=True),
-        entry_cost=_number(plan.get("entry_cost"), "entry_cost") * fill_fraction,
+        entry_cost=_non_negative_number(plan.get("entry_cost"), "entry_cost") * fill_fraction,
         maintenance_margin_tiers=tuple(
             MaintenanceMarginTier.model_validate(tier)
             for tier in plan.get("maintenance_margin_tiers", [])
         ),
-        liquidation_fee_rate=_number(
+        liquidation_fee_rate=_rate(
             plan.get("liquidation_fee_rate"),
             "liquidation_fee_rate",
         ),

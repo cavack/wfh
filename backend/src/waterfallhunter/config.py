@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     environment: str = "production"
     registry_db_path: str = "/app/data/waterfall_registry.db"
+    backtest_artifact_hmac_key: str | None = None
 
     # Safety boundary: WaterfallHunter remains signal/paper-only.
     live_trading_enabled: bool = False
