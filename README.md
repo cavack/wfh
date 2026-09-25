@@ -280,7 +280,7 @@ docker compose down
 
 ## Native development
 
-Canonical runtimes are recorded in [`.github/runtime-versions.json`](.github/runtime-versions.json): Python 3.13 and Node.js 26.
+Canonical runtimes are recorded in [`.github/runtime-versions.json`](.github/runtime-versions.json): Python 3.13 and Node.js 26. `make setup` refuses to build a virtualenv from a different Python; pass `PYTHON=python3.13` when `python3` is not the canonical runtime.
 
 ```bash
 make setup
