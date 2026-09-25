@@ -26,6 +26,7 @@ REQUIRED_LINKS = (
     "tested_image_digest",
     "deployment_manifest_sha256",
     "running_image_digest",
+    "runtime_fingerprint_sha256",
 )
 
 
@@ -35,6 +36,7 @@ def _invalid_links(links: Mapping[str, Any]) -> list[str]:
         "dependency_lock_sha256": _HEX_SHA256,
         "dockerfile_sha256": _HEX_SHA256,
         "deployment_manifest_sha256": _HEX_SHA256,
+        "runtime_fingerprint_sha256": _HEX_SHA256,
         "base_image_digest": _SHA256,
         "built_image_digest": _SHA256,
         "tested_image_digest": _SHA256,
