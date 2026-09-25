@@ -66,7 +66,7 @@ class TelegramNotifier:
             f"🎯 Entry: <b>${cls._number(pos_setup.get('entry_price'), 8)}</b>",
             f"🛑 Stop: <b>${cls._number(pos_setup.get('stop_loss'), 8)}</b> ({cls._number(pos_setup.get('risk_pct'), 2)}%)",
             f"💰 TP1 / TP2: <b>${cls._number(pos_setup.get('take_profit_1'), 8)}</b> / <b>${cls._number(pos_setup.get('take_profit_2'), 8)}</b>",
-            f"📐 Reward:risk: <b>{cls._number(pos_setup.get('reward_to_risk'), 2)}</b> · TP 24h: <b>{cls._number(pos_setup.get('tp_24h_probability', 0) * 100 if isinstance(pos_setup.get('tp_24h_probability'), (int, float)) else None, 1)}%</b>",
+            f"📐 Reward:risk: <b>{cls._number(pos_setup.get('reward_to_risk'), 2)}</b>",
             f"📚 Spread / slippage: <b>{cls._number(microstructure.get('spread_pct'), 3)}%</b> / <b>{cls._number(microstructure.get('slippage_pct'), 3)}%</b>",
         ]
         if dex_context:

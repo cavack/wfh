@@ -86,13 +86,20 @@ def _score_packet() -> dict:
     }
 
 
-def _candidate(status: str, score: float, execution: str, age: float,
-               probability: float | None) -> dict:
-    position = {} if probability is None else {"tp_24h_probability": probability}
+def _candidate(
+    status: str,
+    score: float,
+    execution: str,
+    analysis_age: float,
+    reference_age: float,
+    *,
+    evaluation_time: float,
+) -> dict:
     return {
         "status": status,
         "score": score,
-        "age_seconds": age,
+        "analysis_observed_at": evaluation_time - analysis_age,
+        "reference_observed_at": evaluation_time - reference_age,
         "execution_suitability": {"status": execution},
         "metrics": {
             "strategy_stages": {
@@ -110,7 +117,6 @@ def _candidate(status: str, score: float, execution: str, age: float,
                     "5m": {"relative_return_6bars_pct": -1.0},
                 },
             },
-            "position_setup": position,
         },
     }
 
@@ -144,10 +150,17 @@ def cases() -> list[dict]:
             "symbol": "BTC/USDT:USDT",
         }}),
         ("observational_ranking_order", {"evaluator": "final_ranking", "arguments": {
+            "evaluation_time": 1_700_000_000.0,
             "limit": 3,
             "candidates": {
-                "WATCH": _candidate("WATCH", 60.0, "MARGINAL", 20.0, None),
-                "READY": _candidate("TRIGGERED", 85.0, "SUITABLE", 5.0, 0.7),
+                "WATCH": _candidate(
+                    "WATCH", 60.0, "MARGINAL", 20.0, 10.0,
+                    evaluation_time=1_700_000_000.0,
+                ),
+                "READY": _candidate(
+                    "TRIGGERED", 85.0, "SUITABLE", 5.0, 2.0,
+                    evaluation_time=1_700_000_000.0,
+                ),
             },
         }}),
     ]
