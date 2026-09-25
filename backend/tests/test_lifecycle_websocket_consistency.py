@@ -605,3 +605,60 @@ def test_fuel_rich_uses_shared_market_evidence_pool_without_direct_subscription(
     assert direct_unsubscribed == []
     assert shared_subscribed == [source]
     assert shared_unsubscribed == []
+
+
+def test_shared_direct_shared_lifecycle_handoff_never_has_dual_logical_ownership(monkeypatch) -> None:
+    source = ("binance", "HANDOFF/USDT:USDT")
+    direct: set[tuple[str, str]] = set()
+    shared: set[tuple[str, str]] = set()
+    snapshots: list[tuple[str, frozenset[tuple[str, str]], frozenset[tuple[str, str]]]] = []
+
+    def subscribe(exchange: str, mapped: str) -> None:
+        direct.add((exchange, mapped))
+        snapshots.append(("direct-subscribe", frozenset(direct), frozenset(shared)))
+
+    def unsubscribe(exchange: str, mapped: str) -> None:
+        direct.discard((exchange, mapped))
+        snapshots.append(("direct-unsubscribe", frozenset(direct), frozenset(shared)))
+
+    def subscribe_shared(exchange: str, mapped: str) -> bool:
+        shared.add((exchange, mapped))
+        snapshots.append(("shared-subscribe", frozenset(direct), frozenset(shared)))
+        return True
+
+    def unsubscribe_shared(exchange: str, mapped: str) -> None:
+        shared.discard((exchange, mapped))
+        snapshots.append(("shared-unsubscribe", frozenset(direct), frozenset(shared)))
+
+    manager = main.validator.ws_manager
+    monkeypatch.setattr(manager, "subscribe", subscribe)
+    monkeypatch.setattr(manager, "unsubscribe", unsubscribe)
+    monkeypatch.setattr(manager, "subscribe_shared_evidence", subscribe_shared, raising=False)
+    monkeypatch.setattr(manager, "unsubscribe_shared_evidence", unsubscribe_shared, raising=False)
+    monkeypatch.setattr(
+        manager,
+        "has_direct_evidence_subscription",
+        lambda exchange, mapped: (exchange, mapped) in direct,
+        raising=False,
+    )
+
+    main._sync_websocket_evidence_subscription(source, source, state="FUEL-RICH")
+    assert direct == set()
+    assert shared == {source}
+
+    main._sync_websocket_evidence_subscription(source, source, state="PRE-TRIGGER")
+    assert direct == {source}
+    assert shared == set()
+
+    main._sync_websocket_evidence_subscription(source, source, state="FUEL-RICH")
+    assert direct == set()
+    assert shared == {source}
+
+    assert all(not (direct_state and shared_state) for _, direct_state, shared_state in snapshots)
+    assert [event for event, _, _ in snapshots] == [
+        "shared-subscribe",
+        "shared-unsubscribe",
+        "direct-subscribe",
+        "direct-unsubscribe",
+        "shared-subscribe",
+    ]
