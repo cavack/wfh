@@ -32,6 +32,31 @@ def packet(decision: str, readiness: float, now: int) -> dict:
     }
 
 
+def outcome_packet(symbol: str, *, available: bool) -> dict:
+    item = packet("ENTRY_READY", 84.0, 100)
+    item["trade_plan"] = {
+        "entry_price": 100.0,
+        "stop_loss": 105.0,
+        "take_profit_1": 95.0,
+        "take_profit_2": 90.0,
+    }
+    item["research_provenance"] = {
+        "source_revision": "a" * 40,
+        "decision_contract_sha256": "b" * 64,
+        "contract": {
+            "available": available,
+            "exchange": "lbank" if available else "bybit",
+            "mapped_symbol": symbol,
+            "market_type": "linear_usdt_perpetual",
+        },
+        "outcome_contract": {
+            "closed_candles_only": True,
+            "complete_window_required": True,
+        },
+    }
+    return item
+
+
 def test_store_appends_only_decision_transitions(tmp_path) -> None:
     db_path = migrate_test_database(tmp_path / "registry.db")
     store = EntryDecisionStore(db_path)
@@ -762,6 +787,128 @@ def test_entry_outcome_worker_round_robin_prevents_retryable_row_starvation(tmp_
     assert asyncio.run(worker.run_once(now=100_000)) == 1
     assert calls == [first, second]
     assert [row["decision_event_id"] for row in store.pending_outcome_captures(mature_before=101)] == [first]
+
+
+def test_entry_outcome_worker_prioritizes_provider_ready_capture_over_local_backlog(
+    tmp_path,
+) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path, source_revision="a" * 40)
+
+    def append_capture(symbol: str, *, available: bool) -> int:
+        event_id = store.append_if_changed_with_capture(
+            symbol,
+            outcome_packet(symbol, available=available),
+            captured_at=101,
+        )
+        assert event_id is not None
+        return event_id
+
+    unavailable_ids = [
+        append_capture(f"UNAVAILABLE{index}/USDT:USDT", available=False)
+        for index in range(3)
+    ]
+    provider_ready_id = append_capture("READY/USDT:USDT", available=True)
+    calls = []
+
+    async def resolver(capture):
+        calls.append(capture["decision_event_id"])
+        return {
+            "outcome_status": (
+                "OBSERVED" if capture["decision_event_id"] == provider_ready_id else "UNAVAILABLE"
+            )
+        }
+
+    worker = EntryOutcomeResolutionWorker(
+        store,
+        resolver,
+        batch_size=1,
+        local_batch_size=3,
+        interval_seconds=60,
+    )
+
+    assert asyncio.run(worker.run_once(now=100_000)) == 4
+    assert calls == [provider_ready_id, *unavailable_ids]
+
+
+def test_entry_outcome_worker_keeps_provider_attempts_bounded_across_lanes(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path, source_revision="a" * 40)
+
+    def append_capture(symbol: str, *, available: bool) -> int:
+        event_id = store.append_if_changed_with_capture(
+            symbol,
+            outcome_packet(symbol, available=available),
+            captured_at=101,
+        )
+        assert event_id is not None
+        return event_id
+
+    provider_ids = [
+        append_capture(f"READY{index}/USDT:USDT", available=True)
+        for index in range(2)
+    ]
+    local_ids = [
+        append_capture(f"LOCAL{index}/USDT:USDT", available=False)
+        for index in range(2)
+    ]
+    calls = []
+
+    async def resolver(capture):
+        event_id = capture["decision_event_id"]
+        calls.append(event_id)
+        return {
+            "outcome_status": "OBSERVED" if event_id in provider_ids else "UNAVAILABLE"
+        }
+
+    worker = EntryOutcomeResolutionWorker(
+        store,
+        resolver,
+        batch_size=1,
+        local_batch_size=2,
+        interval_seconds=60,
+    )
+
+    assert asyncio.run(worker.run_once(now=100_000)) == 3
+    assert calls == [provider_ids[0], *local_ids]
+    assert provider_ids[1] in [
+        row["decision_event_id"]
+        for row in store.pending_outcome_captures(mature_before=101)
+    ]
+
+
+def test_entry_outcome_worker_round_robins_retryable_provider_lane(tmp_path) -> None:
+    db_path = migrate_test_database(tmp_path / "registry.db")
+    store = EntryDecisionStore(db_path, source_revision="a" * 40)
+    provider_ids = []
+    for symbol in ("FIRST/USDT:USDT", "SECOND/USDT:USDT"):
+        event_id = store.append_if_changed_with_capture(
+            symbol,
+            outcome_packet(symbol, available=True),
+            captured_at=101,
+        )
+        assert event_id is not None
+        provider_ids.append(event_id)
+    calls = []
+
+    async def resolver(capture):
+        event_id = capture["decision_event_id"]
+        calls.append(event_id)
+        if event_id == provider_ids[0]:
+            raise TimeoutError("temporary provider timeout")
+        return {"outcome_status": "OBSERVED"}
+
+    worker = EntryOutcomeResolutionWorker(
+        store,
+        resolver,
+        batch_size=1,
+        local_batch_size=1,
+        interval_seconds=60,
+    )
+
+    assert asyncio.run(worker.run_once(now=100_000)) == 0
+    assert asyncio.run(worker.run_once(now=100_000)) == 1
+    assert calls == provider_ids
 
 
 
