@@ -85,6 +85,17 @@ def build_corpus(
     runtime_fingerprint_id: str | None = None,
     model_contract_id: str | None = None,
 ) -> dict[str, Any]:
+    """Build a hashed corpus with cases sorted by ID and volatile outputs removed.
+
+    Supply exactly the identity for corpus_type: a lowercase 64-digit hex
+    runtime fingerprint for legacy, a lowercase 40-digit hex Git SHA for
+    canonical-main, or a 3-64 character model contract ID matching
+    [a-z0-9][a-z0-9_-]{2,63} for model-change replay.
+
+    Unknown types, invalid identities, duplicate IDs, and missing required case
+    fields raise ValueError. Canonical JSON TypeError and ValueError propagate;
+    input cases are copied.
+    """
     if corpus_type == LEGACY_RUNTIME_CORPUS:
         if not (
             runtime_fingerprint_id

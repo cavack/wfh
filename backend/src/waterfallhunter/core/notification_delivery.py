@@ -36,7 +36,9 @@ class DeliveryResult:
 
 
 class NotificationTransport(Protocol):
-    async def deliver(self, event: dict[str, Any]) -> DeliveryResult: ...
+    async def deliver(self, event: dict[str, Any]) -> DeliveryResult:
+        """Send the outbox envelope and report its delivery disposition."""
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +82,16 @@ class DurableNotificationWorker:
         jitter: Callable[[], float] = random.random,
         verify_schema: bool = True,
     ):
+        """Configure leased delivery against an existing outbox database.
+
+        Durations are seconds; the transport timeout defaults to lease_seconds.
+        max_attempts counts claims, including the first attempt. jitter supplies a
+        sample clamped to [0, 1] for up to 20% extra retry delay.
+
+        Invalid worker IDs, timing bounds, or attempt limits raise ValueError.
+        With verify_schema enabled, SchemaContractError propagates if managed
+        schema verification fails.
+        """
         if not worker_id.strip() or len(worker_id) > 128:
             raise ValueError("worker_id must be a bounded non-empty identifier")
         if lease_seconds < 1 or max_attempts < 1:
@@ -106,6 +118,13 @@ class DurableNotificationWorker:
             )
 
     def recover_expired_leases(self, *, now: int) -> int:
+        """Mark expired SENDING leases DELIVERY_UNCERTAIN and return the count.
+
+        now must be nonnegative integer Unix seconds, excluding booleans, or
+        ValueError is raised. Recovered events are not automatically retried.
+        SQLite update errors become NotificationDeliveryError; connection failures
+        propagate as ManagedSQLiteError.
+        """
         timestamp = self._timestamp(now)
         try:
             with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
@@ -130,6 +149,13 @@ class DurableNotificationWorker:
             raise NotificationDeliveryError("DELIVERY_LEASE_RECOVERY_FAILED") from exc
 
     def claim_next(self, *, now: int) -> ClaimedEvent | None:
+        """Lease the earliest due PENDING or RETRY_WAIT event and increment attempts.
+
+        Order by availability, creation time, then event ID. Return None if no
+        eligible event can be claimed. now is nonnegative integer Unix seconds;
+        invalid clocks raise ValueError. SQLite transaction errors become
+        NotificationDeliveryError; ManagedSQLiteError from connecting propagates.
+        """
         timestamp = self._timestamp(now)
         try:
             with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
@@ -194,6 +220,17 @@ class DurableNotificationWorker:
             raise NotificationDeliveryError("DELIVERY_CLAIM_FAILED") from exc
 
     async def dispatch_once(self, *, now: int) -> DispatchOutcome | None:
+        """Recover expired leases, deliver at most one due event, and persist its outcome.
+
+        Return None when no event is claimed. now is nonnegative integer Unix
+        seconds and anchors both lease expiry and retry scheduling; it is not
+        advanced after awaiting delivery. Transport timeouts and ordinary exceptions become
+        transient failures, retried until max_attempts, then dead-lettered.
+        Cancellation propagates and leaves the lease for later recovery.
+
+        Invalid clocks raise ValueError. NotificationDeliveryError and
+        ManagedSQLiteError from durable state operations propagate.
+        """
         timestamp = self._timestamp(now)
         self.recover_expired_leases(now=timestamp)
         event = self.claim_next(now=timestamp)
@@ -236,6 +273,11 @@ class DurableNotificationWorker:
         result: DeliveryResult,
         now: int,
     ) -> DispatchOutcome:
+        """Persist a claimed attempt's outcome, clear its lease, and return the result.
+
+        Raise NotificationDeliveryError on SQLite update failure or changed lease
+        ownership, state, or attempt count. Connection ManagedSQLiteError propagates.
+        """
         state, next_available, error_code = self._next_state(event, result, now=now)
         try:
             with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
@@ -284,6 +326,13 @@ class DurableNotificationWorker:
         *,
         now: int,
     ) -> tuple[str, int | None, str | None]:
+        """Return the next state, retry Unix timestamp, and sanitized error code.
+
+        Failed deliveries with permanent errors or exhausted attempts become dead
+        letters. Rate-limit delays use retry_after_seconds, clamped to [1, max_backoff_seconds], with
+        base_backoff_seconds for a missing or non-integer value. Other failures
+        use exponential backoff with jitter.
+        """
         error_code = self._safe_error_code(result.error_code)
         if result.disposition is DeliveryDisposition.DELIVERED:
             return "DELIVERED", None, None
@@ -301,6 +350,12 @@ class DurableNotificationWorker:
         return "RETRY_WAIT", now + delay, error_code or "TRANSIENT_FAILURE"
 
     def _backoff(self, attempt_count: int) -> int:
+        """Return a retry delay in whole seconds, rounded up and at least one.
+
+        Cap the exponential base before adding up to 20% jitter, so the result may
+        exceed max_backoff_seconds. Nonfinite or nonnumeric samples add no jitter;
+        exceptions raised by the jitter callable propagate.
+        """
         base = min(
             self.max_backoff_seconds,
             self.base_backoff_seconds * (2 ** max(0, attempt_count - 1)),
@@ -313,6 +368,11 @@ class DurableNotificationWorker:
 
     @staticmethod
     def _safe_error_code(value: str | None) -> str | None:
+        """Uppercase and sanitize an error code to at most 128 characters.
+
+        Keep alphanumeric characters, underscores, and hyphens. Preserve None;
+        use UNKNOWN_ERROR for an empty string.
+        """
         if value is None:
             return None
         normalized = "".join(
@@ -323,6 +383,10 @@ class DurableNotificationWorker:
 
     @staticmethod
     def _timestamp(value: int) -> int:
+        """Return nonnegative integer Unix seconds, raising ValueError for other values.
+
+        Booleans are rejected.
+        """
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise ValueError("delivery clock must be a non-negative integer timestamp")
         return value
@@ -333,6 +397,16 @@ def notification_delivery_health(
     *,
     now: int,
 ) -> dict[str, Any]:
+    """Read outbox counts, oldest active age in seconds, and delivery alerts.
+
+    Active states are PENDING, RETRY_WAIT, and SENDING; age is None if absent
+    and otherwise floored at zero. Alert on dead letters, uncertain deliveries,
+    or active age greater than 300 seconds. The database is opened read-only.
+
+    now must be nonnegative integer Unix seconds, excluding booleans, or
+    ValueError is raised. A missing database or SQLite query failure raises
+    NotificationDeliveryError.
+    """
     timestamp = DurableNotificationWorker._timestamp(now)
     path = Path(db_path)
     if not path.is_file():

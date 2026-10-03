@@ -56,9 +56,18 @@ class PositionCalculator:
                                  mark_price: float = None,
                                  entry_slippage_pct: float | None = None,
                                  exit_slippage_pct: float | None = None) -> Dict[str, Any]:
-        """
-        محاسبه پوزیشن شرت (Short) با اعمال Fee و Slippage دوطرفه (ورود و خروج).
-        فرضِ Stop-first: محاسبه ریسک بر اساس ضربه به استاپلاس.
+        """Size a short setup with entry/exit costs and stop-first risk assumptions.
+
+        Slippage inputs are percentages, falling back to configured slippage when
+        omitted. recent_high sets the stop when above net entry; otherwise use a
+        2% stop before round-level adjustment. market_info uses CCXT tick/step
+        increments, contract size, and minimum notional. mark_price must be positive
+        and finite and is retained as the stop-monitoring reference.
+
+        Return aligned levels, contract quantity, USDT notional, and readiness.
+        Invalid prices, slippage, or nonpositive risk return a rejection-only packet;
+        a minimum-notional rejection retains calculated fields. Malformed market
+        metadata conversions and arithmetic errors propagate.
         """
         if (
             not isinstance(vwap_entry, (int, float)) or isinstance(vwap_entry, bool)

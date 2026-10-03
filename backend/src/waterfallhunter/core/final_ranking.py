@@ -68,6 +68,11 @@ class FinalRanking:
         observed_at: Any,
         evaluation_time: float,
     ) -> float | None:
+        """Decay freshness linearly from one to zero over 180 seconds.
+
+        Timestamps use Unix seconds. Missing, nonfinite, negative, or future
+        observations return None; observations at least 180 seconds old return zero.
+        """
         observed = cls._finite(observed_at)
         if observed is None or observed < 0 or observed > evaluation_time:
             return None
@@ -81,6 +86,13 @@ class FinalRanking:
         *,
         evaluation_time: float,
     ) -> dict:
+        """Return an observational score and component coverage without mutating inputs.
+
+        The score scales the available-evidence score by weight coverage; it is
+        None when no components are available. Analysis and reference freshness
+        are evaluated separately. evaluation_time is Unix time in seconds and
+        raises ValueError if negative, nonfinite, boolean, or nonnumeric.
+        """
         evaluated_at = cls._finite(evaluation_time)
         if evaluated_at is None or evaluated_at < 0:
             raise ValueError("evaluation_time must be a non-negative finite timestamp")
@@ -146,6 +158,13 @@ class FinalRanking:
         *,
         evaluation_time: float,
     ) -> dict:
+        """Return all candidates ranked by descending score, confidence, then symbol.
+
+        Missing scores sort last. top contains up to int(limit) entries, or none
+        for a nonpositive limit; all retains every entry with one-based ranks.
+        Inputs are not mutated. Invalid evaluation_time (Unix seconds) raises
+        ValueError, and limit conversion errors propagate.
+        """
         evaluated_at = cls._finite(evaluation_time)
         if evaluated_at is None or evaluated_at < 0:
             raise ValueError("evaluation_time must be a non-negative finite timestamp")

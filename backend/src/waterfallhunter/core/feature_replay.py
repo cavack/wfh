@@ -155,6 +155,14 @@ class FeatureReplayEngine:
         return result
 
     async def replay(self, payload: dict) -> dict:
+        """Recompute captured features and return an observational equivalence report.
+
+        Return NOT_REPLAYABLE for incompatible source hashes or missing required
+        capture data; otherwise return EQUIVALENT or MISMATCH with differences.
+        Use captured market data without placing orders. Missing or malformed
+        recent-high samples fall back to the position calculator's default stop;
+        other analysis and conversion errors propagate.
+        """
         metrics = payload.get("metrics") or {}
         source = metrics.get("source_capture") or {}
         position_source = source.get("position") or {}

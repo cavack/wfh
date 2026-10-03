@@ -18,6 +18,10 @@ MODEL_CONTRACT_ID = "wave1d_semantics_v1"
 
 
 def main() -> int:
+    """Write the Wave 1D corpus to --output, creating parents, and return zero.
+
+    Existing output is replaced. Corpus construction and filesystem errors propagate.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--output",

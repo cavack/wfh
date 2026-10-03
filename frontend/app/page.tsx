@@ -22,6 +22,7 @@ function connectionLabel(mode: ConnectionMode): string {
   return "Reconnecting…";
 }
 
+/** Sample a whole-number delay from zero through maximum, in milliseconds. */
 function boundedJitter(maximum: number): number {
   const sample = new Uint32Array(1);
   globalThis.crypto.getRandomValues(sample);
@@ -65,6 +66,10 @@ function candidateRank(candidate: Candidate): number | undefined {
   return undefined;
 }
 
+/**
+ * Render candidates by signal cohort, retaining the latest accepted snapshot.
+ * Show initialization until data arrives; stream failures schedule polling with backoff.
+ */
 export default function Dashboard() {
   const [data, setData] = useState<DashboardSnapshot | null>(null);
   const [mode, setMode] = useState<ConnectionMode>("reconnecting");
@@ -77,12 +82,14 @@ export default function Dashboard() {
     let streaming = false;
     const stream = new EventSource("/dashboard/api/stream");
 
+    /** Replace displayed data only while mounted and for a strictly newer version. */
     const acceptSnapshot = (snapshot: DashboardSnapshot) => {
       if (!active || snapshot.snapshot_version <= latestVersion.current) return;
       latestVersion.current = snapshot.snapshot_version;
       setData(snapshot);
     };
 
+    /** Schedule one fallback poll after delay plus jitter, both in milliseconds. */
     const schedulePoll = (delay: number) => {
       if (!active || pollTimer !== undefined) return;
       const jitter = boundedJitter(Math.max(250, delay * 0.2));
@@ -158,6 +165,7 @@ export default function Dashboard() {
     discovery: rows.filter(([, candidate]) => candidate.signal_class !== "EXPERIMENTAL" && !(candidate.signal_class === "STRICT" && ["TRIGGERED", "FUEL-RICH", "PRE-TRIGGER", "ARMED"].includes(String(candidate.status)))),
   }), [rows]);
 
+  /** Render a nonempty cohort; experimental tone adds research styling. */
   const renderGroup = (title: string, items: [string, Candidate][], tone = "slate") => items.length > 0 && (
     <section className="mx-auto mb-8 max-w-7xl">
       <h2 className={`mb-3 text-sm font-semibold uppercase tracking-wide ${tone === "experimental" ? "text-violet-300" : "text-slate-300"}`}>{title}</h2>

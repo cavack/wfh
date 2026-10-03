@@ -31,6 +31,7 @@ class DashboardSnapshot(BaseModel):
 
     @model_validator(mode="after")
     def _validate_total(self) -> "DashboardSnapshot":
+        """Return this snapshot, raising ValueError if its candidate count differs."""
         if self.total != len(self.candidates):
             raise ValueError("dashboard total must equal candidate count")
         return self
@@ -53,6 +54,10 @@ class DashboardStreamEvent(BaseModel):
 
     @model_validator(mode="after")
     def _validate_event_shape(self) -> "DashboardStreamEvent":
+        """Return this event, rejecting payload/type or snapshot-version mismatches.
+
+        Violations raise ValueError during model validation.
+        """
         if self.event_type == "snapshot" and self.payload is None:
             raise ValueError("snapshot events require a payload")
         if self.event_type == "heartbeat" and self.payload is not None:
@@ -63,6 +68,7 @@ class DashboardStreamEvent(BaseModel):
 
 
 def serialize_sse_event(event: DashboardStreamEvent) -> str:
+    """Encode an event as a blank-line-terminated SSE record with JSON data."""
     data = event.model_dump_json(exclude_none=False)
     return f"id: {event.event_id}\nevent: {event.event_type}\ndata: {data}\n\n"
 
@@ -71,6 +77,10 @@ class DashboardEventBuffer:
     """Thread-safe monotonic event sequencer with bounded in-memory replay."""
 
     def __init__(self, *, replay_limit: int = 100):
+        """Keep at most replay_limit events, including heartbeats.
+
+        Raise ValueError when replay_limit is less than one.
+        """
         if replay_limit < 1:
             raise ValueError("replay_limit must be positive")
         self._events: deque[DashboardStreamEvent] = deque(maxlen=replay_limit)
@@ -86,6 +96,11 @@ class DashboardEventBuffer:
         generated_at: float,
         full_snapshot: bool,
     ) -> DashboardStreamEvent:
+        """Validate and retain a snapshot, advancing the event and snapshot counters.
+
+        generated_at is Unix time in seconds; full_snapshot marks a replay fallback.
+        Pydantic ValidationError and canonical JSON TypeError or ValueError propagate.
+        """
         with self._lock:
             return self._publish_snapshot_locked(
                 payload,
@@ -99,7 +114,12 @@ class DashboardEventBuffer:
         *,
         generated_at: float,
     ) -> DashboardStreamEvent | None:
-        """Retain a periodic snapshot only when its business payload changed."""
+        """Retain a periodic snapshot only when its business payload changed.
+
+        Return None for an unchanged payload, regardless of generated_at (Unix
+        seconds). Validation and canonical JSON errors propagate for new content;
+        canonical JSON errors also propagate while comparing payloads.
+        """
         content_hash = canonical_sha256(payload)
         with self._lock:
             if content_hash == self._last_snapshot_content_hash:
@@ -119,6 +139,11 @@ class DashboardEventBuffer:
         full_snapshot: bool,
         content_hash: str | None = None,
     ) -> DashboardStreamEvent:
+        """Validate and retain a snapshot while the caller holds the buffer lock.
+
+        content_hash may supply the already computed business-payload hash.
+        Validation and canonical JSON errors propagate.
+        """
         next_snapshot_version = self._snapshot_sequence + 1
         snapshot = DashboardSnapshot.model_validate(
             {
@@ -142,6 +167,11 @@ class DashboardEventBuffer:
         )
 
     def publish_heartbeat(self, *, generated_at: float) -> DashboardStreamEvent:
+        """Retain a heartbeat at generated_at (Unix seconds) with no snapshot payload.
+
+        Advance only the event counter. Invalid times raise ValueError during
+        canonicalization or Pydantic ValidationError during event validation.
+        """
         with self._lock:
             heartbeat_material = {
                 "contract_version": DASHBOARD_EVENT_CONTRACT,
@@ -169,6 +199,11 @@ class DashboardEventBuffer:
         payload_hash: str,
         full_snapshot: bool,
     ) -> DashboardStreamEvent:
+        """Assign the next event ID and retain an event under the caller's lock.
+
+        The oldest event is evicted when full. Pydantic ValidationError propagates;
+        the event counter has already advanced if validation fails.
+        """
         previous = str(self._event_sequence) if self._event_sequence else None
         self._event_sequence += 1
         event = DashboardStreamEvent(
@@ -188,7 +223,12 @@ class DashboardEventBuffer:
         return event
 
     def replay_after(self, last_event_id: str | None) -> list[DashboardStreamEvent] | None:
-        """Return replay events, or None when a full snapshot is required."""
+        """Return replay events, or None when a full snapshot is required.
+
+        A current ID returns an empty list. Missing, nonpositive, non-digit, or
+        unretained IDs require a full snapshot. Returned copies are marked replayed
+        and clear full_snapshot. Digit strings that int cannot parse raise ValueError.
+        """
 
         if last_event_id is None or not last_event_id.isdigit() or int(last_event_id) < 1:
             return None
@@ -219,7 +259,12 @@ class DashboardEventBuffer:
         *,
         generated_at: float,
     ) -> DashboardSnapshot:
-        """Build a read-only snapshot for initial polling without retaining it."""
+        """Build a read-only snapshot for initial polling without retaining it.
+
+        Use the current snapshot version, or one before the first publication,
+        without advancing counters. generated_at is Unix time in seconds.
+        Pydantic ValidationError propagates for an invalid snapshot.
+        """
         with self._lock:
             snapshot_version = max(1, self._snapshot_sequence)
         return DashboardSnapshot.model_validate(
@@ -235,5 +280,6 @@ class DashboardEventBuffer:
 
     @property
     def snapshot_version(self) -> int:
+        """Return the publication counter, initially zero; heartbeats do not advance it."""
         with self._lock:
             return self._snapshot_sequence

@@ -17,6 +17,10 @@ DEFAULT_OUTPUT = Path("frontend/generated/dashboard-contract.ts")
 
 
 def _typescript_type(schema: dict) -> str:
+    """Translate the supported dashboard JSON Schema subset to a TypeScript type.
+
+    Raise ValueError for unsupported schema forms, including arrays.
+    """
     if "const" in schema:
         return json.dumps(schema["const"])
     if "enum" in schema:
@@ -48,6 +52,10 @@ def _typescript_type(schema: dict) -> str:
 
 
 def _interface(name: str, schema: dict) -> str:
+    """Render schema properties in order, marking fields absent from required optional.
+
+    Missing properties raises KeyError; unsupported property schemas raise ValueError.
+    """
     required = set(schema.get("required", ()))
     lines = [f"export interface {name} {{"]
     for field, property_schema in schema["properties"].items():
@@ -58,6 +66,10 @@ def _interface(name: str, schema: dict) -> str:
 
 
 def render_types() -> str:
+    """Render dashboard interfaces from Pydantic schemas without writing files.
+
+    Unsupported schema forms propagate ValueError from type translation.
+    """
     snapshot = DashboardSnapshot.model_json_schema()
     event = DashboardStreamEvent.model_json_schema()
     snapshot_interface = _interface("DashboardSnapshot", snapshot)
@@ -72,6 +84,10 @@ export type JsonObject = Record<string, unknown>;
 
 
 def main() -> int:
+    """Write generated dashboard types to --output, creating parents, and return zero.
+
+    Existing output is replaced. Schema translation and filesystem errors propagate.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     args = parser.parse_args()

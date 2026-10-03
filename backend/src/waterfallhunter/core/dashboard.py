@@ -4,6 +4,11 @@ from typing import Any
 def compact_metrics(
     metrics: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
+    """Return the dashboard's allowlisted metrics, or None for non-dicts.
+
+    Nested market packets are trimmed without modifying the input; retained
+    values are not deep-copied.
+    """
     if not isinstance(metrics, dict):
         return None
 
