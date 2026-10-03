@@ -8,6 +8,16 @@ class ManagedSQLiteError(RuntimeError):
     """Raised before mutation when managed SQLite invariants are unavailable."""
 
 
+class ManagedSQLiteConnection(sqlite3.Connection):
+    """SQLite connection whose context manager also closes the connection."""
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            return super().__exit__(exc_type, exc, tb)
+        finally:
+            self.close()
+
+
 def connect_managed_sqlite(
     database: str | Path,
     *,
@@ -24,6 +34,7 @@ def connect_managed_sqlite(
             timeout=timeout,
             isolation_level=isolation_level,
             uri=uri,
+            factory=ManagedSQLiteConnection,
         )
         conn.execute("PRAGMA foreign_keys=ON")
         row = conn.execute("PRAGMA foreign_keys").fetchone()

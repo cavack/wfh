@@ -39,6 +39,17 @@ def test_managed_connection_enables_and_verifies_foreign_keys(
     assert enabled == (1,)
 
 
+def test_managed_connection_context_closes_immediately(tmp_path: Path) -> None:
+    """Managed contexts must not leave SQLite connections live until cyclic GC."""
+    db_path = tmp_path / "managed-close.db"
+
+    with connect_managed_sqlite(db_path) as conn:
+        assert conn.execute("SELECT 1").fetchone() == (1,)
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        conn.execute("SELECT 1")
+
+
 def test_managed_connection_rejects_orphan_signal_metadata(tmp_path: Path) -> None:
     db_path = migrate_test_database(tmp_path / "orphan.db")
 

@@ -13,6 +13,7 @@ from waterfallhunter.core.feature_replay import (
     NOT_REPLAYABLE,
     FeatureReplayEngine,
     FeatureReplayStore,
+    FeatureReplayWorker,
 )
 from waterfallhunter.core.microstructure import MicrostructureAnalyzer
 from waterfallhunter.core.multi_exchange_validator import MultiExchangeValidator
@@ -297,3 +298,142 @@ def test_v9_unavailable_replay_row_is_queued_and_reported_not_replayable(tmp_pat
     assert result["differences"] == {
         "replay_context": "REPLAY_CONTEXT_ABSENT",
     }
+
+
+class _FrontierStore:
+    def __init__(self, batches, next_snapshot_id=999):
+        self.batches = list(batches)
+        self.pending_starts = []
+        self.appended = []
+        self.next_id = next_snapshot_id
+
+    def pending(self, limit=3, *, start_snapshot_id=None):
+        self.pending_starts.append(start_snapshot_id)
+        if not self.batches:
+            return []
+        return self.batches.pop(0)[:limit]
+
+    def append(self, snapshot, result):
+        self.appended.append((snapshot["id"], result["status"]))
+        return True
+
+    def next_snapshot_id(self):
+        return self.next_id
+
+
+class _EquivalentReplayEngine:
+    async def replay(self, payload):
+        return {
+            "version": FeatureReplayEngine.VERSION,
+            "status": EQUIVALENT,
+            "strategy_equivalent": True,
+            "differences": {},
+            "decision_path": "UNKNOWN",
+            "observational_only": True,
+            "hard_gating_allowed": False,
+        }
+
+
+
+class _RejectingFrontierStore(_FrontierStore):
+    def append(self, snapshot, result):
+        self.appended.append((snapshot["id"], result["status"]))
+        return False
+
+
+def test_feature_replay_worker_does_not_advance_past_unpersisted_result():
+    store = _RejectingFrontierStore(
+        [[
+            {"id": 100, "symbol": "A", "payload": {}},
+            {"id": 101, "symbol": "B", "payload": {}},
+        ]]
+    )
+    worker = FeatureReplayWorker(store, batch_size=2)
+    worker.engine = _EquivalentReplayEngine()
+
+    assert asyncio.run(worker.run_once()) == 0
+    assert worker._next_snapshot_id == 100
+    assert store.appended == [(100, EQUIVALENT)]
+
+def test_feature_replay_worker_offloads_store_io(monkeypatch):
+    store = _FrontierStore([[{"id": 100, "symbol": "A", "payload": {}}]])
+    worker = FeatureReplayWorker(store, batch_size=1)
+    worker.engine = _EquivalentReplayEngine()
+    offloaded = []
+    original_to_thread = asyncio.to_thread
+
+    async def tracked_to_thread(func, /, *args, **kwargs):
+        offloaded.append(getattr(func, "__name__", repr(func)))
+        return await original_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", tracked_to_thread)
+
+    assert asyncio.run(worker.run_once()) == 1
+    assert "pending" in offloaded
+    assert "append" in offloaded
+
+
+def test_feature_replay_worker_reuses_monotonic_frontier_after_initial_scan():
+    store = _FrontierStore(
+        [
+            [
+                {"id": 100, "symbol": "A", "payload": {}},
+                {"id": 101, "symbol": "B", "payload": {}},
+            ],
+            [],
+        ]
+    )
+    worker = FeatureReplayWorker(store, batch_size=2)
+    worker.engine = _EquivalentReplayEngine()
+
+    assert asyncio.run(worker.run_once()) == 2
+    assert asyncio.run(worker.run_once()) == 0
+    assert store.pending_starts == [None, 102]
+
+
+def test_feature_replay_worker_avoids_repeating_full_scan_after_empty_initial_scan():
+    store = _FrontierStore([[], []], next_snapshot_id=700)
+    worker = FeatureReplayWorker(store, batch_size=2)
+    worker.engine = _EquivalentReplayEngine()
+
+    assert asyncio.run(worker.run_once()) == 0
+    assert asyncio.run(worker.run_once()) == 0
+    assert store.pending_starts == [None, 700]
+
+
+def test_feature_replay_pending_supports_primary_key_frontier(tmp_path):
+    db_path = migrate_test_database(tmp_path / "replay-frontier.db")
+    recorder = ProductionEvidenceRecorder(str(db_path), bucket_seconds=60)
+    contract = {
+        "contract_schema_version": "production_decision_contract_v2",
+        "application": {"source_tree_sha256": "a" * 64},
+        "strategy": {},
+        "microstructure": {},
+        "derivatives": {},
+        "position": {},
+        "recorder": {},
+        "runtime_settings": {},
+    }
+    for index in range(4):
+        assert recorder.record(
+            f"TEST{index}/USDT:USDT",
+            candidate_state="WATCH",
+            reference_source=None,
+            reference_price=None,
+            result={"is_valid": False, "metrics": {"error": "reference unavailable"}},
+            decision_contract=contract,
+            observed_at=100.0 + index * 60,
+            replay_context=None,
+        )
+
+    store = FeatureReplayStore(str(db_path))
+    all_pending = store.pending(limit=10)
+    assert len(all_pending) == 4
+    frontier = all_pending[2]["id"]
+
+    pending = store.pending(limit=10, start_snapshot_id=frontier)
+
+    assert [row["id"] for row in pending] == [
+        all_pending[2]["id"],
+        all_pending[3]["id"],
+    ]

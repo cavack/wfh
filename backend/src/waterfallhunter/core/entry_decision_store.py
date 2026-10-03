@@ -30,6 +30,18 @@ _OBSERVATIONAL_ONLY = "observational_only"
 _DECISION_MUTATED = "decision_mutated"
 _DECISION_EVENT_ID_INVALID = "decision event id invalid"
 _RESOLUTION_OBSERVATIONAL_ONLY = "resolution must be observational only"
+_PROVIDER_READY_CAPTURE_PREDICATE = """
+    json_extract(c.capture_json, '$.contract.available') = 1
+    AND lower(json_extract(c.capture_json, '$.contract.exchange')) = 'lbank'
+    AND json_extract(c.capture_json, '$.contract.market_type') = 'linear_usdt_perpetual'
+    AND length(trim(json_extract(c.capture_json, '$.contract.mapped_symbol'))) > 0
+    AND json_extract(c.capture_json, '$.outcome_contract.closed_candles_only') = 1
+    AND json_extract(c.capture_json, '$.outcome_contract.complete_window_required') = 1
+    AND json_extract(c.capture_json, '$.trade_plan.entry_price') IS NOT NULL
+    AND json_extract(c.capture_json, '$.trade_plan.stop_loss') IS NOT NULL
+    AND json_extract(c.capture_json, '$.trade_plan.take_profit_1') IS NOT NULL
+    AND json_extract(c.capture_json, '$.trade_plan.take_profit_2') IS NOT NULL
+"""
 
 _ALLOWED = {
     "NO_TRADE",
@@ -674,16 +686,24 @@ class EntryDecisionStore:
         return event_id
 
     def scan_pending_outcome_captures(
-        self, *, mature_before: int, limit: int = 100, after_id: int = 0
+        self,
+        *,
+        mature_before: int,
+        limit: int = 100,
+        after_id: int = 0,
+        resolution_lane: str = "all",
     ) -> tuple[list[dict[str, Any]], int]:
         """Return verified captures plus the highest raw capture id scanned."""
         if isinstance(mature_before, bool) or not isinstance(mature_before, int):
             raise ValueError("maturity timestamp invalid")
+        if resolution_lane not in {"all", "provider", "local"}:
+            raise ValueError("outcome resolution lane invalid")
         bounded_after = max(0, int(after_id))
+        lane_mode = {"all": -1, "provider": 1, "local": 0}[resolution_lane]
         with connect_managed_sqlite(self.db_path, timeout=10.0) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                """
+                f"""
                 SELECT c.id, c.decision_event_id, c.captured_at,
                        c.capture_json, c.capture_hash,
                        e.packet_hash AS decision_packet_hash
@@ -695,9 +715,20 @@ class EntryDecisionStore:
                 WHERE r.id IS NULL AND c.outcome_status = 'UNOBSERVED'
                   AND c.captured_at <= ?
                   AND c.id > ?
+                  AND (
+                    ? = -1
+                    OR CASE WHEN ({_PROVIDER_READY_CAPTURE_PREDICATE})
+                            THEN 1 ELSE 0 END = ?
+                  )
                 ORDER BY c.id LIMIT ?
                 """,
-                (mature_before, bounded_after, max(1, min(int(limit), 1000))),
+                (
+                    mature_before,
+                    bounded_after,
+                    lane_mode,
+                    lane_mode,
+                    max(1, min(int(limit), 1000)),
+                ),
             ).fetchall()
         scanned_through = int(rows[-1]["id"]) if rows else bounded_after
         valid: list[dict[str, Any]] = []
@@ -724,6 +755,28 @@ class EntryDecisionStore:
                 continue
             valid.append({**decoded, **item})
         return valid, scanned_through
+
+    def scan_pending_provider_outcome_captures(
+        self, *, mature_before: int, limit: int = 100, after_id: int = 0
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Return captures that may call the exact-contract candle provider."""
+        return self.scan_pending_outcome_captures(
+            mature_before=mature_before,
+            limit=limit,
+            after_id=after_id,
+            resolution_lane="provider",
+        )
+
+    def scan_pending_local_outcome_captures(
+        self, *, mature_before: int, limit: int = 100, after_id: int = 0
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Return captures whose unavailable outcome is known without provider I/O."""
+        return self.scan_pending_outcome_captures(
+            mature_before=mature_before,
+            limit=limit,
+            after_id=after_id,
+            resolution_lane="local",
+        )
 
     def pending_outcome_captures(
         self, *, mature_before: int, limit: int = 100, after_id: int = 0
@@ -1052,16 +1105,26 @@ class EntryOutcomeResolutionWorker:
         resolver: Any,
         *,
         batch_size: int = 3,
+        local_batch_size: int | None = None,
         interval_seconds: float = 900.0,
         close_delay_seconds: int = 120,
     ):
         self.store = store
         self.resolver = resolver
         self.batch_size = max(1, min(int(batch_size), 100))
+        self.local_batch_size = max(
+            1,
+            min(
+                int(local_batch_size if local_batch_size is not None else batch_size),
+                1000,
+            ),
+        )
         self.interval_seconds = max(60.0, float(interval_seconds))
         self.close_delay_seconds = max(60, int(close_delay_seconds))
         self._running = False
         self._scan_after_id = 0
+        self._provider_scan_after_id = 0
+        self._local_scan_after_id = 0
 
     async def _load_pending_batch(self, *, mature_before: int) -> list[dict[str, Any]]:
         if not hasattr(self.store, "scan_pending_outcome_captures"):
@@ -1090,6 +1153,37 @@ class EntryOutcomeResolutionWorker:
             after_id=0,
         )
         self._scan_after_id = scanned_through
+        return captures
+
+    async def _load_lane_batch(
+        self,
+        *,
+        scanner_name: str,
+        cursor_name: str,
+        mature_before: int,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        scanner = getattr(self.store, scanner_name)
+        cursor = int(getattr(self, cursor_name))
+        captures, scanned_through = await asyncio.to_thread(
+            scanner,
+            mature_before=mature_before,
+            limit=limit,
+            after_id=cursor,
+        )
+        if scanned_through > cursor:
+            setattr(self, cursor_name, scanned_through)
+            return captures
+        if not cursor:
+            return captures
+        setattr(self, cursor_name, 0)
+        captures, scanned_through = await asyncio.to_thread(
+            scanner,
+            mature_before=mature_before,
+            limit=limit,
+            after_id=0,
+        )
+        setattr(self, cursor_name, scanned_through)
         return captures
 
     async def _resolve_pending_capture(
@@ -1156,18 +1250,42 @@ class EntryOutcomeResolutionWorker:
                 mature_before=mature_before,
                 limit=self.batch_size,
             )
-        captures = await self._load_pending_batch(mature_before=mature_before)
-        resolved = 0
-        for attempt, capture in enumerate(captures, start=1):
-            self._scan_after_id = int(capture["id"])
-            resolved += int(
-                await self._resolve_pending_capture(
-                    capture,
-                    attempt=attempt,
-                    batch_limit=len(captures),
-                    resolved_at=current,
-                )
+        lane_scanners_available = all(
+            hasattr(self.store, name)
+            for name in (
+                "scan_pending_provider_outcome_captures",
+                "scan_pending_local_outcome_captures",
             )
+        )
+        if lane_scanners_available:
+            provider_captures = await self._load_lane_batch(
+                scanner_name="scan_pending_provider_outcome_captures",
+                cursor_name="_provider_scan_after_id",
+                mature_before=mature_before,
+                limit=self.batch_size,
+            )
+            local_captures = await self._load_lane_batch(
+                scanner_name="scan_pending_local_outcome_captures",
+                cursor_name="_local_scan_after_id",
+                mature_before=mature_before,
+                limit=self.local_batch_size,
+            )
+            batches = (provider_captures, local_captures)
+        else:
+            batches = (await self._load_pending_batch(mature_before=mature_before),)
+        resolved = 0
+        for captures in batches:
+            for attempt, capture in enumerate(captures, start=1):
+                if not lane_scanners_available:
+                    self._scan_after_id = int(capture["id"])
+                resolved += int(
+                    await self._resolve_pending_capture(
+                        capture,
+                        attempt=attempt,
+                        batch_limit=len(captures),
+                        resolved_at=current,
+                    )
+                )
         return resolved
 
     async def run_forever(self) -> None:

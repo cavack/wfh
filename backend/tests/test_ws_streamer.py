@@ -113,8 +113,9 @@ def test_unsubscribe_removes_hot_evidence_history() -> None:
 
 
 class _FakeCcxtClient:
-    def __init__(self, subscriptions: int = 1) -> None:
+    def __init__(self, subscriptions: int = 1, futures: int = 0) -> None:
         self.subscriptions = {f"sub-{index}": object() for index in range(subscriptions)}
+        self.futures = {f"future-{index}": object() for index in range(futures)}
         self.close_calls = 0
 
     async def close(self) -> None:
@@ -198,6 +199,49 @@ def test_unsubscribe_unwatches_symbol_and_closes_idle_ccxt_clients() -> None:
     assert [client.close_calls for client in clients] == [1, 1, 1]
     assert exchange.close_calls == 0
     assert manager._direct_symbol_retire_tasks == {}
+
+
+def test_direct_retirement_closes_idle_clients_while_other_symbol_remains_active() -> None:
+    manager = WebSocketManager()
+    retired_symbol = "OLD/USDT:USDT"
+    survivor_symbol = "KEEP/USDT:USDT"
+    exchange = _ClosableExchange(clients=6, subscriptions_each=1)
+    clients = list(exchange.clients.values())
+
+    async def survivor() -> None:
+        await asyncio.Future()
+
+    async def scenario() -> None:
+        manager.exchanges["binance"] = exchange
+        survivor_task = asyncio.create_task(survivor())
+        manager.active_tasks[f"binance:{survivor_symbol}"] = survivor_task
+        try:
+            await manager._retire_direct_symbol("binance", retired_symbol, ())
+        finally:
+            manager.active_tasks.pop(f"binance:{survivor_symbol}", None)
+            survivor_task.cancel()
+            await asyncio.gather(survivor_task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+    assert list(exchange.clients) == ["ws-3", "ws-4", "ws-5"]
+    assert [client.close_calls for client in clients] == [1, 1, 1, 0, 0, 0]
+
+
+def test_direct_idle_cleanup_preserves_client_with_pending_future() -> None:
+    manager = WebSocketManager()
+    idle = _FakeCcxtClient(subscriptions=0, futures=0)
+    pending = _FakeCcxtClient(subscriptions=0, futures=1)
+    active = _FakeCcxtClient(subscriptions=1, futures=0)
+    exchange = _ClosableExchange(clients=0)
+    exchange.clients = {"idle": idle, "pending": pending, "active": active}
+
+    asyncio.run(manager._close_idle_ccxt_clients("binance", exchange))
+
+    assert list(exchange.clients) == ["pending", "active"]
+    assert idle.close_calls == 1
+    assert pending.close_calls == 0
+    assert active.close_calls == 0
 
 
 def test_retain_liquidations_retires_direct_clients_without_restarting_liquidation(monkeypatch) -> None:
@@ -393,7 +437,9 @@ def test_close_all_bounds_slow_exchange_close() -> None:
 
 def test_runtime_diagnostics_exposes_ccxt_client_ownership() -> None:
     manager = WebSocketManager()
-    manager.exchanges["bybit"] = _ClosableExchange(clients=3, subscriptions_each=1)
+    direct_exchange = _ClosableExchange(clients=3, subscriptions_each=1)
+    direct_exchange.clients["retired-idle"] = _FakeCcxtClient(subscriptions=0)
+    manager.exchanges["bybit"] = direct_exchange
     manager.liquidation_exchanges["bybit:AAA/USDT:USDT"] = _ClosableExchange(
         clients=1, subscriptions_each=1
     )
@@ -408,7 +454,14 @@ def test_runtime_diagnostics_exposes_ccxt_client_ownership() -> None:
 
     assert snapshot["direct_exchange_instances"] == 1
     assert snapshot["liquidation_exchange_instances"] == 2
-    assert snapshot["ccxt_clients"] == 7
+    assert snapshot["direct_ccxt_clients"] == 4
+    assert snapshot["direct_ccxt_subscriptions"] == 3
+    assert snapshot["direct_idle_ccxt_clients"] == 1
+    assert snapshot["liquidation_ccxt_clients"] == 2
+    assert snapshot["liquidation_ccxt_subscriptions"] == 2
+    assert snapshot["shared_evidence_ccxt_clients"] == 2
+    assert snapshot["shared_evidence_ccxt_subscriptions"] == 4
+    assert snapshot["ccxt_clients"] == 8
     assert snapshot["ccxt_subscriptions"] == 9
     assert snapshot["direct_exchange_retire_tasks"] == 0
     assert snapshot["liquidation_exchange_retire_tasks"] == 0
@@ -459,6 +512,7 @@ def test_cross_symbol_direct_start_waits_for_shared_client_retirement() -> None:
             self.subscriptions = (
                 {initial_subscription: object()} if initial_subscription else {}
             )
+            self.futures = {}
             self.close_started = asyncio.Event()
             self.close_release = asyncio.Event()
             self.closed = False
