@@ -95,6 +95,7 @@ def _candidate(
     *,
     evaluation_time: float,
 ) -> dict:
+    """Build a ranking fixture with observation times derived from ages in seconds."""
     return {
         "status": status,
         "score": score,
@@ -122,6 +123,7 @@ def _candidate(
 
 
 def cases() -> list[dict]:
+    """Return deterministic fixture inputs paired with current model replay outputs."""
     complete = _score_packet()
     missing = deepcopy(complete)
     missing["derivatives"] = {

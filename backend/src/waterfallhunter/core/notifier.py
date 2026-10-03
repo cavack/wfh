@@ -40,6 +40,11 @@ class TelegramNotifier:
 
     @classmethod
     def build_signal_message(cls, symbol: str, data: dict) -> str:
+        """Format a paper signal alert as Telegram HTML without sending it.
+
+        Escape inserted text and render missing or nonfinite numeric evidence as
+        an em dash. Include DEX and on-chain sections when their packets are present.
+        """
         metrics = data.get("metrics") or {}
         pos_setup = metrics.get("position_setup") or {}
         ai_data = metrics.get("ai_advisory") or {}

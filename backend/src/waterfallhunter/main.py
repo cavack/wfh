@@ -88,6 +88,10 @@ logger = logging.getLogger("WaterfallHunter")
 
 @asynccontextmanager
 async def app_lifespan(_: FastAPI):
+    """Start application workers, yield control, and shut down after successful startup.
+
+    Startup and shutdown errors propagate.
+    """
     await startup_event()
     try:
         yield
@@ -975,6 +979,16 @@ def _store_live_metrics(
 
 
 def get_formatted_candidates(*, evaluation_time: float | None = None):  # NOSONAR
+    """Combine active database candidates with live evidence and dashboard summaries.
+
+    Use evaluation_time in Unix seconds, defaulting to the current clock, for
+    separate analysis/reference ages and observational ranking. Missing live
+    references leave price, score, and metrics unavailable. Return candidates
+    sorted by score, the count, top-three ranking, and signal funnel.
+
+    Invalid or nonfinite/negative evaluation times raise conversion errors or
+    ValueError. Uncaught data-source errors propagate.
+    """
     now = time.time() if evaluation_time is None else float(evaluation_time)
     if not math.isfinite(now) or now < 0:
         raise ValueError("evaluation_time must be a non-negative finite timestamp")
@@ -1275,6 +1289,11 @@ def _publish_dashboard_snapshot(
     full_snapshot: bool,
     only_if_changed: bool = False,
 ) -> DashboardStreamEvent | None:
+    """Build and retain a current dashboard event, propagating snapshot errors.
+
+    only_if_changed returns None for duplicate content and ignores full_snapshot;
+    otherwise full_snapshot marks the published event as a replay fallback.
+    """
     generated_at = time.time()
     payload = get_formatted_candidates(evaluation_time=generated_at)
     if only_if_changed:
@@ -1290,6 +1309,7 @@ def _publish_dashboard_snapshot(
 
 
 def _broadcast_dashboard_event(event: DashboardStreamEvent) -> None:
+    """Enqueue an event for each client, dropping its oldest queued event if full."""
     for queue in _sse_clients:
         try:
             queue.put_nowait(event)
@@ -1305,6 +1325,11 @@ def _broadcast_dashboard_event(event: DashboardStreamEvent) -> None:
 
 
 async def sse_broadcaster():
+    """Publish changed snapshots while the hunter runs and clients are connected.
+
+    Check once per one-second sleep and send heartbeats at least 15 seconds
+    apart. Snapshot construction errors and cancellation propagate.
+    """
     last_heartbeat_at = 0.0
     while _hunter_running:
         if _sse_clients:
@@ -1331,6 +1356,15 @@ async def evaluate_candidate(
     symbol: str,
     data: dict,
 ):
+    """Evaluate one candidate and update live evidence, subscriptions, and persisted state.
+
+    Record separate analysis and reference timestamps. Unavailable evidence
+    falls back to observational state; eligible triggers pass advisory and
+    metadata checks before persistence and any permitted paper alert.
+
+    Leverage errors and metadata ValueError abort the trigger, while uncaught
+    provider, analysis, and persistence errors propagate. Returns no result.
+    """
     analysis_observed_at = int(time.time())
 
     active_candidate = scanner.active_candidates.setdefault(
@@ -2485,6 +2519,11 @@ async def healthz_check():
 
 
 async def _notification_delivery_health_snapshot() -> dict:
+    """Read delivery health off the event loop and refresh its Prometheus gauges.
+
+    Use NaN for an absent oldest pending age; return the report and propagate
+    NotificationDeliveryError on unavailable delivery state.
+    """
     report = await asyncio.to_thread(
         notification_delivery_health,
         settings.registry_db_path,
@@ -2514,6 +2553,7 @@ async def _notification_delivery_health_snapshot() -> dict:
     responses={503: {"description": "Notification delivery state is unavailable"}},
 )
 async def notification_delivery_status(response: Response):
+    """Return delivery health with no-store caching, or HTTP 503 when unavailable."""
     response.headers["Cache-Control"] = "no-store"
     try:
         return await _notification_delivery_health_snapshot()
@@ -2528,6 +2568,11 @@ async def notification_delivery_status(response: Response):
     "/metrics"
 )
 async def metrics():
+    """Refresh and return Prometheus metrics.
+
+    A NotificationDeliveryError leaves delivery gauges at their previous values
+    and still returns the remaining metrics.
+    """
     active_candidates = db.get_all_active_candidates()
     tracked_candidates.set(
         len(active_candidates)
@@ -2583,6 +2628,13 @@ async def stream_candidates(
         Header(alias="Last-Event-ID"),
     ] = None,
 ):
+    """Subscribe to dashboard SSE events with caching and proxy buffering disabled.
+
+    last_event_id is the Last-Event-ID header: replay retained newer events or
+    publish a full snapshot when replay is unavailable. Each client buffers up
+    to 100 events, dropping older queued events on overflow. Stream generation
+    errors propagate; the client is removed when the generator exits.
+    """
     q = asyncio.Queue(
         maxsize=100
     )
@@ -2592,6 +2644,10 @@ async def stream_candidates(
     )
 
     async def event_generator():
+        """Yield replay/fallback and then newer queued SSE records until closed.
+
+        Always remove the client on exit; snapshot and serialization errors propagate.
+        """
         delivered_event_id = 0
         try:
             replay = _dashboard_event_buffer.replay_after(last_event_id)
@@ -2633,6 +2689,11 @@ async def stream_candidates(
     response_model_exclude_none=False,
 )
 async def get_candidates(response: Response):
+    """Return the latest retained snapshot with no-store caching.
+
+    If none remains, build an unretained preview without advancing event or
+    snapshot counters. Snapshot construction and validation errors propagate.
+    """
     response.headers["Cache-Control"] = "no-store"
     latest = _dashboard_event_buffer.latest_snapshot()
     if latest is not None:

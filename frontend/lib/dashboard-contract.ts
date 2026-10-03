@@ -1,19 +1,26 @@
 import type { DashboardSnapshot, DashboardStreamEvent, JsonObject } from "@/generated/dashboard-contract";
 
+/** Return a non-null, non-array object without inspecting its fields. */
 function record(value: unknown): JsonObject | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as JsonObject
     : undefined;
 }
 
+/** Accept finite numbers, excluding numeric strings and nonfinite values. */
 function finite(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
+/** Accept positive decimal integer text without leading zeros. */
 function positiveIntegerText(value: unknown): value is string {
   return typeof value === "string" && /^[1-9]\d*$/.test(value);
 }
 
+/**
+ * Return a snapshot passing envelope and candidate-count checks, or undefined.
+ * Candidate values, ranking fields, and funnel fields are not deeply validated.
+ */
 export function dashboardSnapshot(value: unknown): DashboardSnapshot | undefined {
   const packet = record(value);
   if (!packet) return undefined;
@@ -32,6 +39,11 @@ export function dashboardSnapshot(value: unknown): DashboardSnapshot | undefined
   return packet as unknown as DashboardSnapshot;
 }
 
+/**
+ * Return an event passing envelope and payload-version checks, or undefined.
+ * Heartbeats require a null payload; snapshots use dashboardSnapshot validation.
+ * Check the hash's format only, without recomputing it or checking event ordering.
+ */
 export function dashboardStreamEvent(value: unknown): DashboardStreamEvent | undefined {
   const packet = record(value);
   if (!packet) return undefined;

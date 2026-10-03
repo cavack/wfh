@@ -1215,6 +1215,18 @@ class MultiExchangeValidator:
         reference_price: float,
         reference_source: str = "lbank",
     ) -> Dict[str, Any]:
+        """Analyze compatible live perpetual markets and return a score/state proposal.
+
+        reference_price anchors cross-exchange price checks; reference_source labels
+        its provenance. Try successive sources when prices, order books, completed
+        candles, or microstructure are unusable. Missing required evidence returns
+        an invalid result with reasons and any available observational metrics.
+
+        A rejected position setup downgrades a trigger proposal to WATCH. Fetches
+        market data but places no orders. Order-book fetch errors trigger source
+        fallback and malformed recent-high data uses the default stop; other
+        uncaught provider and analysis errors propagate.
+        """
         source_failures = []
         selected = None
 

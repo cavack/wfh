@@ -126,6 +126,7 @@ function ExecutionSuitability({ packet }: { packet: RecordValue | undefined }) {
   );
 }
 
+/** Render candidate identity and state, showing price and evidence ages only when live. */
 function CandidateHeader({ symbol, candidate, live, state }: {
   symbol: string;
   candidate: Candidate;

@@ -33,10 +33,15 @@ class StrictCalibrationDataset:
 
 
 def _sha256(value: Any) -> str:
+    """Hash canonical JSON, propagating TypeError or ValueError for unsafe values."""
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
 def _timestamp(value: int, field: str) -> int:
+    """Validate a nonnegative integer, excluding booleans.
+
+    Raise StrictCalibrationDatasetError naming field on invalid input.
+    """
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise StrictCalibrationDatasetError(
             f"{field} must be a non-negative integer UTC timestamp"
@@ -45,6 +50,10 @@ def _timestamp(value: int, field: str) -> int:
 
 
 def _open_read_only(db_path: str | Path) -> sqlite3.Connection:
+    """Open an existing database for queries; the caller must close the connection.
+
+    Missing files and open/configuration failures raise StrictCalibrationDatasetError.
+    """
     path = Path(db_path)
     if not path.is_file():
         raise StrictCalibrationDatasetError("CALIBRATION_DATABASE_UNAVAILABLE")
@@ -72,6 +81,7 @@ class StrictCalibrationDatasetBuilder:
     """Build an immutable manifest over a bounded, outcome-complete cohort."""
 
     def __init__(self, db_path: str | Path):
+        """Store the source path; database access and validation occur in build."""
         self.db_path = Path(db_path)
 
     def build(
@@ -84,6 +94,22 @@ class StrictCalibrationDatasetBuilder:
         source_revision: str,
         target_horizon_seconds: int = DEFAULT_TARGET_HORIZON_SECONDS,
     ) -> StrictCalibrationDataset:
+        """Read a STRICT cohort and return ordered rows with a hashed provenance manifest.
+
+        Clocks are nonnegative integer Unix seconds and must satisfy
+        start < end <= outcome_as_of <= generated_at. Signals use [start, end);
+        outcomes must be resolved and observed through a time at or before
+        outcome_as_of, with matching expected and observed candle counts.
+
+        Match target_horizon_seconds exactly (positive; defaults to 24 hours).
+        The target is true when first_tp2_at is present. source_revision is a
+        caller-supplied nonempty provenance label, stripped and limited to 128 characters.
+        No database writes are performed; an empty cohort is valid.
+
+        Invalid arguments, unavailable or incompatible databases, and query errors
+        raise StrictCalibrationDatasetError. Canonical JSON errors propagate when
+        hashing rows or the manifest.
+        """
         start = _timestamp(signal_window_start, "signal_window_start")
         end = _timestamp(signal_window_end, "signal_window_end")
         as_of = _timestamp(outcome_as_of, "outcome_as_of")
@@ -174,6 +200,13 @@ class StrictCalibrationDatasetBuilder:
         as_of: int,
         horizon: int,
     ) -> list[dict[str, Any]]:
+        """Select complete, usable STRICT outcomes ordered by trigger time and signal ID.
+
+        Use the half-open signal window [start, end), inclusive as_of cutoff, and
+        exact horizon in seconds. Exclude mismatched outcome identities, future
+        signal evidence, and event times outside the observed interval. Add a
+        boolean target based on first_tp2_at presence. SQLite errors propagate.
+        """
         placeholders = ", ".join("?" for _ in _UNUSABLE_OUTCOMES)
         sql = f"""
             SELECT

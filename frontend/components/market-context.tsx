@@ -29,6 +29,7 @@ function Metric({ label, value }: { label: string; value: string }) {
   return <div className="flex items-center justify-between gap-3 border-b border-slate-800/80 py-2 last:border-0"><dt className="text-slate-400">{label}</dt><dd className="shrink-0 font-mono text-slate-200">{value}</dd></div>;
 }
 
+/** Show execution, derivatives, and provenance only from a live candidate snapshot. */
 export function MarketContext({ candidate, hasFreshSnapshot }: { candidate: Candidate; hasFreshSnapshot: boolean }) {
   const live = isLiveCandidate(candidate, hasFreshSnapshot);
   const metrics = live ? asRecord(candidate.metrics) : undefined;
@@ -44,6 +45,7 @@ export function MarketContext({ candidate, hasFreshSnapshot }: { candidate: Cand
   </div>;
 }
 
+/** Render volume, spread, slippage, and sell flow with em dashes for missing values. */
 function ExecutionMetrics({ volume, microstructure }: { volume: unknown; microstructure: Record<string, unknown> | undefined }) {
   return <section className="metric-card"><p className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-slate-400"><Waves size={14} /> Execution</p><dl>
     <Metric label="24h futures volume" value={valueText(volume, 0, "$")} />
