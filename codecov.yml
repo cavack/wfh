@@ -1,0 +1,17 @@
+coverage:
+  status:
+    project:
+      backend:
+        informational: true
+        flags:
+          - backend
+    patch:
+      backend:
+        informational: true
+        flags:
+          - backend
+
+comment: false
+
+github_checks:
+  annotations: true
